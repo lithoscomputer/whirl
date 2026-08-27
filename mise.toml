@@ -1,0 +1,81 @@
+[tools]
+node = "24.19.0"
+
+[env]
+WHIRL_NODE = "node"
+WHIRL_SHIM_JS = "{{config_root}}/shim/dist/index.js"
+
+[tasks.setup]
+description = "Install toolchains, shim dependencies, and Playwright browsers"
+run = [
+  "rustup toolchain install nightly-2026-04-14 --profile minimal --component rustfmt",
+  "rustup toolchain install 1.85.0 --profile minimal",
+  "cargo nextest --version >/dev/null 2>&1 || cargo install cargo-nextest --locked",
+  "mise run setup:shim",
+  "cd shim && npx playwright install chromium",
+]
+
+[tasks."setup:shim"]
+description = "Install shim npm dependencies from the lockfile"
+dir = "shim"
+sources = ["package.json", "package-lock.json"]
+outputs = ["node_modules/.package-lock.json"]
+run = "npm ci"
+
+[tasks."build:shim"]
+description = "Build the browser shim from its TypeScript source"
+depends = ["setup:shim"]
+dir = "shim"
+sources = ["src/**/*", "package.json", "package-lock.json", "tsconfig.json"]
+outputs = ["dist/index.js"]
+run = "npm run build"
+
+[tasks.dev]
+description = "Build the shim and the whirl binary for local development"
+depends = ["build:shim"]
+run = "cargo build --workspace"
+
+[tasks.test]
+description = "Run all tests (Rust unit, acceptance, and shim)"
+depends = ["test:rust", "test:shim"]
+
+[tasks."test:rust"]
+description = "Run Rust unit and acceptance tests with nextest"
+depends = ["build:shim"]
+run = "cargo nextest run --workspace --all-targets --all-features"
+
+[tasks."test:shim"]
+description = "Run the shim's own tests"
+depends = ["build:shim"]
+dir = "shim"
+run = "npm test"
+
+[tasks.check]
+description = "Run the routine checks for every pushed revision"
+depends = ["check:fmt", "check:clippy", "test", "check:msrv", "check:shim"]
+
+[tasks."check:fmt"]
+description = "Check Rust formatting with the pinned nightly rustfmt"
+run = "cargo +nightly-2026-04-14 fmt --check --all"
+
+[tasks."check:clippy"]
+description = "Lint Rust code with Clippy, warnings denied"
+run = "cargo clippy --locked --workspace --all-targets --all-features -- -D warnings"
+
+[tasks."check:msrv"]
+description = "Type-check the workspace on the minimum supported Rust version"
+run = "cargo +1.85.0 check --workspace --all-targets --all-features"
+
+[tasks."check:shim"]
+description = "Type-check and lint the shim TypeScript"
+depends = ["setup:shim"]
+dir = "shim"
+run = ["npm run typecheck", "npm run lint"]
+
+[tasks."check:nightly"]
+description = "Run the nightly checks: acceptance tests on all three browser engines"
+depends = ["build:shim"]
+run = [
+  "cd shim && npx playwright install chromium firefox webkit",
+  "WHIRL_TEST_ALL_BROWSERS=1 cargo nextest run --workspace --all-targets --all-features",
+]

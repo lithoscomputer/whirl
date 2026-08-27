@@ -9,3 +9,5 @@ node_modules/
 __pycache__/
 tmp
 /dist/
+/shim/dist/
+whirl-artifacts/
