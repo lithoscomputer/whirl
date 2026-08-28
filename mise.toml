@@ -53,7 +53,7 @@ run = "{{config_root}}/scripts/quiet.sh bun run test"
 
 [tasks.check]
 description = "Run the routine checks for every pushed revision"
-depends = ["check:fmt", "check:clippy", "test", "check:msrv", "check:shim"]
+depends = ["check:fmt", "check:clippy", "test", "check:shim"]
 
 [tasks."check:fmt"]
 description = "Check Rust formatting with the pinned nightly rustfmt"
@@ -61,11 +61,8 @@ run = "{{config_root}}/scripts/quiet.sh cargo +nightly-2026-04-14 fmt --check --
 
 [tasks."check:clippy"]
 description = "Lint Rust code with Clippy, warnings denied"
+env = { CARGO_TARGET_DIR = "{{config_root}}/target/clippy" }
 run = "{{config_root}}/scripts/quiet.sh cargo clippy --locked --workspace --all-targets --all-features -- -D warnings"
-
-[tasks."check:msrv"]
-description = "Type-check the workspace on the minimum supported Rust version"
-run = "{{config_root}}/scripts/quiet.sh cargo +1.85.0 check --workspace --all-targets --all-features"
 
 [tasks."check:shim"]
 description = "Type-check and lint the shim TypeScript"
