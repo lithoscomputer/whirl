@@ -1,0 +1,42 @@
+{
+	"$schema": "https://biomejs.dev/schemas/2.5.9/schema.json",
+	"files": {
+		"includes": ["**", "!dist"]
+	},
+	"formatter": {
+		"enabled": true
+	},
+	"linter": {
+		"enabled": true,
+		"rules": {
+			"recommended": true,
+			"style": {
+				"noEnum": "error",
+				"noNonNullAssertion": "error",
+				"noParameterAssign": "error",
+				"useNamingConvention": "error",
+				"useThrowOnlyError": "error",
+				"useThrowNewError": "error",
+				"useConsistentTypeDefinitions": {
+					"level": "error",
+					"options": { "style": "interface" }
+				},
+				"useConsistentArrayType": {
+					"level": "error",
+					"options": { "syntax": "shorthand" }
+				},
+				"useFilenamingConvention": {
+					"level": "error",
+					"options": { "filenameCases": ["kebab-case"] }
+				}
+			},
+			"performance": {
+				"noBarrelFile": "error",
+				"noReExportAll": "error"
+			},
+			"suspicious": {
+				"noImportCycles": "error"
+			}
+		}
+	}
+}

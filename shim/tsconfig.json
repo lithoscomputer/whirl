@@ -1,0 +1,40 @@
+{
+	"compilerOptions": {
+		// Node island: the shim ships to plain Node, so nodenext resolution
+		// applies instead of the guide's preserve/bundler baseline.
+		"module": "nodenext",
+		"moduleResolution": "nodenext",
+		"verbatimModuleSyntax": true,
+		"resolveJsonModule": true,
+
+		"noUncheckedSideEffectImports": true,
+
+		// tsc emits the runnable shim to dist/.
+		"noEmit": false,
+		"rootDir": "src",
+		"outDir": "dist",
+		"isolatedModules": true,
+
+		"erasableSyntaxOnly": true,
+
+		// The shim runs on Node but injects functions into browser pages,
+		// so the DOM lib joins the default ES lib.
+		"lib": ["es2025", "dom", "dom.iterable"],
+		"types": ["node"],
+
+		"strict": true,
+		"noUncheckedIndexedAccess": true,
+		"exactOptionalPropertyTypes": true,
+		"noPropertyAccessFromIndexSignature": true,
+		"noImplicitReturns": true,
+		"noImplicitOverride": true,
+		"noUnusedLocals": true,
+		"noUnusedParameters": true,
+		"noFallthroughCasesInSwitch": true,
+		"allowUnreachableCode": false,
+		"allowUnusedLabels": false,
+
+		"skipLibCheck": true
+	},
+	"include": ["src"]
+}
