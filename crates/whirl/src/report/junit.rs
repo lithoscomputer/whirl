@@ -20,14 +20,20 @@ pub fn render(report: &RunReport) -> String {
         for entry in &file.entries {
             suite.add_test_case(test_case(entry));
         }
-        // Screenshot skip warnings must reach both reports (SPEC 7), so
-        // the suite carries them as its <system-out> text.
-        if !file.warnings.is_empty() {
-            let lines: Vec<String> = file
-                .warnings
-                .iter()
-                .map(|warning| format!("warning: {warning}"))
-                .collect();
+        // Screenshot skip warnings must reach both reports (SPEC 7),
+        // and the reports list every blocked host (SPEC 5), so the
+        // suite carries both as its <system-out> text.
+        let lines: Vec<String> = file
+            .warnings
+            .iter()
+            .map(|warning| format!("warning: {warning}"))
+            .chain(
+                file.blocked_hosts
+                    .iter()
+                    .map(|host| format!("blocked host: {host}")),
+            )
+            .collect();
+        if !lines.is_empty() {
             suite.set_system_out(lines.join("\n"));
         }
         junit.add_test_suite(suite);
@@ -160,11 +166,12 @@ mod tests {
     }
 
     #[test]
-    fn screenshot_warnings_appear_as_suite_system_out() {
+    fn warnings_and_blocked_hosts_appear_as_suite_system_out() {
         let xml = rendered();
         assert!(
             xml.contains(
-                "<system-out>warning: SCREENSHOT overview skipped: page crashed</system-out>"
+                "<system-out>warning: SCREENSHOT overview skipped: page crashed\n\
+                 blocked host: cdn.example.com</system-out>"
             ),
             "xml:\n{xml}"
         );

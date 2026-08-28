@@ -5,6 +5,7 @@ import { mkdir } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname } from "node:path";
 import type {
+	APIResponse,
 	Browser,
 	BrowserContext,
 	BrowserContextOptions,
@@ -105,6 +106,44 @@ function browserType(engine: BrowserEngine) {
 	}
 }
 
+const redirectStatuses = new Set([301, 302, 303, 307, 308]);
+
+/** The browser's own redirect-hop limit. */
+const maxRedirectHops = 20;
+
+/** The absolute target of a redirect response, or null when it is not one. */
+function redirectTarget(
+	status: number,
+	location: string | undefined,
+	base: URL,
+): URL | null {
+	if (!redirectStatuses.has(status) || location === undefined) {
+		return null;
+	}
+	try {
+		return new URL(location, base);
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * True for requests whose response may stream forever (server-sent
+ * events, media). Resolving those through `route.fetch` would buffer the
+ * whole body and hang, so they skip redirect vetting.
+ */
+function streamsIndefinitely(request: {
+	resourceType: () => string;
+	headers: () => Record<string, string>;
+}): boolean {
+	const type = request.resourceType();
+	if (type === "eventsource" || type === "media") {
+		return true;
+	}
+	const accept = request.headers()["accept"];
+	return accept?.includes("text/event-stream") ?? false;
+}
+
 async function installHostFiltering(
 	context: BrowserContext,
 	allowHosts: readonly string[],
@@ -113,18 +152,74 @@ async function installHostFiltering(
 	const isAllowed = createHostAllowlist(allowHosts);
 	await context.route("**/*", async (route) => {
 		try {
-			const url = new URL(route.request().url());
+			const request = route.request();
+			const url = new URL(request.url());
 			// data: and blob: URLs have no host and are always allowed.
 			if (url.protocol !== "http:" && url.protocol !== "https:") {
 				await route.continue();
 				return;
 			}
-			if (isAllowed(url.hostname)) {
-				await route.continue();
-			} else {
+			if (!isAllowed(url.hostname)) {
 				blockedHosts.add(url.hostname.toLowerCase());
 				await route.abort("blockedbyclient");
+				return;
 			}
+			if (streamsIndefinitely(request)) {
+				await route.continue();
+				return;
+			}
+			// The browser follows server redirects without re-entering
+			// route handlers (a fulfilled 3xx included), so a redirect to
+			// a disallowed host would bypass the check. Resolve the
+			// response here and vet the redirect chain hop by hop before
+			// the browser may follow it.
+			let response: APIResponse;
+			try {
+				response = await route.fetch({ maxRedirects: 0 });
+			} catch {
+				await route.abort("failed");
+				return;
+			}
+			let hopUrl = url;
+			let hopStatus = response.status();
+			let hopLocation = response.headers()["location"];
+			for (let hop = 0; hop < maxRedirectHops; hop += 1) {
+				const target = redirectTarget(hopStatus, hopLocation, hopUrl);
+				if (
+					target === null ||
+					(target.protocol !== "http:" && target.protocol !== "https:")
+				) {
+					break;
+				}
+				if (!isAllowed(target.hostname)) {
+					blockedHosts.add(target.hostname.toLowerCase());
+					await route.abort("blockedbyclient");
+					return;
+				}
+				const method = request.method();
+				if (method !== "GET" && method !== "HEAD") {
+					// Refetching would replay a non-idempotent request, so
+					// the chain is vetted one hop deep only.
+					break;
+				}
+				hopUrl = target;
+				let hopResponse: APIResponse;
+				try {
+					hopResponse = await route.fetch({
+						maxRedirects: 0,
+						url: target.toString(),
+					});
+				} catch {
+					// The browser will surface its own error for this hop.
+					break;
+				}
+				hopStatus = hopResponse.status();
+				hopLocation = hopResponse.headers()["location"];
+			}
+			// Every reachable hop is allowed: hand the original response
+			// to the browser, which follows the chain with its own
+			// method, history, and URL semantics.
+			await route.fulfill({ response });
 		} catch {
 			// The page or request is gone; nothing to do.
 		}

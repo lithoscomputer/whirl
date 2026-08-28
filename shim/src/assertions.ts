@@ -238,14 +238,47 @@ async function assertText(
 				() => expect(locator).toContainText(op.value, { timeout }),
 				failure,
 			);
-		case "matches":
-			return webFirst(
-				() => expect(locator).toHaveText(stringOpRegExp(op), { timeout }),
-				failure,
-			);
+		case "matches": {
+			// No web-first form: `toHaveText(RegExp)` matches the raw
+			// text, but the subject of a `text` check is the normalized
+			// text content (SPEC 9.2), so a shim-owned poll loop applies
+			// the regex to the normalized text with the same timeout.
+			const description = failure.description ?? "";
+			return pollTextMatches(locator, stringOpRegExp(op), timeout, {
+				expected: failure.expected,
+				description,
+			});
+		}
 		default:
 			return assertNever(op);
 	}
+}
+
+async function pollTextMatches(
+	locator: Locator,
+	pattern: RegExp,
+	timeoutMs: number,
+	info: { readonly expected: string; readonly description: string },
+): Promise<void> {
+	await pollUntilPass(
+		timeoutMs,
+		async () => {
+			const count = await locator.count();
+			if (count > 1) {
+				throw await strictnessError(locator, info.description, count);
+			}
+			if (count === 0) {
+				return { pass: false, actual: "no matching element" };
+			}
+			const text = normalizeWhitespace((await locator.textContent()) ?? "");
+			return { pass: pattern.test(text), actual: text };
+		},
+		{
+			kind: "assert",
+			message: `text check did not pass within ${String(timeoutMs)}ms`,
+			expected: info.expected,
+		},
+	);
 }
 
 async function assertValue(

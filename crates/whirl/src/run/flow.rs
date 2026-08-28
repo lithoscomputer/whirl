@@ -2,9 +2,9 @@
 //! resolution (SPEC 5, 11), entry and step execution with timeout
 //! budgeting (SPEC 12), failure artifacts, and the per-file report.
 
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
+use std::{env, fs};
 
 use serde_json::Value as Json;
 
@@ -1051,9 +1051,23 @@ impl EntryReport {
     }
 }
 
+/// A path rendered for the wire. The shim protocol declares every path
+/// param as absolute, so a relative CLI path (`--storage`,
+/// `--save-storage`) resolves against the current working directory
+/// first. When the working directory is unreadable, the path is sent as
+/// given — the shim inherits the same directory either way.
+fn wire_path(path: &Path) -> String {
+    if path.is_absolute() {
+        return path.to_string_lossy().into_owned();
+    }
+    match env::current_dir() {
+        Ok(cwd) => cwd.join(path).to_string_lossy().into_owned(),
+        Err(_) => path.to_string_lossy().into_owned(),
+    }
+}
+
 /// The `startFlow` params of one flow (protocol section 3).
 fn start_flow_params(run: &FlowRun<'_>, options: &ResolvedOptions) -> StartFlowParams {
-    let abs = |path: &Path| path.to_string_lossy().into_owned();
     StartFlowParams {
         browser:            browser_name(options.browser).to_owned(),
         headed:             options.headed,
@@ -1061,7 +1075,7 @@ fn start_flow_params(run: &FlowRun<'_>, options: &ResolvedOptions) -> StartFlowP
             width:  options.viewport.width,
             height: options.viewport.height,
         },
-        storage_state_path: options.storage.as_deref().map(abs),
+        storage_state_path: options.storage.as_deref().map(wire_path),
         dialogs:            match options.dialogs {
             DialogPolicy::Dismiss => "dismiss".to_owned(),
             DialogPolicy::Accept => "accept".to_owned(),
@@ -1069,13 +1083,13 @@ fn start_flow_params(run: &FlowRun<'_>, options: &ResolvedOptions) -> StartFlowP
         allow_hosts:        options.allow_hosts.clone(),
         nav_timeout_ms:     options.nav_timeout_ms,
         video:              run.flags.video.then(|| VideoParams {
-            temp_dir:   abs(&run.abs_dir.join("video-temp")),
-            final_path: abs(&run.abs_dir.join(artifacts::VIDEO_WEBM)),
+            temp_dir:   wire_path(&run.abs_dir.join("video-temp")),
+            final_path: wire_path(&run.abs_dir.join(artifacts::VIDEO_WEBM)),
         }),
         har_path:           run
             .flags
             .har
-            .then(|| abs(&run.abs_dir.join(artifacts::NETWORK_HAR))),
+            .then(|| wire_path(&run.abs_dir.join(artifacts::NETWORK_HAR))),
         trace:              run.flags.trace,
     }
 }
@@ -1182,12 +1196,9 @@ pub async fn run_flow(run: &FlowRun<'_>, client: &mut ShimClient) -> FileReport 
             .then(|| run.abs_dir.join(artifacts::TRACE_ZIP));
         let end = EndFlowParams {
             save_storage_path: (report.status == Status::Passed)
-                .then(|| run.flags.save_storage.clone())
-                .flatten()
-                .map(|path| path.to_string_lossy().into_owned()),
-            trace_path:        trace_path
-                .as_deref()
-                .map(|path| path.to_string_lossy().into_owned()),
+                .then(|| run.flags.save_storage.as_deref().map(wire_path))
+                .flatten(),
+            trace_path:        trace_path.as_deref().map(wire_path),
         };
         match client.end_flow(&end).await {
             Ok(result) => {
@@ -1295,6 +1306,19 @@ mod tests {
         let options = resolve_options(&file, canonical, &mut vars, &Overrides::default())
             .expect("options resolve");
         assert_eq!(options.storage, Some(PathBuf::from("/real/dir/st.json")));
+    }
+
+    #[test]
+    fn wire_paths_are_absolute() {
+        // The shim protocol declares every path param as absolute, so a
+        // relative `--storage` / `--save-storage` path resolves against
+        // the current working directory before crossing the wire.
+        let cwd = env::current_dir().expect("the working directory is readable");
+        assert_eq!(
+            wire_path(Path::new("nested/state.json")),
+            cwd.join("nested/state.json").to_string_lossy()
+        );
+        assert_eq!(wire_path(Path::new("/abs/state.json")), "/abs/state.json");
     }
 
     #[test]

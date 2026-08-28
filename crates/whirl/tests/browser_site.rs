@@ -90,6 +90,23 @@ impl SiteServer {
 fn respond(request: tiny_http::Request) {
     let url = request.url().to_owned();
     let path = url.split('?').next().unwrap_or("/").trim_start_matches('/');
+    // The redirect test needs a server-side 302 to this same server
+    // under its other loopback hostname.
+    if path == "redirect-cross" {
+        let port = request
+            .headers()
+            .iter()
+            .find(|header| header.field.equiv("Host"))
+            .and_then(|header| header.value.as_str().rsplit(':').next().map(str::to_owned))
+            .unwrap_or_default();
+        let location = Header::from_bytes(
+            &b"Location"[..],
+            format!("http://localhost:{port}/second.html").into_bytes(),
+        )
+        .expect("the redirect location is a valid header");
+        let _ = request.respond(Response::empty(302).with_header(location));
+        return;
+    }
     let file = site_root().join(path);
     let Ok(bytes) = fs::read(&file) else {
         let _ = request.respond(Response::empty(404));
@@ -176,6 +193,8 @@ css:"#saved" text == saved
 css:"li.item" count >= 3
 css:"li.item" >> nth:2 text == Two
 text~:"rder #ABC" visible
+testid:order text matches /Order #\w+/
+css:"#spaced" text matches /^spaced text$/
 testid:state attr:data-state == open
 css:"#ghost" hidden
 role:button "Disabled btn" disabled
@@ -320,7 +339,13 @@ fn allow_hosts_blocks_a_cross_host_fetch_and_reports_the_host() {
             base = server.base()
         ),
     );
-    let output = run_whirl(&dir, &["--report-json", "report.json", "cross.whirl"]);
+    let output = run_whirl(&dir, &[
+        "--report-json",
+        "report.json",
+        "--report-junit",
+        "report.xml",
+        "cross.whirl",
+    ]);
     let stdout = stdout_text(&output);
     assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
     let report = fs::read_to_string(dir.path.join("report.json")).expect("report.json exists");
@@ -331,6 +356,44 @@ fn allow_hosts_blocks_a_cross_host_fetch_and_reports_the_host() {
     assert!(
         blocked.iter().any(|host| host == "localhost"),
         "blockedHosts should list localhost, got {blocked:?}"
+    );
+    // The console output and the JUnit report list the blocked host too
+    // (SPEC 5: "the reports list every blocked host").
+    assert!(
+        stdout.contains("blocked host: localhost"),
+        "stdout:\n{stdout}"
+    );
+    let junit = fs::read_to_string(dir.path.join("report.xml")).expect("report.xml exists");
+    assert!(junit.contains("blocked host: localhost"), "junit:\n{junit}");
+}
+
+#[test]
+fn allow_hosts_blocks_a_server_side_redirect_to_a_cross_host_target() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    // The page is served from 127.0.0.1 and /redirect-cross answers 302
+    // to the same server as http://localhost:PORT — a different
+    // hostname. The redirect hop must be aborted and recorded like a
+    // direct request (SPEC 5).
+    dir.file(
+        "redir.whirl",
+        &format!(
+            "[Options]\nbase: {base}\nallow-hosts: 127.0.0.1\n\nVISIT /redirect-cross\n",
+            base = server.base()
+        ),
+    );
+    let output = run_whirl(&dir, &["--report-json", "report.json", "redir.whirl"]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 1, "stdout:\n{stdout}");
+    assert!(stdout.contains("redir.whirl FAILED"), "stdout:\n{stdout}");
+    let report = fs::read_to_string(dir.path.join("report.json")).expect("report.json exists");
+    let report: serde_json::Value = serde_json::from_str(&report).expect("valid JSON report");
+    let blocked = report["files"][0]["blockedHosts"]
+        .as_array()
+        .expect("blockedHosts is an array");
+    assert!(
+        blocked.iter().any(|host| host == "localhost"),
+        "blockedHosts should list the redirect target, got {blocked:?}"
     );
 }
 

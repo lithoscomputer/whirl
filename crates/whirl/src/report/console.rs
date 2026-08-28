@@ -37,6 +37,10 @@ pub fn render(report: &RunReport) -> String {
         for warning in &file.warnings {
             let _ = writeln!(out, "  warning: {warning}");
         }
+        // The reports list every blocked host (SPEC 5).
+        for host in &file.blocked_hosts {
+            let _ = writeln!(out, "  blocked host: {host}");
+        }
     }
     for file in &report.files {
         for entry in &file.entries {
@@ -115,7 +119,7 @@ mod tests {
                     status:        Status::Passed,
                     duration_ms:   1_234,
                     artifacts_dir: "whirl-artifacts/flows/pass".to_owned(),
-                    blocked_hosts: Vec::new(),
+                    blocked_hosts: vec!["cdn.example.com".to_owned()],
                     warnings:      vec!["SCREENSHOT shot skipped: page crashed".to_owned()],
                     artifacts:     Vec::new(),
                     entries:       Vec::new(),
@@ -171,6 +175,7 @@ mod tests {
             out.contains("warning: SCREENSHOT shot skipped: page crashed"),
             "out:\n{out}"
         );
+        assert!(out.contains("blocked host: cdn.example.com"), "out:\n{out}");
     }
 
     #[test]
