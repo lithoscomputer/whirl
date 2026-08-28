@@ -1,0 +1,3 @@
+warn.whirl:3:1: warning: capture `unused` is never used
+  unused: url
+  ^^^^^^

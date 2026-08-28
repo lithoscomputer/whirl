@@ -1,0 +1,8 @@
+broken.whirl:2:1: error: expected a step line
+  BOGUS line
+  ^^^^^
+  expected one of: an action, PAGE, [Asserts], [Captures]
+notvisit.whirl:1:1: error: the first action in a file must be VISIT
+  CLICK "Go"
+  ^^^^^
+  expected VISIT

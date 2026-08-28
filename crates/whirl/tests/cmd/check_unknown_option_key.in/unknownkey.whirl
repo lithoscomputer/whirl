@@ -1,0 +1,5 @@
+[Options]
+base: https://shop.example.com
+frobs: 3
+
+VISIT /

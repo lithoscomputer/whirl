@@ -1,0 +1,4 @@
+broken.whirl:2:1: error: expected a step line
+  BOGUS line
+  ^^^^^
+  expected one of: an action, PAGE, [Asserts], [Captures]

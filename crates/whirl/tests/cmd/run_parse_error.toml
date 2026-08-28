@@ -1,0 +1,4 @@
+bin.name = "whirl"
+args = ["broken.whirl"]
+fs.sandbox = true
+status.code = 2

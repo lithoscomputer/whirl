@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Form Page</title>
+  </head>
+  <body>
+    <h1>Form page</h1>
+
+    <label for="email">Email</label>
+    <input id="email" type="text" />
+
+    <input type="search" placeholder="Search things" id="search" />
+    <div id="press-result"></div>
+
+    <label for="color">Color</label>
+    <select id="color">
+      <option value="red">Red</option>
+      <option value="green">Green</option>
+      <option value="blue">Blue</option>
+    </select>
+    <div id="color-result"></div>
+
+    <label><input type="checkbox" id="subscribe" /> Subscribe</label>
+    <label><input type="checkbox" id="terms" checked /> Terms</label>
+
+    <fieldset>
+      <legend>Size</legend>
+      <label><input type="radio" name="size" value="small" /> Small</label>
+      <label><input type="radio" name="size" value="medium" /> Medium</label>
+    </fieldset>
+
+    <label for="avatar">Avatar</label>
+    <input id="avatar" type="file" />
+    <div id="upload-name"></div>
+
+    <button type="button" data-testid="save-button" id="save">Save</button>
+    <div id="saved"></div>
+    <button type="button" disabled>Disabled btn</button>
+    <button type="button" id="dup-a">Dup</button>
+    <button type="button" id="dup-b">Dup</button>
+
+    <button type="button" id="confirm-btn">Confirm thing</button>
+    <div id="dialog-result"></div>
+
+    <div id="hover-me">hover target</div>
+    <div id="dbl">dbl target</div>
+    <div id="late">pending</div>
+    <div id="ghost" style="display: none">ghost</div>
+
+    <span data-testid="state" data-state="open">stateful</span>
+    <span data-testid="order">Order #ABC123</span>
+    <a id="next-link" href="/second.html">Next page</a>
+
+    <ul id="items">
+      <li class="item">One</li>
+      <li class="item">Two</li>
+      <li class="item">Three</li>
+    </ul>
+
+    <script>
+      document.getElementById("search").addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          document.getElementById("press-result").textContent = "enter-pressed";
+        }
+      });
+      document.getElementById("color").addEventListener("change", (event) => {
+        document.getElementById("color-result").textContent = event.target.value;
+      });
+      document.getElementById("avatar").addEventListener("change", (event) => {
+        const file = event.target.files[0];
+        document.getElementById("upload-name").textContent = file ? file.name : "none";
+      });
+      document.getElementById("save").addEventListener("click", () => {
+        document.getElementById("saved").textContent = "saved";
+      });
+      document.getElementById("confirm-btn").addEventListener("click", () => {
+        document.getElementById("dialog-result").textContent = confirm("Sure?")
+          ? "accepted"
+          : "dismissed";
+      });
+      document.getElementById("hover-me").addEventListener("mouseover", () => {
+        document.getElementById("hover-me").textContent = "hovered";
+      });
+      document.getElementById("dbl").addEventListener("dblclick", () => {
+        document.getElementById("dbl").textContent = "dblclicked";
+      });
+      setTimeout(() => {
+        document.getElementById("late").textContent = "ready";
+      }, 300);
+    </script>
+  </body>
+</html>

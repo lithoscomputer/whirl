@@ -1,0 +1,3 @@
+dupe.whirl:3:12: error: duplicate SCREENSHOT name `shot`; first used on line 2
+  SCREENSHOT shot
+             ^^^^

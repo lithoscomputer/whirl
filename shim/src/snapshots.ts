@@ -11,7 +11,7 @@ import { createRequire } from "node:module";
 import { dirname } from "node:path";
 import type { Page } from "@playwright/test";
 import { ShimError } from "./protocol.js";
-import { Deadline, sleep } from "./step-util.js";
+import { Deadline, isTimeoutError, sleep } from "./step-util.js";
 
 interface ComparatorResult {
 	readonly errorMessage: string;
@@ -133,7 +133,19 @@ export async function runSnapshot(
 	let lastFrame: Buffer | null = null;
 	let lastMismatch: ComparatorResult | null = null;
 	for (;;) {
-		const { frame, settled } = await settleFrame(page, deadline);
+		let capture: SettledFrame;
+		try {
+			capture = await settleFrame(page, deadline);
+		} catch (error) {
+			// A capture near the deadline can outlive its sliver of budget
+			// and throw Playwright's timeout. The comparison already has a
+			// frame to report; failing on it keeps the mismatch artifacts.
+			if (isTimeoutError(error) && lastFrame !== null) {
+				break;
+			}
+			throw error;
+		}
+		const { frame, settled } = capture;
 		const mismatch = comparePng(frame, baseline, {
 			threshold: defaultThreshold,
 		});

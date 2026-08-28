@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Cross Host Page</title>
+  </head>
+  <body>
+    <h1>Cross host page</h1>
+    <div id="fetch-result">waiting</div>
+    <script>
+      // The page is served from one hostname (127.0.0.1); this fetch
+      // targets the same server through a different hostname, so it is a
+      // cross-host request for allow-hosts purposes.
+      const other = window.location.hostname === "localhost" ? "127.0.0.1" : "localhost";
+      fetch(`http://${other}:${window.location.port}/ping.txt`)
+        .then(() => {
+          document.getElementById("fetch-result").textContent = "fetched";
+        })
+        .catch(() => {
+          document.getElementById("fetch-result").textContent = "blocked";
+        });
+    </script>
+  </body>
+</html>

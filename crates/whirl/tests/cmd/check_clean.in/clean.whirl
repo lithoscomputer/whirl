@@ -1,0 +1,6 @@
+VISIT /login
+FILL "Email" alice@example.com
+CLICK role:button "Sign in"
+PAGE /dashboard
+[Asserts]
+role:heading "Welcome back" visible

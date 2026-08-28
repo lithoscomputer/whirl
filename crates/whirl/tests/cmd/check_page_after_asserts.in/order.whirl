@@ -1,0 +1,4 @@
+VISIT /login
+[Asserts]
+role:heading "Hi" visible
+PAGE /dashboard

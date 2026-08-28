@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Stable Page</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: #204060;
+      }
+      #box {
+        width: 200px;
+        height: 120px;
+        margin: 40px;
+        background: #40c080;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="box"></div>
+    <script>
+      // No text and no fonts: the page renders identically frame after
+      // frame. The variant query flips the box color so a mutated page
+      // makes a stable, visible snapshot difference.
+      if (window.location.search.includes("variant")) {
+        document.getElementById("box").style.background = "#cc2020";
+      }
+    </script>
+  </body>
+</html>
