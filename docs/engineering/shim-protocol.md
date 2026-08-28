@@ -223,6 +223,13 @@ String operator `<strop>`:
 {"op": "matches", "source": "Order #\\w+", "flags": "i"}
 ```
 
+A `url` or `title` subject always carries a check of type `"text"` with a
+string operator; the shim picks `toHaveURL`/`toHaveTitle` from the subject.
+In every regex object (`matches` operators, PAGE `regex`, capture `filter`),
+`source` carries the pattern with the `\/` delimiter escape unescaped to a
+plain `/`; all other escape sequences are verbatim. `flags` is zero or more
+of `i`, `s`, `m` in that order.
+
 The shim compiles each check to a Playwright web-first assertion where one
 exists and to a shim-owned poll loop with the same timeout otherwise (SPEC
 section 15). SPEC section 9 semantics apply: `hidden` passes on zero matches;

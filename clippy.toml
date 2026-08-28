@@ -1,0 +1,10 @@
+allow-unwrap-in-tests = true
+allow-unwrap-types = ["std::sync::LockResult"]
+
+# Async guardrails for the Tokio-based runner (later phases). Acceptance
+# tests intentionally spawn the `whirl` binary with `std::process::Command`,
+# so process spawning stays allowed.
+disallowed-methods = [
+  { path = "std::thread::sleep", reason = "Prefer tokio::time::sleep on Tokio paths; document intentional blocking sleeps with #[expect(clippy::disallowed_methods, reason = \"...\")]", replacement = "tokio::time::sleep" },
+  { path = "std::thread::spawn", reason = "Prefer Tokio task APIs on async paths; document intentional dedicated OS threads with #[expect(clippy::disallowed_methods, reason = \"...\")]" },
+]
