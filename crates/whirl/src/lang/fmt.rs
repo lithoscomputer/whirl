@@ -22,6 +22,7 @@ use crate::lang::ast::{
     OptionValue, Page, PageCheck, Regex, SegmentKind, StateCheck, StrCheck, TextPrefix, Value,
     ValueSegment, ValueSource, Viewport,
 };
+use crate::lang::parse::parse_duration;
 
 /// Where a rendered value sits in its line. The context decides which
 /// bare spellings would change the parse and therefore need quotes.
@@ -126,9 +127,14 @@ fn bare_candidate(value: &Value) -> Option<String> {
 /// value in its context (SPEC 3.1: `whirl fmt` never removes quotes
 /// whose removal would change the parse).
 fn bare_changes_parse(text: &str, ctx: ValueCtx, is_final: bool) -> bool {
-    if is_final && ctx != ValueCtx::Prefixed && text.starts_with('@') {
-        // A final bare `@...` token is the timeout suffix (or a parse
-        // error when it is not a valid duration).
+    if is_final
+        && ctx != ValueCtx::Prefixed
+        && text
+            .strip_prefix('@')
+            .is_some_and(|rest| parse_duration(rest).is_some())
+    {
+        // A final bare token of the form `@duration` is the timeout
+        // suffix (SPEC 3.1); any other `@...` token is an ordinary value.
         return true;
     }
     match ctx {
@@ -979,6 +985,12 @@ mod tests {
         assert_eq!(
             fmt("VISIT /\nFILL Email \"@60s\" @5s\n"),
             "VISIT /\nFILL Email @60s @5s\n"
+        );
+        // A final `@` token that is not a valid duration is an ordinary
+        // value (SPEC 3.1), so its quotes are not required.
+        assert_eq!(
+            fmt("VISIT /\nFILL Email \"@60x\"\n"),
+            "VISIT /\nFILL Email @60x\n"
         );
     }
 

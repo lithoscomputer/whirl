@@ -191,9 +191,12 @@ fn parse_dialogs_value(text: &str) -> Option<DialogPolicy> {
 /// Resolves a file's options at file start (SPEC 5, 11): only
 /// variables-file entries, `--var` flags, and `{{env.NAME}}` are
 /// available; command-line flags override file options; the `base` host
-/// is appended to `allow-hosts` when that option is set.
+/// is appended to `allow-hosts` when that option is set. `canonical` is
+/// the flow's canonical path (SPEC 14): the `storage` path resolves
+/// relative to it, like `UPLOAD` paths and snapshot baselines.
 pub fn resolve_options(
     file: &File,
+    canonical: &Path,
     vars: &mut VarStore,
     overrides: &Overrides,
 ) -> Result<ResolvedOptions, OptionsError> {
@@ -261,11 +264,13 @@ pub fn resolve_options(
         }
     }
 
-    // `storage` resolves relative to the `.whirl` file (SPEC 5); the
-    // `--storage` flag overrides and resolves like any CLI path.
+    // `storage` resolves relative to the `.whirl` file — its canonical
+    // path, so a symlinked input resolves like `UPLOAD` paths do
+    // (SPEC 5, 14); the `--storage` flag overrides and resolves like any
+    // CLI path.
     let storage = match &overrides.storage {
         Some(flag) => Some(flag.clone()),
-        None => storage.map(|path| resolve_beside_file(&file.path, &path)),
+        None => storage.map(|path| resolve_beside_file(canonical, &path)),
     };
 
     Ok(ResolvedOptions {
@@ -1113,7 +1118,7 @@ pub async fn run_flow(run: &FlowRun<'_>, client: &mut ShimClient) -> FileReport 
 
     // Option resolution (SPEC 11): a failure here fails the file before
     // any entry, as the `[setup]` entry of a failed run (exit 1).
-    let options = match resolve_options(run.file, &mut vars, run.overrides) {
+    let options = match resolve_options(run.file, run.canonical, &mut vars, run.overrides) {
         Ok(options) => options,
         Err(error) => {
             let message = vars.mask(&error.to_string());
@@ -1272,8 +1277,8 @@ mod tests {
         let file = parse("VISIT /a\nCLICK \"Go\"\n[Asserts]\ntitle == x\n");
         let entry = &file.entries[0];
         let mut vars = VarStore::new();
-        let options =
-            resolve_options(&file, &mut vars, &Overrides::default()).expect("options resolve");
+        let options = resolve_options(&file, &file.path, &mut vars, &Overrides::default())
+            .expect("options resolve");
         let steps = entry_steps(entry);
         assert_eq!(line_budget_ms(steps[0], &options), DEFAULT_NAV_TIMEOUT_MS);
         assert_eq!(line_budget_ms(steps[1], &options), DEFAULT_STEP_TIMEOUT_MS);
@@ -1281,11 +1286,23 @@ mod tests {
     }
 
     #[test]
+    fn storage_resolves_beside_the_canonical_flow_path() {
+        // A symlinked input's `storage` path must resolve beside the
+        // real file, not beside the symlink (SPEC 5, 14).
+        let file = parse("[Options]\nstorage: st.json\nVISIT /a\n");
+        let mut vars = VarStore::new();
+        let canonical = Path::new("/real/dir/flow.whirl");
+        let options = resolve_options(&file, canonical, &mut vars, &Overrides::default())
+            .expect("options resolve");
+        assert_eq!(options.storage, Some(PathBuf::from("/real/dir/st.json")));
+    }
+
+    #[test]
     fn a_duration_suffix_overrides_the_line_budget() {
         let file = parse("VISIT /a @2s\nCLICK \"Go\" @500ms\n");
         let mut vars = VarStore::new();
-        let options =
-            resolve_options(&file, &mut vars, &Overrides::default()).expect("options resolve");
+        let options = resolve_options(&file, &file.path, &mut vars, &Overrides::default())
+            .expect("options resolve");
         let steps = entry_steps(&file.entries[0]);
         assert_eq!(line_budget_ms(steps[0], &options), 2_000);
         assert_eq!(line_budget_ms(steps[1], &options), 500);

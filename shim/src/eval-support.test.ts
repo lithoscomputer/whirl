@@ -25,10 +25,24 @@ test("statement scripts classify as statements", () => {
 	assert.equal(isExpressionScript("throw new Error('x')"), false);
 });
 
-test("expression scripts wrap as return (script);", () => {
+test("unbalanced scripts cannot complete the probe wrapper", () => {
+	// Without the outer parentheses this script completed the probe's own
+	// `(...)` pair, misclassified as an expression, and its tail became
+	// dead code after the emitted `return`.
+	assert.equal(isExpressionScript("1); (window.__x = 2"), false);
+	// Not an expression, so it runs as written and its SyntaxError fails
+	// the entry (SPEC 7).
+	const expression = buildEvalExpression("1); (window.__x = 2");
+	assert.match(expression, /\n1\); \(window\.__x = 2\n/);
+	assert.throws(() => {
+		new Function(`return ${expression};`);
+	}, SyntaxError);
+});
+
+test("expression scripts wrap as a returned expression", () => {
 	const expression = buildEvalExpression("1 + 2");
 	assert.match(expression, /^\(async \(\) => \{\n/);
-	assert.match(expression, /return \(1 \+ 2\n\);/);
+	assert.match(expression, /return \(async \(\) => \(1 \+ 2\n\)\)\(\);/);
 });
 
 test("statement scripts run as written", () => {

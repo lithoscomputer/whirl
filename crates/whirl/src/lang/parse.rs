@@ -112,7 +112,7 @@ fn parse_number(text: &str) -> Option<u64> {
 }
 
 /// Parses a duration literal: integer plus `ms` or `s` (SPEC 3.1).
-fn parse_duration(text: &str) -> Option<DurationLit> {
+pub(crate) fn parse_duration(text: &str) -> Option<DurationLit> {
     let (digits, unit) = if let Some(digits) = text.strip_suffix("ms") {
         (digits, DurationUnit::Milliseconds)
     } else if let Some(digits) = text.strip_suffix('s') {
@@ -778,23 +778,17 @@ fn attach_role_name(
 }
 
 /// Strips a final `@duration` step-timeout suffix (SPEC 12). Only a bare
-/// token counts: a quoted `"@60s"` is an ordinary value (SPEC 3.1).
-fn split_timeout(tokens: &mut Vec<RawToken>) -> Result<Option<DurationLit>, LineError> {
-    let Some(last) = tokens.last() else {
-        return Ok(None);
-    };
-    let Some(text) = last.bare_single() else {
-        return Ok(None);
-    };
-    let Some(rest) = text.strip_prefix('@') else {
-        return Ok(None);
-    };
-    let Some(duration) = parse_duration(rest) else {
-        return Err(LineError::new(last.span, "invalid step-timeout suffix")
-            .expecting(["a duration like @500ms or @10s"]));
-    };
+/// token counts: a quoted `"@60s"` is an ordinary value (SPEC 3.1). A bare
+/// `@` token that is not a valid duration (`@zzz`) is not "of the form
+/// `@duration`", so it stays an ordinary value too.
+fn split_timeout(tokens: &mut Vec<RawToken>) -> Option<DurationLit> {
+    let duration = tokens
+        .last()?
+        .bare_single()
+        .and_then(|text| text.strip_prefix('@'))
+        .and_then(parse_duration)?;
     tokens.pop();
-    Ok(Some(duration))
+    Some(duration)
 }
 
 const ACTION_KEYWORDS: [&str; 13] = [
@@ -875,7 +869,7 @@ fn parse_action_body(
     while let Some(token) = cursor.next_token()? {
         tokens.push(token);
     }
-    let timeout = split_timeout(&mut tokens)?;
+    let timeout = split_timeout(&mut tokens);
     let locator_only = |tokens| build_locator(tokens, true, keyword_span);
     let kind = match keyword {
         "VISIT" => ActionKind::Visit {
@@ -1155,7 +1149,7 @@ fn parse_line_timeout(cursor: &mut Cursor) -> Result<Option<DurationLit>, LineEr
         return Ok(None);
     };
     let mut tokens = vec![token];
-    let timeout = split_timeout(&mut tokens)?;
+    let timeout = split_timeout(&mut tokens);
     if let Some(extra) = tokens.first() {
         return Err(LineError::new(extra.span, "expected end of line")
             .expecting(["@duration", "end of line"]));
@@ -1336,7 +1330,7 @@ fn parse_capture_body(
             timeout = parse_line_timeout(cursor)?;
         } else {
             let mut tokens = vec![token];
-            timeout = split_timeout(&mut tokens)?;
+            timeout = split_timeout(&mut tokens);
             if let Some(extra) = tokens.first() {
                 return Err(
                     LineError::new(extra.span, "expected end of line").expecting([
@@ -2007,6 +2001,20 @@ mod tests {
     }
 
     #[test]
+    fn a_final_bare_at_token_that_is_not_a_duration_is_a_value() {
+        // SPEC 3.1 reserves only tokens "of the form `@duration`"; `@zzz`
+        // is an ordinary value in every position, action lines included.
+        let source = "VISIT /\nFILL Email @zzz\n";
+        let file = parse(source);
+        let action = &only_entry(&file).actions[1];
+        assert_eq!(action.timeout, None);
+        let ActionKind::Fill { value, .. } = &action.kind else {
+            panic!("expected FILL");
+        };
+        assert_eq!(lit(value), "@zzz");
+    }
+
+    #[test]
     fn regex_flags_allow_only_i_s_m() {
         let AssertBody::Url(StrCheck::Matches(regex)) = only_assert("url matches /a.b/ism") else {
             panic!("expected matches");
@@ -2570,10 +2578,12 @@ role:alert text contains "Added to cart"
     }
 
     #[test]
-    fn invalid_timeout_suffix_is_an_error() {
+    fn a_bare_at_token_that_is_not_a_duration_is_no_timeout() {
+        // `@60x` is not "of the form `@duration`" (SPEC 3.1), so it is an
+        // ordinary token; here it is an extra token after CLICK's locator.
         let error = parse_err("VISIT /\nCLICK \"Go\" @60x\n");
         assert!(
-            error.message.contains("step-timeout"),
+            !error.message.contains("step-timeout"),
             "message: {}",
             error.message
         );

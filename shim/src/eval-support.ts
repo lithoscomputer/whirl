@@ -1,18 +1,30 @@
 // EVAL script handling (SPEC section 7 and 10, protocol section 4).
 //
 // A script runs as the body of an async function in the page's main world.
-// A script that parses as a single expression runs as `return (script);`;
-// any other script runs as written.
+// A script that parses as a single expression runs as `return (script);`
+// (through an async arrow, so the value is the same); any other script
+// runs as written.
 
 /**
- * True when the script parses as a single expression. The probe wraps the
- * script in an async arrow so `await <expr>` classifies as an expression.
- * `new Function` only parses here; nothing is ever executed in Node.
+ * The expression-path body: the script runs inside its own async arrow, so
+ * `await <expr>` works and the whole wrapper is one parenthesized
+ * expression — a script with unbalanced parentheses cannot complete the
+ * wrapper and misclassify as an expression.
+ */
+function expressionBody(script: string): string {
+	return `return (async () => (${script}\n))();`;
+}
+
+/**
+ * True when the script parses as a single expression. The probe parses the
+ * exact body the expression path executes, so classification and execution
+ * cannot diverge. `new Function` only parses here; nothing is ever
+ * executed in Node.
  */
 export function isExpressionScript(script: string): boolean {
 	try {
 		// eslint-style note: parse-only probe; the function is discarded.
-		new Function(`return async () => (${script}\n);`);
+		new Function(expressionBody(script));
 		return true;
 	} catch {
 		return false;
@@ -20,7 +32,7 @@ export function isExpressionScript(script: string): boolean {
 }
 
 function functionBody(script: string): string {
-	return isExpressionScript(script) ? `return (${script}\n);` : script;
+	return isExpressionScript(script) ? expressionBody(script) : script;
 }
 
 /**

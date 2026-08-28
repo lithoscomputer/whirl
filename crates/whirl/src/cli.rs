@@ -22,7 +22,7 @@ use crate::lang::parse::{ParseError, parse_file};
 use crate::lang::{ast, fmt};
 use crate::report::model::RunReport;
 use crate::report::{console, json, junit};
-use crate::run::{flow, runner, vars};
+use crate::run::{artifacts, flow, runner, vars};
 
 /// Outcome of one invocation, ordered by SPEC 13 precedence: `max` of two
 /// outcomes is the one that wins the process exit code.
@@ -447,6 +447,32 @@ fn build_base_vars(args: &RunArgs) -> Result<Vec<(String, String)>, UsageError> 
     Ok(entries)
 }
 
+/// Rejects `--save-storage` with more than one input flow before parsing,
+/// so the usage error preempts parse errors (SPEC 13). Flows are counted
+/// after canonical-path dedup (SPEC 14); a canonicalization failure is
+/// left for the runner to report as a runtime error.
+fn check_save_storage_inputs(
+    args: &RunArgs,
+    sources: &[(PathBuf, String)],
+) -> Result<(), UsageError> {
+    if args.save_storage.is_none() {
+        return Ok(());
+    }
+    let inputs: Vec<PathBuf> = sources.iter().map(|(path, _)| path.clone()).collect();
+    let Ok(flows) = artifacts::dedup_flows(&inputs) else {
+        return Ok(());
+    };
+    if flows.len() > 1 {
+        return Err(UsageError {
+            message: format!(
+                "--save-storage requires a single input file, got {}",
+                flows.len()
+            ),
+        });
+    }
+    Ok(())
+}
+
 /// The default run command (SPEC 13): parse and lint everything, then
 /// run the files through the worker pool and print the console report.
 fn run_command(args: &RunArgs) -> Exit {
@@ -465,6 +491,10 @@ fn run_command(args: &RunArgs) -> Exit {
         Ok(sources) => sources,
         Err(exit) => return exit,
     };
+    if let Err(error) = check_save_storage_inputs(args, &sources) {
+        print_err(&format!("whirl: error: {error}"));
+        return Exit::Usage;
+    }
     let (parsed, exit) = check_inputs(sources);
     if exit != Exit::Success {
         return exit;
