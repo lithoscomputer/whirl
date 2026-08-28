@@ -6,6 +6,9 @@ resolver = "3"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/lithoscomputer/whirl"
+description = "Run web UI tests written in plain text files, driving real browsers through Playwright"
 
 [workspace.lints.rust]
 unsafe_code = "deny"

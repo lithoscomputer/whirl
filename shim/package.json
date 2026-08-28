@@ -16,5 +16,6 @@
 	},
 	"dependencies": {
 		"@playwright/test": "1.62.1"
-	}
+	},
+	"license": "MIT OR Apache-2.0"
 }
