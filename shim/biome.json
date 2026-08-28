@@ -1,7 +1,10 @@
 {
 	"$schema": "https://biomejs.dev/schemas/2.5.9/schema.json",
-	"files": {
-		"includes": ["**", "!dist"]
+	"vcs": {
+		"enabled": true,
+		"clientKind": "git",
+		"useIgnoreFile": true,
+		"root": ".."
 	},
 	"formatter": {
 		"enabled": true
@@ -9,12 +12,22 @@
 	"linter": {
 		"enabled": true,
 		"rules": {
-			"recommended": true,
+			"preset": "recommended",
+			"complexity": {
+				"useLiteralKeys": "off"
+			},
 			"style": {
 				"noEnum": "error",
 				"noNonNullAssertion": "error",
 				"noParameterAssign": "error",
-				"useNamingConvention": "error",
+				"useNamingConvention": {
+					"level": "error",
+					"options": {
+						"conventions": [
+							{ "selector": { "kind": "objectLiteralProperty" }, "match": ".*" }
+						]
+					}
+				},
 				"useThrowOnlyError": "error",
 				"useThrowNewError": "error",
 				"useConsistentTypeDefinitions": {
