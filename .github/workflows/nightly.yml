@@ -1,0 +1,43 @@
+name: Nightly
+
+on:
+  schedule:
+    - cron: "30 9 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  nightly:
+    name: nightly (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            playwright-cache: ~/Library/Caches/ms-playwright
+          - runner: ubuntu-24.04
+            playwright-cache: ~/.cache/ms-playwright
+          - runner: ubuntu-24.04-arm
+            playwright-cache: ~/.cache/ms-playwright
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3
+      - uses: taiki-e/install-action@37f7c5781271959fb65b6b35224e28652ff2b63d # v2
+        with:
+          tool: cargo-nextest
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ matrix.playwright-cache }}
+          key: playwright-nightly-1.62.1-${{ matrix.runner }}
+      - run: mise run setup
+      - name: Install Playwright system dependencies for all engines
+        if: runner.os == 'Linux'
+        run: cd shim && sudo env "PATH=$PATH" node node_modules/@playwright/test/cli.js install-deps
+      - run: mise run check:nightly

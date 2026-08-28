@@ -1,6 +1,7 @@
 [tools]
 node = "24.19.0"
 bun = "1.4.0"
+zizmor = "1.29.0"
 
 [env]
 WHIRL_NODE = "node"
@@ -10,7 +11,6 @@ WHIRL_SHIM_JS = "{{config_root}}/shim/dist/index.js"
 description = "Install toolchains, shim dependencies, and Playwright browsers"
 run = [
   "rustup toolchain install nightly-2026-04-14 --profile minimal --component rustfmt",
-  "rustup toolchain install 1.85.0 --profile minimal",
   "cargo nextest --version >/dev/null 2>&1 || cargo install cargo-nextest --locked",
   "mise run setup:shim",
   "cd shim && bun x playwright install chromium",
@@ -53,7 +53,7 @@ run = "{{config_root}}/scripts/quiet.sh bun run test"
 
 [tasks.check]
 description = "Run the routine checks for every pushed revision"
-depends = ["check:fmt", "check:clippy", "test", "check:shim"]
+depends = ["check:fmt", "check:clippy", "test", "check:shim", "check:actions"]
 
 [tasks."check:fmt"]
 description = "Check Rust formatting with the pinned nightly rustfmt"
@@ -69,6 +69,10 @@ description = "Type-check and lint the shim TypeScript"
 depends = ["setup:shim"]
 dir = "shim"
 run = ["{{config_root}}/scripts/quiet.sh bun run typecheck", "{{config_root}}/scripts/quiet.sh bun run lint"]
+
+[tasks."check:actions"]
+description = "Audit the GitHub Actions workflows with zizmor"
+run = "{{config_root}}/scripts/quiet.sh zizmor .github/workflows"
 
 [tasks."check:nightly"]
 description = "Run the nightly checks: all browser engines plus the whirl install end-to-end test"
