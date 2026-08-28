@@ -615,11 +615,12 @@ export class PlaywrightDriver implements ShimDriver {
 			await settlesWithin(this.#flow.context.close(), closeWatchdogMs);
 			this.#flow = null;
 		}
-		if (this.#browser !== null) {
-			await settlesWithin(this.#browser.close(), closeWatchdogMs);
-			this.#browser = null;
-			this.#browserKey = null;
-		}
+		// No graceful browser.close() here: the process exits right after
+		// dispose, and Playwright's exit hooks kill the browser child.
+		// Closing an idle browser hangs for seconds on macOS headless
+		// shell, and its watchdog expiry ended in the same exit-hook kill.
+		this.#browser = null;
+		this.#browserKey = null;
 	}
 }
 

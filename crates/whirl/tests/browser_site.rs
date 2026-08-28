@@ -242,7 +242,7 @@ fn a_full_flow_passes_against_the_site() {
 }
 
 #[test]
-fn asserts_retry_until_delayed_text_appears_and_time_out_on_a_mismatch() {
+fn asserts_retry_until_delayed_text_appears() {
     let server = SiteServer::start();
     let dir = TestDir::new();
     // The page rewrites #late from "pending" to "ready" after 300ms, so
@@ -254,7 +254,12 @@ fn asserts_retry_until_delayed_text_appears_and_time_out_on_a_mismatch() {
     let output = run_whirl(&dir, &["--base", &server.base(), "waits.whirl"]);
     let stdout = stdout_text(&output);
     assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+}
 
+#[test]
+fn a_wrong_assert_times_out_with_expected_and_actual() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
     // A wrong expectation retries until the step timeout, then reports
     // expected versus actual.
     dir.file(
@@ -490,7 +495,7 @@ css:"#status" text == "logged in"
 }
 
 #[test]
-fn snapshot_baselines_update_compare_fail_and_require_a_baseline() {
+fn update_snapshots_writes_a_baseline_that_a_second_run_matches() {
     let server = SiteServer::start();
     let dir = TestDir::new();
     dir.file("snap.whirl", "VISIT /stable.html\nSNAPSHOT hero\n");
@@ -513,6 +518,23 @@ fn snapshot_baselines_update_compare_fail_and_require_a_baseline() {
 
     // A second run compares against the baseline and passes.
     let output = run_whirl(&dir, &["--base", &server.base(), "snap.whirl"]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+}
+
+#[test]
+fn a_snapshot_mismatch_fails_and_writes_actual_and_diff() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file("snap.whirl", "VISIT /stable.html\nSNAPSHOT hero\n");
+
+    // Write the baseline from the stable page.
+    let output = run_whirl(&dir, &[
+        "--base",
+        &server.base(),
+        "--update-snapshots",
+        "snap.whirl",
+    ]);
     let stdout = stdout_text(&output);
     assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
 
@@ -541,7 +563,12 @@ fn snapshot_baselines_update_compare_fail_and_require_a_baseline() {
         flow_artifacts.join("snapshot-hero-diff.png").is_file(),
         "the diff image should be saved"
     );
+}
 
+#[test]
+fn a_snapshot_without_a_baseline_is_a_runtime_error() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
     // A snapshot with no baseline is a runtime error without
     // --update-snapshots.
     dir.file("fresh.whirl", "VISIT /stable.html\nSNAPSHOT fresh\n");
