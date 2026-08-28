@@ -1,6 +1,6 @@
 # Whirl V1 Specification
 
-Status: draft
+Status: v1
 Date: 2026-08-18
 
 Whirl is a command-line tool that runs web UI tests written in plain text files. It is to browser flows what [Hurl](https://hurl.dev/) is to HTTP: a tight, closed, file-based format that is readable, diffable, and easy to generate. The `whirl` binary is written in Rust and drives real browsers through Playwright.
