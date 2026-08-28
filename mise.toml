@@ -74,6 +74,11 @@ run = ["{{config_root}}/scripts/quiet.sh bun run typecheck", "{{config_root}}/sc
 description = "Audit the GitHub Actions workflows with zizmor"
 run = "{{config_root}}/scripts/quiet.sh zizmor .github/workflows"
 
+[tasks.release]
+description = "Build and package a release archive for the current platform"
+depends = ["build:shim"]
+run = "{{config_root}}/scripts/package.sh"
+
 [tasks."check:nightly"]
 description = "Run the nightly checks: all browser engines plus the whirl install end-to-end test"
 depends = ["build:shim"]

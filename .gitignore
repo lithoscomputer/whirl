@@ -10,4 +10,5 @@ __pycache__/
 tmp
 /dist/
 /shim/dist/
+/dist-release/
 whirl-artifacts/
