@@ -1,8 +1,9 @@
 //! End-to-end acceptance test for `whirl install` (CLI acceptance-tests
 //! decision): provisions a real bundle — Node runtime download, shim
-//! files, npm dependencies, and browser builds — into a scratch data
-//! directory (`WHIRL_DATA_DIR`), then runs a `data:` URL flow that must
-//! resolve the shim from that bundle because `WHIRL_SHIM_JS` is unset.
+//! files, the pinned Bun binary, `bun install` of the dependencies, and
+//! browser builds — into a scratch data directory (`WHIRL_DATA_DIR`),
+//! then runs a `data:` URL flow that must resolve the shim from that
+//! bundle because `WHIRL_SHIM_JS` is unset.
 //!
 //! The test is `#[ignore]`d: it needs network access, downloads hundreds
 //! of megabytes, and takes minutes. Run it deliberately with
@@ -58,7 +59,7 @@ fn output_text(output: &Output) -> String {
 }
 
 #[test]
-#[ignore = "network + disk heavy: downloads the Node runtime, npm deps, and browsers"]
+#[ignore = "network + disk heavy: downloads the Node runtime, Bun, dependencies, and browsers"]
 fn installs_the_bundle_and_runs_a_flow_from_it() {
     let data_dir = ScratchDir::new("data");
     let work_dir = ScratchDir::new("work");
@@ -76,6 +77,10 @@ fn installs_the_bundle_and_runs_a_flow_from_it() {
         "the bundled shim entry should exist; {text}"
     );
     assert!(
+        data_dir.path.join("bundle/bun/bun").is_file(),
+        "the bundled bun should exist; {text}"
+    );
+    assert!(
         data_dir
             .path
             .join("bundle/shim/node_modules/@playwright/test/package.json")
@@ -87,7 +92,12 @@ fn installs_the_bundle_and_runs_a_flow_from_it() {
     let again = run_whirl_with_bundle(&data_dir, &work_dir, &["install"]);
     let text = output_text(&again);
     assert_eq!(exit_code(&again), 0, "{text}");
-    assert!(text.contains("already installed"), "{text}");
+    assert!(text.contains("Node v24.19.0: already installed"), "{text}");
+    assert!(text.contains("Bun 1.4.0: already installed"), "{text}");
+    assert!(
+        text.contains("@playwright/test 1.62.1: already installed"),
+        "{text}"
+    );
 
     // A flow now runs with the bundle as the only shim source.
     let flow = work_dir.path.join("bundled.whirl");

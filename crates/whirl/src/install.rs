@@ -3,9 +3,11 @@
 //!
 //! The bundle lives under the Whirl data directory
 //! ([`shim::whirl_data_dir`]) in the layout `run/shim.rs` resolves:
-//! `bundle/node/` holds the pinned Node runtime and `bundle/shim/` holds
-//! the shim entry `index.js`, its sibling dist files, a `package.json`,
-//! and a `node_modules` tree with the pinned `@playwright/test`.
+//! `bundle/node/` holds the pinned Node runtime, `bundle/bun/` holds the
+//! pinned Bun binary that installs dependencies, and `bundle/shim/`
+//! holds the shim entry `index.js`, its sibling dist files, a
+//! `package.json`, and a `node_modules` tree with the pinned
+//! `@playwright/test`.
 //!
 //! Every step is idempotent: re-running `whirl install` refreshes the
 //! bundle in place and resumes after an interrupted attempt. Playwright
@@ -36,13 +38,19 @@ mod embedded {
 pub const NODE_VERSION: &str = "24.19.0";
 /// The pinned Playwright version, matching `shim/package.json`.
 pub const PLAYWRIGHT_VERSION: &str = "1.62.1";
+/// The pinned Bun version used to install the bundle's dependencies
+/// (Bun package-management decision). Bun is not a runtime here: the
+/// bundle always runs on the pinned Node.
+pub const BUN_VERSION: &str = "1.4.0";
 /// Where the pinned Node release tarballs and checksums live.
 const NODE_DIST_BASE: &str = "https://nodejs.org/dist";
+/// Where the pinned Bun release archives and checksums live.
+const BUN_RELEASE_BASE: &str = "https://github.com/oven-sh/bun/releases/download";
 
 /// Progress reporting: one human-readable line per call.
 pub type Progress<'a> = &'a mut dyn FnMut(&str);
 
-/// Runs the full provisioning: Node runtime, shim files, npm
+/// Runs the full provisioning: Node runtime, shim files, Bun binary,
 /// dependencies, and browser builds. Each step prints a progress line
 /// and is safe to re-run.
 pub fn run(progress: Progress<'_>) -> anyhow::Result<()> {
@@ -51,7 +59,8 @@ pub fn run(progress: Progress<'_>) -> anyhow::Result<()> {
     let bundle = BundleLayout::new(&data_dir);
     provision_node(&bundle, progress)?;
     provision_shim_files(&bundle, progress)?;
-    provision_npm_dependencies(&bundle, progress)?;
+    provision_bun(&bundle, progress)?;
+    provision_dependencies(&bundle, progress)?;
     provision_browsers(&bundle, progress)?;
     progress(&format!(
         "whirl install complete: bundle at {}",
@@ -67,6 +76,8 @@ struct BundleLayout {
     root:     PathBuf,
     /// `<data dir>/bundle/node` — the unpacked Node runtime.
     node_dir: PathBuf,
+    /// `<data dir>/bundle/bun` — the pinned Bun binary (installer only).
+    bun_dir:  PathBuf,
     /// `<data dir>/bundle/shim` — shim JS, package.json, node_modules.
     shim_dir: PathBuf,
 }
@@ -76,6 +87,7 @@ impl BundleLayout {
         Self {
             root:     data_dir.to_path_buf(),
             node_dir: data_dir.join("bundle/node"),
+            bun_dir:  data_dir.join("bundle/bun"),
             shim_dir: data_dir.join("bundle/shim"),
         }
     }
@@ -86,10 +98,10 @@ impl BundleLayout {
         self.node_dir.join("bin/node")
     }
 
-    /// npm's CLI entry inside the bundled runtime, run via the bundled
-    /// node directly so no npm shell shim is involved.
-    fn npm_cli(&self) -> PathBuf {
-        self.node_dir.join("lib/node_modules/npm/bin/npm-cli.js")
+    /// The bundled Bun executable, used only to install the bundle's
+    /// dependencies.
+    fn bun_bin(&self) -> PathBuf {
+        self.bun_dir.join("bun")
     }
 
     /// Playwright's CLI entry inside the installed dependencies.
@@ -284,7 +296,8 @@ fn shim_source_files() -> anyhow::Result<Vec<(String, Vec<u8>)>> {
     let Some(shim_js) = env::var_os(shim::SHIM_JS_ENV).map(PathBuf::from) else {
         bail!(
             "this whirl binary was built without an embedded shim and {env} is not set; \
-             build the shim (cd shim && npm ci && npm run build) and either rebuild whirl \
+             build the shim (cd shim && bun install --frozen-lockfile && bun run build) \
+             and either rebuild whirl \
              or set {env} to shim/dist/index.js",
             env = shim::SHIM_JS_ENV
         );
@@ -340,10 +353,106 @@ fn bundle_package_json() -> String {
     )
 }
 
-/// Step (c): `npm install` in the bundle shim directory, run with the
-/// bundled Node so the user's machine needs no Node of its own. Skipped
-/// when the pinned `@playwright/test` is already installed.
-fn provision_npm_dependencies(bundle: &BundleLayout, progress: Progress<'_>) -> anyhow::Result<()> {
+/// Step (c): the pinned Bun binary that installs the bundle's
+/// dependencies. Skipped when the bundled bun already reports the pinned
+/// version; otherwise the release zip is downloaded from GitHub,
+/// verified against the release's `SHASUMS256.txt`, and unpacked into
+/// place through a staging directory like the Node step.
+fn provision_bun(bundle: &BundleLayout, progress: Progress<'_>) -> anyhow::Result<()> {
+    if bun_version_matches(&bundle.bun_bin()) {
+        progress(&format!("Bun {BUN_VERSION}: already installed"));
+        return Ok(());
+    }
+    let archive = bun_archive_name(env::consts::OS, env::consts::ARCH).context(
+        "installing the Bun binary: unsupported platform; \
+         install is currently available on macOS and Linux only",
+    )?;
+    progress(&format!("Downloading Bun {BUN_VERSION} ({archive})..."));
+    let client = http_client()?;
+    let release_dir = format!("{BUN_RELEASE_BASE}/bun-v{BUN_VERSION}");
+    let shasums = fetch_text(&client, &format!("{release_dir}/SHASUMS256.txt")).context(
+        "downloading SHASUMS256.txt from the Bun release; check network access and retry",
+    )?;
+    let expected = parse_shasum(&shasums, &archive).with_context(|| {
+        format!("no SHASUMS256.txt entry for {archive}; this Whirl build may pin a bad version")
+    })?;
+    let zip = fetch_bytes(&client, &format!("{release_dir}/{archive}"))
+        .context("downloading the Bun archive from GitHub; check network access and retry")?;
+    verify_sha256(&zip, &expected)
+        .with_context(|| format!("verifying {archive}; delete nothing and retry the download"))?;
+
+    progress(&format!("Unpacking Bun {BUN_VERSION}..."));
+    let staging = bundle.root.join("bundle/.bun-staging");
+    replace_dir_with(&staging, |staging| unpack_zip(&zip, staging))
+        .context("unpacking the Bun archive")?;
+    let unpacked = staging.join(archive.trim_end_matches(".zip"));
+    let unpacked_bun = unpacked.join("bun");
+    if !unpacked_bun.is_file() {
+        bail!(
+            "the Bun archive did not contain {}/bun; retry `whirl install`",
+            unpacked.display()
+        );
+    }
+    make_executable(&unpacked_bun)?;
+    remove_dir_if_present(&bundle.bun_dir).context("replacing the previous Bun binary")?;
+    fs::rename(&unpacked, &bundle.bun_dir)
+        .with_context(|| format!("moving the Bun binary into {}", bundle.bun_dir.display()))?;
+    remove_dir_if_present(&staging).context("cleaning the Bun staging directory")?;
+    Ok(())
+}
+
+/// True when `bun_bin` exists and prints the pinned version.
+fn bun_version_matches(bun_bin: &Path) -> bool {
+    let Ok(output) = Command::new(bun_bin).arg("--version").output() else {
+        return false;
+    };
+    output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == BUN_VERSION
+}
+
+/// Maps `std::env::consts` OS and arch to the official Bun release zip
+/// name, for example `bun-darwin-aarch64.zip`. `None` for platforms
+/// Whirl does not provision (Windows included, for now).
+fn bun_archive_name(os: &str, arch: &str) -> Option<String> {
+    let os = match os {
+        "macos" => "darwin",
+        "linux" => "linux",
+        _ => return None,
+    };
+    let arch = match arch {
+        "aarch64" => "aarch64",
+        "x86_64" => "x64",
+        _ => return None,
+    };
+    Some(format!("bun-{os}-{arch}.zip"))
+}
+
+/// Unpacks a zip archive into `dir`, preserving permissions where the
+/// archive records them.
+fn unpack_zip(bytes: &[u8], dir: &Path) -> anyhow::Result<()> {
+    zip::ZipArchive::new(io::Cursor::new(bytes))
+        .context("reading the zip archive")?
+        .extract(dir)
+        .with_context(|| format!("unpacking into {}", dir.display()))
+}
+
+/// Marks `path` executable (`rwxr-xr-x`). A no-op on non-Unix targets,
+/// which the install steps reject earlier anyway.
+fn make_executable(path: &Path) -> anyhow::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755))
+            .with_context(|| format!("marking {} executable", path.display()))?;
+    }
+    Ok(())
+}
+
+/// Step (d): `bun install` in the bundle shim directory. Bun is the
+/// installer only: the generated `package.json` pins `@playwright/test`,
+/// and the resulting `node_modules` tree serves the bundled Node
+/// runtime. Skipped when the pinned `@playwright/test` is already
+/// installed.
+fn provision_dependencies(bundle: &BundleLayout, progress: Progress<'_>) -> anyhow::Result<()> {
     if installed_playwright_version(bundle).as_deref() == Some(PLAYWRIGHT_VERSION) {
         progress(&format!(
             "@playwright/test {PLAYWRIGHT_VERSION}: already installed"
@@ -353,18 +462,15 @@ fn provision_npm_dependencies(bundle: &BundleLayout, progress: Progress<'_>) -> 
     progress(&format!(
         "Installing @playwright/test {PLAYWRIGHT_VERSION}..."
     ));
-    run_bundle_node(bundle, &bundle.npm_cli(), &[
-        "install",
-        "--no-audit",
-        "--no-fund",
-    ])
-    .context(
-        "npm install of @playwright/test failed; check network access and \
+    let mut command = Command::new(bundle.bun_bin());
+    command.arg("install");
+    run_in_shim_dir(bundle, command).context(
+        "bun install of @playwright/test failed; check network access and \
          re-run `whirl install`",
     )?;
     if !bundle.playwright_cli().is_file() {
         bail!(
-            "npm install finished but {} is missing; re-run `whirl install`",
+            "bun install finished but {} is missing; re-run `whirl install`",
             bundle.playwright_cli().display()
         );
     }
@@ -380,7 +486,7 @@ fn installed_playwright_version(bundle: &BundleLayout) -> Option<String> {
     Some(json.get("version")?.as_str()?.to_owned())
 }
 
-/// Step (d): the browser builds, via Playwright's own CLI (`playwright
+/// Step (e): the browser builds, via Playwright's own CLI (`playwright
 /// install chromium firefox webkit`) run with the bundled Node.
 /// Playwright skips builds that are already in its cache, so re-runs
 /// are cheap.
@@ -395,35 +501,40 @@ fn provision_browsers(bundle: &BundleLayout, progress: Progress<'_>) -> anyhow::
     )
 }
 
-/// Runs `<bundle node> <script> <args...>` in the bundle shim directory
-/// with the bundled `bin/` first on PATH (npm and Playwright spawn
-/// `node` themselves). Output streams through to the user.
+/// Runs `<bundle node> <script> <args...>` in the bundle shim
+/// directory. Output streams through to the user.
 fn run_bundle_node(bundle: &BundleLayout, script: &Path, args: &[&str]) -> anyhow::Result<()> {
+    let mut command = Command::new(bundle.node_bin());
+    command.arg(script).args(args);
+    run_in_shim_dir(bundle, command)
+}
+
+/// Runs `command` in the bundle shim directory with the bundled node
+/// `bin/` first on PATH (Bun's lifecycle scripts and Playwright spawn
+/// `node` themselves). Output streams through to the user.
+fn run_in_shim_dir(bundle: &BundleLayout, mut command: Command) -> anyhow::Result<()> {
     let bin_dir = bundle.node_dir.join("bin");
     let mut path_entries = vec![bin_dir];
     if let Some(existing) = env::var_os("PATH") {
         path_entries.extend(env::split_paths(&existing));
     }
     let path = env::join_paths(path_entries).context("rebuilding PATH for the bundled node")?;
-    let status = Command::new(bundle.node_bin())
-        .arg(script)
-        .args(args)
+    let args = command
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let description = format!(
+        "{program} {args}",
+        program = command.get_program().to_string_lossy()
+    );
+    let status = command
         .current_dir(&bundle.shim_dir)
         .env("PATH", path)
         .status()
-        .with_context(|| {
-            format!(
-                "running {node} {script}",
-                node = bundle.node_bin().display(),
-                script = script.display()
-            )
-        })?;
+        .with_context(|| format!("running {description}"))?;
     if !status.success() {
-        bail!(
-            "{script} {args} exited with {status}",
-            script = script.display(),
-            args = args.join(" ")
-        );
+        bail!("{description} exited with {status}");
     }
     Ok(())
 }
@@ -459,6 +570,47 @@ mod tests {
     }
 
     #[test]
+    fn bun_archive_names_cover_macos_and_linux() {
+        assert_eq!(
+            bun_archive_name("macos", "aarch64").as_deref(),
+            Some("bun-darwin-aarch64.zip")
+        );
+        assert_eq!(
+            bun_archive_name("macos", "x86_64").as_deref(),
+            Some("bun-darwin-x64.zip")
+        );
+        assert_eq!(
+            bun_archive_name("linux", "aarch64").as_deref(),
+            Some("bun-linux-aarch64.zip")
+        );
+        assert_eq!(
+            bun_archive_name("linux", "x86_64").as_deref(),
+            Some("bun-linux-x64.zip")
+        );
+    }
+
+    #[test]
+    fn bun_archive_names_reject_unsupported_platforms() {
+        assert_eq!(bun_archive_name("windows", "x86_64"), None);
+        assert_eq!(bun_archive_name("linux", "riscv64"), None);
+    }
+
+    #[test]
+    fn shasum_parsing_reads_the_bun_release_format() {
+        // Two lines in the exact `<hex>  <name>` shape of the Bun
+        // release's SHASUMS256.txt.
+        let shasums = "c669e97f6164e1c96e0701748db98dfa77492908cbd8394c7557134a735de381  \
+                       bun-darwin-aarch64.zip\n\
+                       2d03fb5fb83ac8b567aca0a281b2ce1a1a19d488f56c2968d88c3f25e92fe452  \
+                       bun-linux-x64.zip\n";
+        assert_eq!(
+            parse_shasum(shasums, "bun-linux-x64.zip").as_deref(),
+            Some("2d03fb5fb83ac8b567aca0a281b2ce1a1a19d488f56c2968d88c3f25e92fe452")
+        );
+        assert_eq!(parse_shasum(shasums, "bun-windows-x64.zip"), None);
+    }
+
+    #[test]
     fn shasum_parsing_finds_the_named_file() {
         let shasums = "aaaa  node-v24.19.0-darwin-arm64.tar.gz\n\
                        BBBB  node-v24.19.0-linux-x64.tar.gz\n";
@@ -468,6 +620,35 @@ mod tests {
             "hashes normalize to lowercase"
         );
         assert_eq!(parse_shasum(shasums, "node-v24.19.0-win-x64.zip"), None);
+    }
+
+    #[test]
+    fn zip_unpacking_recreates_the_archived_tree() {
+        use std::io::Write as _;
+        use std::process;
+
+        use zip::write::SimpleFileOptions;
+
+        let mut writer = zip::ZipWriter::new(io::Cursor::new(Vec::new()));
+        let options = SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored)
+            .unix_permissions(0o755);
+        writer
+            .start_file("bun-test-platform/bun", options)
+            .expect("the zip entry should start");
+        writer
+            .write_all(b"#!/bin/sh\n")
+            .expect("the zip entry should be writable");
+        let archive = writer
+            .finish()
+            .expect("the zip archive should finish")
+            .into_inner();
+
+        let dir = env::temp_dir().join(format!("whirl-unzip-test-{}", process::id()));
+        replace_dir_with(&dir, |dir| unpack_zip(&archive, dir)).expect("the zip should unpack");
+        let bun = dir.join("bun-test-platform/bun");
+        assert!(bun.is_file(), "the archived file should exist");
+        fs::remove_dir_all(&dir).expect("temp dirs should be removable");
     }
 
     #[test]
@@ -489,6 +670,7 @@ mod tests {
             bundle.shim_dir.join("index.js"),
             Path::new("/data").join(shim::BUNDLE_SHIM_JS)
         );
+        assert_eq!(bundle.bun_bin(), Path::new("/data/bundle/bun/bun"));
     }
 
     #[test]

@@ -53,6 +53,8 @@ the task.
 If the local guide is unavailable, use the
 [TypeScript Style Guide on GitHub](https://github.com/brynary/typescript-style-guide/blob/main/SKILL.md).
 
-The browser shim runs on Whirl's pinned private Node runtime. The TypeScript
-guide's Bun-specific runtime, API, package-management, and test-runner rules do
-not apply.
+The browser shim runs on Whirl's pinned private Node runtime, but Bun is the
+repository's package manager and script runner for TypeScript (see
+[Bun package management](docs/engineering/decisions/bun-package-management.md)).
+The TypeScript guide's Bun runtime, API, and test-runner rules do not apply
+to shim code; its package-management rules do.

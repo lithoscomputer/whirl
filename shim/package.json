@@ -7,7 +7,7 @@
 		"typecheck": "tsc --noEmit",
 		"lint": "biome check .",
 		"format": "biome format --write .",
-		"test": "npm run build && node --test \"dist/**/*.test.js\""
+		"test": "bun run build && node --test \"dist/**/*.test.js\""
 	},
 	"devDependencies": {
 		"@biomejs/biome": "2.5.9",

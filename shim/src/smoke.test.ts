@@ -1,5 +1,5 @@
 // Opt-in real-browser smoke test. Skipped unless WHIRL_SHIM_SMOKE=1 so the
-// default `npm test` run stays browser-free.
+// default `bun run test` run stays browser-free.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";

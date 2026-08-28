@@ -20,6 +20,9 @@ sha2 = "0.10"
 tar = "0.4"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
+zip = { version = "7.2.0", default-features = false, features = [
+    "deflate-flate2",
+] }
 
 [dev-dependencies]
 tiny_http = "0.12.0"

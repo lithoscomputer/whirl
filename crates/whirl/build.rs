@@ -7,7 +7,7 @@
 //! an empty table so the crate still compiles; `whirl install` then falls
 //! back to the `WHIRL_SHIM_JS` tree as its shim source.
 //!
-//! This script only copies prebuilt output. It never invokes npm or tsc:
+//! This script only copies prebuilt output. It never invokes Bun or tsc:
 //! the repository-owned-tasks ADR gives shim building to mise.
 
 use std::fmt::Write as _;
