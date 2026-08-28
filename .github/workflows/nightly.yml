@@ -39,5 +39,9 @@ jobs:
       - run: mise run setup
       - name: Install Playwright system dependencies for all engines
         if: runner.os == 'Linux'
-        run: cd shim && sudo env "PATH=$PATH" node node_modules/@playwright/test/cli.js install-deps
+        # Resolve the real node binary first: mise's shims cannot run
+        # under sudo (root has no mise trust store).
+        run: |
+          cd shim
+          sudo "$(mise which node)" node_modules/@playwright/test/cli.js install-deps
       - run: mise run check:nightly

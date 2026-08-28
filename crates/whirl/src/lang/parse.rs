@@ -115,10 +115,9 @@ fn parse_number(text: &str) -> Option<u64> {
 pub(crate) fn parse_duration(text: &str) -> Option<DurationLit> {
     let (digits, unit) = if let Some(digits) = text.strip_suffix("ms") {
         (digits, DurationUnit::Milliseconds)
-    } else if let Some(digits) = text.strip_suffix('s') {
-        (digits, DurationUnit::Seconds)
     } else {
-        return None;
+        let digits = text.strip_suffix('s')?;
+        (digits, DurationUnit::Seconds)
     };
     parse_number(digits).map(|amount| DurationLit { amount, unit })
 }

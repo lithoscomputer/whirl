@@ -61,10 +61,9 @@ pub struct FlowFlags {
 pub fn parse_duration_flag(text: &str) -> Option<u64> {
     let (amount, factor) = if let Some(amount) = text.strip_suffix("ms") {
         (amount, 1)
-    } else if let Some(amount) = text.strip_suffix('s') {
-        (amount, 1000)
     } else {
-        return None;
+        let amount = text.strip_suffix('s')?;
+        (amount, 1000)
     };
     if amount.is_empty() || !amount.bytes().all(|byte| byte.is_ascii_digit()) {
         return None;

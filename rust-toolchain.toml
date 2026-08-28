@@ -1,0 +1,7 @@
+# Pin the stable toolchain so local runs and CI use the same rustc and
+# Clippy; unpinned stable let new Clippy lints break CI without warning.
+# The formatting toolchain (nightly-2026-04-14) is pinned separately in
+# the check:fmt task.
+[toolchain]
+channel = "1.97.1"
+components = ["clippy"]
