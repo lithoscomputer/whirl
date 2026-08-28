@@ -73,9 +73,9 @@ dir = "shim"
 run = ["npm run typecheck", "npm run lint"]
 
 [tasks."check:nightly"]
-description = "Run the nightly checks: acceptance tests on all three browser engines"
+description = "Run the nightly checks: all browser engines plus the whirl install end-to-end test"
 depends = ["build:shim"]
 run = [
   "cd shim && npx playwright install chromium firefox webkit",
-  "WHIRL_TEST_ALL_BROWSERS=1 cargo nextest run --workspace --all-targets --all-features",
+  "WHIRL_TEST_ALL_BROWSERS=1 cargo nextest run --workspace --all-targets --all-features --run-ignored all",
 ]

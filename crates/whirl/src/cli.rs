@@ -14,10 +14,15 @@ use std::{fs, io};
 use anyhow::Context as _;
 use clap::error::ErrorKind;
 use clap::{Args, Parser, Subcommand};
+use tokio::runtime::Runtime;
 
+use crate::install;
 use crate::lang::lint::{Lint, Severity, lint_file};
 use crate::lang::parse::{ParseError, parse_file};
 use crate::lang::{ast, fmt};
+use crate::report::model::RunReport;
+use crate::report::{console, json, junit};
+use crate::run::{flow, runner, vars};
 
 /// Outcome of one invocation, ordered by SPEC 13 precedence: `max` of two
 /// outcomes is the one that wins the process exit code.
@@ -386,26 +391,169 @@ fn fmt_command(check: bool, paths: &[PathBuf]) -> Exit {
     exit
 }
 
-/// The default run command. This phase parses and lints everything (SPEC
-/// 13: nothing runs when any file has a parse or lint error); the runner
-/// itself is a later phase.
+/// Builds the command-line option overrides (SPEC 5, 13). A malformed
+/// flag value is a usage error.
+fn build_overrides(args: &RunArgs) -> Result<flow::Overrides, UsageError> {
+    let duration = |flag: &'static str, value: &Option<String>| {
+        value
+            .as_deref()
+            .map(|text| {
+                flow::parse_duration_flag(text).ok_or_else(|| UsageError {
+                    message: format!("invalid {flag} value '{text}': expected e.g. 500ms or 10s"),
+                })
+            })
+            .transpose()
+    };
+    let browser = args
+        .browser
+        .as_deref()
+        .map(|text| {
+            flow::parse_browser_flag(text).ok_or_else(|| UsageError {
+                message: format!(
+                    "invalid --browser value '{text}': expected chromium, firefox, or webkit"
+                ),
+            })
+        })
+        .transpose()?;
+    Ok(flow::Overrides {
+        base: args.base.clone(),
+        browser,
+        step_timeout_ms: duration("--step-timeout", &args.step_timeout)?,
+        entry_timeout_ms: duration("--entry-timeout", &args.entry_timeout)?,
+        headed: args.headed,
+        storage: args.storage.clone(),
+    })
+}
+
+/// Loads `--variables-file` entries then `--var` flags, in order
+/// (SPEC 11). Malformed entries are usage errors.
+fn build_base_vars(args: &RunArgs) -> Result<Vec<(String, String)>, UsageError> {
+    let mut entries = Vec::new();
+    if let Some(path) = &args.variables_file {
+        let source = fs::read_to_string(path).map_err(|error| UsageError {
+            message: format!("cannot read variables file '{}': {error}", path.display()),
+        })?;
+        entries.extend(
+            vars::parse_variables_file(&source).map_err(|error| UsageError {
+                message: format!("variables file '{}': {error}", path.display()),
+            })?,
+        );
+    }
+    for flag in &args.var {
+        entries.push(vars::parse_var_flag(flag).map_err(|error| UsageError {
+            message: format!("--var {flag}: {error}"),
+        })?);
+    }
+    Ok(entries)
+}
+
+/// The default run command (SPEC 13): parse and lint everything, then
+/// run the files through the worker pool and print the console report.
 fn run_command(args: &RunArgs) -> Exit {
+    // Usage errors are detected before parsing and preempt everything
+    // (SPEC 13).
+    let (overrides, base_vars) = match build_overrides(args)
+        .and_then(|overrides| build_base_vars(args).map(|base_vars| (overrides, base_vars)))
+    {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            print_err(&format!("whirl: error: {error}"));
+            return Exit::Usage;
+        }
+    };
     let sources = match prepare_sources(&args.paths) {
         Ok(sources) => sources,
         Err(exit) => return exit,
     };
-    let (_parsed, exit) = check_inputs(sources);
+    let (parsed, exit) = check_inputs(sources);
     if exit != Exit::Success {
         return exit;
     }
-    print_err("whirl: error: the runner is not implemented yet");
-    Exit::Runtime
+    let settings = runner::RunSettings {
+        jobs: args.jobs,
+        fail_fast: args.fail_fast,
+        artifacts_dir: args.artifacts.clone(),
+        flags: flow::FlowFlags {
+            trace:            args.trace,
+            video:            args.video,
+            har:              args.har,
+            update_snapshots: args.update_snapshots,
+            save_storage:     args.save_storage.clone(),
+        },
+        overrides,
+        base_vars,
+    };
+    let files: Vec<ast::File> = parsed.into_iter().map(|input| input.file).collect();
+    let runtime = match Runtime::new() {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            print_err(&format!("whirl: error: cannot start the runtime: {error}"));
+            return Exit::Runtime;
+        }
+    };
+    match runtime.block_on(runner::run_files(&files, &settings)) {
+        Ok(report) => {
+            print_out(console::render(&report).trim_end());
+            let report_exit = write_reports(args, &report);
+            let run_exit = if report.has_error() {
+                Exit::Runtime
+            } else if report.has_failure() {
+                Exit::Negative
+            } else {
+                Exit::Success
+            };
+            run_exit.max(report_exit)
+        }
+        Err(error @ runner::RunnerError::SaveStorageManyFiles { .. }) => {
+            print_err(&format!("whirl: error: {error}"));
+            Exit::Usage
+        }
+        Err(error) => {
+            print_err(&format!("whirl: error: {error}"));
+            Exit::Runtime
+        }
+    }
 }
 
-/// `whirl install`: provisioning is a later phase.
+/// Writes the requested `--report-json` and `--report-junit` files
+/// (SPEC 13, 14). Reports are written whenever a run happened, whatever
+/// its outcome; a report that cannot be written is an environmental
+/// failure (exit 3).
+fn write_reports(args: &RunArgs, report: &RunReport) -> Exit {
+    let mut exit = Exit::Success;
+    if let Some(path) = &args.report_json {
+        exit = exit.max(write_report_file(path, &json::render(report)));
+    }
+    if let Some(path) = &args.report_junit {
+        exit = exit.max(write_report_file(path, &junit::render(report)));
+    }
+    exit
+}
+
+/// Writes one report file, printing any error.
+fn write_report_file(path: &Path, content: &str) -> Exit {
+    match fs::write(path, content) {
+        Ok(()) => Exit::Success,
+        Err(error) => {
+            print_err(&format!(
+                "whirl: error: cannot write report '{}': {error}",
+                path.display()
+            ));
+            Exit::Runtime
+        }
+    }
+}
+
+/// `whirl install`: provision the shim bundle and browsers (SPEC 13).
+/// A failure is a runtime error (exit 3) naming the failing step.
 fn install_command() -> Exit {
-    print_err("whirl: error: install is not implemented yet");
-    Exit::Runtime
+    match install::run(&mut |line| print_out(line)) {
+        Ok(()) => Exit::Success,
+        Err(error) => {
+            print_err(&format!("whirl: error: {error:#}"));
+            Exit::Runtime
+        }
+    }
 }
 
 #[cfg(test)]
@@ -590,14 +738,33 @@ mod tests {
     }
 
     #[test]
-    fn run_reports_the_unimplemented_runner_with_exit_3() {
+    fn an_invalid_browser_flag_is_a_usage_error() {
         let dir = TempDir::new();
         let file = dir.file("clean.whirl", "VISIT /login\n");
-        assert_eq!(run_cli(&["--trace", file.to_str().expect("utf-8 path")]), 3);
+        assert_eq!(
+            run_cli(&["--browser", "netscape", file.to_str().expect("utf-8 path")]),
+            4
+        );
     }
 
     #[test]
-    fn install_is_not_implemented_yet() {
-        assert_eq!(run_cli(&["install"]), 3);
+    fn an_invalid_step_timeout_flag_is_a_usage_error() {
+        let dir = TempDir::new();
+        let file = dir.file("clean.whirl", "VISIT /login\n");
+        assert_eq!(
+            run_cli(&["--step-timeout", "soon", file.to_str().expect("utf-8 path")]),
+            4
+        );
+    }
+
+    #[test]
+    fn a_malformed_var_flag_is_a_usage_error() {
+        let dir = TempDir::new();
+        let file = dir.file("broken.whirl", "BOGUS line\n");
+        // The usage error preempts the parse error (SPEC 13).
+        assert_eq!(
+            run_cli(&["--var", "novalue", file.to_str().expect("utf-8 path")]),
+            4
+        );
     }
 }

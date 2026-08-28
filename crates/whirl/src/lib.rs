@@ -5,4 +5,7 @@
 //! repository root is the product authority for everything in here.
 
 pub mod cli;
+pub mod install;
 pub mod lang;
+pub mod report;
+pub mod run;
