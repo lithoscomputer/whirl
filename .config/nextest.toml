@@ -1,0 +1,10 @@
+# Browser acceptance tests each spawn a whirl -> shim -> Chromium process
+# tree; running all of them at once oversubscribes the machine and makes
+# the suite's wall time swing widely. Cap their concurrency; unit tests
+# keep nextest's default parallelism.
+[test-groups.browser]
+max-threads = 8
+
+[[profile.default.overrides]]
+filter = 'binary(=browser_site) | binary(=browser_run)'
+test-group = 'browser'
