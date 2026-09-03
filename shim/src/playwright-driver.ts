@@ -513,14 +513,33 @@ export class PlaywrightDriver implements ShimDriver {
 				return {};
 			}
 			case "store": {
-				fieldEnum(params, "scope", ["local"] as const);
+				const scope = fieldEnum(params, "scope", [
+					"local",
+					"session",
+					"cookie",
+				] as const);
 				const key = fieldString(params, "key");
 				const value = fieldString(params, "value");
+				if (scope === "cookie") {
+					const url = page.url();
+					if (!/^https?:/.test(url)) {
+						throw new ShimError(
+							"action",
+							`STORE cookie needs an http or https page; the current page is ${url}`,
+						);
+					}
+					await page.context().addCookies([{ name: key, value, url }]);
+					return {};
+				}
 				await page.evaluate(
-					([storageKey, storageValue]) => {
-						window.localStorage.setItem(storageKey, storageValue);
+					([storageScope, storageKey, storageValue]) => {
+						const storage =
+							storageScope === "session"
+								? window.sessionStorage
+								: window.localStorage;
+						storage.setItem(storageKey, storageValue);
 					},
-					[key, value] as const,
+					[scope, key, value] as const,
 				);
 				return {};
 			}

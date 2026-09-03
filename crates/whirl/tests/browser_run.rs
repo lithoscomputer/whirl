@@ -218,6 +218,23 @@ fn type_sends_key_events_where_fill_does_not() {
 }
 
 #[test]
+fn store_cookie_on_a_data_url_fails_the_entry() {
+    let dir = TestDir::new();
+    // A data: URL has no http origin to attach a cookie to.
+    let flow = dir.file(
+        "cookie.whirl",
+        "VISIT \"data:text/html,<h1>Hi</h1>\"\nSTORE cookie flag v1\n",
+    );
+    let output = run_whirl(&dir, &[flow.to_str().expect("utf-8 path")]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 1, "stdout:\n{stdout}");
+    assert!(
+        stdout.contains("needs an http or https page"),
+        "stdout:\n{stdout}"
+    );
+}
+
+#[test]
 fn the_user_agent_option_and_flag_set_navigator_user_agent() {
     let dir = TestDir::new();
     // The file option sets the context's user agent; the flag beats the

@@ -302,17 +302,20 @@ pub enum ActionKind {
     },
 }
 
-/// Browser storage a `STORE` action writes to (SPEC 7). Only
-/// `localStorage` today; cookies and session storage are candidates.
+/// Browser storage a `STORE` action writes to (SPEC 7).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StoreScope {
     Local,
+    Session,
+    Cookie,
 }
 
 impl StoreScope {
     pub fn keyword(self) -> &'static str {
         match self {
             Self::Local => "local",
+            Self::Session => "session",
+            Self::Cookie => "cookie",
         }
     }
 }

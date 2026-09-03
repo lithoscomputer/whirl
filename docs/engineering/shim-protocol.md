@@ -143,7 +143,7 @@ Commands and their extra params (result `{}` unless noted):
 | `screenshot` | `path` (absolute .png; full page) |
 | `snapshot` | `baselinePath`, `actualPath`, `diffPath`, `update` (bool) |
 | `evalAction` | `script` |
-| `store` | `scope` (`"local"`), `key`, `value` — writes one `localStorage` entry on the current origin |
+| `store` | `scope` (`"local"` \| `"session"` \| `"cookie"`), `key`, `value` — writes one `localStorage` or `sessionStorage` entry on the current origin, or one cookie for the current page's URL (host, path `/`, no attributes); `cookie` on a non-http(s) page is an `action` error |
 | `page` | `expect` (section 4.2) |
 | `assert` | `spec` (section 4.3) |
 | `capture` | `source`, `filter` (section 4.4); result `{"value": "..."}` |

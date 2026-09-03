@@ -856,6 +856,15 @@ mod tests {
                 serde_json::json!({"scope": "local", "key": "onboarding:done", "value": "yes"}),
             ),
             (
+                StepCommand::Store {
+                    scope: "cookie".to_owned(),
+                    key:   "chat_version".to_owned(),
+                    value: "v1".to_owned(),
+                },
+                "store",
+                serde_json::json!({"scope": "cookie", "key": "chat_version", "value": "v1"}),
+            ),
+            (
                 StepCommand::EvalAction {
                     script: "1 + 1".to_owned(),
                 },

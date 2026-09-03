@@ -257,6 +257,30 @@ fn a_full_flow_passes_against_the_site() {
 }
 
 #[test]
+fn store_session_and_cookie_reach_the_page_after_the_next_visit() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    // The page mirrors the "flag" sessionStorage entry and the "flag"
+    // cookie while loading, so each STORE shows after a reload.
+    dir.file(
+        "store.whirl",
+        "VISIT /form.html\n\
+         [Asserts]\n\
+         css:\"#session-flag\" text == unset\n\
+         css:\"#cookie-flag\" text == unset\n\
+         STORE session flag \"from session\"\n\
+         STORE cookie flag v1\n\
+         VISIT /form.html\n\
+         [Asserts]\n\
+         css:\"#session-flag\" text == \"from session\"\n\
+         css:\"#cookie-flag\" text == v1\n",
+    );
+    let output = run_whirl(&dir, &["--base", &server.base(), "store.whirl"]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+}
+
+#[test]
 fn visit_completes_at_domcontentloaded_while_a_subresource_stalls_load() {
     let server = SiteServer::start();
     let dir = TestDir::new();

@@ -41,6 +41,8 @@
     <button type="button" data-testid="save-button" id="save">Save</button>
     <div id="saved"></div>
     <div id="stored-flag"></div>
+    <div id="session-flag"></div>
+    <div id="cookie-flag"></div>
     <button type="button" disabled>Disabled btn</button>
     <button type="button" id="dup-a">Dup</button>
     <button type="button" id="dup-b">Dup</button>
@@ -72,6 +74,13 @@
       // on this origin shows up after the next VISIT.
       document.getElementById("stored-flag").textContent =
         window.localStorage.getItem("flag") ?? "unset";
+      document.getElementById("session-flag").textContent =
+        window.sessionStorage.getItem("flag") ?? "unset";
+      document.getElementById("cookie-flag").textContent =
+        document.cookie
+          .split("; ")
+          .find((entry) => entry.startsWith("flag="))
+          ?.slice("flag=".length) ?? "unset";
       // Records each keydown, so a TYPE shows one entry per character while a
       // FILL (one input event, no key events) records nothing.
       document.getElementById("code").addEventListener("keydown", (event) => {

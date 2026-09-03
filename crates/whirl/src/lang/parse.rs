@@ -823,7 +823,7 @@ fn one_value(mut tokens: Vec<RawToken>, keyword_span: Span) -> Result<Value, Lin
 /// Parses `STORE scope key value` (SPEC 7): a bare storage scope, then
 /// exactly two values.
 fn parse_store(tokens: Vec<RawToken>, keyword_span: Span) -> Result<ActionKind, LineError> {
-    let scope_expected = ["local"];
+    let scope_expected = ["local", "session", "cookie"];
     let mut tokens = tokens.into_iter();
     let Some(scope_token) = tokens.next() else {
         return Err(
@@ -832,6 +832,8 @@ fn parse_store(tokens: Vec<RawToken>, keyword_span: Span) -> Result<ActionKind, 
     };
     let scope = match scope_token.bare_single() {
         Some("local") => StoreScope::Local,
+        Some("session") => StoreScope::Session,
+        Some("cookie") => StoreScope::Cookie,
         _ => {
             return Err(LineError::new(scope_token.span, "expected a storage scope")
                 .expecting(scope_expected));
@@ -2903,10 +2905,23 @@ role:alert text contains "Added to cart"
     }
 
     #[test]
+    fn store_accepts_the_session_and_cookie_scopes() {
+        let ActionKind::Store { scope, .. } = action_kind("STORE session draft \"hi\"") else {
+            panic!("expected STORE");
+        };
+        assert_eq!(scope, StoreScope::Session);
+        let ActionKind::Store { scope, .. } = action_kind("STORE cookie chat_version v1") else {
+            panic!("expected STORE");
+        };
+        assert_eq!(scope, StoreScope::Cookie);
+    }
+
+    #[test]
     fn store_rejects_an_unknown_scope_and_a_missing_value() {
-        let error = parse_err("VISIT /\nSTORE cookie flag on\n");
+        let error = parse_err("VISIT /\nSTORE global flag on\n");
         assert_eq!(error.message, "expected a storage scope");
         assert!(error.expected.iter().any(|alt| alt == "local"));
+        assert!(error.expected.iter().any(|alt| alt == "cookie"));
         let error = parse_err("VISIT /\nSTORE local flag\n");
         assert_eq!(error.message, "expected a value after the key");
         let error = parse_err("VISIT /\nSTORE local flag on extra\n");
