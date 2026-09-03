@@ -310,6 +310,7 @@ export type StepCommand =
 	| "click"
 	| "dblclick"
 	| "fill"
+	| "type"
 	| "press"
 	| "checkbox"
 	| "selectOption"
@@ -327,6 +328,7 @@ const stepCommandList: readonly StepCommand[] = [
 	"click",
 	"dblclick",
 	"fill",
+	"type",
 	"press",
 	"checkbox",
 	"selectOption",

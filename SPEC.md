@@ -160,6 +160,7 @@ An action is a verb, an optional locator, and an optional value. Element-targeti
 | `CLICK locator` | Click the element. |
 | `DBLCLICK locator` | Double-click the element. |
 | `FILL locator "text"` | Replace the input's content with `text`. |
+| `TYPE locator "text"` | Focus the element, then send one key event per character of `text`. |
 | `PRESS "Key"` | Send a key or chord (Playwright key names, for example `"Enter"`, `"Control+A"`) to the focused element. |
 | `PRESS locator "Key"` | Focus the element, then send the key. |
 | `CHECK locator` | Set a checkbox or radio to checked. |
@@ -172,6 +173,8 @@ An action is a verb, an optional locator, and an optional value. Element-targeti
 | `EVAL "script"` | Run a JavaScript script in the page. The escape hatch; rules below. |
 
 `PRESS` with a single argument treats it as the key: `PRESS Enter` presses Enter on the focused element, even though `Enter` could also parse as a locator. Only when two arguments are present is the first a locator.
+
+`FILL` is the default way to enter text: it sets the value and fires one `input` event, which is what a plain field expects. `TYPE` is for the pages that listen for keys instead — segmented one-time-code inputs, masked fields, autocomplete boxes, and rich-text editors ignore a plain fill. It focuses the element and sends a `keydown`, `keypress`, `input`, and `keyup` per character, as Playwright's `pressSequentially` does. `TYPE` does not clear the element first. Use `FILL` unless the page needs key events; a flow that reaches for `TYPE` to slow down typing wants an assertion on the state the page should reach, not a slower `TYPE`.
 
 `SCREENSHOT` never fails the entry, even when it goes wrong: if the capture or the file write fails — a crashed page, an I/O error, or its step timeout expiring — Whirl skips the artifact and records a warning naming the screenshot and the cause, in the console output and in both reports, so a missing artifact is always explained. One cap outranks this: an expiring `entry-timeout` fails the entry as usual, whatever line is in flight.
 
@@ -359,6 +362,7 @@ action-body = "VISIT" , value
            | "CLICK" , locator
            | "DBLCLICK" , locator
            | "FILL" , locator , value
+           | "TYPE" , locator , value
            | "PRESS" , [ locator ] , value
            | "CHECK" , locator
            | "UNCHECK" , locator

@@ -256,6 +256,11 @@ pub enum ActionKind {
         target: Locator,
         value:  Value,
     },
+    /// `TYPE locator "text"` sends one key event per character.
+    Type {
+        target: Locator,
+        text:   Value,
+    },
     /// `PRESS "Key"` has no target; `PRESS locator "Key"` has one.
     Press {
         target: Option<Locator>,
@@ -296,6 +301,7 @@ impl ActionKind {
     pub fn default_engine(&self) -> Option<DefaultEngine> {
         match self {
             Self::Fill { .. }
+            | Self::Type { .. }
             | Self::Select { .. }
             | Self::Check { .. }
             | Self::Uncheck { .. }

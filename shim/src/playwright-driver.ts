@@ -433,6 +433,13 @@ export class PlaywrightDriver implements ShimDriver {
 				);
 				return {};
 			}
+			case "type": {
+				const text = fieldString(params, "text");
+				await this.#locatorAction(page, params, (locator) =>
+					locator.pressSequentially(text, { timeout: timeoutMs }),
+				);
+				return {};
+			}
 			case "press": {
 				const key = fieldString(params, "key");
 				if (fieldArrayOrNull(params, "locator") === null) {
@@ -630,6 +637,7 @@ function defaultErrorKind(cmd: StepCommand): ErrorKind {
 		case "click":
 		case "dblclick":
 		case "fill":
+		case "type":
 		case "press":
 		case "checkbox":
 		case "selectOption":

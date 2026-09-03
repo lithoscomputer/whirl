@@ -179,6 +179,7 @@ fn platform_tag() -> &'static str {
 const HAPPY_FLOW_BODY: &str = r##"# Fill the form.
 VISIT /form.html
 FILL "Email" alice@example.com
+TYPE "Code" 4242
 FILL placeholder:"Search things" widget
 CLICK testid:save-button
 PRESS placeholder:"Search things" "Enter"
@@ -186,6 +187,8 @@ SCREENSHOT overview
 [Asserts]
 role:heading "Form page" visible
 label:Email value == alice@example.com
+label:Code value == 4242
+css:"#typed-keys" text == 4242
 placeholder:"Search things" value == widget
 placeholder:"Search things" focused
 css:"#press-result" text == enter-pressed

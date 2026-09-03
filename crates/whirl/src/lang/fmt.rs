@@ -320,6 +320,11 @@ fn render_action(action: &Action) -> String {
             render_locator(target, LocatorCtx::Action, false),
             render_value(value, ValueCtx::Plain, is_final)
         ),
+        ActionKind::Type { target, text } => format!(
+            "TYPE {} {}",
+            render_locator(target, LocatorCtx::Action, false),
+            render_value(text, ValueCtx::Plain, is_final)
+        ),
         ActionKind::Press { target: None, key } => {
             format!("PRESS {}", render_value(key, ValueCtx::Plain, is_final))
         }
@@ -783,6 +788,10 @@ mod tests {
             | ActionKind::Uncheck { target }
             | ActionKind::Hover { target } => scrub_locator(target),
             ActionKind::Fill { target, value }
+            | ActionKind::Type {
+                target,
+                text: value,
+            }
             | ActionKind::Select {
                 target,
                 option: value,
@@ -904,7 +913,7 @@ mod tests {
         "[Options]\nbase: https://example.com\nbrowser: webkit\nviewport: 800x600\nstep-timeout: 5s\nentry-timeout: 90s\nnav-timeout: 45s\nallow-hosts: example.com *.example.com\ndialogs: accept\nstorage: auth/state.json\nVISIT /\n",
         "[Options]\nbrowser: {{engine}}\nviewport: {{size}}\nstep-timeout: {{t}}\nVISIT /\n",
         // Every action form.
-        "VISIT /a\nCLICK \"Add to cart\"\nDBLCLICK text~:\"added\"\nFILL \"Email\" alice@example.com\nPRESS Enter\nPRESS label:Search \"Control+A\"\nCHECK \"Remember me\"\nUNCHECK role:checkbox \"Spam\"\nSELECT \"Country\" \"United States\"\nHOVER testid:menu\nUPLOAD \"Avatar\" file:images/cat.png\nSCREENSHOT overview\nSNAPSHOT header\nEVAL \"window.scrollTo(0, 0)\"\n",
+        "VISIT /a\nCLICK \"Add to cart\"\nDBLCLICK text~:\"added\"\nFILL \"Email\" alice@example.com\nTYPE \"Code\" 424242\nPRESS Enter\nPRESS label:Search \"Control+A\"\nCHECK \"Remember me\"\nUNCHECK role:checkbox \"Spam\"\nSELECT \"Country\" \"United States\"\nHOVER testid:menu\nUPLOAD \"Avatar\" file:images/cat.png\nSCREENSHOT overview\nSNAPSHOT header\nEVAL \"window.scrollTo(0, 0)\"\n",
         // Timeout suffixes on every step kind.
         "VISIT / @45s\nCLICK go @60s\nPAGE /done @2s\n[Asserts]\ntestid:x visible @2500ms\nurl == / @1s\n[Captures]\nn: testid:x text @3s\nm: testid:x text regex /x(y)?/ @3s\n",
         // Every assert form and operator.

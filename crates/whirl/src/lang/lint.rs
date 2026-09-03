@@ -168,6 +168,10 @@ fn collect_action_refs<'a>(action: &'a Action, refs: &mut Vec<VarRef<'a>>) {
         | ActionKind::Uncheck { target }
         | ActionKind::Hover { target } => collect_locator_refs(target, line, refs),
         ActionKind::Fill { target, value }
+        | ActionKind::Type {
+            target,
+            text: value,
+        }
         | ActionKind::Select {
             target,
             option: value,

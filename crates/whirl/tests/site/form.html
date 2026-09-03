@@ -13,6 +13,10 @@
     <input type="search" placeholder="Search things" id="search" />
     <div id="press-result"></div>
 
+    <label for="code">Code</label>
+    <input id="code" type="text" inputmode="numeric" />
+    <div id="typed-keys"></div>
+
     <label for="color">Color</label>
     <select id="color">
       <option value="red">Red</option>
@@ -63,6 +67,11 @@
     </ul>
 
     <script>
+      // Records each keydown, so a TYPE shows one entry per character while a
+      // FILL (one input event, no key events) records nothing.
+      document.getElementById("code").addEventListener("keydown", (event) => {
+        document.getElementById("typed-keys").textContent += event.key;
+      });
       document.getElementById("search").addEventListener("keydown", (event) => {
         if (event.key === "Enter") {
           document.getElementById("press-result").textContent = "enter-pressed";

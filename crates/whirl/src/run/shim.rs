@@ -215,6 +215,10 @@ pub enum StepCommand {
         locator: Json,
         value:   String,
     },
+    Type {
+        locator: Json,
+        text:    String,
+    },
     Press {
         locator: Option<Json>,
         key:     String,
@@ -766,6 +770,14 @@ mod tests {
                 },
                 "fill",
                 serde_json::json!({"locator": locator, "value": "text"}),
+            ),
+            (
+                StepCommand::Type {
+                    locator: locator.clone(),
+                    text:    "424242".to_owned(),
+                },
+                "type",
+                serde_json::json!({"locator": locator, "text": "424242"}),
             ),
             (
                 StepCommand::Press {

@@ -790,11 +790,12 @@ fn split_timeout(tokens: &mut Vec<RawToken>) -> Option<DurationLit> {
     Some(duration)
 }
 
-const ACTION_KEYWORDS: [&str; 13] = [
+const ACTION_KEYWORDS: [&str; 14] = [
     "VISIT",
     "CLICK",
     "DBLCLICK",
     "FILL",
+    "TYPE",
     "PRESS",
     "CHECK",
     "UNCHECK",
@@ -892,6 +893,10 @@ fn parse_action_body(
         "FILL" => {
             let (target, value) = locator_and_value(tokens, keyword_span, true)?;
             ActionKind::Fill { target, value }
+        }
+        "TYPE" => {
+            let (target, text) = locator_and_value(tokens, keyword_span, true)?;
+            ActionKind::Type { target, text }
         }
         "SELECT" => {
             let (target, option) = locator_and_value(tokens, keyword_span, true)?;
@@ -2815,6 +2820,27 @@ role:alert text contains "Added to cart"
         assert_eq!(default_segment_text(target), "Email");
         assert_eq!(lit(value), "alice@example.com");
         assert_eq!(kind.default_engine(), Some(DefaultEngine::Label));
+    }
+
+    #[test]
+    fn type_takes_locator_and_text_with_the_label_engine() {
+        let kind = action_kind("TYPE \"Enter verification code\" 424242");
+        let ActionKind::Type { target, text } = &kind else {
+            panic!("expected TYPE");
+        };
+        assert_eq!(default_segment_text(target), "Enter verification code");
+        assert_eq!(lit(text), "424242");
+        assert_eq!(kind.default_engine(), Some(DefaultEngine::Label));
+    }
+
+    #[test]
+    fn type_with_one_argument_is_an_error() {
+        let error = parse_err("VISIT /\nTYPE 424242\n");
+        assert!(
+            error.message.contains("expected a locator and a value"),
+            "message: {}",
+            error.message
+        );
     }
 
     #[test]

@@ -547,6 +547,10 @@ impl FlowExec<'_> {
                 locator: self.locator(target, engine)?,
                 value:   self.resolve(value)?,
             },
+            K::Type { target, text } => StepCommand::Type {
+                locator: self.locator(target, engine)?,
+                text:    self.resolve(text)?,
+            },
             K::Press { target, key } => StepCommand::Press {
                 locator: target
                     .as_ref()

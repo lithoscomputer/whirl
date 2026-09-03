@@ -131,6 +131,7 @@ Commands and their extra params (result `{}` unless noted):
 | `click` | `locator` |
 | `dblclick` | `locator` |
 | `fill` | `locator`, `value` |
+| `type` | `locator`, `text` (one key event per character via `pressSequentially`) |
 | `press` | `locator` (or `null`), `key` |
 | `checkbox` | `locator`, `checked` (bool; CHECK/UNCHECK) |
 | `selectOption` | `locator`, `label` |

@@ -199,6 +199,25 @@ fn press_and_eval_action_and_eval_capture_work() {
 }
 
 #[test]
+fn type_sends_key_events_where_fill_does_not() {
+    let dir = TestDir::new();
+    // The page records every keydown. FILL fires none; TYPE fires one per
+    // character, so the recorder shows only the typed text.
+    let flow = dir.file(
+        "type.whirl",
+        "VISIT \"data:text/html,<input aria-label=\\\"Code\\\" onkeydown=\\\"document.getElementById('k').textContent+=event.key\\\"><div id=k></div>\"\n\
+         FILL \"Code\" 99\n\
+         TYPE \"Code\" 4242\n\
+         [Asserts]\n\
+         label:Code value == 994242\n\
+         css:\"#k\" text == 4242\n",
+    );
+    let output = run_whirl(&dir, &[flow.to_str().expect("utf-8 path")]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+}
+
+#[test]
 fn a_run_writes_json_and_junit_reports_with_masking() {
     let dir = TestDir::new();
     let secret = "hunter2-report-secret";
