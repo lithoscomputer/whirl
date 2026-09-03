@@ -288,6 +288,7 @@ export interface StartFlowParams {
 	readonly dialogs: "dismiss" | "accept";
 	readonly allowHosts: readonly string[] | null;
 	readonly navTimeoutMs: number;
+	readonly userAgent: string | null;
 	readonly video: VideoConfig | null;
 	readonly harPath: string | null;
 	readonly trace: boolean;

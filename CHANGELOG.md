@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add the `user-agent` option and `--user-agent` flag, which set the browser's
+  user agent string for the flow.
 - Add `TYPE locator "text"`, which sends one key event per character for
   inputs that ignore a plain `FILL`, such as segmented one-time-code fields.
 - Add `STORE local "key" "value"`, which writes one `localStorage` entry on

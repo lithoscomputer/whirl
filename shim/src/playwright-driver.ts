@@ -292,6 +292,7 @@ export class PlaywrightDriver implements ShimDriver {
 			...(params.storageStatePath === null
 				? {}
 				: { storageState: params.storageStatePath }),
+			...(params.userAgent === null ? {} : { userAgent: params.userAgent }),
 			...(params.video === null
 				? {}
 				: { recordVideo: { dir: params.video.tempDir } }),

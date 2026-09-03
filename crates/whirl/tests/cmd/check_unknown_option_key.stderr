@@ -1,4 +1,4 @@
 unknownkey.whirl:3:1: error: unknown option key `frobs`
   frobs: 3
   ^^^^^
-  expected one of: base, browser, viewport, step-timeout, entry-timeout, nav-timeout, allow-hosts, dialogs, storage
+  expected one of: base, browser, viewport, step-timeout, entry-timeout, nav-timeout, allow-hosts, dialogs, storage, user-agent

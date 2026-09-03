@@ -175,6 +175,7 @@ pub struct StartFlowParams {
     pub dialogs:            String,
     pub allow_hosts:        Option<Vec<String>>,
     pub nav_timeout_ms:     u64,
+    pub user_agent:         Option<String>,
     pub video:              Option<VideoParams>,
     pub har_path:           Option<String>,
     pub trace:              bool,

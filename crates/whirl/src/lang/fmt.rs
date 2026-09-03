@@ -556,6 +556,7 @@ fn render_option(option: &FileOption) -> String {
             render_option_value(value, |policy| dialogs_text(*policy).to_owned())
         ),
         FileOption::Storage(value) => format!("storage: {}", plain(value)),
+        FileOption::UserAgent(value) => format!("user-agent: {}", plain(value)),
     }
 }
 
@@ -767,7 +768,9 @@ mod tests {
         option.line = 0;
         option.span = ZERO;
         match &mut option.option {
-            FileOption::Base(value) | FileOption::Storage(value) => scrub_value(value),
+            FileOption::Base(value) | FileOption::Storage(value) | FileOption::UserAgent(value) => {
+                scrub_value(value);
+            }
             FileOption::Browser(value) => scrub_option_value(value),
             FileOption::Viewport(value) => scrub_option_value(value),
             FileOption::StepTimeout(value)
@@ -920,7 +923,7 @@ mod tests {
         // The SPEC section 2 example.
         "# checkout.whirl \u{2014} buy a widget as a signed-in user.\n[Options]\nbase: https://shop.example.com\nviewport: 1280x800\n\n# Log in.\nVISIT /login\n\nFILL \"Email\" alice@example.com\nFILL \"Password\" {{env.TEST_PASSWORD}}\nCLICK role:button \"Sign in\"\nPAGE /dashboard\n[Asserts]\nrole:heading \"Welcome back\" visible\ntestid:user-menu text == Alice\n\n# Find a product.\nFILL placeholder:\"Search products\" widget\nPRESS Enter\n[Asserts]\nurl contains \"q=widget\"\ntestid:result-card count >= 1\n[Captures]\nfirst_product: testid:result-card >> nth:1 >> role:link attr:href\n\n# Add it to the cart.\nVISIT {{first_product}}\nCLICK \"Add to cart\"\n[Asserts]\ntestid:cart-badge text == 1\nrole:alert text contains \"Added to cart\"\n",
         // Every option key, including interpolated values.
-        "[Options]\nbase: https://example.com\nbrowser: webkit\nviewport: 800x600\nstep-timeout: 5s\nentry-timeout: 90s\nnav-timeout: 45s\nallow-hosts: example.com *.example.com\ndialogs: accept\nstorage: auth/state.json\nVISIT /\n",
+        "[Options]\nbase: https://example.com\nbrowser: webkit\nviewport: 800x600\nstep-timeout: 5s\nentry-timeout: 90s\nnav-timeout: 45s\nallow-hosts: example.com *.example.com\ndialogs: accept\nstorage: auth/state.json\nuser-agent: \"Mozilla/5.0 (Whirl)\"\nVISIT /\n",
         "[Options]\nbrowser: {{engine}}\nviewport: {{size}}\nstep-timeout: {{t}}\nVISIT /\n",
         // Every action form.
         "VISIT /a\nCLICK \"Add to cart\"\nDBLCLICK text~:\"added\"\nFILL \"Email\" alice@example.com\nTYPE \"Code\" 424242\nPRESS Enter\nPRESS label:Search \"Control+A\"\nCHECK \"Remember me\"\nUNCHECK role:checkbox \"Spam\"\nSELECT \"Country\" \"United States\"\nHOVER testid:menu\nUPLOAD \"Avatar\" file:images/cat.png\nSCREENSHOT overview\nSNAPSHOT header\nEVAL \"window.scrollTo(0, 0)\"\nSTORE local onboarding:done yes\nSTORE local \"welcome seen\" {{env.SEEN}}\n",

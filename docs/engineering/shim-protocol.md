@@ -65,6 +65,7 @@ Creates the browser context and page for one flow. Params:
   "dialogs": "dismiss" | "accept",
   "allowHosts": ["example.com", "*.example.com"] | null,
   "navTimeoutMs": 30000,
+  "userAgent": "Mozilla/5.0 ..." | null,
   "video": {"tempDir": "abs path", "finalPath": "abs path"} | null,
   "harPath": "abs path" | null,
   "trace": false
@@ -81,6 +82,8 @@ Result: `{}`.
   `data:` and `blob:` URLs are always allowed.
 - `dialogs` installs an auto-dismiss or auto-accept handler for alert,
   confirm, and prompt.
+- `userAgent` sets the context's user agent string; `null` keeps the
+  engine default.
 - `trace: true` starts Playwright tracing (screenshots and snapshots on).
 - `video` records video into `tempDir`; at `endFlow` the shim moves the
   recording to `finalPath`.

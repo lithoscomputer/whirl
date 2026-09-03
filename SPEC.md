@@ -107,10 +107,13 @@ The `[Options]` section holds `key: value` lines. V1 keys:
 | `allow-hosts` | glob list | all hosts | Hosts the browser may reach; requests to others are aborted |
 | `dialogs` | `dismiss` \| `accept` | `dismiss` | Automatic response to alert, confirm, and prompt dialogs |
 | `storage` | file path | none | Saved storage state loaded into each file's browser context |
+| `user-agent` | string | engine default | User agent string the browser sends and reports |
 
 `allow-hosts` takes one or more host globs (`allow-hosts: example.com *.example.com`). Globs match the request's hostname only — scheme and port are ignored — and `*.example.com` does not match the apex `example.com`; list both to cover both. The `base` host is always allowed. Whirl aborts requests to any other host, including fetch/XHR, WebSockets, and subresources, and the reports list every blocked host. Service workers are disabled when `allow-hosts` is set, because they can bypass request routing. IP-literal hosts match textually; `data:` and `blob:` URLs have no host and are always allowed. Without the option, all hosts are allowed.
 
 `storage` names a Playwright storageState JSON file, resolved relative to the `.whirl` file. Each browser context starts from that saved state (cookies and local storage) instead of empty, so flows can skip UI login. Produce the file with `--save-storage`, which writes the final context state of a successful run — typically of a dedicated login flow.
+
+`user-agent` replaces the browser's user agent string for the flow's context, in request headers and in `navigator.userAgent`. It exists for testing an app's own user-agent handling and for apps that gate on the string, such as bot protection that rejects headless Chromium's `HeadlessChrome` token. Quote the value, since it contains spaces.
 
 Unknown keys are a parse error. When section 13 defines a corresponding command-line flag, that flag overrides the file option.
 
@@ -317,6 +320,7 @@ whirl fmt [--check] <PATH>...    Rewrite files to canonical form
 | `--storage PATH` | Override the storage option |
 | `--save-storage PATH` | Write the final storage state after a successful run (single file only) |
 | `--entry-timeout DURATION` | Override the entry-timeout option |
+| `--user-agent UA` | Override the user-agent option |
 
 Exit codes:
 

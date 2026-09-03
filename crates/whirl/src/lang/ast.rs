@@ -217,6 +217,7 @@ pub enum FileOption {
     AllowHosts(Vec<Value>),
     Dialogs(OptionValue<DialogPolicy>),
     Storage(Value),
+    UserAgent(Value),
 }
 
 /// An `[Options]` line with its source position.

@@ -1407,7 +1407,7 @@ fn parse_capture_body(
     })
 }
 
-const OPTION_KEYS: [&str; 9] = [
+const OPTION_KEYS: [&str; 10] = [
     "base",
     "browser",
     "viewport",
@@ -1417,6 +1417,7 @@ const OPTION_KEYS: [&str; 9] = [
     "allow-hosts",
     "dialogs",
     "storage",
+    "user-agent",
 ];
 
 /// Shape-validates a literal option value at parse time; a value with
@@ -1526,6 +1527,7 @@ fn parse_option_line(first: RawToken, cursor: &mut Cursor) -> Result<FileOption,
             ])?))
         }
         "storage" => Ok(FileOption::Storage(value)),
+        "user-agent" => Ok(FileOption::UserAgent(value)),
         key => unreachable!("option key `{key}` was validated against OPTION_KEYS"),
     }
 }
@@ -2488,9 +2490,9 @@ role:alert text contains "Added to cart"
 
     #[test]
     fn every_option_key_parses() {
-        let source = "[Options]\nbase: https://shop.example.com\nbrowser: firefox\nviewport: 1280x800\nstep-timeout: 5s\nentry-timeout: 90s\nnav-timeout: 500ms\nallow-hosts: example.com *.example.com\ndialogs: accept\nstorage: auth/state.json\nVISIT /\n";
+        let source = "[Options]\nbase: https://shop.example.com\nbrowser: firefox\nviewport: 1280x800\nstep-timeout: 5s\nentry-timeout: 90s\nnav-timeout: 500ms\nallow-hosts: example.com *.example.com\ndialogs: accept\nstorage: auth/state.json\nuser-agent: \"Whirl/1 (test)\"\nVISIT /\n";
         let file = parse(source);
-        assert_eq!(file.options.len(), 9);
+        assert_eq!(file.options.len(), 10);
         let options: Vec<&FileOption> = file.options.iter().map(|line| &line.option).collect();
         let FileOption::Base(base) = options[0] else {
             panic!("expected base");
@@ -2544,6 +2546,10 @@ role:alert text contains "Added to cart"
             panic!("expected storage");
         };
         assert_eq!(lit(storage), "auth/state.json");
+        let FileOption::UserAgent(user_agent) = options[9] else {
+            panic!("expected user-agent");
+        };
+        assert_eq!(lit(user_agent), "Whirl/1 (test)");
     }
 
     #[test]
