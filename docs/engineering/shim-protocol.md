@@ -127,7 +127,7 @@ Commands and their extra params (result `{}` unless noted):
 
 | cmd | params |
 | --- | --- |
-| `visit` | `url` (absolute; Rust resolved `base`) |
+| `visit` | `url` (absolute; Rust resolved `base`); resolves at the new document's `DOMContentLoaded`, not `load` |
 | `click` | `locator` |
 | `dblclick` | `locator` |
 | `fill` | `locator`, `value` |

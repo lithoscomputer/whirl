@@ -156,7 +156,7 @@ An action is a verb, an optional locator, and an optional value. Element-targeti
 
 | Syntax | Meaning |
 | --- | --- |
-| `VISIT url` | Navigate. A `url` starting with `/` resolves against `base`. |
+| `VISIT url` | Navigate, and continue once the new document has parsed. A `url` starting with `/` resolves against `base`. |
 | `CLICK locator` | Click the element. |
 | `DBLCLICK locator` | Double-click the element. |
 | `FILL locator "text"` | Replace the input's content with `text`. |
@@ -281,6 +281,7 @@ Whirl masks every value sourced from `env.*` in the textual output it generates:
 - **Isolation.** Each file runs in a fresh browser context with its own single page. Without the `storage` option the context starts empty; with it, the context starts from the saved storage state. Files never share live state either way.
 - **Order.** Entries run top to bottom. Within an entry: actions, then `PAGE`, then asserts, then captures.
 - **Failure.** The first failing step fails the entry, and a failed entry stops its file; remaining entries in that file are skipped and reported as skipped. Other files still run. On failure Whirl saves a full-page screenshot and, with `--trace`, a Playwright trace to the artifacts directory.
+- **Navigation.** `VISIT` completes when the new document reaches `DOMContentLoaded`: the HTML is parsed and its synchronous scripts have run. It does not wait for the `load` event, because images, fonts, iframes, and media hold `load` open for reasons a flow never asserted, and every later line waits for what it needs anyway: actions wait for their element to be actionable, asserts and `PAGE` retry. A page that only becomes usable after `load` needs an assert on that state before an `EVAL` or `SCREENSHOT`, which run once without waiting.
 - **Timeouts.** Each action, PAGE, assert, and capture line gets the step timeout (`step-timeout` option, default 10s); `VISIT` gets the navigation timeout (`nav-timeout` option, default 30s). A trailing `@duration` on any such line overrides its own budget: `CLICK "Generate report" @60s`. The optional `entry-timeout` option caps an entry's total time across all of its lines; when it expires, the in-flight step fails with an entry-timeout error. An entry without one is still bounded by its per-step timeouts. The suffix must be bare: a line’s final bare token of the form `@duration` is always its timeout, and a quoted `"@60s"` is an ordinary value. Timeouts are enforced from outside the page, so they hold even when the page cannot respond — an `EVAL` script blocking the renderer or returning a Promise that never settles. When a timed-out step cannot be cancelled cleanly, Whirl closes that flow's browser context; if closing also stalls, it terminates and restarts only that worker's shim process. Either way the flow fails and reports normally, and other files are unaffected.
 - **Parallelism.** Files run in parallel across worker slots (`--jobs`, default: logical CPU count). A single file is never parallelized.
 - **Dialogs.** `alert`, `confirm`, and `prompt` dialogs are auto-dismissed by default. The `dialogs: accept` option auto-accepts them instead.

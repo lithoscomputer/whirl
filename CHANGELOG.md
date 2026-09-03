@@ -7,6 +7,9 @@
 - Add `STORE local "key" "value"`, which writes one `localStorage` entry on
   the current origin so a flow can skip onboarding screens and dismissed
   banners without `EVAL`.
+- `VISIT` now completes at the new document's `DOMContentLoaded` instead of
+  `load`, so a slow image, font, or video no longer fails a navigation that
+  the flow's own asserts would have waited out.
 
 ## 0.1.0 (2026-08-28)
 

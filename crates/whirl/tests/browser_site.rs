@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Duration;
 use std::{env, fs, process, thread};
 
 use tiny_http::{Header, Response, Server};
@@ -92,6 +93,17 @@ fn respond(request: tiny_http::Request) {
     let path = url.split('?').next().unwrap_or("/").trim_start_matches('/');
     // The redirect test needs a server-side 302 to this same server
     // under its other loopback hostname.
+    // The slow-load test needs a subresource that keeps the page's load
+    // event pending well past the navigation timeout.
+    if path == "stall" {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the test's blocking HTTP server holds a response open on its own OS thread"
+        )]
+        thread::sleep(Duration::from_secs(20));
+        let _ = request.respond(Response::empty(204));
+        return;
+    }
     if path == "redirect-cross" {
         let port = request
             .headers()
@@ -242,6 +254,25 @@ fn a_full_flow_passes_against_the_site() {
         dir.artifacts().join("happy/overview.png").is_file(),
         "SCREENSHOT should write overview.png"
     );
+}
+
+#[test]
+fn visit_completes_at_domcontentloaded_while_a_subresource_stalls_load() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    // The page's image never answers within the navigation timeout, so a
+    // VISIT that waited for `load` would time out here.
+    dir.file(
+        "slow.whirl",
+        &format!(
+            "[Options]\nbase: {base}\nnav-timeout: 3s\n\n\
+             VISIT /slow-load.html\n[Asserts]\nrole:heading \"Parsed\" visible\n",
+            base = server.base()
+        ),
+    );
+    let output = run_whirl(&dir, &["slow.whirl"]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
 }
 
 #[test]

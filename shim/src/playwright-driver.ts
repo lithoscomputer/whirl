@@ -415,7 +415,13 @@ export class PlaywrightDriver implements ShimDriver {
 		const page = flow.page;
 		switch (cmd) {
 			case "visit":
-				await page.goto(fieldString(params, "url"), { timeout: timeoutMs });
+				// The flow's later lines wait for what they need (SPEC section 12),
+				// so VISIT only needs a parsed document, not the `load` event that
+				// images, fonts, and media can hold open.
+				await page.goto(fieldString(params, "url"), {
+					timeout: timeoutMs,
+					waitUntil: "domcontentloaded",
+				});
 				return {};
 			case "click":
 				await this.#locatorAction(page, params, (locator) =>
