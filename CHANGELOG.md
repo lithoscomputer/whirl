@@ -4,6 +4,9 @@
 
 - Add `TYPE locator "text"`, which sends one key event per character for
   inputs that ignore a plain `FILL`, such as segmented one-time-code fields.
+- Add `STORE local "key" "value"`, which writes one `localStorage` entry on
+  the current origin so a flow can skip onboarding screens and dismissed
+  banners without `EVAL`.
 
 ## 0.1.0 (2026-08-28)
 

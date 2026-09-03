@@ -620,6 +620,11 @@ impl FlowExec<'_> {
             K::Eval { script } => StepCommand::EvalAction {
                 script: self.resolve(script)?,
             },
+            K::Store { scope, key, value } => StepCommand::Store {
+                scope: scope.keyword().to_owned(),
+                key:   self.resolve(key)?,
+                value: self.resolve(value)?,
+            },
         };
         Ok(command)
     }

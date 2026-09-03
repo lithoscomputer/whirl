@@ -260,6 +260,27 @@ fn asserts_retry_until_delayed_text_appears() {
 }
 
 #[test]
+fn store_local_is_visible_to_the_page_after_the_next_visit() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    // The page mirrors the "flag" entry while loading, so the first visit
+    // shows "unset", and the value written by STORE shows after a reload.
+    dir.file(
+        "store.whirl",
+        "VISIT /form.html\n\
+         [Asserts]\n\
+         css:\"#stored-flag\" text == unset\n\
+         STORE local flag \"seen it\"\n\
+         VISIT /form.html\n\
+         [Asserts]\n\
+         css:\"#stored-flag\" text == \"seen it\"\n",
+    );
+    let output = run_whirl(&dir, &["--base", &server.base(), "store.whirl"]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+}
+
+#[test]
 fn a_wrong_assert_times_out_with_expected_and_actual() {
     let server = SiteServer::start();
     let dir = TestDir::new();

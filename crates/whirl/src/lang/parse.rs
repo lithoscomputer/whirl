@@ -14,8 +14,8 @@ use crate::lang::ast::{
     Action, ActionKind, Assert, AssertBody, BrowserKind, Capture, CaptureSource, Comment,
     DialogPolicy, DurationLit, DurationUnit, Entry, Extractor, File, FileOption, Ident, Locator,
     LocatorSegment, NumOp, OptionLine, OptionValue, Page, PageCheck, Regex, RegexFlags,
-    SegmentKind, Span, StateCheck, StrCheck, TextPrefix, Value, ValueSegment, ValueSource,
-    Viewport,
+    SegmentKind, Span, StateCheck, StoreScope, StrCheck, TextPrefix, Value, ValueSegment,
+    ValueSource, Viewport,
 };
 
 /// A parse diagnostic (SPEC 16): file, line, column, the source line, a
@@ -790,7 +790,7 @@ fn split_timeout(tokens: &mut Vec<RawToken>) -> Option<DurationLit> {
     Some(duration)
 }
 
-const ACTION_KEYWORDS: [&str; 14] = [
+const ACTION_KEYWORDS: [&str; 15] = [
     "VISIT",
     "CLICK",
     "DBLCLICK",
@@ -805,6 +805,7 @@ const ACTION_KEYWORDS: [&str; 14] = [
     "SCREENSHOT",
     "SNAPSHOT",
     "EVAL",
+    "STORE",
 ];
 
 fn one_value(mut tokens: Vec<RawToken>, keyword_span: Span) -> Result<Value, LineError> {
@@ -817,6 +818,45 @@ fn one_value(mut tokens: Vec<RawToken>, keyword_span: Span) -> Result<Value, Lin
         return Err(LineError::new(keyword_span, "expected a value").expecting(["a value"]));
     };
     token.into_value()
+}
+
+/// Parses `STORE scope key value` (SPEC 7): a bare storage scope, then
+/// exactly two values.
+fn parse_store(tokens: Vec<RawToken>, keyword_span: Span) -> Result<ActionKind, LineError> {
+    let scope_expected = ["local"];
+    let mut tokens = tokens.into_iter();
+    let Some(scope_token) = tokens.next() else {
+        return Err(
+            LineError::new(keyword_span, "expected a storage scope").expecting(scope_expected)
+        );
+    };
+    let scope = match scope_token.bare_single() {
+        Some("local") => StoreScope::Local,
+        _ => {
+            return Err(LineError::new(scope_token.span, "expected a storage scope")
+                .expecting(scope_expected));
+        }
+    };
+    let value_expected = ["a key and a value"];
+    let Some(key) = tokens.next() else {
+        return Err(
+            LineError::new(scope_token.span, "expected a key and a value")
+                .expecting(value_expected),
+        );
+    };
+    let Some(value) = tokens.next() else {
+        return Err(
+            LineError::new(key.span, "expected a value after the key").expecting(["a value"])
+        );
+    };
+    if let Some(extra) = tokens.next() {
+        return Err(LineError::new(extra.span, "expected end of line").expecting(["@duration"]));
+    }
+    Ok(ActionKind::Store {
+        scope,
+        key: key.into_value()?,
+        value: value.into_value()?,
+    })
 }
 
 /// Splits `locator value` tokens: the final token is the value, everything
@@ -910,6 +950,7 @@ fn parse_action_body(
         "SNAPSHOT" => ActionKind::Snapshot {
             name: parse_name(tokens, keyword_span)?,
         },
+        "STORE" => parse_store(tokens, keyword_span)?,
         "EVAL" => ActionKind::Eval {
             script: one_value(tokens, keyword_span)?,
         },
@@ -2841,6 +2882,29 @@ role:alert text contains "Added to cart"
             "message: {}",
             error.message
         );
+    }
+
+    #[test]
+    fn store_takes_a_scope_a_key_and_a_value() {
+        let kind = action_kind("STORE local onboarding:done \"yes\"");
+        let ActionKind::Store { scope, key, value } = &kind else {
+            panic!("expected STORE");
+        };
+        assert_eq!(*scope, StoreScope::Local);
+        assert_eq!(lit(key), "onboarding:done");
+        assert_eq!(lit(value), "yes");
+        assert_eq!(kind.default_engine(), None);
+    }
+
+    #[test]
+    fn store_rejects_an_unknown_scope_and_a_missing_value() {
+        let error = parse_err("VISIT /\nSTORE cookie flag on\n");
+        assert_eq!(error.message, "expected a storage scope");
+        assert!(error.expected.iter().any(|alt| alt == "local"));
+        let error = parse_err("VISIT /\nSTORE local flag\n");
+        assert_eq!(error.message, "expected a value after the key");
+        let error = parse_err("VISIT /\nSTORE local flag on extra\n");
+        assert_eq!(error.message, "expected end of line");
     }
 
     #[test]

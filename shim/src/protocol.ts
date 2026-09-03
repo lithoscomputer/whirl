@@ -319,6 +319,7 @@ export type StepCommand =
 	| "screenshot"
 	| "snapshot"
 	| "evalAction"
+	| "store"
 	| "page"
 	| "assert"
 	| "capture";
@@ -337,6 +338,7 @@ const stepCommandList: readonly StepCommand[] = [
 	"screenshot",
 	"snapshot",
 	"evalAction",
+	"store",
 	"page",
 	"assert",
 	"capture",

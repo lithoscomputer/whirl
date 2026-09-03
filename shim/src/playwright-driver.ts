@@ -24,6 +24,7 @@ import {
 	fieldArray,
 	fieldArrayOrNull,
 	fieldBoolean,
+	fieldEnum,
 	fieldNumber,
 	fieldObject,
 	fieldObjectOrNull,
@@ -504,6 +505,18 @@ export class PlaywrightDriver implements ShimDriver {
 				);
 				return {};
 			}
+			case "store": {
+				fieldEnum(params, "scope", ["local"] as const);
+				const key = fieldString(params, "key");
+				const value = fieldString(params, "value");
+				await page.evaluate(
+					([storageKey, storageValue]) => {
+						window.localStorage.setItem(storageKey, storageValue);
+					},
+					[key, value] as const,
+				);
+				return {};
+			}
 			case "page": {
 				const expectation = fieldObject(
 					params,
@@ -647,6 +660,8 @@ function defaultErrorKind(cmd: StepCommand): ErrorKind {
 			return "action";
 		case "evalAction":
 			return "eval";
+		case "store":
+			return "action";
 		case "snapshot":
 		case "page":
 		case "assert":

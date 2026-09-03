@@ -252,6 +252,11 @@ pub enum StepCommand {
     EvalAction {
         script: String,
     },
+    Store {
+        scope: String,
+        key:   String,
+        value: String,
+    },
     Page {
         expect: Json,
     },
@@ -839,6 +844,15 @@ mod tests {
                     "diffPath": "/abs/diff.png",
                     "update": false,
                 }),
+            ),
+            (
+                StepCommand::Store {
+                    scope: "local".to_owned(),
+                    key:   "onboarding:done".to_owned(),
+                    value: "yes".to_owned(),
+                },
+                "store",
+                serde_json::json!({"scope": "local", "key": "onboarding:done", "value": "yes"}),
             ),
             (
                 StepCommand::EvalAction {

@@ -293,6 +293,27 @@ pub enum ActionKind {
     Eval {
         script: Value,
     },
+    /// `STORE local "key" "value"` writes one browser storage entry.
+    Store {
+        scope: StoreScope,
+        key:   Value,
+        value: Value,
+    },
+}
+
+/// Browser storage a `STORE` action writes to (SPEC 7). Only
+/// `localStorage` today; cookies and session storage are candidates.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StoreScope {
+    Local,
+}
+
+impl StoreScope {
+    pub fn keyword(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+        }
+    }
 }
 
 impl ActionKind {
@@ -313,7 +334,8 @@ impl ActionKind {
             Self::Visit { .. }
             | Self::Screenshot { .. }
             | Self::Snapshot { .. }
-            | Self::Eval { .. } => None,
+            | Self::Eval { .. }
+            | Self::Store { .. } => None,
         }
     }
 }

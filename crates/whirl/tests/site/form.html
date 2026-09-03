@@ -40,6 +40,7 @@
 
     <button type="button" data-testid="save-button" id="save">Save</button>
     <div id="saved"></div>
+    <div id="stored-flag"></div>
     <button type="button" disabled>Disabled btn</button>
     <button type="button" id="dup-a">Dup</button>
     <button type="button" id="dup-b">Dup</button>
@@ -67,6 +68,10 @@
     </ul>
 
     <script>
+      // Mirrors the "flag" localStorage entry at load, so a STORE that ran
+      // on this origin shows up after the next VISIT.
+      document.getElementById("stored-flag").textContent =
+        window.localStorage.getItem("flag") ?? "unset";
       // Records each keydown, so a TYPE shows one entry per character while a
       // FILL (one input event, no key events) records nothing.
       document.getElementById("code").addEventListener("keydown", (event) => {

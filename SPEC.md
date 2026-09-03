@@ -171,10 +171,13 @@ An action is a verb, an optional locator, and an optional value. Element-targeti
 | `SCREENSHOT name` | Save a full-page screenshot as artifact `name.png`. Never fails the entry (see below). |
 | `SNAPSHOT name` | Compare a full-page screenshot against the stored baseline; fails the entry on visual difference. |
 | `EVAL "script"` | Run a JavaScript script in the page. The escape hatch; rules below. |
+| `STORE local "key" "value"` | Write one `localStorage` entry on the current page's origin. |
 
 `PRESS` with a single argument treats it as the key: `PRESS Enter` presses Enter on the focused element, even though `Enter` could also parse as a locator. Only when two arguments are present is the first a locator.
 
 `FILL` is the default way to enter text: it sets the value and fires one `input` event, which is what a plain field expects. `TYPE` is for the pages that listen for keys instead — segmented one-time-code inputs, masked fields, autocomplete boxes, and rich-text editors ignore a plain fill. It focuses the element and sends a `keydown`, `keypress`, `input`, and `keyup` per character, as Playwright's `pressSequentially` does. `TYPE` does not clear the element first. Use `FILL` unless the page needs key events; a flow that reaches for `TYPE` to slow down typing wants an assertion on the state the page should reach, not a slower `TYPE`.
+
+`STORE` sets browser storage that a page reads to decide what to show — an onboarding flag, a dismissed banner, a feature switch — so a flow can skip a one-time screen without clicking through it or reaching for `EVAL`. `local` is the only scope in V1 and names `localStorage`; storage is per origin, so `STORE` runs against the origin of the current page, after a `VISIT` has landed there. It writes once and does not retry. A page that reads the key only while loading needs a second `VISIT` to see the value; a page that re-reads it on render picks the value up on its own. Values are strings, as in the browser; write `"true"` or `done`, not a number or a boolean. Section 11's masking applies to `STORE` values like any other line, so a masked variable stays masked in reports.
 
 `SCREENSHOT` never fails the entry, even when it goes wrong: if the capture or the file write fails — a crashed page, an I/O error, or its step timeout expiring — Whirl skips the artifact and records a warning naming the screenshot and the cause, in the console output and in both reports, so a missing artifact is always explained. One cap outranks this: an expiring `entry-timeout` fails the entry as usual, whatever line is in flight.
 
@@ -371,7 +374,8 @@ action-body = "VISIT" , value
            | "UPLOAD" , locator , "file:" , value
            | "SCREENSHOT" , name
            | "SNAPSHOT" , name
-           | "EVAL" , value ;
+           | "EVAL" , value
+           | "STORE" , "local" , value , value ;
 
 page       = "PAGE" , ( value | "matches" , regex ) , [ step-timeout ] ;
 

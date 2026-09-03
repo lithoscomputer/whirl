@@ -140,6 +140,7 @@ Commands and their extra params (result `{}` unless noted):
 | `screenshot` | `path` (absolute .png; full page) |
 | `snapshot` | `baselinePath`, `actualPath`, `diffPath`, `update` (bool) |
 | `evalAction` | `script` |
+| `store` | `scope` (`"local"`), `key`, `value` — writes one `localStorage` entry on the current origin |
 | `page` | `expect` (section 4.2) |
 | `assert` | `spec` (section 4.3) |
 | `capture` | `source`, `filter` (section 4.4); result `{"value": "..."}` |
