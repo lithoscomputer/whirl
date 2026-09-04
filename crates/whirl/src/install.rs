@@ -53,7 +53,7 @@ pub type Progress<'a> = &'a mut dyn FnMut(&str);
 /// Runs the full provisioning: Node runtime, shim files, Bun binary,
 /// dependencies, and browser builds. Each step prints a progress line
 /// and is safe to re-run.
-pub fn run(progress: Progress<'_>) -> anyhow::Result<()> {
+pub fn run(browsers: &[String], progress: Progress<'_>) -> anyhow::Result<()> {
     let data_dir = shim::whirl_data_dir()
         .context("no data directory on this platform; set WHIRL_DATA_DIR to choose one")?;
     let bundle = BundleLayout::new(&data_dir);
@@ -61,7 +61,7 @@ pub fn run(progress: Progress<'_>) -> anyhow::Result<()> {
     provision_shim_files(&bundle, progress)?;
     provision_bun(&bundle, progress)?;
     provision_dependencies(&bundle, progress)?;
-    provision_browsers(&bundle, progress)?;
+    provision_browsers(&bundle, browsers, progress)?;
     progress(&format!(
         "whirl install complete: bundle at {}",
         bundle.root.display()
@@ -490,14 +490,24 @@ fn installed_playwright_version(bundle: &BundleLayout) -> Option<String> {
 /// install chromium firefox webkit`) run with the bundled Node.
 /// Playwright skips builds that are already in its cache, so re-runs
 /// are cheap.
-fn provision_browsers(bundle: &BundleLayout, progress: Progress<'_>) -> anyhow::Result<()> {
-    progress("Installing browser builds (chromium, firefox, webkit)...");
-    run_bundle_node(bundle, &bundle.playwright_cli(), &[
-        "install", "chromium", "firefox", "webkit",
-    ])
-    .context(
-        "playwright install failed; check network and disk space, then \
-         re-run `whirl install`",
+fn provision_browsers(
+    bundle: &BundleLayout,
+    browsers: &[String],
+    progress: Progress<'_>,
+) -> anyhow::Result<()> {
+    let engines: Vec<&str> = if browsers.is_empty() {
+        vec!["chromium", "firefox", "webkit"]
+    } else {
+        browsers.iter().map(String::as_str).collect()
+    };
+    progress(&format!(
+        "Installing browser builds ({})...",
+        engines.join(", ")
+    ));
+    let mut args = vec!["install"];
+    args.extend(engines);
+    run_bundle_node(bundle, &bundle.playwright_cli(), &args).context(
+        "playwright install failed; check network and disk space, then re-run `whirl install`",
     )
 }
 

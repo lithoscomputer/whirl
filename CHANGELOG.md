@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Allow selected browser installation and add `whirl doctor` with repair commands.
+
 - Add JSON check diagnostics, stable error codes, runtime report metadata,
   and `--rerun-failed` for complete failed flows and their setup.
 

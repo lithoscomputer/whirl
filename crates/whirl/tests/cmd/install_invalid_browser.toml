@@ -1,0 +1,4 @@
+bin.name = "whirl"
+args = ["install", "netscape"]
+fs.sandbox = true
+status.code = 4

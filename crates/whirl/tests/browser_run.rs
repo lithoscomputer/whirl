@@ -640,3 +640,47 @@ fn rerun_selects_only_failed_files_and_runs_their_setup_again_from_another_direc
     assert!(stdout_text(&rerun).contains("setup.whirl passed"));
     assert!(!stdout_text(&rerun).contains("passed.whirl"));
 }
+
+#[test]
+fn doctor_launches_the_real_browser_and_checks_the_runtime() {
+    let dir = TestDir::new();
+    let shim_js = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../shim/dist/index.js");
+    let output = Command::new(env!("CARGO_BIN_EXE_whirl"))
+        .current_dir(&dir.path)
+        .env("WHIRL_NODE", "node")
+        .env("WHIRL_SHIM_JS", shim_js)
+        .arg("doctor")
+        .output()
+        .expect("doctor runs");
+    assert_eq!(
+        exit_code(&output),
+        0,
+        "{}\n{}",
+        stdout_text(&output),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = stdout_text(&output);
+    assert!(text.contains("Playwright 1.62.1: OK"));
+    assert!(text.contains("chromium: browser launch OK"));
+    assert!(text.contains("Whirl is ready."));
+}
+
+#[test]
+fn doctor_reports_the_selected_missing_browser_and_its_repair() {
+    let dir = TestDir::new();
+    let shim_js = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../shim/dist/index.js");
+    let output = Command::new(env!("CARGO_BIN_EXE_whirl"))
+        .current_dir(&dir.path)
+        .env("WHIRL_NODE", "node")
+        .env("WHIRL_SHIM_JS", shim_js)
+        .env("PLAYWRIGHT_BROWSERS_PATH", dir.path.join("empty-browsers"))
+        .args(["doctor", "--browser", "firefox"])
+        .output()
+        .expect("doctor runs");
+    assert_eq!(exit_code(&output), 3);
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(error.contains("whirl install firefox"), "{error}");
+    if cfg!(target_os = "linux") {
+        assert!(error.contains("install-deps firefox"), "{error}");
+    }
+}

@@ -73,8 +73,13 @@ package, and the browser builds — no Node installation required on your
 machine):
 
 ```console
-$ whirl install
+$ whirl install chromium
+$ whirl doctor
 ```
+
+Use `whirl install` to provision all three engines, or name the engines you
+need: `whirl install chromium firefox`. `whirl doctor --browser firefox` checks
+that engine and gives repair commands, including missing Linux libraries.
 
 ### Supported platforms
 

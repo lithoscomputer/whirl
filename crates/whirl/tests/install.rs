@@ -9,7 +9,7 @@
 //! of megabytes, and takes minutes. Run it deliberately with
 //! `cargo nextest run --run-ignored all -E 'test(installs_the_bundle)'`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::{env, fs, process};
 
@@ -115,4 +115,73 @@ fn installs_the_bundle_and_runs_a_flow_from_it() {
     let text = output_text(&run);
     assert_eq!(exit_code(&run), 0, "{text}");
     assert!(text.contains("passed"), "{text}");
+}
+
+#[cfg(unix)]
+fn executable(path: &Path, content: &str) {
+    use std::os::unix::fs::PermissionsExt as _;
+    fs::create_dir_all(path.parent().expect("fixture parent")).expect("fixture directory");
+    fs::write(path, content).expect("script fixture");
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).expect("executable fixture");
+}
+
+/// An already-provisioned bundle avoids network and records browser installer
+/// arguments.
+#[cfg(unix)]
+fn installer_fixture(data_dir: &ScratchDir) {
+    executable(
+        &data_dir.path.join("bundle/node/bin/node"),
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo v24.19.0; else printf '%s\\n' \"$@\" > browser-args.txt; fi\n",
+    );
+    executable(
+        &data_dir.path.join("bundle/bun/bun"),
+        "#!/bin/sh\necho 1.4.0\n",
+    );
+    let package = data_dir
+        .path
+        .join("bundle/shim/node_modules/@playwright/test");
+    fs::create_dir_all(&package).expect("package directory");
+    fs::write(package.join("package.json"), r#"{"version":"1.62.1"}"#).expect("package fixture");
+    fs::write(package.join("cli.js"), "").expect("CLI fixture");
+}
+
+#[test]
+#[cfg(unix)]
+fn install_chromium_provisions_only_the_selected_engine() {
+    let data = ScratchDir::new("select-chromium");
+    let cwd = ScratchDir::new("select-chromium-cwd");
+    installer_fixture(&data);
+    let output = run_whirl_with_bundle(&data, &cwd, &["install", "chromium"]);
+    assert_eq!(exit_code(&output), 0, "{}", output_text(&output));
+    let args = fs::read_to_string(data.path.join("bundle/shim/browser-args.txt"))
+        .expect("installer arguments");
+    assert!(args.ends_with("install\nchromium\n"), "{args}");
+    assert!(!args.contains("firefox"));
+    assert!(!args.contains("webkit"));
+}
+
+#[test]
+#[cfg(unix)]
+fn install_without_engines_preserves_all_browser_installation() {
+    let data = ScratchDir::new("all-browsers");
+    let cwd = ScratchDir::new("all-browsers-cwd");
+    installer_fixture(&data);
+    let output = run_whirl_with_bundle(&data, &cwd, &["install"]);
+    assert_eq!(exit_code(&output), 0, "{}", output_text(&output));
+    let args = fs::read_to_string(data.path.join("bundle/shim/browser-args.txt"))
+        .expect("installer arguments");
+    assert!(
+        args.ends_with("install\nchromium\nfirefox\nwebkit\n"),
+        "{args}"
+    );
+}
+
+#[test]
+fn doctor_reports_a_missing_bundle_without_installing_it() {
+    let data = ScratchDir::new("doctor-missing");
+    let cwd = ScratchDir::new("doctor-missing-cwd");
+    let output = run_whirl_with_bundle(&data, &cwd, &["doctor"]);
+    assert_eq!(exit_code(&output), 3);
+    assert!(output_text(&output).contains("whirl install"));
+    assert!(!data.path.join("bundle").exists());
 }

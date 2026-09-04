@@ -307,10 +307,13 @@ Whirl masks every value sourced from `env.*` in the textual output it generates:
 ```
 whirl [OPTIONS] <PATH>...        Run files; directories recurse to *.whirl
 whirl check [--json] <PATH>...            Parse and lint only; nothing runs
-whirl install                    Provision the shim bundle and browsers
+whirl install [BROWSER]...       Provision the shim bundle and selected browsers
+whirl doctor [--browser NAME]    Check the runtime and browser; print repair commands
 whirl show-trace <PATH>          Open a trace with the private runtime
 whirl fmt [--check] <PATH>...    Rewrite files to canonical form
 ```
+
+`whirl install chromium` provisions only Chromium; any combination of `chromium`, `firefox`, and `webkit` may be named. Without names, all three engines are provisioned. `whirl doctor` checks the selected Node runtime, shim protocol, Playwright version, and a real headless browser launch (Chromium by default). It installs nothing, finishes within 30 seconds, exits 0 when ready or 3 when diagnosis fails, and prints repair commands. On Linux, a failed launch also prints the private-runtime command for installing system libraries. Unsupported browser names are usage errors.
 
 `whirl fmt` rewrites files to the canonical form: single spaces between tokens, quotes only where a value requires them, and one blank line between entries. `--check` writes nothing and exits with code 1 when any file would change.
 

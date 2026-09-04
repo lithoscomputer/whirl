@@ -1,0 +1,4 @@
+error: invalid value 'netscape' for '[BROWSER]...'
+  [possible values: chromium, firefox, webkit]
+
+For more information, try '--help'.

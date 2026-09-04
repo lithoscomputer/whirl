@@ -18,13 +18,13 @@ use clap::{Args, Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use tokio::runtime::Runtime;
 
-use crate::install;
 use crate::lang::lint::{Lint, Severity, lint_file_with, lint_setup_refs, setup_capture_uses};
 use crate::lang::parse::{ParseError, parse_file};
 use crate::lang::{ast, fmt};
 use crate::report::model::{RunReport, Status};
 use crate::report::{console, json, junit};
 use crate::run::{artifacts, flow, runner, vars};
+use crate::{doctor, install};
 
 /// Outcome of one invocation, ordered by SPEC 13 precedence: `max` of two
 /// outcomes is the one that wins the process exit code.
@@ -92,7 +92,18 @@ enum Command {
         paths: Vec<PathBuf>,
     },
     /// Provision the shim bundle and browsers.
-    Install,
+    Install {
+        /// Browser engines to install; defaults to all three.
+        #[arg(value_name = "BROWSER", value_parser = ["chromium", "firefox", "webkit"])]
+        browsers: Vec<String>,
+    },
+    /// Check the runtime and launch a browser; print repair commands on
+    /// failure.
+    Doctor {
+        /// Browser engine to check.
+        #[arg(long, default_value = "chromium", value_parser = ["chromium", "firefox", "webkit"])]
+        browser: String,
+    },
     /// Open a Playwright trace with Whirl's private runtime.
     ShowTrace {
         /// Trace archive to open.
@@ -203,7 +214,16 @@ fn execute(argv: impl IntoIterator<Item = OsString>) -> u8 {
     let exit = match cli.command {
         Some(Command::Check { paths, json }) => check_command(&paths, json),
         Some(Command::Fmt { check, paths }) => fmt_command(check, &paths),
-        Some(Command::Install) => install_command(),
+        Some(Command::Install { browsers }) => install_command(&browsers),
+        Some(Command::Doctor { browser }) => {
+            match doctor::run(&browser, &mut |line| print_out(line)) {
+                Ok(()) => Exit::Success,
+                Err(error) => {
+                    print_err(&format!("whirl: error: {error:#}"));
+                    Exit::Runtime
+                }
+            }
+        }
         Some(Command::ShowTrace { path }) => {
             if !path.is_file() {
                 print_err(&format!(
@@ -855,8 +875,8 @@ fn write_report_file(path: &Path, content: &str) -> Exit {
 
 /// `whirl install`: provision the shim bundle and browsers (SPEC 13).
 /// A failure is a runtime error (exit 3) naming the failing step.
-fn install_command() -> Exit {
-    match install::run(&mut |line| print_out(line)) {
+fn install_command(browsers: &[String]) -> Exit {
+    match install::run(browsers, &mut |line| print_out(line)) {
         Ok(()) => Exit::Success,
         Err(error) => {
             print_err(&format!("whirl: error: {error:#}"));
