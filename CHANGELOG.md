@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 (2026-09-04)
 
 - Add the `setup` option: a flow that runs first, once per invocation, whose
   saved state every file naming it starts from, and whose captures those
