@@ -13,9 +13,9 @@ use std::vec::IntoIter;
 use crate::lang::ast::{
     Action, ActionKind, Assert, AssertBody, BrowserKind, Capture, CaptureSource, Comment,
     DialogPolicy, DurationLit, DurationUnit, Entry, Extractor, File, FileOption, Ident, Locator,
-    LocatorSegment, NumOp, OptionLine, OptionValue, Page, PageCheck, Regex, RegexFlags,
-    SegmentKind, Span, StateCheck, StoreScope, StrCheck, TextPrefix, Value, ValueSegment,
-    ValueSource, Viewport,
+    LocatorSegment, NumOp, OptionLine, OptionValue, Page, PageCheck, ReducedMotion, Regex,
+    RegexFlags, SegmentKind, Span, StateCheck, StoreScope, StrCheck, TextPrefix, Value,
+    ValueSegment, ValueSource, Viewport,
 };
 
 /// A parse diagnostic (SPEC 16): file, line, column, the source line, a
@@ -1418,7 +1418,7 @@ fn parse_capture_body(
     })
 }
 
-const OPTION_KEYS: [&str; 11] = [
+const OPTION_KEYS: [&str; 12] = [
     "base",
     "browser",
     "viewport",
@@ -1427,6 +1427,7 @@ const OPTION_KEYS: [&str; 11] = [
     "nav-timeout",
     "allow-hosts",
     "dialogs",
+    "reduced-motion",
     "storage",
     "user-agent",
     "setup",
@@ -1536,6 +1537,17 @@ fn parse_option_line(first: RawToken, cursor: &mut Cursor) -> Result<FileOption,
             };
             Ok(FileOption::Dialogs(option_shape(value, parse, &[
                 "dismiss", "accept",
+            ])?))
+        }
+        "reduced-motion" => {
+            let parse = |text: &str| match text {
+                "reduce" => Some(ReducedMotion::Reduce),
+                "no-preference" => Some(ReducedMotion::NoPreference),
+                _ => None,
+            };
+            Ok(FileOption::ReducedMotion(option_shape(value, parse, &[
+                "reduce",
+                "no-preference",
             ])?))
         }
         "storage" => Ok(FileOption::Storage(value)),
@@ -2503,9 +2515,9 @@ role:alert text contains "Added to cart"
 
     #[test]
     fn every_option_key_parses() {
-        let source = "[Options]\nbase: https://shop.example.com\nbrowser: firefox\nviewport: 1280x800\nstep-timeout: 5s\nentry-timeout: 90s\nnav-timeout: 500ms\nallow-hosts: example.com *.example.com\ndialogs: accept\nstorage: auth/state.json\nuser-agent: \"Whirl/1 (test)\"\nsetup: sign-in.whirl\nVISIT /\n";
+        let source = "[Options]\nbase: https://shop.example.com\nbrowser: firefox\nviewport: 1280x800\nstep-timeout: 5s\nentry-timeout: 90s\nnav-timeout: 500ms\nallow-hosts: example.com *.example.com\ndialogs: accept\nreduced-motion: reduce\nstorage: auth/state.json\nuser-agent: \"Whirl/1 (test)\"\nsetup: sign-in.whirl\nVISIT /\n";
         let file = parse(source);
-        assert_eq!(file.options.len(), 11);
+        assert_eq!(file.options.len(), 12);
         let options: Vec<&FileOption> = file.options.iter().map(|line| &line.option).collect();
         let FileOption::Base(base) = options[0] else {
             panic!("expected base");
@@ -2555,15 +2567,19 @@ role:alert text contains "Added to cart"
             *options[7],
             FileOption::Dialogs(OptionValue::Literal(DialogPolicy::Accept))
         );
-        let FileOption::Storage(storage) = options[8] else {
+        assert_eq!(
+            *options[8],
+            FileOption::ReducedMotion(OptionValue::Literal(ReducedMotion::Reduce))
+        );
+        let FileOption::Storage(storage) = options[9] else {
             panic!("expected storage");
         };
         assert_eq!(lit(storage), "auth/state.json");
-        let FileOption::UserAgent(user_agent) = options[9] else {
+        let FileOption::UserAgent(user_agent) = options[10] else {
             panic!("expected user-agent");
         };
         assert_eq!(lit(user_agent), "Whirl/1 (test)");
-        let FileOption::Setup(setup) = options[10] else {
+        let FileOption::Setup(setup) = options[11] else {
             panic!("expected setup");
         };
         assert_eq!(lit(setup), "sign-in.whirl");

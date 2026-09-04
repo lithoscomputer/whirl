@@ -19,8 +19,8 @@ use std::fmt::Write as _;
 use crate::lang::ast::{
     Action, ActionKind, Assert, AssertBody, BrowserKind, Capture, CaptureSource, Comment,
     DialogPolicy, DurationLit, DurationUnit, Entry, Extractor, File, FileOption, Locator, NumOp,
-    OptionValue, Page, PageCheck, Regex, SegmentKind, StateCheck, StrCheck, TextPrefix, Value,
-    ValueSegment, ValueSource, Viewport,
+    OptionValue, Page, PageCheck, ReducedMotion, Regex, SegmentKind, StateCheck, StrCheck,
+    TextPrefix, Value, ValueSegment, ValueSource, Viewport,
 };
 use crate::lang::parse::parse_duration;
 
@@ -517,6 +517,13 @@ fn browser_text(browser: BrowserKind) -> &'static str {
     }
 }
 
+fn reduced_motion_text(value: ReducedMotion) -> &'static str {
+    match value {
+        ReducedMotion::Reduce => "reduce",
+        ReducedMotion::NoPreference => "no-preference",
+    }
+}
+
 fn dialogs_text(policy: DialogPolicy) -> &'static str {
     match policy {
         DialogPolicy::Dismiss => "dismiss",
@@ -560,6 +567,10 @@ fn render_option(option: &FileOption) -> String {
         FileOption::Dialogs(value) => format!(
             "dialogs: {}",
             render_option_value(value, |policy| dialogs_text(*policy).to_owned())
+        ),
+        FileOption::ReducedMotion(value) => format!(
+            "reduced-motion: {}",
+            render_option_value(value, |motion| reduced_motion_text(*motion).to_owned())
         ),
         FileOption::Storage(value) => format!("storage: {}", plain(value)),
         FileOption::UserAgent(value) => format!("user-agent: {}", plain(value)),
@@ -787,6 +798,7 @@ mod tests {
             | FileOption::EntryTimeout(value)
             | FileOption::NavTimeout(value) => scrub_option_value(value),
             FileOption::Dialogs(value) => scrub_option_value(value),
+            FileOption::ReducedMotion(value) => scrub_option_value(value),
             FileOption::AllowHosts(globs) => {
                 for glob in globs {
                     scrub_value(glob);
@@ -933,7 +945,7 @@ mod tests {
         // The SPEC section 2 example.
         "# checkout.whirl \u{2014} buy a widget as a signed-in user.\n[Options]\nbase: https://shop.example.com\nviewport: 1280x800\n\n# Log in.\nVISIT /login\n\nFILL \"Email\" alice@example.com\nFILL \"Password\" {{env.TEST_PASSWORD}}\nCLICK role:button \"Sign in\"\nPAGE /dashboard\n[Asserts]\nrole:heading \"Welcome back\" visible\ntestid:user-menu text == Alice\n\n# Find a product.\nFILL placeholder:\"Search products\" widget\nPRESS Enter\n[Asserts]\nurl contains \"q=widget\"\ntestid:result-card count >= 1\n[Captures]\nfirst_product: testid:result-card >> nth:1 >> role:link attr:href\n\n# Add it to the cart.\nVISIT {{first_product}}\nCLICK \"Add to cart\"\n[Asserts]\ntestid:cart-badge text == 1\nrole:alert text contains \"Added to cart\"\n",
         // Every option key, including interpolated values.
-        "[Options]\nbase: https://example.com\nbrowser: webkit\nviewport: 800x600\nstep-timeout: 5s\nentry-timeout: 90s\nnav-timeout: 45s\nallow-hosts: example.com *.example.com\ndialogs: accept\nstorage: auth/state.json\nuser-agent: \"Mozilla/5.0 (Whirl)\"\nsetup: sign-in.whirl\nVISIT /\n",
+        "[Options]\nbase: https://example.com\nbrowser: webkit\nviewport: 800x600\nstep-timeout: 5s\nentry-timeout: 90s\nnav-timeout: 45s\nallow-hosts: example.com *.example.com\ndialogs: accept\nreduced-motion: reduce\nstorage: auth/state.json\nuser-agent: \"Mozilla/5.0 (Whirl)\"\nsetup: sign-in.whirl\nVISIT /\n",
         "[Options]\nbrowser: {{engine}}\nviewport: {{size}}\nstep-timeout: {{t}}\nVISIT /\n",
         // Every action form.
         "VISIT /a\nCLICK \"Add to cart\"\nDBLCLICK text~:\"added\"\nFILL \"Email\" alice@example.com\nTYPE \"Code\" 424242\nPRESS Enter\nPRESS label:Search \"Control+A\"\nCHECK \"Remember me\"\nUNCHECK role:checkbox \"Spam\"\nSELECT \"Country\" \"United States\"\nHOVER testid:menu\nUPLOAD \"Avatar\" file:images/cat.png\nSCREENSHOT overview\nSNAPSHOT header\nEVAL \"window.scrollTo(0, 0)\"\nSTORE local onboarding:done yes\nSTORE local \"welcome seen\" {{env.SEEN}}\nSTORE session draft hi\nSTORE cookie chat_version v1\nVISIT /u/{{setup.user_id}}\n",

@@ -138,6 +138,13 @@ export function decodeStartFlowParams(params: Params): StartFlowParams {
 			allowHosts === null ? null : allowHosts.map((host) => String(host)),
 		navTimeoutMs: fieldNumber(params, "navTimeoutMs"),
 		userAgent: fieldStringOrNull(params, "userAgent"),
+		reducedMotion:
+			fieldStringOrNull(params, "reducedMotion") === null
+				? null
+				: fieldEnum(params, "reducedMotion", [
+						"reduce",
+						"no-preference",
+					] as const),
 		video:
 			video === null
 				? null

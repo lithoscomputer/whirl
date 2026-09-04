@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Add the `reduced-motion` option, which sets what the page's
+  `prefers-reduced-motion` media query reports, so pages that honor it skip
+  animations and background video.
+
 ## 0.3.0 (2026-09-04)
 
 - Add the `setup` option: a flow that runs first, once per invocation, whose

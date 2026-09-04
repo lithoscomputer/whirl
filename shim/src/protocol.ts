@@ -289,6 +289,7 @@ export interface StartFlowParams {
 	readonly allowHosts: readonly string[] | null;
 	readonly navTimeoutMs: number;
 	readonly userAgent: string | null;
+	readonly reducedMotion: "reduce" | "no-preference" | null;
 	readonly video: VideoConfig | null;
 	readonly harPath: string | null;
 	readonly trace: boolean;

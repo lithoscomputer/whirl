@@ -373,7 +373,8 @@ fn collect_setup_refs(file: &File) -> Vec<VarRef<'_>> {
             | FileOption::StepTimeout(_)
             | FileOption::EntryTimeout(_)
             | FileOption::NavTimeout(_)
-            | FileOption::Dialogs(_) => {}
+            | FileOption::Dialogs(_)
+            | FileOption::ReducedMotion(_) => {}
         }
     }
     let mut refs = Vec::new();

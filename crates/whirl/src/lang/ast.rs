@@ -184,6 +184,14 @@ pub enum BrowserKind {
     Webkit,
 }
 
+/// Values of the `reduced-motion` option (SPEC 5): what the page's
+/// `prefers-reduced-motion` media query reports.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReducedMotion {
+    Reduce,
+    NoPreference,
+}
+
 /// Automatic dialog responses accepted by the `dialogs` option (SPEC 5).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DialogPolicy {
@@ -218,6 +226,7 @@ pub enum FileOption {
     NavTimeout(OptionValue<DurationLit>),
     AllowHosts(Vec<Value>),
     Dialogs(OptionValue<DialogPolicy>),
+    ReducedMotion(OptionValue<ReducedMotion>),
     Storage(Value),
     UserAgent(Value),
     /// `setup: path`, a flow whose final state this file starts from

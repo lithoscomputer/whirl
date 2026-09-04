@@ -302,6 +302,30 @@ fn store_cookie_on_a_data_url_fails_the_entry() {
 }
 
 #[test]
+fn the_reduced_motion_option_is_visible_to_the_page() {
+    let dir = TestDir::new();
+    let flow = dir.file(
+        "motion.whirl",
+        "[Options]\nreduced-motion: reduce\n\n\
+         VISIT \"data:text/html,<h1>Hi</h1>\"\n\
+         [Captures]\nreduced: eval \"matchMedia('(prefers-reduced-motion: reduce)').matches\"\n",
+    );
+    let output = run_whirl(&dir, &[
+        "--report-json",
+        "report.json",
+        flow.to_str().expect("utf-8 path"),
+    ]);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{}", stdout_text(&output));
+    let report: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(dir.path.join("report.json")).expect("report"))
+            .expect("valid JSON report");
+    assert_eq!(
+        report["files"][0]["entries"][0]["captures"]["reduced"], "true",
+        "report:\n{report}"
+    );
+}
+
+#[test]
 fn the_user_agent_option_and_flag_set_navigator_user_agent() {
     let dir = TestDir::new();
     // The file option sets the context's user agent; the flag beats the
