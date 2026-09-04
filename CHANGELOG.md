@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 (2026-09-03)
 
 - Add the `user-agent` option and `--user-agent` flag, which set the browser's
   user agent string for the flow.
