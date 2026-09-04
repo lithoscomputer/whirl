@@ -9,7 +9,8 @@ use std::{env, fs};
 use serde_json::Value as Json;
 
 use crate::lang::ast::{
-    self, BrowserKind, DialogPolicy, DurationLit, File, FileOption, OptionValue, Value, Viewport,
+    self, BrowserKind, DialogPolicy, DurationLit, File, FileOption, OptionValue, ReducedMotion,
+    Value, Viewport,
 };
 use crate::lang::wire;
 use crate::report::model::{
@@ -124,6 +125,9 @@ pub struct ResolvedOptions {
     /// With the `base` host already appended when set (SPEC 5).
     pub allow_hosts:      Option<Vec<String>>,
     pub dialogs:          DialogPolicy,
+    /// The `prefers-reduced-motion` value the page sees; the engine
+    /// default when unset (SPEC 5).
+    pub reduced_motion:   Option<ReducedMotion>,
     /// Resolved relative to the `.whirl` file (SPEC 5).
     pub storage:          Option<PathBuf>,
     pub headed:           bool,
@@ -184,6 +188,14 @@ fn parse_viewport_value(text: &str) -> Option<Viewport> {
 }
 
 /// Parses a resolved dialogs option value.
+fn parse_reduced_motion_value(text: &str) -> Option<ReducedMotion> {
+    match text {
+        "reduce" => Some(ReducedMotion::Reduce),
+        "no-preference" => Some(ReducedMotion::NoPreference),
+        _ => None,
+    }
+}
+
 fn parse_dialogs_value(text: &str) -> Option<DialogPolicy> {
     match text {
         "dismiss" => Some(DialogPolicy::Dismiss),
@@ -212,6 +224,7 @@ pub fn resolve_options(
     let mut nav_timeout_ms = DEFAULT_NAV_TIMEOUT_MS;
     let mut allow_hosts: Option<Vec<String>> = None;
     let mut dialogs = DialogPolicy::Dismiss;
+    let mut reduced_motion = None;
     let mut storage: Option<String> = None;
     let mut user_agent: Option<String> = None;
     let mut setup: Option<String> = None;
@@ -244,6 +257,15 @@ pub fn resolve_options(
             }
             FileOption::Dialogs(value) => {
                 dialogs = resolve_option(value, "dialogs", line, vars, parse_dialogs_value)?;
+            }
+            FileOption::ReducedMotion(value) => {
+                reduced_motion = Some(resolve_option(
+                    value,
+                    "reduced-motion",
+                    line,
+                    vars,
+                    parse_reduced_motion_value,
+                )?);
             }
             FileOption::Storage(value) => storage = Some(vars.resolve(value)?),
             FileOption::UserAgent(value) => user_agent = Some(vars.resolve(value)?),
@@ -293,6 +315,7 @@ pub fn resolve_options(
         nav_timeout_ms,
         allow_hosts,
         dialogs,
+        reduced_motion,
         storage,
         headed: overrides.headed,
         user_agent,
@@ -1149,6 +1172,13 @@ fn start_flow_params(run: &FlowRun<'_>, options: &ResolvedOptions) -> StartFlowP
         allow_hosts:        options.allow_hosts.clone(),
         nav_timeout_ms:     options.nav_timeout_ms,
         user_agent:         options.user_agent.clone(),
+        reduced_motion:     options.reduced_motion.map(|motion| {
+            match motion {
+                ReducedMotion::Reduce => "reduce",
+                ReducedMotion::NoPreference => "no-preference",
+            }
+            .to_owned()
+        }),
         video:              run.flags.video.then(|| VideoParams {
             temp_dir:   wire_path(&run.abs_dir.join("video-temp")),
             final_path: wire_path(&run.abs_dir.join(artifacts::VIDEO_WEBM)),

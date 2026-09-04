@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add the `reduced-motion` option, which sets what the page's
+  `prefers-reduced-motion` media query reports, so pages that honor it skip
+  animations and background video.
+- `SCREENSHOT` and `SNAPSHOT` names may contain hyphens, so
+  `SCREENSHOT after-verification-code` writes `after-verification-code.png`.
 - Lint warns about a `count >= 1` assert directly followed by a check on the
   same locator; the second check already waits for the element.
 

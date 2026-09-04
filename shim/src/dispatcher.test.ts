@@ -137,6 +137,7 @@ const startFlowParams = JSON.stringify({
 	allowHosts: null,
 	navTimeoutMs: 30000,
 	userAgent: null,
+	reducedMotion: null,
 	video: null,
 	harPath: null,
 	trace: false,

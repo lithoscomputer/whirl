@@ -106,6 +106,7 @@ The `[Options]` section holds `key: value` lines. V1 keys:
 | `nav-timeout` | duration | `30s` | Navigation timeout for `VISIT` |
 | `allow-hosts` | glob list | all hosts | Hosts the browser may reach; requests to others are aborted |
 | `dialogs` | `dismiss` \| `accept` | `dismiss` | Automatic response to alert, confirm, and prompt dialogs |
+| `reduced-motion` | `reduce` \| `no-preference` | engine default | What the page's `prefers-reduced-motion` media query reports |
 | `storage` | file path | none | Saved storage state loaded into each file's browser context |
 | `user-agent` | string | engine default | User agent string the browser sends and reports |
 | `setup` | file path | none | A flow that runs first; this file starts from its final state |
@@ -115,6 +116,8 @@ The `[Options]` section holds `key: value` lines. V1 keys:
 `storage` names a Playwright storageState JSON file, resolved relative to the `.whirl` file. Each browser context starts from that saved state (cookies and local storage) instead of empty, so flows can skip UI login. Produce the file with `--save-storage`, which writes the final context state of a successful run — typically of a dedicated login flow.
 
 `setup` names another `.whirl` file, resolved relative to this one, whose final state this file starts from: Whirl runs the setup flow first, in its own context, saves that context's cookies and storage, and starts this file's context from the saved state, the way `storage` would. The two options cannot be combined. The setup flow is an ordinary flow with its own options and its own `VISIT`, so it runs and debugs on its own, and it may not name a `setup` of its own. Every file that names the same setup flow in one invocation shares one run of it: ten flows that need a signed-in session sign in once. The saved state lives only for the invocation. The setup flow's captures are readable in the dependent file as `{{setup.name}}` (section 11). When the setup flow fails, its dependents do not start and each reports the failure as its `[setup]` case (section 12). The path must be literal: it is resolved before any variable exists.
+
+`reduced-motion: reduce` makes the page's `prefers-reduced-motion` media query match, as it does for a user who asked their OS for less motion. Pages that honor it skip transitions, looping animations, and background video, which makes `SNAPSHOT` baselines stable and removes work the flow never asserted. `no-preference` forces the opposite; without the option the engine default applies.
 
 `user-agent` replaces the browser's user agent string for the flow's context, in request headers and in `navigator.userAgent`. It exists for testing an app's own user-agent handling and for apps that gate on the string, such as bot protection that rejects headless Chromium's `HeadlessChrome` token. Quote the value, since it contains spaces.
 
@@ -174,7 +177,7 @@ An action is a verb, an optional locator, and an optional value. Element-targeti
 | `SELECT locator "Label"` | Choose the `<select>` option with visible text `Label`. |
 | `HOVER locator` | Move the pointer over the element. |
 | `UPLOAD locator file:path` | Set the file input to `path`, resolved relative to the `.whirl` file. |
-| `SCREENSHOT name` | Save a full-page screenshot as artifact `name.png`. Never fails the entry (see below). |
+| `SCREENSHOT name` | Save a full-page screenshot as artifact `name.png`. The name is an identifier that may also contain hyphens. Never fails the entry (see below). |
 | `SNAPSHOT name` | Compare a full-page screenshot against the stored baseline; fails the entry on visual difference. |
 | `EVAL "script"` | Run a JavaScript script in the page. The escape hatch; rules below. |
 | `STORE local "key" "value"` | Write one `localStorage` entry on the current page's origin. |
@@ -387,8 +390,8 @@ action-body = "VISIT" , value
            | "SELECT" , locator , value
            | "HOVER" , locator
            | "UPLOAD" , locator , "file:" , value
-           | "SCREENSHOT" , name
-           | "SNAPSHOT" , name
+           | "SCREENSHOT" , artifact-name
+           | "SNAPSHOT" , artifact-name
            | "EVAL" , value
            | "STORE" , ( "local" | "session" | "cookie" ) , value , value ;
 
@@ -423,6 +426,7 @@ segment    = ( "role:" | "role~:" ) , name , [ value ]
 step-timeout = "@" , duration ;
 value      = quoted-string | bare-token ;
 name       = letter-or-underscore , { letter-digit-underscore } ;
+artifact-name = letter-or-underscore , { letter-digit-underscore | "-" } ;
 attr-name  = letter-or-underscore , { letter-digit-underscore | "-" } ;
 regex      = "/" , pattern , "/" , [ flags ] ;
 ```

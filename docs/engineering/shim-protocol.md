@@ -66,6 +66,7 @@ Creates the browser context and page for one flow. Params:
   "allowHosts": ["example.com", "*.example.com"] | null,
   "navTimeoutMs": 30000,
   "userAgent": "Mozilla/5.0 ..." | null,
+  "reducedMotion": "reduce" | "no-preference" | null,
   "video": {"tempDir": "abs path", "finalPath": "abs path"} | null,
   "harPath": "abs path" | null,
   "trace": false
@@ -84,6 +85,8 @@ Result: `{}`.
   confirm, and prompt.
 - `userAgent` sets the context's user agent string; `null` keeps the
   engine default.
+- `reducedMotion` emulates the `prefers-reduced-motion` media feature for
+  the context; `null` keeps the engine default.
 - `trace: true` starts Playwright tracing (screenshots and snapshots on).
 - `video` records video into `tempDir`; at `endFlow` the shim moves the
   recording to `finalPath`.

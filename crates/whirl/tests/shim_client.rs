@@ -65,6 +65,7 @@ async fn hello_start_flow_and_end_flow_round_trip() {
         allow_hosts:        None,
         nav_timeout_ms:     30_000,
         user_agent:         None,
+        reduced_motion:     None,
         video:              None,
         har_path:           None,
         trace:              false,
