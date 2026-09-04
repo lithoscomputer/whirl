@@ -365,7 +365,7 @@ Rust source, configuration, and project setup follow the [Brynary Rust Style Gui
 
 ## 16. Errors
 
-- **Parse errors** (exit 2) are reported with file, line, column, a caret under the offending token, and the expected alternatives. `whirl check` surfaces them without launching a browser. Lint warnings (for example a capture that is never used) do not change the exit code.
+- **Parse errors** (exit 2) are reported with file, line, column, a caret under the offending token, and the expected alternatives. `whirl check` surfaces them without launching a browser. Lint warnings do not change the exit code. Whirl warns about a capture that is never used, and about a `count >= 1` assert directly followed by a check on the same locator, since every check already waits for its element.
 - **Test failures** (exit 1) report the failing step the same way, plus expected versus actual and the artifacts.
 - **Runtime errors** (exit 3) cover shim crashes, missing browsers, and similar environmental failures.
 
