@@ -893,8 +893,19 @@ fn locator_and_value(
     Ok((locator, value_token.into_value()?))
 }
 
+/// `SCREENSHOT` and `SNAPSHOT` names: an identifier that may also contain
+/// hyphens, since the name only becomes a file name (SPEC 7, 14).
+fn is_artifact_name(text: &str) -> bool {
+    let mut chars = text.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+}
+
 fn parse_name(mut tokens: Vec<RawToken>, keyword_span: Span) -> Result<Ident, LineError> {
-    let expected = ["a name matching [A-Za-z_][A-Za-z0-9_]*"];
+    let expected = ["a name matching [A-Za-z_][A-Za-z0-9_-]*"];
     if tokens.len() > 1 {
         return Err(LineError::new(tokens[1].span, "expected end of line").expecting(expected));
     }
@@ -902,7 +913,7 @@ fn parse_name(mut tokens: Vec<RawToken>, keyword_span: Span) -> Result<Ident, Li
         return Err(LineError::new(keyword_span, "expected a name").expecting(expected));
     };
     match token.bare_single() {
-        Some(text) if is_ident(text) => Ok(Ident {
+        Some(text) if is_artifact_name(text) => Ok(Ident {
             text: text.to_owned(),
             span: token.span,
         }),
@@ -2160,6 +2171,27 @@ mod tests {
                 unit:   DurationUnit::Seconds,
             })
         );
+    }
+
+    #[test]
+    fn artifact_names_may_contain_hyphens() {
+        let ActionKind::Screenshot { name } = action_kind("SCREENSHOT after-verification-code")
+        else {
+            panic!("expected SCREENSHOT");
+        };
+        assert_eq!(name.text, "after-verification-code");
+        let ActionKind::Snapshot { name } = action_kind("SNAPSHOT top-bar_v2") else {
+            panic!("expected SNAPSHOT");
+        };
+        assert_eq!(name.text, "top-bar_v2");
+        for bad in [
+            "SCREENSHOT -leading",
+            "SCREENSHOT with.dot",
+            "SCREENSHOT \"quoted\"",
+        ] {
+            let error = parse_err(&format!("VISIT /\n{bad}\n"));
+            assert_eq!(error.message, "expected a name", "source: {bad}");
+        }
     }
 
     #[test]

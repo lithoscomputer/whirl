@@ -177,7 +177,7 @@ An action is a verb, an optional locator, and an optional value. Element-targeti
 | `SELECT locator "Label"` | Choose the `<select>` option with visible text `Label`. |
 | `HOVER locator` | Move the pointer over the element. |
 | `UPLOAD locator file:path` | Set the file input to `path`, resolved relative to the `.whirl` file. |
-| `SCREENSHOT name` | Save a full-page screenshot as artifact `name.png`. Never fails the entry (see below). |
+| `SCREENSHOT name` | Save a full-page screenshot as artifact `name.png`. The name is an identifier that may also contain hyphens. Never fails the entry (see below). |
 | `SNAPSHOT name` | Compare a full-page screenshot against the stored baseline; fails the entry on visual difference. |
 | `EVAL "script"` | Run a JavaScript script in the page. The escape hatch; rules below. |
 | `STORE local "key" "value"` | Write one `localStorage` entry on the current page's origin. |
@@ -390,8 +390,8 @@ action-body = "VISIT" , value
            | "SELECT" , locator , value
            | "HOVER" , locator
            | "UPLOAD" , locator , "file:" , value
-           | "SCREENSHOT" , name
-           | "SNAPSHOT" , name
+           | "SCREENSHOT" , artifact-name
+           | "SNAPSHOT" , artifact-name
            | "EVAL" , value
            | "STORE" , ( "local" | "session" | "cookie" ) , value , value ;
 
@@ -426,6 +426,7 @@ segment    = ( "role:" | "role~:" ) , name , [ value ]
 step-timeout = "@" , duration ;
 value      = quoted-string | bare-token ;
 name       = letter-or-underscore , { letter-digit-underscore } ;
+artifact-name = letter-or-underscore , { letter-digit-underscore | "-" } ;
 attr-name  = letter-or-underscore , { letter-digit-underscore | "-" } ;
 regex      = "/" , pattern , "/" , [ flags ] ;
 ```

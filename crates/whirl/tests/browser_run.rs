@@ -302,6 +302,24 @@ fn store_cookie_on_a_data_url_fails_the_entry() {
 }
 
 #[test]
+fn a_hyphenated_screenshot_name_becomes_the_artifact_file_name() {
+    let dir = TestDir::new();
+    let flow = dir.file(
+        "shot.whirl",
+        "VISIT \"data:text/html,<h1>Hi</h1>\"\nSCREENSHOT after-verification-code\n",
+    );
+    let output = run_whirl(&dir, &[flow.to_str().expect("utf-8 path")]);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{}", stdout_text(&output));
+    assert!(
+        dir.artifacts()
+            .join("shot")
+            .join("after-verification-code.png")
+            .is_file(),
+        "the screenshot should be written under the hyphenated name"
+    );
+}
+
+#[test]
 fn the_reduced_motion_option_is_visible_to_the_page() {
     let dir = TestDir::new();
     let flow = dir.file(
