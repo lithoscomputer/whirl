@@ -6,8 +6,6 @@
 use serde::ser::SerializeMap as _;
 use serde::{Deserialize, Serialize, Serializer};
 
-use crate::run::shim::ViewportParams;
-
 /// The name of the synthetic entry that reports a failure before the
 /// first real entry: option resolution, storage loading, or browser
 /// launch (SPEC 14).
@@ -62,12 +60,19 @@ impl Default for StepError {
     }
 }
 
+/// The viewport recorded in a report, in CSS pixels.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub(crate) struct ReportViewport {
+    pub(crate) width:  u64,
+    pub(crate) height: u64,
+}
+
 /// The selected browser environment, reported only after a context starts.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RuntimeMetadata {
     pub(crate) browser:            String,
-    pub(crate) viewport:           ViewportParams,
+    pub(crate) viewport:           ReportViewport,
     pub(crate) browser_version:    Option<String>,
     pub(crate) node_version:       Option<String>,
     pub(crate) playwright_version: Option<String>,

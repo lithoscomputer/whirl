@@ -604,7 +604,7 @@ fn json_reports_include_actual_runtime_versions_and_error_codes() {
     let dir = TestDir::new();
     dir.file(
         "flow.whirl",
-        "VISIT \"data:text/html,<title>Hello</title>\"\n[Asserts]\ntitle == Wrong @100ms\n",
+        "[Options]\nviewport: 960x540\nVISIT \"data:text/html,<title>Hello</title>\"\n[Asserts]\ntitle == Wrong @100ms\n",
     );
     let output = run_whirl(&dir, &["--report-json", "report.json", "flow.whirl"]);
     assert_eq!(exit_code(&output), 1);
@@ -626,7 +626,10 @@ fn json_reports_include_actual_runtime_versions_and_error_codes() {
             .as_str()
             .is_some_and(|v| !v.is_empty())
     );
-    assert_eq!(report["files"][0]["runtime"]["viewport"]["width"], 1280);
+    assert_eq!(
+        report["files"][0]["runtime"]["viewport"],
+        serde_json::json!({"width": 960, "height": 540})
+    );
     assert_eq!(
         report["files"][0]["entries"][0]["steps"][1]["error"]["code"],
         "assert"

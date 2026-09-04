@@ -15,7 +15,8 @@ use crate::lang::ast::{
 };
 use crate::lang::wire;
 use crate::report::model::{
-    EntryReport, FileReport, RuntimeMetadata, SETUP_ENTRY, Status, StepError, StepKind, StepReport,
+    EntryReport, FileReport, ReportViewport, RuntimeMetadata, SETUP_ENTRY, Status, StepError,
+    StepKind, StepReport,
 };
 use crate::run::artifacts;
 use crate::run::shim::{
@@ -1259,7 +1260,10 @@ pub(crate) async fn run_flow(run: &FlowRun<'_>, client: &mut ShimClient) -> Flow
         };
         report.runtime = Some(RuntimeMetadata {
             browser:            params.browser.clone(),
-            viewport:           params.viewport,
+            viewport:           ReportViewport {
+                width:  params.viewport.width,
+                height: params.viewport.height,
+            },
             browser_version:    version("browserVersion"),
             node_version:       version("nodeVersion"),
             playwright_version: version("playwrightVersion"),
