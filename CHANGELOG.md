@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Lint warns about a `count >= 1` assert directly followed by a check on the
+  same locator; the second check already waits for the element.
+
 ## 0.3.0 (2026-09-04)
 
 - Add the `setup` option: a flow that runs first, once per invocation, whose
