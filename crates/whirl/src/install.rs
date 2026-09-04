@@ -539,6 +539,43 @@ fn run_in_shim_dir(bundle: &BundleLayout, mut command: Command) -> anyhow::Resul
     Ok(())
 }
 
+/// Opens a trace with the Playwright CLI belonging to the selected shim.
+pub fn show_trace(path: &Path) -> anyhow::Result<()> {
+    let trace = path
+        .canonicalize()
+        .with_context(|| format!("reading trace '{}'", path.display()))?;
+    let launch = shim::resolve_launch()?;
+    let cli = playwright_cli_for(&launch)?;
+    let status = Command::new(&launch.node)
+        .arg(cli)
+        .arg("show-trace")
+        .arg(trace)
+        .status()
+        .context("starting the trace viewer; run `whirl install` to repair the runtime")?;
+    if !status.success() {
+        bail!("trace viewer exited with {status}");
+    }
+    Ok(())
+}
+
+/// Finds Playwright beside an installed shim or above the development dist
+/// tree.
+pub fn playwright_cli_for(launch: &shim::ShimLaunch) -> anyhow::Result<PathBuf> {
+    let parent = launch
+        .shim_js
+        .parent()
+        .context("the shim path has no parent")?;
+    for dir in [Some(parent), parent.parent()].into_iter().flatten() {
+        let cli = dir.join("node_modules/@playwright/test/cli.js");
+        if cli.is_file() {
+            return Ok(cli);
+        }
+    }
+    bail!(
+        "Playwright is missing beside the shim; run `whirl install` (development: `mise run setup:shim`)"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -682,41 +719,4 @@ mod tests {
             serde_json::json!(PLAYWRIGHT_VERSION)
         );
     }
-}
-
-/// Opens a trace with the Playwright CLI belonging to the selected shim.
-pub fn show_trace(path: &Path) -> anyhow::Result<()> {
-    let trace = path
-        .canonicalize()
-        .with_context(|| format!("reading trace '{}'", path.display()))?;
-    let launch = shim::resolve_launch()?;
-    let cli = playwright_cli_for(&launch)?;
-    let status = Command::new(&launch.node)
-        .arg(cli)
-        .arg("show-trace")
-        .arg(trace)
-        .status()
-        .context("starting the trace viewer; run `whirl install` to repair the runtime")?;
-    if !status.success() {
-        bail!("trace viewer exited with {status}");
-    }
-    Ok(())
-}
-
-/// Finds Playwright beside an installed shim or above the development dist
-/// tree.
-pub fn playwright_cli_for(launch: &shim::ShimLaunch) -> anyhow::Result<PathBuf> {
-    let parent = launch
-        .shim_js
-        .parent()
-        .context("the shim path has no parent")?;
-    for dir in [Some(parent), parent.parent()].into_iter().flatten() {
-        let cli = dir.join("node_modules/@playwright/test/cli.js");
-        if cli.is_file() {
-            return Ok(cli);
-        }
-    }
-    bail!(
-        "Playwright is missing beside the shim; run `whirl install` (development: `mise run setup:shim`)"
-    )
 }
