@@ -963,3 +963,81 @@ fn all_engines_run_the_site_flow_when_requested() {
         );
     }
 }
+
+#[test]
+fn frame_locators_fill_assert_and_capture_across_origins_and_nested_frames() {
+    let site = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file(
+        "frames.whirl",
+        &format!(
+            r##"[Options]
+base: {}
+VISIT /frames.html
+FILL css:"#payments" >> frame:iframe >> label:Email alice@example.com
+TYPE frame:"#payment" >> label:Code 4242
+CHECK frame:"#payment" >> label:Notifications
+FILL frame:"#nested" >> frame:iframe >> label:Email nested@example.com
+[Asserts]
+frame:"#payment" >> label:Email value == alice@example.com
+frame:"#payment" >> label:Notifications checked
+frame:"#payment" >> css:"#typed-keys" text == 4242
+frame:"#nested" >> frame:iframe >> label:Email value == nested@example.com
+[Captures]
+email: frame:"#payment" >> label:Email value
+FILL frame:iframe >> nth:1 >> label:Email {{{{email}}}}
+[Asserts]
+frame:iframe >> nth:1 >> label:Email value == alice@example.com
+"##,
+            site.base()
+        ),
+    );
+    let output = run_whirl(&dir, &["frames.whirl"]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+}
+
+#[test]
+fn frame_locators_wait_for_a_frame_created_after_the_action() {
+    let site = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file(
+        "delayed.whirl",
+        &format!(
+            r##"[Options]
+base: {}
+VISIT /frames.html
+CLICK role:button "Load frame"
+FILL frame:"#delayed" >> label:Email late@example.com
+[Asserts]
+frame:"#delayed" >> label:Email value == late@example.com
+"##,
+            site.base()
+        ),
+    );
+    let output = run_whirl(&dir, &["delayed.whirl"]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+}
+
+#[test]
+fn frame_locators_reject_multiple_matching_frames() {
+    let site = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file(
+        "ambiguous.whirl",
+        &format!(
+            r"[Options]
+base: {}
+VISIT /frames.html
+FILL frame:iframe >> label:Email wrong@example.com @1s
+",
+            site.base()
+        ),
+    );
+    let output = run_whirl(&dir, &["ambiguous.whirl"]);
+    assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
+    assert!(
+        stdout_text(&output).contains("strict"),
+        "{}",
+        stdout_text(&output)
+    );
+}

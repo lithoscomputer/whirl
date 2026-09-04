@@ -554,7 +554,7 @@ impl Cursor {
     }
 }
 
-const SEGMENT_PREFIXES: [&str; 9] = [
+const SEGMENT_PREFIXES: [&str; 10] = [
     "role:",
     "label:",
     "placeholder:",
@@ -563,6 +563,7 @@ const SEGMENT_PREFIXES: [&str; 9] = [
     "title:",
     "testid:",
     "css:",
+    "frame:",
     "nth:",
 ];
 
@@ -661,6 +662,13 @@ fn parse_segment(
             span,
         });
     }
+    if head.starts_with("frame:") {
+        let value = value_after("frame:")?;
+        return Ok(LocatorSegment {
+            kind: SegmentKind::Frame(value),
+            span,
+        });
+    }
     if head.starts_with("css:") {
         let value = value_after("css:")?;
         return Ok(LocatorSegment {
@@ -708,6 +716,21 @@ fn parse_segment(
     .expecting(SEGMENT_PREFIXES))
 }
 
+fn finish_locator(segments: Vec<LocatorSegment>, span: Span) -> Result<Locator, LineError> {
+    if segments
+        .iter()
+        .rev()
+        .find(|segment| !matches!(segment.kind, SegmentKind::Nth(_)))
+        .is_some_and(|segment| matches!(segment.kind, SegmentKind::Frame(_)))
+    {
+        return Err(LineError::new(
+            span,
+            "a frame locator needs an element segment inside the frame",
+        ));
+    }
+    Ok(Locator { segments, span })
+}
+
 fn locator_span(first: Span, last: Span) -> Span {
     Span {
         line:   first.line,
@@ -751,10 +774,7 @@ fn build_locator(
         last_span = next.span;
         segments.push(parse_segment(next, allow_default, false)?);
     }
-    Ok(Locator {
-        segments,
-        span: locator_span(first_span, last_span),
-    })
+    finish_locator(segments, locator_span(first_span, last_span))
 }
 
 /// When the last segment is a nameless `role:`, consumes the next token
@@ -1063,11 +1083,11 @@ fn scan_locator(
     loop {
         let span = locator_span(first_span, last_span);
         let Some(token) = cursor.next_token()? else {
-            return Ok((Locator { segments, span }, None));
+            return Ok((finish_locator(segments, span)?, None));
         };
         if let Some(text) = token.bare_single() {
             if is_stop(text) {
-                return Ok((Locator { segments, span }, Some(token)));
+                return Ok((finish_locator(segments, span)?, Some(token)));
             }
             if text == ">>" {
                 let Some(next) = cursor.next_token()? else {
@@ -3089,5 +3109,23 @@ role:alert text contains "Added to cart"
             panic!("expected EVAL");
         };
         assert_eq!(lit(&script), "foo(); bar();");
+    }
+}
+
+#[cfg(test)]
+mod frame_tests {
+    use std::path::Path;
+
+    use super::parse_file;
+
+    fn parse(source: &str) -> Result<super::File, super::ParseError> {
+        parse_file(Path::new("frames.whirl"), source)
+    }
+
+    #[test]
+    fn rejects_a_frame_without_an_inner_element_in_actions_asserts_and_captures() {
+        assert!(parse("VISIT /\nCLICK frame:iframe\n").is_err());
+        assert!(parse("VISIT /\n[Asserts]\nframe:iframe >> nth:1 visible\n").is_err());
+        assert!(parse("VISIT /\n[Captures]\nx: frame:iframe text\n").is_err());
     }
 }

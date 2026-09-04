@@ -50,7 +50,7 @@ enum ValueCtx {
 }
 
 /// Every locator-segment prefix spelling (SPEC 6.1).
-const PREFIX_MARKERS: [&str; 15] = [
+const PREFIX_MARKERS: [&str; 16] = [
     "role:",
     "role~:",
     "label:",
@@ -65,6 +65,7 @@ const PREFIX_MARKERS: [&str; 15] = [
     "title~:",
     "testid:",
     "css:",
+    "frame:",
     "nth:",
 ];
 
@@ -277,6 +278,9 @@ fn render_segment(kind: &SegmentKind, ctx: LocatorCtx, is_final: bool) -> String
         }
         SegmentKind::Css(value) => {
             format!("css:{}", render_value(value, ValueCtx::Prefixed, false))
+        }
+        SegmentKind::Frame(value) => {
+            format!("frame:{}", render_value(value, ValueCtx::Prefixed, false))
         }
         SegmentKind::Nth(index) => format!("nth:{index}"),
         SegmentKind::Default(value) => render_value(value, ValueCtx::ActionDefault, is_final),
@@ -762,6 +766,7 @@ mod tests {
             SegmentKind::TextEngine { value, .. }
             | SegmentKind::TestId(value)
             | SegmentKind::Css(value)
+            | SegmentKind::Frame(value)
             | SegmentKind::Default(value) => scrub_value(value),
             SegmentKind::Nth(_) => {}
         }
@@ -1011,6 +1016,20 @@ mod tests {
         assert_eq!(
             fmt("VISIT /\nCLICK \"Add   to cart\"\nFILL Email \"a\\\"b\"\n"),
             "VISIT /\nCLICK \"Add   to cart\"\nFILL Email \"a\\\"b\"\n"
+        );
+    }
+
+    #[test]
+    fn frame_locators_round_trip_in_actions_asserts_and_captures() {
+        assert_round_trip(
+            r##"VISIT /
+CLICK "frame:literal"
+FILL frame:"#payment iframe" >> nth:2 >> frame:iframe >> label:Email alice@example.com
+[Asserts]
+frame:"#payment iframe" >> label:Email value == alice@example.com
+[Captures]
+email: frame:"#payment iframe" >> label:Email value
+"##,
         );
     }
 

@@ -188,11 +188,16 @@ A locator is an array of segments, in chain order:
   {"type": "title", "text": "Info", "exact": true},
   {"type": "testid", "id": "cart-badge"},
   {"type": "css", "selector": ".foo > .bar"},
+  {"type": "frame", "selector": "#payment-element iframe"},
   {"type": "nth", "index": 1}
 ]
 ```
 
 `exact: false` is the `~` substring variant (Playwright default matching).
+`frame` selects an iframe in the current scope. Following `nth` segments narrow
+that iframe before `contentFrame()` enters it. The next non-`nth` segment runs
+inside the frame. Rust requires an element segment after the final frame.
+
 `nth.index` is 1-based; the shim subtracts 1. Rust guarantees `nth` is never
 first and `index >= 1`. The mapping to Playwright calls is SPEC section 6.1.
 

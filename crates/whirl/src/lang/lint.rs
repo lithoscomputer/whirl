@@ -188,6 +188,7 @@ fn locator_key(locator: &Locator) -> String {
             ),
             SegmentKind::TestId(value) => format!("testid:{}", value_key(value)),
             SegmentKind::Css(value) => format!("css:{}", value_key(value)),
+            SegmentKind::Frame(value) => format!("frame:{}", value_key(value)),
             SegmentKind::Nth(index) => format!("nth:{index}"),
             SegmentKind::Default(value) => format!("default:{}", value_key(value)),
         })
@@ -473,6 +474,7 @@ fn collect_locator_refs<'a>(locator: &'a Locator, line: u32, refs: &mut Vec<VarR
             SegmentKind::TextEngine { value, .. }
             | SegmentKind::TestId(value)
             | SegmentKind::Css(value)
+            | SegmentKind::Frame(value)
             | SegmentKind::Default(value) => collect_value_refs(value, line, refs),
             SegmentKind::Nth(_) => {}
         }

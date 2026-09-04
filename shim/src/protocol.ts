@@ -90,6 +90,11 @@ export interface CssSegment {
 	readonly selector: string;
 }
 
+export interface FrameSegment {
+	readonly type: "frame";
+	readonly selector: string;
+}
+
 export interface NthSegment {
 	readonly type: "nth";
 	readonly index: number;
@@ -100,6 +105,7 @@ export type LocatorSegment =
 	| TextEngineSegment
 	| TestidSegment
 	| CssSegment
+	| FrameSegment
 	| NthSegment;
 
 // --- PAGE expectations (protocol 4.2) ---

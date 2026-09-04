@@ -40,6 +40,7 @@ function applySegment(scope: LocatorScope, segment: LocatorSegment): Locator {
 			return scope.getByTitle(segment.text, { exact: segment.exact });
 		case "testid":
 			return scope.getByTestId(segment.id);
+		case "frame":
 		case "css":
 			return scope.locator(segment.selector);
 		case "nth":
@@ -58,11 +59,20 @@ export function buildLocator(
 		throw new ShimError("internal", "locator has no segments");
 	}
 	let chain = applySegment(page, first);
+	let enteringFrame = first.type === "frame";
 	for (const segment of rest) {
-		chain =
-			segment.type === "nth"
-				? chain.nth(segment.index - 1)
-				: applySegment(chain, segment);
+		if (segment.type === "nth") {
+			chain = chain.nth(segment.index - 1);
+			continue;
+		}
+		chain = applySegment(enteringFrame ? chain.contentFrame() : chain, segment);
+		enteringFrame = segment.type === "frame";
+	}
+	if (enteringFrame) {
+		throw new ShimError(
+			"internal",
+			"a frame locator needs an element segment inside the frame",
+		);
 	}
 	return chain;
 }
@@ -105,6 +115,8 @@ function describeSegment(segment: LocatorSegment): string {
 			return `getByTestId(${quote(segment.id)})`;
 		case "css":
 			return `locator(${quote(segment.selector)})`;
+		case "frame":
+			return `frameLocator(${quote(segment.selector)})`;
 		case "nth":
 			return `nth(${String(segment.index - 1)})`;
 		default:

@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en"><head><title>Frames</title></head><body>
+<h1>Frames</h1>
+<section id="payments"><iframe id="payment" title="Payment"></iframe></section>
+<iframe id="nested" title="Nested" src="/nested-frame.html"></iframe>
+<button id="load" type="button">Load frame</button>
+<script>
+const cross = new URL('/form.html', location.href);
+cross.hostname = 'localhost';
+document.querySelector('#payment').src = cross.href;
+document.querySelector('#load').onclick = () => setTimeout(() => {
+  const frame = document.createElement('iframe');
+  frame.id = 'delayed';
+  frame.src = '/form.html';
+  document.body.append(frame);
+}, 100);
+</script></body></html>

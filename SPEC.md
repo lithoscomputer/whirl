@@ -146,6 +146,7 @@ segment := prefix ":" value [value]   # second value: role name only
 | `alt:"Text"` | `getByAltText('Text', { exact: true })` |
 | `title:"Text"` | `getByTitle('Text', { exact: true })` |
 | `testid:id` | `getByTestId('id')` |
+| `frame:"selector"` | Select an iframe by CSS and enter its document for subsequent segments. |
 | `css:"selector"` | `locator('selector')` — escape hatch |
 | `nth:N` | `.nth(N - 1)` — 1-based position |
 
@@ -154,6 +155,14 @@ Text matching is exact (after whitespace normalization). For partial or pattern 
 Every text-matching prefix has a substring variant marked with `~` — `role~:`, `label~:`, `placeholder~:`, `text~:`, `alt~:`, `title~:` — which matches by case-insensitive substring, Playwright's default matching. So `text~:"Added"` matches "Added to cart". `testid:` and `css:` have no `~` form, and the unprefixed default engine stays exact.
 
 An unprefixed value in locator position selects a default engine: `label:` for form actions (`FILL`, `SELECT`, `CHECK`, `UNCHECK`, `UPLOAD`, and `PRESS` with a target), and `text:` for pointer actions (`CLICK`, `DBLCLICK`, `HOVER`) — buttons and links have no label; their accessible name is their text. So `FILL "Email" alice@example.com` fills the input labeled Email, and `CLICK "Add to cart"` clicks the element with that exact text. Prefixes stay available everywhere for precision. Default engines exist only in actions: in `[Asserts]` and `[Captures]` every segment must carry a prefix (or be `nth:`), and an unprefixed value there is a parse error.
+
+`frame:` works in actions, asserts, and captures. It may follow an element scope or another frame. An immediately following `nth:N` selects the iframe before entering it. A frame must be followed by an element segment; use `css:` to check the iframe element itself. Nested and cross-origin frames use the same syntax. Frames are resolved lazily, so normal actionability and assertion timeouts also cover frames that load or are replaced later. Multiple matching frames fail strictly unless narrowed explicitly.
+
+```whirl
+FILL frame:"#payment-element iframe" >> label:"Card number" "4242424242424242"
+[Asserts]
+frame:"#payment-element iframe" >> label:"Card number" value contains "4242"
+```
 
 ### 6.2 Strictness
 
@@ -431,7 +440,7 @@ locator    = segment , { ">>" , segment } ;
 segment    = ( "role:" | "role~:" ) , name , [ value ]
            | ( "label" | "placeholder" | "text" | "alt"
              | "title" ) , [ "~" ] , ":" , value
-           | ( "testid:" | "css:" ) , value
+           | ( "testid:" | "css:" | "frame:" ) , value
            | "nth:" , number   (* N >= 1; never the first segment *)
            | value ;             (* default engine; actions only — see 6.1 *)
 
@@ -455,7 +464,6 @@ Permanent non-goals — these keep the format Hurl-grade:
 
 Deferred beyond V1 (candidate V2 features, not promised):
 
-- iframe locators (`frame:` segment).
 - Multi-tab and popup handling.
 - Network stubbing and request assertions.
 - Per-entry `[Options]` overrides and mobile device emulation.

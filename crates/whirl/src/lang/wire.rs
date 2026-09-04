@@ -111,6 +111,7 @@ fn segment_wire<E>(
         }
         SegmentKind::TestId(value) => json!({"type": "testid", "id": resolve(value)?}),
         SegmentKind::Css(value) => json!({"type": "css", "selector": resolve(value)?}),
+        SegmentKind::Frame(value) => json!({"type": "frame", "selector": resolve(value)?}),
         SegmentKind::Nth(index) => json!({"type": "nth", "index": index}),
         SegmentKind::Default(value) => {
             let engine = default_engine

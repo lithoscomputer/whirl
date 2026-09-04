@@ -142,6 +142,8 @@ pub enum SegmentKind {
     TestId(Value),
     /// `css:"selector"` — the escape hatch.
     Css(Value),
+    /// `frame:"selector"` enters an iframe before the next element segment.
+    Frame(Value),
     /// `nth:N`, 1-based. Never the first segment; N >= 1.
     Nth(u64),
     /// Unprefixed value; legal only in actions (SPEC 6.1). The default

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add `frame:` locator segments for cross-origin and nested iframes in actions, assertions, and captures.
+
 - Allow selected browser installation and add `whirl doctor` with repair commands.
 
 - Add JSON check diagnostics, stable error codes, runtime report metadata,
