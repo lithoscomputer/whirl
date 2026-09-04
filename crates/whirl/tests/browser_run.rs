@@ -497,3 +497,13 @@ fn an_expiring_entry_timeout_fails_the_in_flight_step() {
     assert_eq!(exit_code(&output), 1, "stdout:\n{stdout}");
     assert!(stdout.contains("entry timeout"), "stdout:\n{stdout}");
 }
+
+#[test]
+fn presence_before_hidden_requires_the_element_to_appear() {
+    let dir = TestDir::new();
+    dir.file("presence.whirl", "VISIT \"data:text/html,<p>Hello</p>\"\n[Asserts]\ntestid:spinner count >= 1 @100ms\ntestid:spinner hidden\n");
+    let output = run_whirl(&dir, &["presence.whirl"]);
+    assert_eq!(exit_code(&output), 1);
+    assert!(String::from_utf8_lossy(&output.stderr).is_empty());
+    assert!(stdout_text(&output).contains("actual: 0"));
+}

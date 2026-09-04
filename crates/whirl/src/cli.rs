@@ -244,6 +244,11 @@ fn expand_paths(paths: &[PathBuf]) -> Result<Vec<PathBuf>, UsageError> {
             });
         }
     }
+    if files.is_empty() {
+        return Err(UsageError {
+            message: "no .whirl files found in the input paths".to_owned(),
+        });
+    }
     Ok(files)
 }
 

@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use crate::lang::ast::{
     Action, ActionKind, Assert, AssertBody, Capture, CaptureSource, Entry, File, FileOption,
-    Locator, NumOp, PageCheck, SegmentKind, Span, StrCheck, Value, ValueSegment,
+    Locator, NumOp, PageCheck, SegmentKind, Span, StateCheck, StrCheck, Value, ValueSegment,
 };
 
 /// How serious a lint diagnostic is: an [`Severity::Error`] fails
@@ -97,9 +97,8 @@ pub fn lint_setup_refs(file: &File, setup: &File) -> Vec<Lint> {
 }
 
 /// Warns about a `count >= 1` (or `count > 0`, `count != 0`) assert
-/// directly followed by a check on the same locator (SPEC 16). Every
-/// check waits for what it needs, so the presence check adds a step and
-/// nothing else.
+/// directly followed by a check on the same locator that requires
+/// presence (SPEC 16). Checks accepting zero matches preserve the wait.
 fn redundant_presence_counts(file: &File, lints: &mut Vec<Lint>) {
     for entry in &file.entries {
         for pair in entry.asserts.windows(2) {
@@ -112,10 +111,26 @@ fn redundant_presence_counts(file: &File, lints: &mut Vec<Lint>) {
                 continue;
             }
             let next = match &pair[1].body {
+                AssertBody::ElementState {
+                    state: StateCheck::Hidden,
+                    ..
+                }
+                | AssertBody::Url(_)
+                | AssertBody::Title(_) => continue,
                 AssertBody::ElementState { locator, .. }
-                | AssertBody::ElementValue { locator, .. }
-                | AssertBody::ElementCount { locator, .. } => locator,
-                AssertBody::Url(_) | AssertBody::Title(_) => continue,
+                | AssertBody::ElementValue { locator, .. } => locator,
+                AssertBody::ElementCount { locator, op, count } => {
+                    let accepts_zero = match op {
+                        NumOp::Eq | NumOp::Ge => *count == 0,
+                        NumOp::Ne | NumOp::Lt => *count != 0,
+                        NumOp::Le => true,
+                        NumOp::Gt => false,
+                    };
+                    if accepts_zero {
+                        continue;
+                    }
+                    locator
+                }
             };
             if locator_key(locator) == locator_key(next) {
                 lints.push(lint_at(

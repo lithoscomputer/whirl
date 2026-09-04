@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Reject input paths that select no flow files.
+- Preserve presence assertions before checks that accept an absent element.
+
 ## 0.4.0 (2026-09-04)
 
 - Add the `reduced-motion` option, which sets what the page's

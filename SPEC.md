@@ -345,6 +345,8 @@ Exit codes:
 | 3 | Runtime error (browser or shim failure) |
 | 4 | Usage error |
 
+If the input paths select no `.whirl` files, run, `check`, and `fmt` report a usage error (exit 4).
+
 Whirl parses and lints every input file before it launches any browser: a parse or lint error anywhere stops the invocation with exit 2 and nothing runs. When one invocation hits several categories, the highest applicable code wins — a usage error (4) is detected before parsing and preempts everything, and within a run a runtime error (3) outranks failed entries (1), which outrank 0.
 
 ## 14. Output and reports
@@ -365,7 +367,7 @@ Rust source, configuration, and project setup follow the [Brynary Rust Style Gui
 
 ## 16. Errors
 
-- **Parse errors** (exit 2) are reported with file, line, column, a caret under the offending token, and the expected alternatives. `whirl check` surfaces them without launching a browser. Lint warnings do not change the exit code. Whirl warns about a capture that is never used, and about a `count >= 1` assert directly followed by a check on the same locator, since every check already waits for its element.
+- **Parse errors** (exit 2) are reported with file, line, column, a caret under the offending token, and the expected alternatives. `whirl check` surfaces them without launching a browser. Lint warnings do not change the exit code. Whirl warns about a capture that is never used, and about a `count >= 1` assert directly followed by a check on the same locator, only when the following check requires at least one element. A `hidden` check or a count comparison that accepts zero does not make the presence check redundant.
 - **Test failures** (exit 1) report the failing step the same way, plus expected versus actual and the artifacts.
 - **Runtime errors** (exit 3) cover shim crashes, missing browsers, and similar environmental failures.
 

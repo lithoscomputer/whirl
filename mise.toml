@@ -86,3 +86,7 @@ run = [
   "cd shim && {{config_root}}/scripts/quiet.sh bun x playwright install chromium firefox webkit",
   "WHIRL_TEST_ALL_BROWSERS=1 {{config_root}}/scripts/quiet.sh cargo nextest run --workspace --all-targets --all-features --run-ignored all",
 ]
+
+[tasks.fmt]
+description = "Format Rust and shim TypeScript source"
+run = ["cargo +nightly-2026-04-14 fmt --all", "cd shim && bun run format"]
