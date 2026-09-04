@@ -617,6 +617,11 @@ fn json_reports_include_actual_runtime_versions_and_error_codes() {
     assert_eq!(report["files"][0]["runtime"]["browser"], "chromium");
     assert_eq!(report["files"][0]["runtime"]["playwrightVersion"], "1.62.1");
     assert!(
+        report["files"][0]["runtime"]["userAgent"]
+            .as_str()
+            .is_some_and(|value| value.starts_with("Mozilla/5.0 "))
+    );
+    assert!(
         report["files"][0]["runtime"]["browserVersion"]
             .as_str()
             .is_some_and(|v| !v.is_empty())

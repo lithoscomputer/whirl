@@ -91,6 +91,16 @@ impl SiteServer {
 fn respond(request: tiny_http::Request) {
     let url = request.url().to_owned();
     let path = url.split('?').next().unwrap_or("/").trim_start_matches('/');
+    if path == "user-agent" {
+        let user_agent = request
+            .headers()
+            .iter()
+            .find(|header| header.field.equiv("User-Agent"))
+            .map_or("", |header| header.value.as_str())
+            .to_owned();
+        let _ = request.respond(Response::from_string(user_agent));
+        return;
+    }
     // The redirect test needs a server-side 302 to this same server
     // under its other loopback hostname.
     // The slow-load test needs a subresource that keeps the page's load
@@ -179,11 +189,16 @@ fn site_root() -> PathBuf {
 /// `PATH` and the repository's built shim entry, with the test's own
 /// working and artifacts directories.
 fn run_whirl(dir: &TestDir, args: &[&str]) -> Output {
+    run_whirl_env(dir, args, &[])
+}
+
+fn run_whirl_env(dir: &TestDir, args: &[&str], env: &[(&str, &str)]) -> Output {
     let shim_js = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../shim/dist/index.js");
     let artifacts = dir.artifacts();
     Command::new(env!("CARGO_BIN_EXE_whirl"))
         .env("WHIRL_NODE", "node")
         .env("WHIRL_SHIM_JS", shim_js)
+        .envs(env.iter().copied())
         .current_dir(&dir.path)
         .arg("--artifacts")
         .arg(&artifacts)
@@ -198,6 +213,100 @@ fn exit_code(output: &Output) -> i32 {
 
 fn stdout_text(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+#[test]
+fn user_agent_aliases_set_headers_and_navigator_without_changing_browser_or_viewport() {
+    let dir = TestDir::new();
+    let server = SiteServer::start();
+    let chrome = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.7922.34 Safari/537.36";
+    let firefox =
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:153.0) Gecko/20100101 Firefox/153.0";
+    let safari = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.5 Safari/605.1.15";
+
+    for (value, flag, expected) in [
+        ("chrome", None, chrome),
+        ("\"chrome\"", None, chrome),
+        ("firefox", None, firefox),
+        ("safari", None, safari),
+        ("{{agent}}", None, firefox),
+        ("chorme", None, "chorme"),
+        ("Chrome", None, "Chrome"),
+        ("\"Whirl/1 (custom)\"", None, "Whirl/1 (custom)"),
+        ("\"Whirl/1 (custom)\"", Some("chrome"), chrome),
+        ("chrome", Some("firefox"), firefox),
+        ("chrome", Some("safari"), safari),
+        ("chrome", Some("Whirl/1 (override)"), "Whirl/1 (override)"),
+    ] {
+        dir.file(
+            "agent.whirl",
+            &format!(
+                "[Options]\nbase: {}\nviewport: 960x540\nuser-agent: {value}\n\
+                 VISIT /user-agent\n\
+                 [Captures]\n\
+                 header: css:body text\n\
+                 navigator: eval \"navigator.userAgent\"\n\
+                 viewport: eval \"innerWidth + 'x' + innerHeight\"\n",
+                server.base(),
+            ),
+        );
+        let mut args = vec!["--report-json", "report.json", "--var", "agent=firefox"];
+        if let Some(flag) = flag {
+            args.extend(["--user-agent", flag]);
+        }
+        args.push("agent.whirl");
+        let output = run_whirl(&dir, &args);
+        assert_eq!(
+            exit_code(&output),
+            0,
+            "{value}, {flag:?}: {}",
+            stdout_text(&output)
+        );
+        let report: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(dir.path.join("report.json")).expect("report exists"),
+        )
+        .expect("report is JSON");
+        let file = &report["files"][0];
+        let captures = &file["entries"][0]["captures"];
+        assert_eq!(captures["header"], expected, "{value}, {flag:?}");
+        assert_eq!(captures["navigator"], expected, "{value}, {flag:?}");
+        assert_eq!(captures["viewport"], "960x540");
+        assert_eq!(file["runtime"]["userAgent"], expected);
+        assert_eq!(file["runtime"]["browser"], "chromium");
+        assert_eq!(
+            file["runtime"]["viewport"],
+            serde_json::json!({"width": 960, "height": 540})
+        );
+    }
+}
+
+#[test]
+fn user_agent_runtime_metadata_masks_environment_values() {
+    let dir = TestDir::new();
+    let server = SiteServer::start();
+    dir.file(
+        "agent.whirl",
+        "[Options]\nuser-agent: \"Whirl/{{env.WHIRL_TEST_SECRET}}\"\nVISIT /form.html\n",
+    );
+    let output = run_whirl_env(
+        &dir,
+        &[
+            "--base",
+            &server.base(),
+            "--report-json",
+            "report.json",
+            "agent.whirl",
+        ],
+        &[("WHIRL_TEST_SECRET", "secret-agent")],
+    );
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    let text = fs::read_to_string(dir.path.join("report.json")).expect("report exists");
+    assert!(
+        !text.contains("secret-agent"),
+        "user agent secrets must be masked"
+    );
+    let report: serde_json::Value = serde_json::from_str(&text).expect("report is JSON");
+    assert_eq!(report["files"][0]["runtime"]["userAgent"], "Whirl/***");
 }
 
 /// The snapshot baseline platform tag (SPEC 7).

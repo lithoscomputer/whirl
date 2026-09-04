@@ -39,10 +39,12 @@ run reports. `check` reports source text without resolving environment variables
 
 The report records the invocation's absolute `workingDirectory`, Whirl version,
 platform, and architecture. Each file with a started browser context has
-`runtime` containing `browser`, `viewport`, `browserVersion`, `nodeVersion`, and
-`playwrightVersion`. Versions come from the active shim and browser. Version
-fields can be null when an older shim omits them. A failure before context startup
-has no runtime object.
+`runtime` containing `browser`, `viewport`, `userAgent`, `browserVersion`,
+`nodeVersion`, and `playwrightVersion`. `userAgent` is the actual string the
+browser reports, after alias resolution, with secret values masked. Versions
+come from the active shim and browser. User agent and version fields can be null
+when an older shim omits them. A failure before context startup has no runtime
+object.
 
 ## Rerunning failures
 

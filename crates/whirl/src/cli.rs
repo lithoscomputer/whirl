@@ -195,7 +195,7 @@ struct RunArgs {
     #[arg(long, value_name = "DURATION")]
     entry_timeout: Option<String>,
 
-    /// Override the `user-agent` option.
+    /// Override the user agent: chrome, firefox, safari, or a literal string.
     #[arg(long, value_name = "UA")]
     user_agent: Option<String>,
 }

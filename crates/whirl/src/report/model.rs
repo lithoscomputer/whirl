@@ -73,6 +73,7 @@ pub(crate) struct ReportViewport {
 pub(crate) struct RuntimeMetadata {
     pub(crate) browser:            String,
     pub(crate) viewport:           ReportViewport,
+    pub(crate) user_agent:         Option<String>,
     pub(crate) browser_version:    Option<String>,
     pub(crate) node_version:       Option<String>,
     pub(crate) playwright_version: Option<String>,

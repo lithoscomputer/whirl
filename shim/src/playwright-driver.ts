@@ -13,7 +13,7 @@ import type {
 	Locator,
 	Page,
 } from "@playwright/test";
-import { chromium, expect, firefox, webkit } from "@playwright/test";
+import { chromium, devices, expect, firefox, webkit } from "@playwright/test";
 import { runAssert, runPage } from "./assertions.js";
 import { applyCaptureFilter, runCapture } from "./captures.js";
 import type { ShimDriver } from "./driver.js";
@@ -66,6 +66,28 @@ const playwrightCoreVersion = (
 
 /** Bound for force-closing a wedged context or browser (protocol 6). */
 const closeWatchdogMs = 3000;
+
+function resolveUserAgent(value: string | null) {
+	let deviceName: string;
+	switch (value) {
+		case "chrome":
+			deviceName = "Desktop Chrome";
+			break;
+		case "firefox":
+			deviceName = "Desktop Firefox";
+			break;
+		case "safari":
+			deviceName = "Desktop Safari";
+			break;
+		default:
+			return value ?? undefined;
+	}
+	const device = devices[deviceName];
+	if (device === undefined) {
+		throw new ShimError("internal", `missing Playwright device: ${deviceName}`);
+	}
+	return device.userAgent;
+}
 
 interface FlowState {
 	readonly context: BrowserContext;
@@ -299,6 +321,7 @@ export class PlaywrightDriver implements ShimDriver {
 		}
 		this.#cancelRequested = false;
 		const browser = await this.#ensureBrowser(params.browser, params.headed);
+		const userAgent = resolveUserAgent(params.userAgent);
 		const contextOptions: BrowserContextOptions = {
 			viewport: {
 				width: params.viewport.width,
@@ -307,7 +330,7 @@ export class PlaywrightDriver implements ShimDriver {
 			...(params.storageStatePath === null
 				? {}
 				: { storageState: params.storageStatePath }),
-			...(params.userAgent === null ? {} : { userAgent: params.userAgent }),
+			...(userAgent === undefined ? {} : { userAgent }),
 			...(params.reducedMotion === null
 				? {}
 				: { reducedMotion: params.reducedMotion }),
@@ -347,6 +370,7 @@ export class PlaywrightDriver implements ShimDriver {
 			browserVersion: browser.version(),
 			nodeVersion: process.versions.node,
 			playwrightVersion: this.playwrightVersion,
+			userAgent: await page.evaluate(() => navigator.userAgent),
 		};
 	}
 

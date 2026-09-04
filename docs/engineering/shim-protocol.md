@@ -65,7 +65,7 @@ Creates the browser context and page for one flow. Params:
   "dialogs": "dismiss" | "accept",
   "allowHosts": ["example.com", "*.example.com"] | null,
   "navTimeoutMs": 30000,
-  "userAgent": "Mozilla/5.0 ..." | null,
+  "userAgent": "chrome" | "firefox" | "safari" | "literal string" | null,
   "reducedMotion": "reduce" | "no-preference" | null,
   "video": {"tempDir": "abs path", "finalPath": "abs path"} | null,
   "harPath": "abs path" | null,
@@ -73,7 +73,7 @@ Creates the browser context and page for one flow. Params:
 }
 ```
 
-Result: `{"browserVersion": "...", "nodeVersion": "...", "playwrightVersion": "..."}`. These are the active browser, Node process, and Playwright library versions. Older protocol 1 shims may omit these additive fields; reports then use null version values.
+Result: `{"browserVersion": "...", "nodeVersion": "...", "playwrightVersion": "...", "userAgent": "..."}`. These are the active browser, Node process, and Playwright library versions, plus the context's actual `navigator.userAgent`. Older protocol 1 shims may omit these additive fields; reports then use null values. Rust applies secret masking to the user agent before reporting it.
 
 - `allowHosts: null` means all hosts are allowed. When it is a list, Rust has
   already appended the `base` host; the shim routes all requests and aborts
@@ -84,7 +84,10 @@ Result: `{"browserVersion": "...", "nodeVersion": "...", "playwrightVersion": ".
 - `dialogs` installs an auto-dismiss or auto-accept handler for alert,
   confirm, and prompt.
 - `userAgent` sets the context's user agent string; `null` keeps the
-  engine default.
+  engine default. Rust sends the value after interpolation and CLI overrides.
+  The shim resolves `chrome`, `firefox`, and `safari` to the user agent strings
+  from Playwright's `Desktop Chrome`, `Desktop Firefox`, and `Desktop Safari`
+  presets. It uses no other preset fields. All other strings pass through.
 - `reducedMotion` emulates the `prefers-reduced-motion` media feature for
   the context; `null` keeps the engine default.
 - `trace: true` starts Playwright tracing (screenshots and snapshots on).

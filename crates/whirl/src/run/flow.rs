@@ -1264,6 +1264,10 @@ pub(crate) async fn run_flow(run: &FlowRun<'_>, client: &mut ShimClient) -> Flow
                 height: params.viewport.height,
             },
             browser_version:    version("browserVersion"),
+            user_agent:         runtime_result
+                .get("userAgent")
+                .and_then(Json::as_str)
+                .map(|value| vars.mask(value)),
             node_version:       version("nodeVersion"),
             playwright_version: version("playwrightVersion"),
         });

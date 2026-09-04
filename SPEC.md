@@ -108,7 +108,7 @@ The `[Options]` section holds `key: value` lines. V1 keys:
 | `dialogs` | `dismiss` \| `accept` | `dismiss` | Automatic response to alert, confirm, and prompt dialogs |
 | `reduced-motion` | `reduce` \| `no-preference` | engine default | What the page's `prefers-reduced-motion` media query reports |
 | `storage` | file path | none | Saved storage state loaded into each file's browser context |
-| `user-agent` | string | engine default | User agent string the browser sends and reports |
+| `user-agent` | alias or string | engine default | User agent string the browser sends and reports |
 | `setup` | file path | none | A flow that runs first; this file starts from its final state |
 
 `allow-hosts` takes one or more host globs (`allow-hosts: example.com *.example.com`). Globs match the request's hostname only — scheme and port are ignored — and `*.example.com` does not match the apex `example.com`; list both to cover both. The `base` host is always allowed. Whirl aborts requests to any other host, including fetch/XHR, WebSockets, and subresources, and the reports list every blocked host. Service workers are disabled when `allow-hosts` is set, because they can bypass request routing. IP-literal hosts match textually; `data:` and `blob:` URLs have no host and are always allowed. Without the option, all hosts are allowed.
@@ -119,7 +119,18 @@ The `[Options]` section holds `key: value` lines. V1 keys:
 
 `reduced-motion: reduce` makes the page's `prefers-reduced-motion` media query match, as it does for a user who asked their OS for less motion. Pages that honor it skip transitions, looping animations, and background video, which makes `SNAPSHOT` baselines stable and removes work the flow never asserted. `no-preference` forces the opposite; without the option the engine default applies.
 
-`user-agent` replaces the browser's user agent string for the flow's context, in request headers and in `navigator.userAgent`. It exists for testing an app's own user-agent handling and for apps that gate on the string, such as bot protection that rejects headless Chromium's `HeadlessChrome` token. Quote the value, since it contains spaces.
+`user-agent` replaces the browser's user agent string for the flow's context, in request headers and in `navigator.userAgent`. It exists for testing an app's own user-agent handling and for apps that gate on the string, such as bot protection that rejects headless Chromium's `HeadlessChrome` token.
+
+The exact, case-sensitive values `chrome`, `firefox`, and `safari` are aliases for
+the user agent strings in the bundled Playwright's `Desktop Chrome` (Windows),
+`Desktop Firefox` (Windows), and `Desktop Safari` (macOS) presets. For example,
+`user-agent: chrome` uses the Chrome string. Aliases change only the user agent;
+`browser`, viewport, and other context settings remain independent. Their strings
+are pinned to the bundled Playwright version and may change with a Whirl upgrade.
+All other values are literal strings, including unknown names such as `chorme`.
+Quote a value that contains spaces. Quoted and unquoted forms have the same
+meaning: `chrome` and `"chrome"` both select the alias. Alias resolution happens
+after option interpolation and CLI overrides; `--user-agent chrome` works too.
 
 Unknown keys are a parse error. When section 13 defines a corresponding command-line flag, that flag overrides the file option.
 
@@ -454,7 +465,7 @@ whirl fmt [--check] <PATH>...    Rewrite files to canonical form
 | `--storage PATH` | Override the storage option |
 | `--save-storage PATH` | Write the final storage state after a successful run (single file only) |
 | `--entry-timeout DURATION` | Override the entry-timeout option |
-| `--user-agent UA` | Override the user-agent option |
+| `--user-agent UA` | Override the user-agent option with `chrome`, `firefox`, `safari`, or a literal string |
 
 Exit codes:
 
@@ -477,7 +488,7 @@ Whirl parses and lints every input file before it launches any browser: a parse 
 - Action failures retain Playwright's actionability log, including the locator being awaited and any element blocking interaction. Output masking applies to the log. Each trace artifact includes a shell-quoted `whirl show-trace -- <PATH>` command. The viewer uses Whirl's private runtime; a missing trace is a usage error, and a viewer launch failure is a runtime error.
 - Default console output: one line per file with pass/fail and duration, then a failure detail block per failed entry: file, line, the failing step, expected versus actual, and the artifact paths.
 - The JUnit report maps one file to one test suite and one entry to one test case. An entry is named by the comment line directly above it — the nearest comment line with no other content line between it and the entry's first action (`# Log in.`) — falling back to its first action line and line number. A failure before the first entry — option resolution, storage loading, or browser launch — reports as a synthetic test case named `[setup]` in that file's suite: an `<error>` for runtime errors, a `<failure>` otherwise. The JSON report carries the same synthetic entry, and masking applies to it like any other output.
-- The version 1 JSON report includes `workingDirectory`, `whirlVersion`, `platform`, and `architecture`. Files whose browser context starts include `runtime`: browser engine, viewport, and actual browser, Node, and Playwright versions. Unavailable version fields are null. Each step error has a stable `code`, separate from its human-readable message. Additive fields do not change the report version; readers must ignore unknown fields. See [machine-readable output](docs/engineering/machine-output.md) for schemas and codes.
+- The version 1 JSON report includes `workingDirectory`, `whirlVersion`, `platform`, and `architecture`. Files whose browser context starts include `runtime`: browser engine, viewport, the actual user agent string (with section 11's masking), and actual browser, Node, and Playwright versions. Unavailable user agent and version fields are null. Each step error has a stable `code`, separate from its human-readable message. Additive fields do not change the report version; readers must ignore unknown fields. See [machine-readable output](docs/engineering/machine-output.md) for schemas and codes.
 - The JSON report is the machine-readable superset: per-step timing, captures (with values sourced from `env.*` masked), and artifact paths.
 - Artifacts: each flow writes to `<artifacts>/<flow path without the .whirl extension>/`. The mirrored path is the flow file's canonical path (made absolute, symlinks resolved) relative to the current working directory, so parallel flows never collide, and overlapping inputs or symlinked duplicates of one file resolve to one flow, run once, and write to one directory. A flow outside the working directory writes to `<file stem>-<hash>/` instead, where `<hash>` is the first 16 hex digits of the SHA-256 of the canonical path, so absolute paths and `..` segments never escape the artifacts directory. Because all inputs are known before the run starts, Whirl verifies that no two flows map to the same directory; a collision is a runtime error. Names inside are fixed: screenshots by their given name, `snapshot-<name>-actual.png` and `snapshot-<name>-diff.png`, `failure.png`, `trace.zip`, `video.webm`, and `network.har`. Duplicate `SCREENSHOT` names or duplicate `SNAPSHOT` names within one flow are a lint error; the two keywords have separate name spaces, because their artifact files never collide.
 
