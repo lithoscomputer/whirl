@@ -1,0 +1,13 @@
+# Sign in once for all dependent flows.
+[Options]
+base: http://127.0.0.1:4173
+
+VISIT /login
+FILL Email demo@example.com
+FILL Password demo-password
+CLICK role:button "Sign in"
+PAGE /checkout
+[Asserts]
+role:heading Checkout visible
+[Captures]
+email: testid:user text

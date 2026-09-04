@@ -49,3 +49,11 @@ jobs:
           cd shim
           sudo "$(mise which node)" node_modules/@playwright/test/cli.js install-deps chromium
       - run: mise run check
+      - run: mise run example:test
+      - name: Upload sample test reports and failure artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sample-shop-${{ matrix.runner }}
+          path: whirl-artifacts/example/
+          if-no-files-found: ignore

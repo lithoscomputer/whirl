@@ -114,7 +114,9 @@ $ whirl --trace flow.whirl  # save a trace when the flow fails
 $ whirl show-trace whirl-artifacts/flow/trace.zip
 ```
 
-See [examples/](examples/) for more flows.
+Run the complete [sample shop](examples/shop/README.md) with
+`mise run example:test`. It covers login, validation, shared setup, snapshots,
+and CI reports. See [examples/](examples/) for more flows.
 
 ## Secrets
 

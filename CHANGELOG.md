@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add a runnable sample shop and a CI task with reports and failure artifacts.
+
 - Keep actionability details in failures and add `whirl show-trace`.
 
 - Reject input paths that select no flow files.

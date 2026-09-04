@@ -90,3 +90,17 @@ run = [
 [tasks.fmt]
 description = "Format Rust and shim TypeScript source"
 run = ["cargo +nightly-2026-04-14 fmt --all", "cd shim && bun run format"]
+
+[tasks."example:serve"]
+description = "Start the sample shop on http://127.0.0.1:4173 (requires Python 3)"
+run = "python3 examples/shop/app.py"
+
+[tasks."example:test"]
+description = "Start the sample shop, run its flows, and write CI reports"
+depends = ["dev"]
+run = "python3 scripts/test-example.py"
+
+[tasks."example:update-snapshots"]
+description = "Review and refresh the sample shop visual baseline"
+depends = ["dev"]
+run = "python3 scripts/test-example.py --update-snapshots"
