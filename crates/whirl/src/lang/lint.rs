@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use crate::lang::ast::{
     Action, ActionKind, Assert, AssertBody, Capture, CaptureSource, Entry, File, FileOption,
-    Locator, PageCheck, SegmentKind, Span, StrCheck, Value, ValueSegment,
+    Locator, NumOp, PageCheck, SegmentKind, Span, StrCheck, Value, ValueSegment,
 };
 
 /// How serious a lint diagnostic is: an [`Severity::Error`] fails
@@ -50,6 +50,7 @@ pub fn lint_file_with(file: &File, external_uses: &HashSet<String>) -> Vec<Lint>
     duplicate_artifact_names(file, &mut lints);
     unused_captures(file, external_uses, &mut lints);
     setup_option_rules(file, &mut lints);
+    redundant_presence_counts(file, &mut lints);
     lints.sort_by_key(|lint| (lint.line, lint.column));
     lints
 }
@@ -93,6 +94,89 @@ pub fn lint_setup_refs(file: &File, setup: &File) -> Vec<Lint> {
     }
     lints.sort_by_key(|lint| (lint.line, lint.column));
     lints
+}
+
+/// Warns about a `count >= 1` (or `count > 0`, `count != 0`) assert
+/// directly followed by a check on the same locator (SPEC 16). Every
+/// check waits for what it needs, so the presence check adds a step and
+/// nothing else.
+fn redundant_presence_counts(file: &File, lints: &mut Vec<Lint>) {
+    for entry in &file.entries {
+        for pair in entry.asserts.windows(2) {
+            let AssertBody::ElementCount { locator, op, count } = &pair[0].body else {
+                continue;
+            };
+            let asserts_presence =
+                matches!((op, count), (NumOp::Ge, 1) | (NumOp::Gt | NumOp::Ne, 0));
+            if !asserts_presence {
+                continue;
+            }
+            let next = match &pair[1].body {
+                AssertBody::ElementState { locator, .. }
+                | AssertBody::ElementValue { locator, .. }
+                | AssertBody::ElementCount { locator, .. } => locator,
+                AssertBody::Url(_) | AssertBody::Title(_) => continue,
+            };
+            if locator_key(locator) == locator_key(next) {
+                lints.push(lint_at(
+                    file,
+                    Severity::Warning,
+                    pair[0].span,
+                    format!(
+                        "this presence check is redundant; the check on line {} already waits for the element",
+                        pair[1].line
+                    ),
+                ));
+            }
+        }
+    }
+}
+
+/// A span-free rendering of a locator, so two lines that spell the same
+/// locator compare equal.
+fn locator_key(locator: &Locator) -> String {
+    locator
+        .segments
+        .iter()
+        .map(|segment| match &segment.kind {
+            SegmentKind::Role {
+                substring,
+                role,
+                name,
+            } => format!(
+                "role{}:{role} {}",
+                if *substring { "~" } else { "" },
+                name.as_ref().map(value_key).unwrap_or_default()
+            ),
+            SegmentKind::TextEngine {
+                prefix,
+                substring,
+                value,
+            } => format!(
+                "{prefix:?}{}:{}",
+                if *substring { "~" } else { "" },
+                value_key(value)
+            ),
+            SegmentKind::TestId(value) => format!("testid:{}", value_key(value)),
+            SegmentKind::Css(value) => format!("css:{}", value_key(value)),
+            SegmentKind::Nth(index) => format!("nth:{index}"),
+            SegmentKind::Default(value) => format!("default:{}", value_key(value)),
+        })
+        .collect::<Vec<_>>()
+        .join(" >> ")
+}
+
+fn value_key(value: &Value) -> String {
+    value
+        .segments
+        .iter()
+        .map(|segment| match segment {
+            ValueSegment::Literal(text) => text.clone(),
+            ValueSegment::Var(name) => format!("{{{{{name}}}}}"),
+            ValueSegment::EnvVar(name) => format!("{{{{env.{name}}}}}"),
+            ValueSegment::SetupVar(name) => format!("{{{{setup.{name}}}}}"),
+        })
+        .collect()
 }
 
 /// Rules for the `setup` option itself (SPEC 5, 11): it cannot be
@@ -430,6 +514,43 @@ mod tests {
     #[test]
     fn distinct_artifact_names_pass() {
         assert_eq!(lint("VISIT /\nSCREENSHOT a\nSCREENSHOT b\n"), Vec::new());
+    }
+
+    #[test]
+    fn warns_about_a_presence_count_before_a_check_on_the_same_locator() {
+        let lints =
+            lint("VISIT /\n[Asserts]\ntestid:card count >= 1\ntestid:card text contains Hello\n");
+        assert_eq!(lints.len(), 1);
+        assert_eq!(lints[0].severity, Severity::Warning);
+        assert_eq!(lints[0].line, 3);
+        assert_eq!(
+            lints[0].message,
+            "this presence check is redundant; the check on line 4 already waits for the element"
+        );
+        for source in [
+            "VISIT /\n[Asserts]\ncss:\"li.item\" count > 0\ncss:\"li.item\" count == 3\n",
+            "VISIT /\n[Asserts]\nrole:button \"Save\" count != 0\nrole:button \"Save\" enabled\n",
+        ] {
+            assert_eq!(lint(source).len(), 1, "source:\n{source}");
+        }
+    }
+
+    #[test]
+    fn presence_counts_that_are_not_redundant_pass() {
+        for source in [
+            // A different locator follows.
+            "VISIT /\n[Asserts]\ntestid:card count >= 1\ntestid:other visible\n",
+            // Not a presence check.
+            "VISIT /\n[Asserts]\ntestid:card count >= 2\ntestid:card visible\n",
+            // Nothing follows it.
+            "VISIT /\n[Asserts]\ntestid:card count >= 1\n",
+            // A page check sits between them.
+            "VISIT /\n[Asserts]\ntestid:card count >= 1\ntitle == Home\ntestid:card visible\n",
+            // The same text through a different segment shape.
+            "VISIT /\n[Asserts]\ntext:Save count >= 1\ntext~:Save visible\n",
+        ] {
+            assert_eq!(lint(source), Vec::new(), "source:\n{source}");
+        }
     }
 
     #[test]
