@@ -498,8 +498,10 @@ export class PlaywrightDriver implements ShimDriver {
 				});
 				return {};
 			case "click":
+				// A click may close its own tab. Later PAGE/assert lines own
+				// verification; do not wait for navigation after dispatching it.
 				await this.#locatorAction(page, params, (locator) =>
-					locator.click({ timeout: timeoutMs }),
+					locator.click({ timeout: timeoutMs, noWaitAfter: true }),
 				);
 				return {};
 			case "dblclick":
