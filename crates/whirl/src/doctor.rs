@@ -4,8 +4,10 @@ use std::time::Duration;
 
 use anyhow::{Context as _, bail, ensure};
 use serde::Deserialize;
+use tokio::fs;
 use tokio::process::Command;
 use tokio::runtime::Runtime;
+use tokio::task::spawn_blocking;
 use tokio::time::timeout;
 
 use crate::install::{self, Progress};
@@ -33,9 +35,13 @@ fn shell_quote(value: &str) -> String {
 }
 
 async fn inspect(browser: &str, progress: Progress<'_>) -> anyhow::Result<()> {
-    let launch = shim::resolve_launch()?;
+    let launch = spawn_blocking(shim::resolve_launch)
+        .await
+        .context("checking the shim installation")??;
     ensure!(
-        launch.shim_js.is_file(),
+        fs::metadata(&launch.shim_js)
+            .await
+            .is_ok_and(|metadata| metadata.is_file()),
         "shim '{}' is missing; run `whirl install` (development: `mise run dev`)",
         launch.shim_js.display()
     );
@@ -62,7 +68,10 @@ async fn inspect(browser: &str, progress: Progress<'_>) -> anyhow::Result<()> {
         install::NODE_VERSION
     );
     progress(&format!("Node {}: OK ({})", info.version, info.executable));
-    let cli = install::playwright_cli_for(&launch)?;
+    let cli_launch = launch.clone();
+    let cli = spawn_blocking(move || install::playwright_cli_for(&cli_launch))
+        .await
+        .context("finding the Playwright CLI")??;
     let mut client = ShimClient::spawn(&launch)?;
     let result = async {
         let hello = client.hello().await.context("cannot contact the shim; run `whirl install` (development: `mise run dev`)")?;

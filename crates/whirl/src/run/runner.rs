@@ -8,9 +8,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use std::{env, fs, path, process, thread};
+use std::{env, path, process, thread};
 
-use tokio::task::JoinSet;
+use tokio::fs;
+use tokio::task::{JoinSet, spawn_blocking};
 
 use crate::lang::ast::File;
 use crate::report::model::{FileReport, RunReport, SETUP_ENTRY, Status};
@@ -81,50 +82,26 @@ pub(crate) async fn run_files(
     settings: &RunSettings,
 ) -> Result<RunReport, RunnerError> {
     let started = Instant::now();
-    let inputs: Vec<PathBuf> = files.iter().map(|file| file.path.clone()).collect();
-    if settings.flags.save_storage.is_some() && artifacts::dedup_flows(&inputs)?.len() > 1 {
-        return Err(RunnerError::SaveStorageManyFiles {
-            count: artifacts::dedup_flows(&inputs)?.len(),
-        });
-    }
-    let cwd = PathBuf::from(".");
-
-    // Setup flows are planned first so they run first and dedup against
-    // inputs that name the same file.
-    let mut setup_paths: Vec<PathBuf> = Vec::new();
-    for file in files {
-        if let Some(path) = setup_path_for(file) {
-            if !setup_paths.contains(&path) {
-                setup_paths.push(path);
-            }
-        }
-    }
-    let planned: Vec<PathBuf> = setup_paths.iter().chain(inputs.iter()).cloned().collect();
-    let flows = artifacts::plan_flows(&settings.artifacts_dir, &cwd, &planned)?;
-    let setup_canonicals: Vec<PathBuf> = flows
-        .iter()
-        .take(artifacts::dedup_flows(&setup_paths)?.len())
-        .map(|flow| flow.canonical.clone())
-        .collect();
-    let state_dir = env::temp_dir().join(format!("whirl-setup-{}", process::id()));
-    let launch = resolve_launch()?;
-
-    let all_files: Vec<&File> = files.iter().chain(setups.iter()).collect();
-    let jobs = build_jobs(&all_files, &flows, &setup_canonicals, &state_dir)?;
-    let (setup_jobs, main_jobs): (Vec<FlowJob>, Vec<FlowJob>) = jobs
-        .into_iter()
-        .partition(|job| setup_canonicals.contains(&job.canonical));
-    let workers = settings
-        .jobs
-        .unwrap_or_else(default_jobs)
-        .clamp(1, setup_jobs.len().max(main_jobs.len()).max(1));
+    let files = files.to_vec();
+    let setups = setups.to_vec();
+    let settings = settings.clone();
+    let PreparedRun {
+        setup_jobs,
+        main_jobs,
+        state_dir,
+        launch,
+        workers,
+        settings,
+    } = spawn_blocking(move || PreparedRun::try_new(&files, &setups, settings))
+        .await
+        .expect("run preparation does not panic")?;
     let stop = Arc::new(AtomicBool::new(false));
-    let settings = Arc::new(settings.clone());
+    let settings = Arc::new(settings);
 
     let mut reports = Vec::new();
     let mut handoffs: HashMap<PathBuf, SetupResult> = HashMap::new();
     if !setup_jobs.is_empty() {
-        if let Err(error) = fs::create_dir_all(&state_dir) {
+        if let Err(error) = fs::create_dir_all(&state_dir).await {
             return Err(RunnerError::Artifacts(ArtifactsError::Canonicalize {
                 path:   state_dir,
                 source: error,
@@ -174,12 +151,91 @@ pub(crate) async fn run_files(
     reports.extend(outcomes.into_iter().flatten().map(|outcome| outcome.report));
     // The saved setup states hold session cookies; do not leave them
     // behind (SPEC 11).
-    let _ = fs::remove_dir_all(&state_dir);
+    let _ = fs::remove_dir_all(&state_dir).await;
 
     Ok(RunReport {
         duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
         files:       reports,
     })
+}
+
+/// Filesystem preparation runs on the blocking pool, including path
+/// canonicalization, artifact collision checks, and installed-shim lookup.
+struct PreparedRun {
+    setup_jobs: Vec<FlowJob>,
+    main_jobs:  Vec<FlowJob>,
+    state_dir:  PathBuf,
+    launch:     ShimLaunch,
+    workers:    usize,
+    settings:   RunSettings,
+}
+
+impl PreparedRun {
+    fn try_new(
+        files: &[File],
+        setups: &[File],
+        mut settings: RunSettings,
+    ) -> Result<Self, RunnerError> {
+        let inputs: Vec<PathBuf> = files.iter().map(|file| file.path.clone()).collect();
+        if settings.flags.save_storage.is_some() && artifacts::dedup_flows(&inputs)?.len() > 1 {
+            return Err(RunnerError::SaveStorageManyFiles {
+                count: artifacts::dedup_flows(&inputs)?.len(),
+            });
+        }
+        let cwd = PathBuf::from(".");
+
+        // Setup flows are planned first so they run first and dedup against
+        // inputs that name the same file.
+        let mut setup_paths: Vec<PathBuf> = Vec::new();
+        for file in files {
+            if let Some(path) = setup_path_for(file) {
+                if !setup_paths.contains(&path) {
+                    setup_paths.push(path);
+                }
+            }
+        }
+        let planned: Vec<PathBuf> = setup_paths.iter().chain(inputs.iter()).cloned().collect();
+        let flows = artifacts::plan_flows(&settings.artifacts_dir, &cwd, &planned)?;
+        let setup_canonicals: Vec<PathBuf> = flows
+            .iter()
+            .take(artifacts::dedup_flows(&setup_paths)?.len())
+            .map(|flow| flow.canonical.clone())
+            .collect();
+        let state_dir = env::temp_dir().join(format!("whirl-setup-{}", process::id()));
+        let launch = resolve_launch()?;
+
+        let all_files: Vec<&File> = files.iter().chain(setups.iter()).collect();
+        let jobs = build_jobs(&all_files, &flows, &setup_canonicals, &state_dir)?;
+        let (setup_jobs, main_jobs): (Vec<FlowJob>, Vec<FlowJob>) = jobs
+            .into_iter()
+            .partition(|job| setup_canonicals.contains(&job.canonical));
+        let workers = settings
+            .jobs
+            .unwrap_or_else(default_jobs)
+            .clamp(1, setup_jobs.len().max(main_jobs.len()).max(1));
+
+        // Normalize CLI paths once, before workers construct wire messages.
+        for input in [
+            &mut settings.overrides.storage,
+            &mut settings.flags.save_storage,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            *input = path::absolute(&*input).map_err(|source| ArtifactsError::Canonicalize {
+                path: input.clone(),
+                source,
+            })?;
+        }
+        Ok(Self {
+            setup_jobs,
+            main_jobs,
+            state_dir,
+            launch,
+            workers,
+            settings,
+        })
+    }
 }
 
 /// The default worker count: the logical CPU count (SPEC 12).

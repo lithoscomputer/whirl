@@ -599,8 +599,8 @@ css:"#dialog-result" text == dismissed
 fn saved_storage_state_logs_the_second_flow_in() {
     let server = SiteServer::start();
     let dir = TestDir::new();
-    let state = dir.path.join("state.json");
-    let state_arg = state.to_str().expect("utf-8 path");
+    let state = dir.path.join("nested/state.json");
+    let state_arg = "nested/state.json";
 
     // A login flow sets localStorage and a cookie, and --save-storage
     // writes the final context state.
@@ -629,7 +629,7 @@ css:"#status" text == "logged in"
     dir.file(
         "reuse.whirl",
         &format!(
-            "[Options]\nbase: {base}\nstorage: state.json\n\n\
+            "[Options]\nbase: {base}\nstorage: nested/state.json\n\n\
              VISIT /login.html\n[Asserts]\ncss:\"#status\" text == \"already logged in\"\n",
             base = server.base()
         ),
@@ -637,6 +637,9 @@ css:"#status" text == "logged in"
     let output = run_whirl(&dir, &["reuse.whirl"]);
     let stdout = stdout_text(&output);
     assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+    // CLI storage paths also resolve against the process working directory.
+    let output = run_whirl(&dir, &["--storage", state_arg, "reuse.whirl"]);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{}", stdout_text(&output));
 }
 
 #[test]

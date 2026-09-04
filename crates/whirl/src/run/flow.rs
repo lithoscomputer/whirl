@@ -4,9 +4,9 @@
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;
-use std::{env, fs};
 
 use serde_json::Value as Json;
+use tokio::fs;
 
 use crate::lang::ast::{
     self, BrowserKind, DialogPolicy, DurationLit, File, FileOption, OptionValue, ReducedMotion,
@@ -691,11 +691,7 @@ impl FlowExec<'_> {
                     &name.text,
                     browser_name(self.options.browser),
                 );
-                if self.run.flags.update_snapshots {
-                    if let Some(parent) = baseline.parent() {
-                        let _ = fs::create_dir_all(parent);
-                    }
-                }
+                // The shim's snapshot writer creates the baseline directory.
                 StepCommand::Snapshot {
                     baseline_path: baseline.to_string_lossy().into_owned(),
                     actual_path:   self
@@ -1165,19 +1161,10 @@ impl EntryReport {
     }
 }
 
-/// A path rendered for the wire. The shim protocol declares every path
-/// param as absolute, so a relative CLI path (`--storage`,
-/// `--save-storage`) resolves against the current working directory
-/// first. When the working directory is unreadable, the path is sent as
-/// given — the shim inherits the same directory either way.
+/// Flow paths are canonical; CLI paths are made absolute during run
+/// preparation. Rendering a wire path performs no filesystem access.
 fn wire_path(path: &Path) -> String {
-    if path.is_absolute() {
-        return path.to_string_lossy().into_owned();
-    }
-    match env::current_dir() {
-        Ok(cwd) => cwd.join(path).to_string_lossy().into_owned(),
-        Err(_) => path.to_string_lossy().into_owned(),
-    }
+    path.to_string_lossy().into_owned()
 }
 
 /// The `startFlow` params of one flow (protocol section 3).
@@ -1284,7 +1271,7 @@ pub(crate) async fn run_flow(run: &FlowRun<'_>, client: &mut ShimClient) -> Flow
         }
     };
 
-    if let Err(error) = fs::create_dir_all(run.abs_dir) {
+    if let Err(error) = fs::create_dir_all(run.abs_dir).await {
         let message = format!(
             "cannot create artifact directory '{dir}': {error}",
             dir = run.abs_dir.display()
@@ -1471,19 +1458,6 @@ mod tests {
         let options = resolve_options(&file, canonical, &mut vars, &Overrides::default())
             .expect("options resolve");
         assert_eq!(options.storage, Some(PathBuf::from("/real/dir/st.json")));
-    }
-
-    #[test]
-    fn wire_paths_are_absolute() {
-        // The shim protocol declares every path param as absolute, so a
-        // relative `--storage` / `--save-storage` path resolves against
-        // the current working directory before crossing the wire.
-        let cwd = env::current_dir().expect("the working directory is readable");
-        assert_eq!(
-            wire_path(Path::new("nested/state.json")),
-            cwd.join("nested/state.json").to_string_lossy()
-        );
-        assert_eq!(wire_path(Path::new("/abs/state.json")), "/abs/state.json");
     }
 
     #[test]
