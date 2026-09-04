@@ -65,6 +65,7 @@ Creates the browser context and page for one flow. Params:
   "dialogs": "dismiss" | "accept",
   "allowHosts": ["example.com", "*.example.com"] | null,
   "navTimeoutMs": 30000,
+  "userAgent": "Mozilla/5.0 ..." | null,
   "video": {"tempDir": "abs path", "finalPath": "abs path"} | null,
   "harPath": "abs path" | null,
   "trace": false
@@ -81,6 +82,8 @@ Result: `{}`.
   `data:` and `blob:` URLs are always allowed.
 - `dialogs` installs an auto-dismiss or auto-accept handler for alert,
   confirm, and prompt.
+- `userAgent` sets the context's user agent string; `null` keeps the
+  engine default.
 - `trace: true` starts Playwright tracing (screenshots and snapshots on).
 - `video` records video into `tempDir`; at `endFlow` the shim moves the
   recording to `finalPath`.
@@ -127,10 +130,11 @@ Commands and their extra params (result `{}` unless noted):
 
 | cmd | params |
 | --- | --- |
-| `visit` | `url` (absolute; Rust resolved `base`) |
+| `visit` | `url` (absolute; Rust resolved `base`); resolves at the new document's `DOMContentLoaded`, not `load` |
 | `click` | `locator` |
 | `dblclick` | `locator` |
 | `fill` | `locator`, `value` |
+| `type` | `locator`, `text` (one key event per character via `pressSequentially`) |
 | `press` | `locator` (or `null`), `key` |
 | `checkbox` | `locator`, `checked` (bool; CHECK/UNCHECK) |
 | `selectOption` | `locator`, `label` |
@@ -139,6 +143,7 @@ Commands and their extra params (result `{}` unless noted):
 | `screenshot` | `path` (absolute .png; full page) |
 | `snapshot` | `baselinePath`, `actualPath`, `diffPath`, `update` (bool) |
 | `evalAction` | `script` |
+| `store` | `scope` (`"local"` \| `"session"` \| `"cookie"`), `key`, `value` — writes one `localStorage` or `sessionStorage` entry on the current origin, or one cookie for the current page's URL (host, path `/`, no attributes); `cookie` on a non-http(s) page is an `action` error |
 | `page` | `expect` (section 4.2) |
 | `assert` | `spec` (section 4.3) |
 | `capture` | `source`, `filter` (section 4.4); result `{"value": "..."}` |

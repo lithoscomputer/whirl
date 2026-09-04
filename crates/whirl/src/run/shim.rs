@@ -175,6 +175,7 @@ pub struct StartFlowParams {
     pub dialogs:            String,
     pub allow_hosts:        Option<Vec<String>>,
     pub nav_timeout_ms:     u64,
+    pub user_agent:         Option<String>,
     pub video:              Option<VideoParams>,
     pub har_path:           Option<String>,
     pub trace:              bool,
@@ -215,6 +216,10 @@ pub enum StepCommand {
         locator: Json,
         value:   String,
     },
+    Type {
+        locator: Json,
+        text:    String,
+    },
     Press {
         locator: Option<Json>,
         key:     String,
@@ -247,6 +252,11 @@ pub enum StepCommand {
     },
     EvalAction {
         script: String,
+    },
+    Store {
+        scope: String,
+        key:   String,
+        value: String,
     },
     Page {
         expect: Json,
@@ -768,6 +778,14 @@ mod tests {
                 serde_json::json!({"locator": locator, "value": "text"}),
             ),
             (
+                StepCommand::Type {
+                    locator: locator.clone(),
+                    text:    "424242".to_owned(),
+                },
+                "type",
+                serde_json::json!({"locator": locator, "text": "424242"}),
+            ),
+            (
                 StepCommand::Press {
                     locator: None,
                     key:     "Enter".to_owned(),
@@ -827,6 +845,24 @@ mod tests {
                     "diffPath": "/abs/diff.png",
                     "update": false,
                 }),
+            ),
+            (
+                StepCommand::Store {
+                    scope: "local".to_owned(),
+                    key:   "onboarding:done".to_owned(),
+                    value: "yes".to_owned(),
+                },
+                "store",
+                serde_json::json!({"scope": "local", "key": "onboarding:done", "value": "yes"}),
+            ),
+            (
+                StepCommand::Store {
+                    scope: "cookie".to_owned(),
+                    key:   "chat_version".to_owned(),
+                    value: "v1".to_owned(),
+                },
+                "store",
+                serde_json::json!({"scope": "cookie", "key": "chat_version", "value": "v1"}),
             ),
             (
                 StepCommand::EvalAction {

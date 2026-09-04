@@ -217,6 +217,7 @@ pub enum FileOption {
     AllowHosts(Vec<Value>),
     Dialogs(OptionValue<DialogPolicy>),
     Storage(Value),
+    UserAgent(Value),
 }
 
 /// An `[Options]` line with its source position.
@@ -256,6 +257,11 @@ pub enum ActionKind {
         target: Locator,
         value:  Value,
     },
+    /// `TYPE locator "text"` sends one key event per character.
+    Type {
+        target: Locator,
+        text:   Value,
+    },
     /// `PRESS "Key"` has no target; `PRESS locator "Key"` has one.
     Press {
         target: Option<Locator>,
@@ -288,6 +294,30 @@ pub enum ActionKind {
     Eval {
         script: Value,
     },
+    /// `STORE local "key" "value"` writes one browser storage entry.
+    Store {
+        scope: StoreScope,
+        key:   Value,
+        value: Value,
+    },
+}
+
+/// Browser storage a `STORE` action writes to (SPEC 7).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StoreScope {
+    Local,
+    Session,
+    Cookie,
+}
+
+impl StoreScope {
+    pub fn keyword(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Session => "session",
+            Self::Cookie => "cookie",
+        }
+    }
 }
 
 impl ActionKind {
@@ -296,6 +326,7 @@ impl ActionKind {
     pub fn default_engine(&self) -> Option<DefaultEngine> {
         match self {
             Self::Fill { .. }
+            | Self::Type { .. }
             | Self::Select { .. }
             | Self::Check { .. }
             | Self::Uncheck { .. }
@@ -307,7 +338,8 @@ impl ActionKind {
             Self::Visit { .. }
             | Self::Screenshot { .. }
             | Self::Snapshot { .. }
-            | Self::Eval { .. } => None,
+            | Self::Eval { .. }
+            | Self::Store { .. } => None,
         }
     }
 }

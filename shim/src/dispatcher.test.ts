@@ -136,6 +136,7 @@ const startFlowParams = JSON.stringify({
 	dialogs: "dismiss",
 	allowHosts: null,
 	navTimeoutMs: 30000,
+	userAgent: null,
 	video: null,
 	harPath: null,
 	trace: false,

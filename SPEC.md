@@ -107,10 +107,13 @@ The `[Options]` section holds `key: value` lines. V1 keys:
 | `allow-hosts` | glob list | all hosts | Hosts the browser may reach; requests to others are aborted |
 | `dialogs` | `dismiss` \| `accept` | `dismiss` | Automatic response to alert, confirm, and prompt dialogs |
 | `storage` | file path | none | Saved storage state loaded into each file's browser context |
+| `user-agent` | string | engine default | User agent string the browser sends and reports |
 
 `allow-hosts` takes one or more host globs (`allow-hosts: example.com *.example.com`). Globs match the request's hostname only — scheme and port are ignored — and `*.example.com` does not match the apex `example.com`; list both to cover both. The `base` host is always allowed. Whirl aborts requests to any other host, including fetch/XHR, WebSockets, and subresources, and the reports list every blocked host. Service workers are disabled when `allow-hosts` is set, because they can bypass request routing. IP-literal hosts match textually; `data:` and `blob:` URLs have no host and are always allowed. Without the option, all hosts are allowed.
 
 `storage` names a Playwright storageState JSON file, resolved relative to the `.whirl` file. Each browser context starts from that saved state (cookies and local storage) instead of empty, so flows can skip UI login. Produce the file with `--save-storage`, which writes the final context state of a successful run — typically of a dedicated login flow.
+
+`user-agent` replaces the browser's user agent string for the flow's context, in request headers and in `navigator.userAgent`. It exists for testing an app's own user-agent handling and for apps that gate on the string, such as bot protection that rejects headless Chromium's `HeadlessChrome` token. Quote the value, since it contains spaces.
 
 Unknown keys are a parse error. When section 13 defines a corresponding command-line flag, that flag overrides the file option.
 
@@ -156,22 +159,32 @@ An action is a verb, an optional locator, and an optional value. Element-targeti
 
 | Syntax | Meaning |
 | --- | --- |
-| `VISIT url` | Navigate. A `url` starting with `/` resolves against `base`. |
+| `VISIT url` | Navigate, and continue once the new document has parsed. A `url` starting with `/` resolves against `base`. |
 | `CLICK locator` | Click the element. |
 | `DBLCLICK locator` | Double-click the element. |
 | `FILL locator "text"` | Replace the input's content with `text`. |
+| `TYPE locator "text"` | Focus the element, then send one key event per character of `text`. |
 | `PRESS "Key"` | Send a key or chord (Playwright key names, for example `"Enter"`, `"Control+A"`) to the focused element. |
 | `PRESS locator "Key"` | Focus the element, then send the key. |
-| `CHECK locator` | Set a checkbox or radio to checked. |
-| `UNCHECK locator` | Set a checkbox to unchecked. |
+| `CHECK locator` | Set a checkbox, radio, or switch to checked. |
+| `UNCHECK locator` | Set a checkbox or switch to unchecked. |
 | `SELECT locator "Label"` | Choose the `<select>` option with visible text `Label`. |
 | `HOVER locator` | Move the pointer over the element. |
 | `UPLOAD locator file:path` | Set the file input to `path`, resolved relative to the `.whirl` file. |
 | `SCREENSHOT name` | Save a full-page screenshot as artifact `name.png`. Never fails the entry (see below). |
 | `SNAPSHOT name` | Compare a full-page screenshot against the stored baseline; fails the entry on visual difference. |
 | `EVAL "script"` | Run a JavaScript script in the page. The escape hatch; rules below. |
+| `STORE local "key" "value"` | Write one `localStorage` entry on the current page's origin. |
+| `STORE session "key" "value"` | Write one `sessionStorage` entry on the current page's origin. |
+| `STORE cookie "name" "value"` | Set one cookie for the current page's host, with path `/`. |
 
 `PRESS` with a single argument treats it as the key: `PRESS Enter` presses Enter on the focused element, even though `Enter` could also parse as a locator. Only when two arguments are present is the first a locator.
+
+`CHECK` and `UNCHECK` are idempotent: a control already in the requested state is left alone. On a native checkbox or radio input, Whirl focuses the input and presses Space, which works whether the input is visible or hidden behind a styled track, as Chakra, Radix, and Headless UI switches hide theirs; a click on such an input would wait out the timeout. On any other control, such as a `role="switch"` button, Whirl clicks it. Both paths verify the resulting state and fail the entry with the expected and actual states when the page did not toggle. A radio button cannot be unchecked; `CHECK` another one in its group. A control hidden with `display: none` cannot take focus, and the error says so; locate the visible control instead.
+
+`FILL` is the default way to enter text: it sets the value and fires one `input` event, which is what a plain field expects. `TYPE` is for the pages that listen for keys instead — segmented one-time-code inputs, masked fields, autocomplete boxes, and rich-text editors ignore a plain fill. It focuses the element and sends a `keydown`, `keypress`, `input`, and `keyup` per character, as Playwright's `pressSequentially` does. `TYPE` does not clear the element first. Use `FILL` unless the page needs key events; a flow that reaches for `TYPE` to slow down typing wants an assertion on the state the page should reach, not a slower `TYPE`.
+
+`STORE` sets browser storage that a page reads to decide what to show — an onboarding flag, a dismissed banner, a feature switch — so a flow can skip a one-time screen without clicking through it or reaching for `EVAL`. `local` names `localStorage` and `session` names `sessionStorage`; both are per origin, so `STORE` runs against the origin of the current page, after a `VISIT` has landed there. `cookie` sets a session cookie for the current page's host with path `/` and no other attributes: no `Secure`, `HttpOnly`, `SameSite`, or expiry. That covers routing flags and feature switches, which is what `STORE` is for; a flow that needs an `HttpOnly` cookie is testing the server and should start from a saved `storage` state instead. A cookie is sent with the next request, so a page whose server reads it needs a second `VISIT`. `cookie` on a page without an http or https origin, such as a `data:` URL, fails the entry. `STORE` writes once and does not retry. A page that reads the key only while loading needs a second `VISIT` to see the value; a page that re-reads it on render picks the value up on its own. Values are strings, as in the browser; write `"true"` or `done`, not a number or a boolean. Section 11's masking applies to `STORE` values like any other line, so a masked variable stays masked in reports.
 
 `SCREENSHOT` never fails the entry, even when it goes wrong: if the capture or the file write fails — a crashed page, an I/O error, or its step timeout expiring — Whirl skips the artifact and records a warning naming the screenshot and the cause, in the console output and in both reports, so a missing artifact is always explained. One cap outranks this: an expiring `entry-timeout` fails the entry as usual, whatever line is in flight.
 
@@ -275,6 +288,7 @@ Whirl masks every value sourced from `env.*` in the textual output it generates:
 - **Isolation.** Each file runs in a fresh browser context with its own single page. Without the `storage` option the context starts empty; with it, the context starts from the saved storage state. Files never share live state either way.
 - **Order.** Entries run top to bottom. Within an entry: actions, then `PAGE`, then asserts, then captures.
 - **Failure.** The first failing step fails the entry, and a failed entry stops its file; remaining entries in that file are skipped and reported as skipped. Other files still run. On failure Whirl saves a full-page screenshot and, with `--trace`, a Playwright trace to the artifacts directory.
+- **Navigation.** `VISIT` completes when the new document reaches `DOMContentLoaded`: the HTML is parsed and its synchronous scripts have run. It does not wait for the `load` event, because images, fonts, iframes, and media hold `load` open for reasons a flow never asserted, and every later line waits for what it needs anyway: actions wait for their element to be actionable, asserts and `PAGE` retry. A page that only becomes usable after `load` needs an assert on that state before an `EVAL` or `SCREENSHOT`, which run once without waiting.
 - **Timeouts.** Each action, PAGE, assert, and capture line gets the step timeout (`step-timeout` option, default 10s); `VISIT` gets the navigation timeout (`nav-timeout` option, default 30s). A trailing `@duration` on any such line overrides its own budget: `CLICK "Generate report" @60s`. The optional `entry-timeout` option caps an entry's total time across all of its lines; when it expires, the in-flight step fails with an entry-timeout error. An entry without one is still bounded by its per-step timeouts. The suffix must be bare: a line’s final bare token of the form `@duration` is always its timeout, and a quoted `"@60s"` is an ordinary value. Timeouts are enforced from outside the page, so they hold even when the page cannot respond — an `EVAL` script blocking the renderer or returning a Promise that never settles. When a timed-out step cannot be cancelled cleanly, Whirl closes that flow's browser context; if closing also stalls, it terminates and restarts only that worker's shim process. Either way the flow fails and reports normally, and other files are unaffected.
 - **Parallelism.** Files run in parallel across worker slots (`--jobs`, default: logical CPU count). A single file is never parallelized.
 - **Dialogs.** `alert`, `confirm`, and `prompt` dialogs are auto-dismissed by default. The `dialogs: accept` option auto-accepts them instead.
@@ -310,6 +324,7 @@ whirl fmt [--check] <PATH>...    Rewrite files to canonical form
 | `--storage PATH` | Override the storage option |
 | `--save-storage PATH` | Write the final storage state after a successful run (single file only) |
 | `--entry-timeout DURATION` | Override the entry-timeout option |
+| `--user-agent UA` | Override the user-agent option |
 
 Exit codes:
 
@@ -359,6 +374,7 @@ action-body = "VISIT" , value
            | "CLICK" , locator
            | "DBLCLICK" , locator
            | "FILL" , locator , value
+           | "TYPE" , locator , value
            | "PRESS" , [ locator ] , value
            | "CHECK" , locator
            | "UNCHECK" , locator
@@ -367,7 +383,8 @@ action-body = "VISIT" , value
            | "UPLOAD" , locator , "file:" , value
            | "SCREENSHOT" , name
            | "SNAPSHOT" , name
-           | "EVAL" , value ;
+           | "EVAL" , value
+           | "STORE" , ( "local" | "session" | "cookie" ) , value , value ;
 
 page       = "PAGE" , ( value | "matches" , regex ) , [ step-timeout ] ;
 

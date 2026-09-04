@@ -64,6 +64,7 @@ async fn hello_start_flow_and_end_flow_round_trip() {
         dialogs:            "dismiss".to_owned(),
         allow_hosts:        None,
         nav_timeout_ms:     30_000,
+        user_agent:         None,
         video:              None,
         har_path:           None,
         trace:              false,

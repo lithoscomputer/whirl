@@ -12,7 +12,7 @@ import type {
 	Locator,
 	Page,
 } from "@playwright/test";
-import { chromium, firefox, webkit } from "@playwright/test";
+import { chromium, expect, firefox, webkit } from "@playwright/test";
 import { runAssert, runPage } from "./assertions.js";
 import { runCapture } from "./captures.js";
 import type { ShimDriver } from "./driver.js";
@@ -24,6 +24,7 @@ import {
 	fieldArray,
 	fieldArrayOrNull,
 	fieldBoolean,
+	fieldEnum,
 	fieldNumber,
 	fieldObject,
 	fieldObjectOrNull,
@@ -291,6 +292,7 @@ export class PlaywrightDriver implements ShimDriver {
 			...(params.storageStatePath === null
 				? {}
 				: { storageState: params.storageStatePath }),
+			...(params.userAgent === null ? {} : { userAgent: params.userAgent }),
 			...(params.video === null
 				? {}
 				: { recordVideo: { dir: params.video.tempDir } }),
@@ -414,7 +416,13 @@ export class PlaywrightDriver implements ShimDriver {
 		const page = flow.page;
 		switch (cmd) {
 			case "visit":
-				await page.goto(fieldString(params, "url"), { timeout: timeoutMs });
+				// The flow's later lines wait for what they need (SPEC section 12),
+				// so VISIT only needs a parsed document, not the `load` event that
+				// images, fonts, and media can hold open.
+				await page.goto(fieldString(params, "url"), {
+					timeout: timeoutMs,
+					waitUntil: "domcontentloaded",
+				});
 				return {};
 			case "click":
 				await this.#locatorAction(page, params, (locator) =>
@@ -433,6 +441,13 @@ export class PlaywrightDriver implements ShimDriver {
 				);
 				return {};
 			}
+			case "type": {
+				const text = fieldString(params, "text");
+				await this.#locatorAction(page, params, (locator) =>
+					locator.pressSequentially(text, { timeout: timeoutMs }),
+				);
+				return {};
+			}
 			case "press": {
 				const key = fieldString(params, "key");
 				if (fieldArrayOrNull(params, "locator") === null) {
@@ -447,7 +462,7 @@ export class PlaywrightDriver implements ShimDriver {
 			case "checkbox": {
 				const checked = fieldBoolean(params, "checked");
 				await this.#locatorAction(page, params, (locator) =>
-					locator.setChecked(checked, { timeout: timeoutMs }),
+					this.#setChecked(page, locator, checked, timeoutMs),
 				);
 				return {};
 			}
@@ -494,6 +509,37 @@ export class PlaywrightDriver implements ShimDriver {
 					page,
 					fieldString(params, "script"),
 					timeoutMs,
+				);
+				return {};
+			}
+			case "store": {
+				const scope = fieldEnum(params, "scope", [
+					"local",
+					"session",
+					"cookie",
+				] as const);
+				const key = fieldString(params, "key");
+				const value = fieldString(params, "value");
+				if (scope === "cookie") {
+					const url = page.url();
+					if (!/^https?:/.test(url)) {
+						throw new ShimError(
+							"action",
+							`STORE cookie needs an http or https page; the current page is ${url}`,
+						);
+					}
+					await page.context().addCookies([{ name: key, value, url }]);
+					return {};
+				}
+				await page.evaluate(
+					([storageScope, storageKey, storageValue]) => {
+						const storage =
+							storageScope === "session"
+								? window.sessionStorage
+								: window.localStorage;
+						storage.setItem(storageKey, storageValue);
+					},
+					[scope, key, value] as const,
 				);
 				return {};
 			}
@@ -571,6 +617,74 @@ export class PlaywrightDriver implements ShimDriver {
 		};
 	}
 
+	/**
+	 * CHECK / UNCHECK (SPEC section 7). A native checkbox or radio input is
+	 * focused and toggled with Space, which works whether the input is
+	 * visible or hidden behind a styled switch (Chakra, Radix, and Headless
+	 * UI all hide the input and would make a click time out). Any other
+	 * control, such as a role=switch button, is clicked. Both paths verify
+	 * the resulting state and are idempotent.
+	 */
+	async #setChecked(
+		page: Page,
+		locator: Locator,
+		checked: boolean,
+		timeoutMs: number,
+	): Promise<void> {
+		await locator.waitFor({ state: "attached", timeout: timeoutMs });
+		const control = await locator.evaluate((element) => {
+			const input = element as HTMLInputElement;
+			const native =
+				element.tagName === "INPUT" &&
+				(input.type === "checkbox" || input.type === "radio");
+			return {
+				native,
+				type: native ? input.type : null,
+				checked: native ? input.checked : null,
+				disabled: native ? input.disabled : false,
+			};
+		});
+		if (!control.native) {
+			await locator.setChecked(checked, { timeout: timeoutMs });
+			return;
+		}
+		if (control.checked === checked) {
+			return;
+		}
+		if (control.disabled) {
+			throw new ShimError("action", "the control is disabled");
+		}
+		if (control.type === "radio" && !checked) {
+			throw new ShimError(
+				"action",
+				"a radio button cannot be unchecked; check another one in its group",
+			);
+		}
+		await locator.focus({ timeout: timeoutMs });
+		const focused = await locator.evaluate(
+			(element) => document.activeElement === element,
+		);
+		if (!focused) {
+			throw new ShimError(
+				"action",
+				"the control cannot take focus (is it display: none?); locate the visible control instead",
+			);
+		}
+		await page.keyboard.press("Space");
+		try {
+			await expect(locator).toBeChecked({ checked, timeout: timeoutMs });
+		} catch {
+			throw new ShimError(
+				"action",
+				`the control did not become ${checked ? "checked" : "unchecked"} after pressing Space`,
+				{
+					expected: checked ? "checked" : "unchecked",
+					actual: checked ? "unchecked" : "checked",
+				},
+			);
+		}
+	}
+
 	async #locatorAction(
 		page: Page,
 		params: Params,
@@ -630,6 +744,7 @@ function defaultErrorKind(cmd: StepCommand): ErrorKind {
 		case "click":
 		case "dblclick":
 		case "fill":
+		case "type":
 		case "press":
 		case "checkbox":
 		case "selectOption":
@@ -639,6 +754,8 @@ function defaultErrorKind(cmd: StepCommand): ErrorKind {
 			return "action";
 		case "evalAction":
 			return "eval";
+		case "store":
+			return "action";
 		case "snapshot":
 		case "page":
 		case "assert":

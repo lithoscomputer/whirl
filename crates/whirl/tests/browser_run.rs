@@ -199,6 +199,81 @@ fn press_and_eval_action_and_eval_capture_work() {
 }
 
 #[test]
+fn type_sends_key_events_where_fill_does_not() {
+    let dir = TestDir::new();
+    // The page records every keydown. FILL fires none; TYPE fires one per
+    // character, so the recorder shows only the typed text.
+    let flow = dir.file(
+        "type.whirl",
+        "VISIT \"data:text/html,<input aria-label=\\\"Code\\\" onkeydown=\\\"document.getElementById('k').textContent+=event.key\\\"><div id=k></div>\"\n\
+         FILL \"Code\" 99\n\
+         TYPE \"Code\" 4242\n\
+         [Asserts]\n\
+         label:Code value == 994242\n\
+         css:\"#k\" text == 4242\n",
+    );
+    let output = run_whirl(&dir, &[flow.to_str().expect("utf-8 path")]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+}
+
+#[test]
+fn store_cookie_on_a_data_url_fails_the_entry() {
+    let dir = TestDir::new();
+    // A data: URL has no http origin to attach a cookie to.
+    let flow = dir.file(
+        "cookie.whirl",
+        "VISIT \"data:text/html,<h1>Hi</h1>\"\nSTORE cookie flag v1\n",
+    );
+    let output = run_whirl(&dir, &[flow.to_str().expect("utf-8 path")]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 1, "stdout:\n{stdout}");
+    assert!(
+        stdout.contains("needs an http or https page"),
+        "stdout:\n{stdout}"
+    );
+}
+
+#[test]
+fn the_user_agent_option_and_flag_set_navigator_user_agent() {
+    let dir = TestDir::new();
+    // The file option sets the context's user agent; the flag beats the
+    // file option (SPEC 5, 13).
+    let flow = dir.file(
+        "ua.whirl",
+        "[Options]\nuser-agent: \"Whirl/1 (file option)\"\n\n\
+         VISIT \"data:text/html,<h1>Hi</h1>\"\n\
+         [Captures]\nua: eval \"navigator.userAgent\"\n",
+    );
+    let flow = flow.to_str().expect("utf-8 path");
+    let output = run_whirl(&dir, &["--report-json", "report.json", flow]);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{}", stdout_text(&output));
+    let report: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(dir.path.join("report.json")).expect("report"))
+            .expect("valid JSON report");
+    assert_eq!(
+        report["files"][0]["entries"][0]["captures"]["ua"], "Whirl/1 (file option)",
+        "report:\n{report}"
+    );
+
+    let output = run_whirl(&dir, &[
+        "--user-agent",
+        "Whirl/1 (flag)",
+        "--report-json",
+        "report.json",
+        flow,
+    ]);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{}", stdout_text(&output));
+    let report: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(dir.path.join("report.json")).expect("report"))
+            .expect("valid JSON report");
+    assert_eq!(
+        report["files"][0]["entries"][0]["captures"]["ua"], "Whirl/1 (flag)",
+        "report:\n{report}"
+    );
+}
+
+#[test]
 fn a_run_writes_json_and_junit_reports_with_masking() {
     let dir = TestDir::new();
     let secret = "hunter2-report-secret";

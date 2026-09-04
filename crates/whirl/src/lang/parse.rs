@@ -14,8 +14,8 @@ use crate::lang::ast::{
     Action, ActionKind, Assert, AssertBody, BrowserKind, Capture, CaptureSource, Comment,
     DialogPolicy, DurationLit, DurationUnit, Entry, Extractor, File, FileOption, Ident, Locator,
     LocatorSegment, NumOp, OptionLine, OptionValue, Page, PageCheck, Regex, RegexFlags,
-    SegmentKind, Span, StateCheck, StrCheck, TextPrefix, Value, ValueSegment, ValueSource,
-    Viewport,
+    SegmentKind, Span, StateCheck, StoreScope, StrCheck, TextPrefix, Value, ValueSegment,
+    ValueSource, Viewport,
 };
 
 /// A parse diagnostic (SPEC 16): file, line, column, the source line, a
@@ -790,11 +790,12 @@ fn split_timeout(tokens: &mut Vec<RawToken>) -> Option<DurationLit> {
     Some(duration)
 }
 
-const ACTION_KEYWORDS: [&str; 13] = [
+const ACTION_KEYWORDS: [&str; 15] = [
     "VISIT",
     "CLICK",
     "DBLCLICK",
     "FILL",
+    "TYPE",
     "PRESS",
     "CHECK",
     "UNCHECK",
@@ -804,6 +805,7 @@ const ACTION_KEYWORDS: [&str; 13] = [
     "SCREENSHOT",
     "SNAPSHOT",
     "EVAL",
+    "STORE",
 ];
 
 fn one_value(mut tokens: Vec<RawToken>, keyword_span: Span) -> Result<Value, LineError> {
@@ -816,6 +818,47 @@ fn one_value(mut tokens: Vec<RawToken>, keyword_span: Span) -> Result<Value, Lin
         return Err(LineError::new(keyword_span, "expected a value").expecting(["a value"]));
     };
     token.into_value()
+}
+
+/// Parses `STORE scope key value` (SPEC 7): a bare storage scope, then
+/// exactly two values.
+fn parse_store(tokens: Vec<RawToken>, keyword_span: Span) -> Result<ActionKind, LineError> {
+    let scope_expected = ["local", "session", "cookie"];
+    let mut tokens = tokens.into_iter();
+    let Some(scope_token) = tokens.next() else {
+        return Err(
+            LineError::new(keyword_span, "expected a storage scope").expecting(scope_expected)
+        );
+    };
+    let scope = match scope_token.bare_single() {
+        Some("local") => StoreScope::Local,
+        Some("session") => StoreScope::Session,
+        Some("cookie") => StoreScope::Cookie,
+        _ => {
+            return Err(LineError::new(scope_token.span, "expected a storage scope")
+                .expecting(scope_expected));
+        }
+    };
+    let value_expected = ["a key and a value"];
+    let Some(key) = tokens.next() else {
+        return Err(
+            LineError::new(scope_token.span, "expected a key and a value")
+                .expecting(value_expected),
+        );
+    };
+    let Some(value) = tokens.next() else {
+        return Err(
+            LineError::new(key.span, "expected a value after the key").expecting(["a value"])
+        );
+    };
+    if let Some(extra) = tokens.next() {
+        return Err(LineError::new(extra.span, "expected end of line").expecting(["@duration"]));
+    }
+    Ok(ActionKind::Store {
+        scope,
+        key: key.into_value()?,
+        value: value.into_value()?,
+    })
 }
 
 /// Splits `locator value` tokens: the final token is the value, everything
@@ -893,6 +936,10 @@ fn parse_action_body(
             let (target, value) = locator_and_value(tokens, keyword_span, true)?;
             ActionKind::Fill { target, value }
         }
+        "TYPE" => {
+            let (target, text) = locator_and_value(tokens, keyword_span, true)?;
+            ActionKind::Type { target, text }
+        }
         "SELECT" => {
             let (target, option) = locator_and_value(tokens, keyword_span, true)?;
             ActionKind::Select { target, option }
@@ -905,6 +952,7 @@ fn parse_action_body(
         "SNAPSHOT" => ActionKind::Snapshot {
             name: parse_name(tokens, keyword_span)?,
         },
+        "STORE" => parse_store(tokens, keyword_span)?,
         "EVAL" => ActionKind::Eval {
             script: one_value(tokens, keyword_span)?,
         },
@@ -1361,7 +1409,7 @@ fn parse_capture_body(
     })
 }
 
-const OPTION_KEYS: [&str; 9] = [
+const OPTION_KEYS: [&str; 10] = [
     "base",
     "browser",
     "viewport",
@@ -1371,6 +1419,7 @@ const OPTION_KEYS: [&str; 9] = [
     "allow-hosts",
     "dialogs",
     "storage",
+    "user-agent",
 ];
 
 /// Shape-validates a literal option value at parse time; a value with
@@ -1480,6 +1529,7 @@ fn parse_option_line(first: RawToken, cursor: &mut Cursor) -> Result<FileOption,
             ])?))
         }
         "storage" => Ok(FileOption::Storage(value)),
+        "user-agent" => Ok(FileOption::UserAgent(value)),
         key => unreachable!("option key `{key}` was validated against OPTION_KEYS"),
     }
 }
@@ -2442,9 +2492,9 @@ role:alert text contains "Added to cart"
 
     #[test]
     fn every_option_key_parses() {
-        let source = "[Options]\nbase: https://shop.example.com\nbrowser: firefox\nviewport: 1280x800\nstep-timeout: 5s\nentry-timeout: 90s\nnav-timeout: 500ms\nallow-hosts: example.com *.example.com\ndialogs: accept\nstorage: auth/state.json\nVISIT /\n";
+        let source = "[Options]\nbase: https://shop.example.com\nbrowser: firefox\nviewport: 1280x800\nstep-timeout: 5s\nentry-timeout: 90s\nnav-timeout: 500ms\nallow-hosts: example.com *.example.com\ndialogs: accept\nstorage: auth/state.json\nuser-agent: \"Whirl/1 (test)\"\nVISIT /\n";
         let file = parse(source);
-        assert_eq!(file.options.len(), 9);
+        assert_eq!(file.options.len(), 10);
         let options: Vec<&FileOption> = file.options.iter().map(|line| &line.option).collect();
         let FileOption::Base(base) = options[0] else {
             panic!("expected base");
@@ -2498,6 +2548,10 @@ role:alert text contains "Added to cart"
             panic!("expected storage");
         };
         assert_eq!(lit(storage), "auth/state.json");
+        let FileOption::UserAgent(user_agent) = options[9] else {
+            panic!("expected user-agent");
+        };
+        assert_eq!(lit(user_agent), "Whirl/1 (test)");
     }
 
     #[test]
@@ -2815,6 +2869,63 @@ role:alert text contains "Added to cart"
         assert_eq!(default_segment_text(target), "Email");
         assert_eq!(lit(value), "alice@example.com");
         assert_eq!(kind.default_engine(), Some(DefaultEngine::Label));
+    }
+
+    #[test]
+    fn type_takes_locator_and_text_with_the_label_engine() {
+        let kind = action_kind("TYPE \"Enter verification code\" 424242");
+        let ActionKind::Type { target, text } = &kind else {
+            panic!("expected TYPE");
+        };
+        assert_eq!(default_segment_text(target), "Enter verification code");
+        assert_eq!(lit(text), "424242");
+        assert_eq!(kind.default_engine(), Some(DefaultEngine::Label));
+    }
+
+    #[test]
+    fn type_with_one_argument_is_an_error() {
+        let error = parse_err("VISIT /\nTYPE 424242\n");
+        assert!(
+            error.message.contains("expected a locator and a value"),
+            "message: {}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn store_takes_a_scope_a_key_and_a_value() {
+        let kind = action_kind("STORE local onboarding:done \"yes\"");
+        let ActionKind::Store { scope, key, value } = &kind else {
+            panic!("expected STORE");
+        };
+        assert_eq!(*scope, StoreScope::Local);
+        assert_eq!(lit(key), "onboarding:done");
+        assert_eq!(lit(value), "yes");
+        assert_eq!(kind.default_engine(), None);
+    }
+
+    #[test]
+    fn store_accepts_the_session_and_cookie_scopes() {
+        let ActionKind::Store { scope, .. } = action_kind("STORE session draft \"hi\"") else {
+            panic!("expected STORE");
+        };
+        assert_eq!(scope, StoreScope::Session);
+        let ActionKind::Store { scope, .. } = action_kind("STORE cookie chat_version v1") else {
+            panic!("expected STORE");
+        };
+        assert_eq!(scope, StoreScope::Cookie);
+    }
+
+    #[test]
+    fn store_rejects_an_unknown_scope_and_a_missing_value() {
+        let error = parse_err("VISIT /\nSTORE global flag on\n");
+        assert_eq!(error.message, "expected a storage scope");
+        assert!(error.expected.iter().any(|alt| alt == "local"));
+        assert!(error.expected.iter().any(|alt| alt == "cookie"));
+        let error = parse_err("VISIT /\nSTORE local flag\n");
+        assert_eq!(error.message, "expected a value after the key");
+        let error = parse_err("VISIT /\nSTORE local flag on extra\n");
+        assert_eq!(error.message, "expected end of line");
     }
 
     #[test]

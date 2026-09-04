@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Duration;
 use std::{env, fs, process, thread};
 
 use tiny_http::{Header, Response, Server};
@@ -92,6 +93,17 @@ fn respond(request: tiny_http::Request) {
     let path = url.split('?').next().unwrap_or("/").trim_start_matches('/');
     // The redirect test needs a server-side 302 to this same server
     // under its other loopback hostname.
+    // The slow-load test needs a subresource that keeps the page's load
+    // event pending well past the navigation timeout.
+    if path == "stall" {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the test's blocking HTTP server holds a response open on its own OS thread"
+        )]
+        thread::sleep(Duration::from_secs(20));
+        let _ = request.respond(Response::empty(204));
+        return;
+    }
     if path == "redirect-cross" {
         let port = request
             .headers()
@@ -179,6 +191,8 @@ fn platform_tag() -> &'static str {
 const HAPPY_FLOW_BODY: &str = r##"# Fill the form.
 VISIT /form.html
 FILL "Email" alice@example.com
+TYPE "Code" 4242
+CHECK "Notifications"
 FILL placeholder:"Search things" widget
 CLICK testid:save-button
 PRESS placeholder:"Search things" "Enter"
@@ -186,6 +200,9 @@ SCREENSHOT overview
 [Asserts]
 role:heading "Form page" visible
 label:Email value == alice@example.com
+label:Code value == 4242
+css:"#typed-keys" text == 4242
+label:Notifications checked
 placeholder:"Search things" value == widget
 placeholder:"Search things" focused
 css:"#press-result" text == enter-pressed
@@ -242,6 +259,88 @@ fn a_full_flow_passes_against_the_site() {
 }
 
 #[test]
+fn check_and_uncheck_handle_hidden_inputs_and_role_switches() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    // "Notifications" is a clipped input behind a styled track, "Dark
+    // mode" is a role=switch button; CHECK twice in a row is a no-op.
+    dir.file(
+        "switch.whirl",
+        "VISIT /form.html\n\
+         CHECK \"Notifications\"\n\
+         CHECK \"Notifications\"\n\
+         [Asserts]\n\
+         label:Notifications checked\n\
+         UNCHECK \"Notifications\"\n\
+         [Asserts]\n\
+         label:Notifications unchecked\n\
+         CHECK role:switch \"Dark mode\"\n\
+         [Asserts]\n\
+         role:switch \"Dark mode\" checked\n\
+         UNCHECK role:switch \"Dark mode\"\n\
+         [Asserts]\n\
+         role:switch \"Dark mode\" unchecked\n",
+    );
+    let output = run_whirl(&dir, &["--base", &server.base(), "switch.whirl"]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+}
+
+#[test]
+fn check_on_a_display_none_input_fails_with_a_focus_message() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file("gone.whirl", "VISIT /form.html\nCHECK \"Gone\"\n");
+    let output = run_whirl(&dir, &["--base", &server.base(), "gone.whirl"]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 1, "stdout:\n{stdout}");
+    assert!(stdout.contains("cannot take focus"), "stdout:\n{stdout}");
+}
+
+#[test]
+fn store_session_and_cookie_reach_the_page_after_the_next_visit() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    // The page mirrors the "flag" sessionStorage entry and the "flag"
+    // cookie while loading, so each STORE shows after a reload.
+    dir.file(
+        "store.whirl",
+        "VISIT /form.html\n\
+         [Asserts]\n\
+         css:\"#session-flag\" text == unset\n\
+         css:\"#cookie-flag\" text == unset\n\
+         STORE session flag \"from session\"\n\
+         STORE cookie flag v1\n\
+         VISIT /form.html\n\
+         [Asserts]\n\
+         css:\"#session-flag\" text == \"from session\"\n\
+         css:\"#cookie-flag\" text == v1\n",
+    );
+    let output = run_whirl(&dir, &["--base", &server.base(), "store.whirl"]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+}
+
+#[test]
+fn visit_completes_at_domcontentloaded_while_a_subresource_stalls_load() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    // The page's image never answers within the navigation timeout, so a
+    // VISIT that waited for `load` would time out here.
+    dir.file(
+        "slow.whirl",
+        &format!(
+            "[Options]\nbase: {base}\nnav-timeout: 3s\n\n\
+             VISIT /slow-load.html\n[Asserts]\nrole:heading \"Parsed\" visible\n",
+            base = server.base()
+        ),
+    );
+    let output = run_whirl(&dir, &["slow.whirl"]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+}
+
+#[test]
 fn asserts_retry_until_delayed_text_appears() {
     let server = SiteServer::start();
     let dir = TestDir::new();
@@ -252,6 +351,27 @@ fn asserts_retry_until_delayed_text_appears() {
         "VISIT /form.html\n[Asserts]\ncss:\"#late\" text == ready\n",
     );
     let output = run_whirl(&dir, &["--base", &server.base(), "waits.whirl"]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+}
+
+#[test]
+fn store_local_is_visible_to_the_page_after_the_next_visit() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    // The page mirrors the "flag" entry while loading, so the first visit
+    // shows "unset", and the value written by STORE shows after a reload.
+    dir.file(
+        "store.whirl",
+        "VISIT /form.html\n\
+         [Asserts]\n\
+         css:\"#stored-flag\" text == unset\n\
+         STORE local flag \"seen it\"\n\
+         VISIT /form.html\n\
+         [Asserts]\n\
+         css:\"#stored-flag\" text == \"seen it\"\n",
+    );
+    let output = run_whirl(&dir, &["--base", &server.base(), "store.whirl"]);
     let stdout = stdout_text(&output);
     assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
 }

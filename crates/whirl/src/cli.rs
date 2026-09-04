@@ -169,6 +169,10 @@ struct RunArgs {
     /// Override the `entry-timeout` option.
     #[arg(long, value_name = "DURATION")]
     entry_timeout: Option<String>,
+
+    /// Override the `user-agent` option.
+    #[arg(long, value_name = "UA")]
+    user_agent: Option<String>,
 }
 
 /// Runs the CLI for the given argv (including the program name) and
@@ -422,6 +426,7 @@ fn build_overrides(args: &RunArgs) -> Result<flow::Overrides, UsageError> {
         entry_timeout_ms: duration("--entry-timeout", &args.entry_timeout)?,
         headed: args.headed,
         storage: args.storage.clone(),
+        user_agent: args.user_agent.clone(),
     })
 }
 

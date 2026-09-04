@@ -137,6 +137,7 @@ export function decodeStartFlowParams(params: Params): StartFlowParams {
 		allowHosts:
 			allowHosts === null ? null : allowHosts.map((host) => String(host)),
 		navTimeoutMs: fieldNumber(params, "navTimeoutMs"),
+		userAgent: fieldStringOrNull(params, "userAgent"),
 		video:
 			video === null
 				? null

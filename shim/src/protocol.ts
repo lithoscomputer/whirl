@@ -288,6 +288,7 @@ export interface StartFlowParams {
 	readonly dialogs: "dismiss" | "accept";
 	readonly allowHosts: readonly string[] | null;
 	readonly navTimeoutMs: number;
+	readonly userAgent: string | null;
 	readonly video: VideoConfig | null;
 	readonly harPath: string | null;
 	readonly trace: boolean;
@@ -310,6 +311,7 @@ export type StepCommand =
 	| "click"
 	| "dblclick"
 	| "fill"
+	| "type"
 	| "press"
 	| "checkbox"
 	| "selectOption"
@@ -318,6 +320,7 @@ export type StepCommand =
 	| "screenshot"
 	| "snapshot"
 	| "evalAction"
+	| "store"
 	| "page"
 	| "assert"
 	| "capture";
@@ -327,6 +330,7 @@ const stepCommandList: readonly StepCommand[] = [
 	"click",
 	"dblclick",
 	"fill",
+	"type",
 	"press",
 	"checkbox",
 	"selectOption",
@@ -335,6 +339,7 @@ const stepCommandList: readonly StepCommand[] = [
 	"screenshot",
 	"snapshot",
 	"evalAction",
+	"store",
 	"page",
 	"assert",
 	"capture",

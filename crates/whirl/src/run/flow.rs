@@ -44,6 +44,7 @@ pub struct Overrides {
     pub entry_timeout_ms: Option<u64>,
     pub headed:           bool,
     pub storage:          Option<PathBuf>,
+    pub user_agent:       Option<String>,
 }
 
 /// Run-wide flags the flow needs (SPEC 13).
@@ -126,6 +127,8 @@ pub struct ResolvedOptions {
     /// Resolved relative to the `.whirl` file (SPEC 5).
     pub storage:          Option<PathBuf>,
     pub headed:           bool,
+    /// Browser user agent string; the engine default when unset (SPEC 5).
+    pub user_agent:       Option<String>,
 }
 
 /// A failure while resolving options at file start. Reported as the
@@ -208,6 +211,7 @@ pub fn resolve_options(
     let mut allow_hosts: Option<Vec<String>> = None;
     let mut dialogs = DialogPolicy::Dismiss;
     let mut storage: Option<String> = None;
+    let mut user_agent: Option<String> = None;
 
     for option in &file.options {
         let line = option.line;
@@ -239,6 +243,7 @@ pub fn resolve_options(
                 dialogs = resolve_option(value, "dialogs", line, vars, parse_dialogs_value)?;
             }
             FileOption::Storage(value) => storage = Some(vars.resolve(value)?),
+            FileOption::UserAgent(value) => user_agent = Some(vars.resolve(value)?),
         }
     }
 
@@ -254,6 +259,9 @@ pub fn resolve_options(
     }
     if let Some(flag) = overrides.entry_timeout_ms {
         entry_timeout_ms = Some(flag);
+    }
+    if let Some(flag) = &overrides.user_agent {
+        user_agent = Some(flag.clone());
     }
 
     // The base host is always allowed (SPEC 5).
@@ -283,6 +291,7 @@ pub fn resolve_options(
         dialogs,
         storage,
         headed: overrides.headed,
+        user_agent,
     })
 }
 
@@ -547,6 +556,10 @@ impl FlowExec<'_> {
                 locator: self.locator(target, engine)?,
                 value:   self.resolve(value)?,
             },
+            K::Type { target, text } => StepCommand::Type {
+                locator: self.locator(target, engine)?,
+                text:    self.resolve(text)?,
+            },
             K::Press { target, key } => StepCommand::Press {
                 locator: target
                     .as_ref()
@@ -615,6 +628,11 @@ impl FlowExec<'_> {
             }
             K::Eval { script } => StepCommand::EvalAction {
                 script: self.resolve(script)?,
+            },
+            K::Store { scope, key, value } => StepCommand::Store {
+                scope: scope.keyword().to_owned(),
+                key:   self.resolve(key)?,
+                value: self.resolve(value)?,
             },
         };
         Ok(command)
@@ -1081,6 +1099,7 @@ fn start_flow_params(run: &FlowRun<'_>, options: &ResolvedOptions) -> StartFlowP
         },
         allow_hosts:        options.allow_hosts.clone(),
         nav_timeout_ms:     options.nav_timeout_ms,
+        user_agent:         options.user_agent.clone(),
         video:              run.flags.video.then(|| VideoParams {
             temp_dir:   wire_path(&run.abs_dir.join("video-temp")),
             final_path: wire_path(&run.abs_dir.join(artifacts::VIDEO_WEBM)),

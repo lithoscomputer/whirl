@@ -13,6 +13,10 @@
     <input type="search" placeholder="Search things" id="search" />
     <div id="press-result"></div>
 
+    <label for="code">Code</label>
+    <input id="code" type="text" inputmode="numeric" />
+    <div id="typed-keys"></div>
+
     <label for="color">Color</label>
     <select id="color">
       <option value="red">Red</option>
@@ -23,6 +27,18 @@
 
     <label><input type="checkbox" id="subscribe" /> Subscribe</label>
     <label><input type="checkbox" id="terms" checked /> Terms</label>
+    <!-- A styled switch in the Chakra shape: the input is clipped to 1px and a span draws the track. -->
+    <label>
+      <input
+        type="checkbox"
+        id="notify"
+        style="position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); border: 0; white-space: nowrap"
+      />
+      <span aria-hidden="true" style="display: inline-block; width: 40px; height: 20px; background: #ccc; border-radius: 10px"></span>
+      Notifications
+    </label>
+    <label><input type="checkbox" id="gone" style="display: none" /> Gone</label>
+    <button type="button" id="dark" role="switch" aria-checked="false">Dark mode</button>
 
     <fieldset>
       <legend>Size</legend>
@@ -36,6 +52,9 @@
 
     <button type="button" data-testid="save-button" id="save">Save</button>
     <div id="saved"></div>
+    <div id="stored-flag"></div>
+    <div id="session-flag"></div>
+    <div id="cookie-flag"></div>
     <button type="button" disabled>Disabled btn</button>
     <button type="button" id="dup-a">Dup</button>
     <button type="button" id="dup-b">Dup</button>
@@ -63,6 +82,22 @@
     </ul>
 
     <script>
+      // Mirrors the "flag" localStorage entry at load, so a STORE that ran
+      // on this origin shows up after the next VISIT.
+      document.getElementById("stored-flag").textContent =
+        window.localStorage.getItem("flag") ?? "unset";
+      document.getElementById("session-flag").textContent =
+        window.sessionStorage.getItem("flag") ?? "unset";
+      document.getElementById("cookie-flag").textContent =
+        document.cookie
+          .split("; ")
+          .find((entry) => entry.startsWith("flag="))
+          ?.slice("flag=".length) ?? "unset";
+      // Records each keydown, so a TYPE shows one entry per character while a
+      // FILL (one input event, no key events) records nothing.
+      document.getElementById("code").addEventListener("keydown", (event) => {
+        document.getElementById("typed-keys").textContent += event.key;
+      });
       document.getElementById("search").addEventListener("keydown", (event) => {
         if (event.key === "Enter") {
           document.getElementById("press-result").textContent = "enter-pressed";
@@ -74,6 +109,10 @@
       document.getElementById("avatar").addEventListener("change", (event) => {
         const file = event.target.files[0];
         document.getElementById("upload-name").textContent = file ? file.name : "none";
+      });
+      document.getElementById("dark").addEventListener("click", (event) => {
+        const on = event.currentTarget.getAttribute("aria-checked") === "true";
+        event.currentTarget.setAttribute("aria-checked", on ? "false" : "true");
       });
       document.getElementById("save").addEventListener("click", () => {
         document.getElementById("saved").textContent = "saved";

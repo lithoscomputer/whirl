@@ -31,5 +31,6 @@ Options:
       --storage <PATH>            Override the `storage` option
       --save-storage <PATH>       Write the final storage state after a successful run
       --entry-timeout <DURATION>  Override the `entry-timeout` option
+      --user-agent <UA>           Override the `user-agent` option
   -h, --help                      Print help
   -V, --version                   Print version
