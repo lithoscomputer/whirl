@@ -50,6 +50,9 @@ pub const WATCHDOG_GRACE: Duration = Duration::from_secs(2);
 /// before killing it.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
+/// Complete lifecycle exchanges, including request writes, are bounded.
+const LIFECYCLE_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Kept bytes of the shim's most recent stderr output.
 const STDERR_TAIL_LIMIT: usize = 8 * 1024;
 
@@ -68,6 +71,11 @@ pub enum ShimError {
         "no browser shim found: set {SHIM_JS_ENV} or run `whirl install` to provision the bundle"
     )]
     NotInstalled,
+    #[error("the shim did not complete {command} within {timeout_ms}ms")]
+    TimedOut {
+        command:    &'static str,
+        timeout_ms: u64,
+    },
     #[error("cannot launch the shim ({node} {shim_js}): {source}", node = launch.node.display(), shim_js = launch.shim_js.display())]
     Spawn {
         launch: ShimLaunch,
@@ -339,15 +347,16 @@ type PendingMap = Arc<Mutex<Option<HashMap<u64, oneshot::Sender<RawResponse>>>>>
 /// respawns a fresh client when [`ShimClient::is_alive`] turns false.
 #[derive(Debug)]
 pub struct ShimClient {
-    child:          Child,
-    stdin:          ChildStdin,
-    next_id:        u64,
-    pending:        PendingMap,
-    stderr_tail:    Arc<Mutex<Vec<u8>>>,
-    reader_task:    JoinHandle<()>,
-    stderr_task:    JoinHandle<()>,
-    watchdog_grace: Duration,
-    alive:          bool,
+    child:             Child,
+    stdin:             ChildStdin,
+    next_id:           u64,
+    pending:           PendingMap,
+    stderr_tail:       Arc<Mutex<Vec<u8>>>,
+    reader_task:       Option<JoinHandle<()>>,
+    stderr_task:       Option<JoinHandle<()>>,
+    watchdog_grace:    Duration,
+    lifecycle_timeout: Duration,
+    alive:             bool,
 }
 
 impl ShimClient {
@@ -390,9 +399,10 @@ impl ShimClient {
             next_id: 1,
             pending,
             stderr_tail,
-            reader_task,
-            stderr_task,
+            reader_task: Some(reader_task),
+            stderr_task: Some(stderr_task),
             watchdog_grace: WATCHDOG_GRACE,
+            lifecycle_timeout: LIFECYCLE_TIMEOUT,
             alive: true,
         })
     }
@@ -471,9 +481,27 @@ impl ShimClient {
         }
     }
 
-    /// Sends a lifecycle request and awaits its response with no
-    /// watchdog: `hello`, `startFlow`, `endFlow`, `cancelFlow`.
+    /// Bounds a complete lifecycle exchange. An interrupted exchange may
+    /// have written a partial frame, so the process must not be reused.
     async fn request<T: DeserializeOwned>(
+        &mut self,
+        cmd: &'static str,
+        params: Json,
+    ) -> Result<T, ShimError> {
+        let budget = self.lifecycle_timeout;
+        if let Ok(result) = timeout(budget, self.exchange(cmd, params)).await {
+            result
+        } else {
+            self.kill().await;
+            Err(ShimError::TimedOut {
+                command:    cmd,
+                timeout_ms: u64::try_from(budget.as_millis()).unwrap_or(u64::MAX),
+            })
+        }
+    }
+
+    /// The caller owns the deadline for this write and response pair.
+    async fn exchange<T: DeserializeOwned>(
         &mut self,
         cmd: &str,
         params: Json,
@@ -611,11 +639,20 @@ impl ShimClient {
         }
         params.insert("timeoutMs".to_owned(), Json::from(step.timeout_ms));
         params.insert("title".to_owned(), Json::from(step.title.clone()));
-        let Ok(receiver) = self.send_request(&cmd, Json::Object(params)).await else {
-            return self.died_outcome();
-        };
         let deadline =
             Instant::now() + Duration::from_millis(step.timeout_ms) + self.watchdog_grace;
+        let receiver =
+            match timeout_at(deadline, self.send_request(&cmd, Json::Object(params))).await {
+                Ok(Ok(receiver)) => receiver,
+                Ok(Err(_)) => return self.died_outcome(),
+                Err(_) => {
+                    // A partial JSON frame cannot be followed by cancelFlow.
+                    self.kill().await;
+                    return StepOutcome::StepTimeout {
+                        process_killed: true,
+                    };
+                }
+            };
         match timeout_at(deadline, receiver).await {
             Ok(Ok(Ok(result))) => StepOutcome::Ok(result),
             Ok(Ok(Err(error))) => StepOutcome::ShimError(error),
@@ -656,7 +693,13 @@ impl ShimClient {
     /// The owner respawns a replacement client for the worker slot.
     pub async fn kill(&mut self) {
         self.alive = false;
-        let _ = self.child.kill().await;
+        let _ = self.child.start_kill();
+        let _ = timeout(SHUTDOWN_GRACE, self.child.wait()).await;
+        self.finish_readers(true).await;
+        *self
+            .pending
+            .lock()
+            .expect("request handlers do not panic while holding the lock") = None;
     }
 
     /// Clean shutdown (protocol section 3): send `shutdown`, wait a
@@ -664,7 +707,7 @@ impl ShimClient {
     pub async fn shutdown(mut self) -> Result<(), ShimError> {
         let acknowledged = match timeout(
             SHUTDOWN_GRACE,
-            self.request::<Json>("shutdown", serde_json::json!({})),
+            self.exchange::<Json>("shutdown", serde_json::json!({})),
         )
         .await
         {
@@ -677,15 +720,31 @@ impl ShimClient {
                 .is_ok_and(|status| status.is_ok());
         self.alive = false;
         if !exited {
-            let _ = self.child.kill().await;
+            self.kill().await;
             return Err(ShimError::ProcessDied {
                 stderr_tail: self.stderr_tail(),
             });
         }
-        // The reader tasks end on their own at pipe EOF.
-        let _ = self.reader_task.await;
-        let _ = self.stderr_task.await;
+        self.finish_readers(false).await;
         Ok(())
+    }
+
+    /// Drain EOF on normal exit; abort pipe readers after a kill or if a
+    /// descendant keeps a pipe open. Each handle is joined only once.
+    async fn finish_readers(&mut self, abort: bool) {
+        let deadline = Instant::now() + SHUTDOWN_GRACE;
+        for mut task in [self.reader_task.take(), self.stderr_task.take()]
+            .into_iter()
+            .flatten()
+        {
+            if abort {
+                task.abort();
+            }
+            if timeout_at(deadline, &mut task).await.is_err() {
+                task.abort();
+                let _ = task.await;
+            }
+        }
     }
 }
 
@@ -920,3 +979,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod timeout_tests;

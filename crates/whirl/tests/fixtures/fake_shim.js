@@ -21,6 +21,8 @@ const readline = require("node:readline");
 
 const rl = readline.createInterface({ input: process.stdin });
 const inFlight = [];
+let ignoreLifecycle = false;
+let ignoreShutdown = false;
 let ignoreCancel = process.env.FAKE_SHIM_IGNORE_CANCEL === "1";
 
 function reply(id, result) {
@@ -47,6 +49,17 @@ function handleStep(id, params) {
     });
   } else if (script === "never") {
     inFlight.push(id);
+  } else if (script === "ignorelifecycle") {
+    ignoreLifecycle = true;
+    reply(id, {});
+  } else if (script === "ignoreshutdown") {
+    ignoreShutdown = true;
+    reply(id, {});
+  } else if (script === "stopreading") {
+    rl.pause();
+    // Keep the process alive with an open stdin that no longer drains.
+    setInterval(() => {}, 60_000);
+    reply(id, {});
   } else if (script === "ignorecancel") {
     ignoreCancel = true;
     reply(id, {});
@@ -66,12 +79,15 @@ rl.on("line", (line) => {
   const { id, cmd, params } = request;
   switch (cmd) {
     case "hello":
+      if (ignoreLifecycle) break;
       reply(id, { protocol: 1, playwrightVersion: "0.0.0-fake" });
       break;
     case "startFlow":
+      if (ignoreLifecycle) break;
       reply(id, {});
       break;
     case "endFlow":
+      if (ignoreLifecycle) break;
       reply(id, { blockedHosts: ["a.example", "b.example"], videoPath: null });
       break;
     case "cancelFlow":
@@ -82,6 +98,7 @@ rl.on("line", (line) => {
       reply(id, {});
       break;
     case "shutdown":
+      if (ignoreShutdown) break;
       reply(id, {});
       process.exit(0);
       break;
