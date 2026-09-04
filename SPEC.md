@@ -166,8 +166,8 @@ An action is a verb, an optional locator, and an optional value. Element-targeti
 | `TYPE locator "text"` | Focus the element, then send one key event per character of `text`. |
 | `PRESS "Key"` | Send a key or chord (Playwright key names, for example `"Enter"`, `"Control+A"`) to the focused element. |
 | `PRESS locator "Key"` | Focus the element, then send the key. |
-| `CHECK locator` | Set a checkbox or radio to checked. |
-| `UNCHECK locator` | Set a checkbox to unchecked. |
+| `CHECK locator` | Set a checkbox, radio, or switch to checked. |
+| `UNCHECK locator` | Set a checkbox or switch to unchecked. |
 | `SELECT locator "Label"` | Choose the `<select>` option with visible text `Label`. |
 | `HOVER locator` | Move the pointer over the element. |
 | `UPLOAD locator file:path` | Set the file input to `path`, resolved relative to the `.whirl` file. |
@@ -179,6 +179,8 @@ An action is a verb, an optional locator, and an optional value. Element-targeti
 | `STORE cookie "name" "value"` | Set one cookie for the current page's host, with path `/`. |
 
 `PRESS` with a single argument treats it as the key: `PRESS Enter` presses Enter on the focused element, even though `Enter` could also parse as a locator. Only when two arguments are present is the first a locator.
+
+`CHECK` and `UNCHECK` are idempotent: a control already in the requested state is left alone. On a native checkbox or radio input, Whirl focuses the input and presses Space, which works whether the input is visible or hidden behind a styled track, as Chakra, Radix, and Headless UI switches hide theirs; a click on such an input would wait out the timeout. On any other control, such as a `role="switch"` button, Whirl clicks it. Both paths verify the resulting state and fail the entry with the expected and actual states when the page did not toggle. A radio button cannot be unchecked; `CHECK` another one in its group. A control hidden with `display: none` cannot take focus, and the error says so; locate the visible control instead.
 
 `FILL` is the default way to enter text: it sets the value and fires one `input` event, which is what a plain field expects. `TYPE` is for the pages that listen for keys instead — segmented one-time-code inputs, masked fields, autocomplete boxes, and rich-text editors ignore a plain fill. It focuses the element and sends a `keydown`, `keypress`, `input`, and `keyup` per character, as Playwright's `pressSequentially` does. `TYPE` does not clear the element first. Use `FILL` unless the page needs key events; a flow that reaches for `TYPE` to slow down typing wants an assertion on the state the page should reach, not a slower `TYPE`.
 

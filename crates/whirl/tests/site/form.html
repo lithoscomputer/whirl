@@ -27,6 +27,18 @@
 
     <label><input type="checkbox" id="subscribe" /> Subscribe</label>
     <label><input type="checkbox" id="terms" checked /> Terms</label>
+    <!-- A styled switch in the Chakra shape: the input is clipped to 1px and a span draws the track. -->
+    <label>
+      <input
+        type="checkbox"
+        id="notify"
+        style="position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); border: 0; white-space: nowrap"
+      />
+      <span aria-hidden="true" style="display: inline-block; width: 40px; height: 20px; background: #ccc; border-radius: 10px"></span>
+      Notifications
+    </label>
+    <label><input type="checkbox" id="gone" style="display: none" /> Gone</label>
+    <button type="button" id="dark" role="switch" aria-checked="false">Dark mode</button>
 
     <fieldset>
       <legend>Size</legend>
@@ -97,6 +109,10 @@
       document.getElementById("avatar").addEventListener("change", (event) => {
         const file = event.target.files[0];
         document.getElementById("upload-name").textContent = file ? file.name : "none";
+      });
+      document.getElementById("dark").addEventListener("click", (event) => {
+        const on = event.currentTarget.getAttribute("aria-checked") === "true";
+        event.currentTarget.setAttribute("aria-checked", on ? "false" : "true");
       });
       document.getElementById("save").addEventListener("click", () => {
         document.getElementById("saved").textContent = "saved";

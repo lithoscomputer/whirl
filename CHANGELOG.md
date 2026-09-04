@@ -6,6 +6,10 @@
   user agent string for the flow.
 - `STORE` gains the `session` and `cookie` scopes: `sessionStorage` entries and
   cookies for the current page's host.
+- `CHECK` and `UNCHECK` toggle native checkbox and radio inputs with the
+  keyboard, so switches that hide their input behind a styled track (Chakra,
+  Radix, Headless UI) no longer time out, and they click `role="switch"`
+  controls. Both are idempotent and verify the resulting state.
 - Add `TYPE locator "text"`, which sends one key event per character for
   inputs that ignore a plain `FILL`, such as segmented one-time-code fields.
 - Add `STORE local "key" "value"`, which writes one `localStorage` entry on

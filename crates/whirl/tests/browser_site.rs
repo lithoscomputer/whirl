@@ -192,6 +192,7 @@ const HAPPY_FLOW_BODY: &str = r##"# Fill the form.
 VISIT /form.html
 FILL "Email" alice@example.com
 TYPE "Code" 4242
+CHECK "Notifications"
 FILL placeholder:"Search things" widget
 CLICK testid:save-button
 PRESS placeholder:"Search things" "Enter"
@@ -201,6 +202,7 @@ role:heading "Form page" visible
 label:Email value == alice@example.com
 label:Code value == 4242
 css:"#typed-keys" text == 4242
+label:Notifications checked
 placeholder:"Search things" value == widget
 placeholder:"Search things" focused
 css:"#press-result" text == enter-pressed
@@ -254,6 +256,45 @@ fn a_full_flow_passes_against_the_site() {
         dir.artifacts().join("happy/overview.png").is_file(),
         "SCREENSHOT should write overview.png"
     );
+}
+
+#[test]
+fn check_and_uncheck_handle_hidden_inputs_and_role_switches() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    // "Notifications" is a clipped input behind a styled track, "Dark
+    // mode" is a role=switch button; CHECK twice in a row is a no-op.
+    dir.file(
+        "switch.whirl",
+        "VISIT /form.html\n\
+         CHECK \"Notifications\"\n\
+         CHECK \"Notifications\"\n\
+         [Asserts]\n\
+         label:Notifications checked\n\
+         UNCHECK \"Notifications\"\n\
+         [Asserts]\n\
+         label:Notifications unchecked\n\
+         CHECK role:switch \"Dark mode\"\n\
+         [Asserts]\n\
+         role:switch \"Dark mode\" checked\n\
+         UNCHECK role:switch \"Dark mode\"\n\
+         [Asserts]\n\
+         role:switch \"Dark mode\" unchecked\n",
+    );
+    let output = run_whirl(&dir, &["--base", &server.base(), "switch.whirl"]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+}
+
+#[test]
+fn check_on_a_display_none_input_fails_with_a_focus_message() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file("gone.whirl", "VISIT /form.html\nCHECK \"Gone\"\n");
+    let output = run_whirl(&dir, &["--base", &server.base(), "gone.whirl"]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 1, "stdout:\n{stdout}");
+    assert!(stdout.contains("cannot take focus"), "stdout:\n{stdout}");
 }
 
 #[test]

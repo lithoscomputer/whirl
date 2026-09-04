@@ -12,7 +12,7 @@ import type {
 	Locator,
 	Page,
 } from "@playwright/test";
-import { chromium, firefox, webkit } from "@playwright/test";
+import { chromium, expect, firefox, webkit } from "@playwright/test";
 import { runAssert, runPage } from "./assertions.js";
 import { runCapture } from "./captures.js";
 import type { ShimDriver } from "./driver.js";
@@ -462,7 +462,7 @@ export class PlaywrightDriver implements ShimDriver {
 			case "checkbox": {
 				const checked = fieldBoolean(params, "checked");
 				await this.#locatorAction(page, params, (locator) =>
-					locator.setChecked(checked, { timeout: timeoutMs }),
+					this.#setChecked(page, locator, checked, timeoutMs),
 				);
 				return {};
 			}
@@ -615,6 +615,74 @@ export class PlaywrightDriver implements ShimDriver {
 			locator: buildLocator(page, segments),
 			description: describeLocator(segments),
 		};
+	}
+
+	/**
+	 * CHECK / UNCHECK (SPEC section 7). A native checkbox or radio input is
+	 * focused and toggled with Space, which works whether the input is
+	 * visible or hidden behind a styled switch (Chakra, Radix, and Headless
+	 * UI all hide the input and would make a click time out). Any other
+	 * control, such as a role=switch button, is clicked. Both paths verify
+	 * the resulting state and are idempotent.
+	 */
+	async #setChecked(
+		page: Page,
+		locator: Locator,
+		checked: boolean,
+		timeoutMs: number,
+	): Promise<void> {
+		await locator.waitFor({ state: "attached", timeout: timeoutMs });
+		const control = await locator.evaluate((element) => {
+			const input = element as HTMLInputElement;
+			const native =
+				element.tagName === "INPUT" &&
+				(input.type === "checkbox" || input.type === "radio");
+			return {
+				native,
+				type: native ? input.type : null,
+				checked: native ? input.checked : null,
+				disabled: native ? input.disabled : false,
+			};
+		});
+		if (!control.native) {
+			await locator.setChecked(checked, { timeout: timeoutMs });
+			return;
+		}
+		if (control.checked === checked) {
+			return;
+		}
+		if (control.disabled) {
+			throw new ShimError("action", "the control is disabled");
+		}
+		if (control.type === "radio" && !checked) {
+			throw new ShimError(
+				"action",
+				"a radio button cannot be unchecked; check another one in its group",
+			);
+		}
+		await locator.focus({ timeout: timeoutMs });
+		const focused = await locator.evaluate(
+			(element) => document.activeElement === element,
+		);
+		if (!focused) {
+			throw new ShimError(
+				"action",
+				"the control cannot take focus (is it display: none?); locate the visible control instead",
+			);
+		}
+		await page.keyboard.press("Space");
+		try {
+			await expect(locator).toBeChecked({ checked, timeout: timeoutMs });
+		} catch {
+			throw new ShimError(
+				"action",
+				`the control did not become ${checked ? "checked" : "unchecked"} after pressing Space`,
+				{
+					expected: checked ? "checked" : "unchecked",
+					actual: checked ? "unchecked" : "checked",
+				},
+			);
+		}
 	}
 
 	async #locatorAction(
