@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Add the `setup` option: a flow that runs first, once per invocation, whose
+  saved state every file naming it starts from, and whose captures those
+  files read as `{{setup.name}}`. A failed setup flow fails its dependents
+  with a `[setup]` case without running them. `whirl check` validates setup
+  references against the setup flow's captures.
+
 ## 0.2.0 (2026-09-03)
 
 - Add the `user-agent` option and `--user-agent` flag, which set the browser's

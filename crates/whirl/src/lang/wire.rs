@@ -286,6 +286,9 @@ mod tests {
                 ValueSegment::EnvVar(name) => {
                     let _ = write!(out, "<env:{name}>");
                 }
+                ValueSegment::SetupVar(name) => {
+                    let _ = write!(out, "<setup:{name}>");
+                }
             }
         }
         Ok(out)

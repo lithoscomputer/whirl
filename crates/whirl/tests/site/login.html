@@ -8,16 +8,27 @@
     <h1>Login page</h1>
     <button type="button" id="login">Log in</button>
     <div id="status">logged out</div>
+    <div id="token"></div>
+    <div id="logins"></div>
     <script>
       const loggedIn = () =>
         localStorage.getItem("token") === "t123" && document.cookie.includes("session=abc");
       if (loggedIn()) {
         document.getElementById("status").textContent = "already logged in";
       }
+      // The setup tests read the token back and count how many times the
+      // button was clicked in this storage state.
+      const mirror = () => {
+        document.getElementById("token").textContent = localStorage.getItem("token") ?? "";
+        document.getElementById("logins").textContent = localStorage.getItem("logins") ?? "0";
+      };
+      mirror();
       document.getElementById("login").addEventListener("click", () => {
         localStorage.setItem("token", "t123");
+        localStorage.setItem("logins", String(Number(localStorage.getItem("logins") ?? "0") + 1));
         document.cookie = "session=abc; path=/";
         document.getElementById("status").textContent = "logged in";
+        mirror();
       });
     </script>
   </body>

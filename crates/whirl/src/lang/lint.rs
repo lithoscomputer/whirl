@@ -4,12 +4,12 @@
 //! invocation with exit code 2 like parse errors; warnings do not change
 //! the exit code (SPEC 16). The CLI layer owns both mappings.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use crate::lang::ast::{
-    Action, ActionKind, Assert, AssertBody, Capture, CaptureSource, Entry, File, Locator,
-    PageCheck, SegmentKind, Span, StrCheck, Value, ValueSegment,
+    Action, ActionKind, Assert, AssertBody, Capture, CaptureSource, Entry, File, FileOption,
+    Locator, PageCheck, SegmentKind, Span, StrCheck, Value, ValueSegment,
 };
 
 /// How serious a lint diagnostic is: an [`Severity::Error`] fails
@@ -39,11 +39,96 @@ pub struct Lint {
 /// errors (SPEC 14), and a capture whose value no later line reads is a
 /// warning (SPEC 16). Diagnostics come back in line order.
 pub fn lint_file(file: &File) -> Vec<Lint> {
+    lint_file_with(file, &HashSet::new())
+}
+
+/// [`lint_file`] for a file other files depend on through `setup:`:
+/// `external_uses` names the captures those files read as
+/// `{{setup.name}}`, which count as used here (SPEC 16).
+pub fn lint_file_with(file: &File, external_uses: &HashSet<String>) -> Vec<Lint> {
     let mut lints = Vec::new();
     duplicate_artifact_names(file, &mut lints);
-    unused_captures(file, &mut lints);
+    unused_captures(file, external_uses, &mut lints);
+    setup_option_rules(file, &mut lints);
     lints.sort_by_key(|lint| (lint.line, lint.column));
     lints
+}
+
+/// The capture names a file reads as `{{setup.name}}`.
+pub fn setup_capture_uses(file: &File) -> HashSet<String> {
+    collect_setup_refs(file)
+        .into_iter()
+        .map(|var_ref| var_ref.name.to_owned())
+        .collect()
+}
+
+/// Lints a file against its parsed `setup` flow (SPEC 12, 16): the setup
+/// flow may not name a setup of its own, and every `{{setup.name}}` the
+/// file reads must be a capture the setup flow takes.
+pub fn lint_setup_refs(file: &File, setup: &File) -> Vec<Lint> {
+    let mut lints = Vec::new();
+    if let (Some(line), Some(nested)) = (file.setup_option(), setup.setup_option()) {
+        let message = format!(
+            "setup flow '{}' names its own setup on line {}; only one level is allowed",
+            setup.path.display(),
+            nested.line
+        );
+        lints.push(lint_at(file, Severity::Error, line.span, message));
+    }
+    let captured: HashSet<&str> = setup
+        .entries
+        .iter()
+        .flat_map(|entry| &entry.captures)
+        .map(|capture| capture.name.text.as_str())
+        .collect();
+    for var_ref in collect_setup_refs(file) {
+        if !captured.contains(var_ref.name) {
+            let message = format!(
+                "setup flow '{}' has no capture `{}`",
+                setup.path.display(),
+                var_ref.name
+            );
+            lints.push(lint_at(file, Severity::Error, var_ref.span, message));
+        }
+    }
+    lints.sort_by_key(|lint| (lint.line, lint.column));
+    lints
+}
+
+/// Rules for the `setup` option itself (SPEC 5, 11): it cannot be
+/// combined with `storage`, its path must be literal, and `{{setup.name}}`
+/// needs a `setup` option to read from.
+fn setup_option_rules(file: &File, lints: &mut Vec<Lint>) {
+    let setup = file.setup_option();
+    if let Some(line) = setup {
+        if let FileOption::Setup(value) = &line.option {
+            if !value.is_literal() {
+                lints.push(lint_at(
+                    file,
+                    Severity::Error,
+                    value.span,
+                    "the setup path must be literal; it is resolved before any variable exists"
+                        .to_owned(),
+                ));
+            }
+        }
+        if let Some(storage) = file.storage_option() {
+            lints.push(lint_at(
+                file,
+                Severity::Error,
+                storage.span,
+                "storage and setup both set the starting state; use one".to_owned(),
+            ));
+        }
+    } else {
+        for var_ref in collect_setup_refs(file) {
+            let message = format!(
+                "`{{{{setup.{}}}}}` needs a setup option naming the flow that captures it",
+                var_ref.name
+            );
+            lints.push(lint_at(file, Severity::Error, var_ref.span, message));
+        }
+    }
 }
 
 fn lint_at(file: &File, severity: Severity, span: Span, message: String) -> Lint {
@@ -90,18 +175,33 @@ fn duplicate_artifact_names(file: &File, lints: &mut Vec<Lint>) {
     }
 }
 
-/// A `{{name}}` variable reference and the line it appears on.
+/// Which namespace a reference reads (SPEC 11).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RefKind {
+    /// `{{name}}`: a capture or a command-line variable.
+    Var,
+    /// `{{setup.name}}`: a capture of the setup flow.
+    Setup,
+}
+
+/// A `{{name}}` or `{{setup.name}}` variable reference and where it
+/// appears.
 struct VarRef<'a> {
+    kind: RefKind,
     name: &'a str,
     line: u32,
+    span: Span,
 }
 
 /// Warns about captures no later line uses (SPEC 16). A use is a
 /// `{{name}}` reference in a value on a later line, up to and including
 /// the line of the next capture that overwrites the name: that capture's
 /// own source still reads the old value, but overwriting is not a use.
-fn unused_captures(file: &File, lints: &mut Vec<Lint>) {
-    let refs = collect_var_refs(file);
+fn unused_captures(file: &File, external_uses: &HashSet<String>, lints: &mut Vec<Lint>) {
+    let refs: Vec<VarRef<'_>> = collect_var_refs(file)
+        .into_iter()
+        .filter(|var_ref| var_ref.kind == RefKind::Var)
+        .collect();
     let captures: Vec<&Capture> = file
         .entries
         .iter()
@@ -112,11 +212,12 @@ fn unused_captures(file: &File, lints: &mut Vec<Lint>) {
             .iter()
             .find(|later| later.name.text == capture.name.text)
             .map(|later| later.line);
-        let used = refs.iter().any(|var_ref| {
-            var_ref.name == capture.name.text
-                && var_ref.line > capture.line
-                && overwrite_line.is_none_or(|line| var_ref.line <= line)
-        });
+        let used = external_uses.contains(&capture.name.text)
+            || refs.iter().any(|var_ref| {
+                var_ref.name == capture.name.text
+                    && var_ref.line > capture.line
+                    && overwrite_line.is_none_or(|line| var_ref.line <= line)
+            });
         if !used {
             let message = format!("capture `{}` is never used", capture.name.text);
             lints.push(lint_at(file, Severity::Warning, capture.name.span, message));
@@ -240,10 +341,49 @@ fn collect_locator_refs<'a>(locator: &'a Locator, line: u32, refs: &mut Vec<VarR
 
 fn collect_value_refs<'a>(value: &'a Value, line: u32, refs: &mut Vec<VarRef<'a>>) {
     for segment in &value.segments {
-        if let ValueSegment::Var(name) = segment {
-            refs.push(VarRef { name, line });
+        let (kind, name) = match segment {
+            ValueSegment::Var(name) => (RefKind::Var, name),
+            ValueSegment::SetupVar(name) => (RefKind::Setup, name),
+            ValueSegment::Literal(_) | ValueSegment::EnvVar(_) => continue,
+        };
+        refs.push(VarRef {
+            kind,
+            name,
+            line,
+            span: value.span,
+        });
+    }
+}
+
+/// Every `{{setup.name}}` reference in the file, including option
+/// values, in source order.
+fn collect_setup_refs(file: &File) -> Vec<VarRef<'_>> {
+    let mut values: Vec<(&Value, u32)> = Vec::new();
+    for line in &file.options {
+        match &line.option {
+            FileOption::Base(value)
+            | FileOption::Storage(value)
+            | FileOption::UserAgent(value)
+            | FileOption::Setup(value) => values.push((value, line.line)),
+            FileOption::AllowHosts(globs) => {
+                values.extend(globs.iter().map(|glob| (glob, line.line)));
+            }
+            FileOption::Browser(_)
+            | FileOption::Viewport(_)
+            | FileOption::StepTimeout(_)
+            | FileOption::EntryTimeout(_)
+            | FileOption::NavTimeout(_)
+            | FileOption::Dialogs(_) => {}
         }
     }
+    let mut refs = Vec::new();
+    for (value, line) in values {
+        collect_value_refs(value, line, &mut refs);
+    }
+    refs.extend(collect_var_refs(file));
+    refs.retain(|var_ref| var_ref.kind == RefKind::Setup);
+    refs.sort_by_key(|var_ref| (var_ref.line, var_ref.span.column));
+    refs
 }
 
 #[cfg(test)]
@@ -290,6 +430,90 @@ mod tests {
     #[test]
     fn distinct_artifact_names_pass() {
         assert_eq!(lint("VISIT /\nSCREENSHOT a\nSCREENSHOT b\n"), Vec::new());
+    }
+
+    #[test]
+    fn setup_with_storage_is_an_error() {
+        let lints = lint("[Options]\nsetup: login.whirl\nstorage: state.json\nVISIT /\n");
+        assert_eq!(lints.len(), 1);
+        assert_eq!(lints[0].severity, Severity::Error);
+        assert_eq!(lints[0].line, 3);
+        assert_eq!(
+            lints[0].message,
+            "storage and setup both set the starting state; use one"
+        );
+    }
+
+    #[test]
+    fn a_setup_reference_needs_a_setup_option() {
+        let lints = lint("VISIT /u/{{setup.user_id}}\n");
+        assert_eq!(lints.len(), 1);
+        assert_eq!(lints[0].severity, Severity::Error);
+        assert!(
+            lints[0].message.contains("needs a setup option"),
+            "message: {}",
+            lints[0].message
+        );
+        assert_eq!(
+            lint("[Options]\nsetup: login.whirl\nVISIT /u/{{setup.user_id}}\n"),
+            Vec::new()
+        );
+    }
+
+    #[test]
+    fn an_interpolated_setup_path_is_an_error() {
+        let lints = lint("[Options]\nsetup: {{env.LOGIN}}\nVISIT /\n");
+        assert_eq!(lints.len(), 1);
+        assert!(
+            lints[0].message.contains("must be literal"),
+            "message: {}",
+            lints[0].message
+        );
+    }
+
+    #[test]
+    fn setup_refs_are_checked_against_the_setup_flow() {
+        let setup = parse_file(
+            Path::new("login.whirl"),
+            "VISIT /\n[Captures]\ntoken: css:\"#t\" text\n",
+        )
+        .expect("fixture should parse");
+        let file = parse_file(
+            Path::new("a.whirl"),
+            "[Options]\nsetup: login.whirl\nVISIT /{{setup.token}}/{{setup.nope}}\n",
+        )
+        .expect("fixture should parse");
+        let lints = lint_setup_refs(&file, &setup);
+        assert_eq!(lints.len(), 1);
+        assert_eq!(
+            lints[0].message,
+            "setup flow 'login.whirl' has no capture `nope`"
+        );
+
+        let nested = parse_file(
+            Path::new("login.whirl"),
+            "[Options]\nsetup: root.whirl\nVISIT /\n",
+        )
+        .expect("fixture should parse");
+        let lints = lint_setup_refs(&file, &nested);
+        assert!(
+            lints
+                .iter()
+                .any(|lint| lint.message.contains("names its own setup")),
+            "lints: {lints:?}"
+        );
+    }
+
+    #[test]
+    fn captures_read_by_dependents_count_as_used() {
+        let file = parse_file(
+            Path::new("login.whirl"),
+            "VISIT /\n[Captures]\ntoken: css:\"#t\" text\n",
+        )
+        .expect("fixture should parse");
+        assert_eq!(lint_file(&file).len(), 1);
+        let uses: HashSet<String> = ["token".to_owned()].into_iter().collect();
+        assert_eq!(lint_file_with(&file, &uses), Vec::new());
     }
 
     #[test]

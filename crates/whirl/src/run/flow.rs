@@ -129,6 +129,8 @@ pub struct ResolvedOptions {
     pub headed:           bool,
     /// Browser user agent string; the engine default when unset (SPEC 5).
     pub user_agent:       Option<String>,
+    /// The `setup` flow, resolved relative to the `.whirl` file (SPEC 5).
+    pub setup:            Option<PathBuf>,
 }
 
 /// A failure while resolving options at file start. Reported as the
@@ -212,6 +214,7 @@ pub fn resolve_options(
     let mut dialogs = DialogPolicy::Dismiss;
     let mut storage: Option<String> = None;
     let mut user_agent: Option<String> = None;
+    let mut setup: Option<String> = None;
 
     for option in &file.options {
         let line = option.line;
@@ -244,6 +247,7 @@ pub fn resolve_options(
             }
             FileOption::Storage(value) => storage = Some(vars.resolve(value)?),
             FileOption::UserAgent(value) => user_agent = Some(vars.resolve(value)?),
+            FileOption::Setup(value) => setup = Some(vars.resolve(value)?),
         }
     }
 
@@ -292,6 +296,7 @@ pub fn resolve_options(
         storage,
         headed: overrides.headed,
         user_agent,
+        setup: setup.map(|path| resolve_beside_file(canonical, &path)),
     })
 }
 
@@ -328,6 +333,40 @@ fn resolve_beside_file(flow_path: &Path, relative: &str) -> PathBuf {
         .join(relative)
 }
 
+/// The path of a file's `setup` flow as written, resolved against the
+/// file's own directory (SPEC 5). `None` without a literal `setup`
+/// option; lint rejects an interpolated one.
+pub fn setup_path_for(file: &File) -> Option<PathBuf> {
+    let line = file.setup_option()?;
+    let FileOption::Setup(value) = &line.option else {
+        return None;
+    };
+    let literal = value.as_literal()?;
+    let parent = file.path.parent().unwrap_or_else(|| Path::new("."));
+    Some(parent.join(literal))
+}
+
+/// What a finished `setup` flow hands to the files that depend on it
+/// (SPEC 12): its saved storage state, its captures, and the secrets it
+/// masked, so dependents mask the same values.
+#[derive(Clone, Debug, Default)]
+pub struct SetupHandoff {
+    pub storage_path: PathBuf,
+    pub captures:     Vec<(String, String)>,
+    pub secrets:      Vec<String>,
+}
+
+/// One flow's result: its report plus what a dependent file would need
+/// from it as a `setup` flow.
+#[derive(Debug)]
+pub struct FlowOutcome {
+    pub report:   FileReport,
+    /// Every capture, unmasked, in the order taken.
+    pub captures: Vec<(String, String)>,
+    /// The secrets the run masked.
+    pub secrets:  Vec<String>,
+}
+
 /// One flow's inputs, prepared by the runner.
 #[derive(Debug)]
 pub struct FlowRun<'a> {
@@ -343,6 +382,12 @@ pub struct FlowRun<'a> {
     pub overrides:  &'a Overrides,
     /// `--variables-file` entries then `--var` flags, in order.
     pub base_vars:  &'a [(String, String)],
+    /// The finished `setup` flow this file starts from, when it has one
+    /// (SPEC 12).
+    pub setup:      Option<&'a SetupHandoff>,
+    /// Where to save the final storage state when this file is itself a
+    /// `setup` flow; only a passed run writes it.
+    pub state_out:  Option<&'a Path>,
 }
 
 /// One step line of an entry, in execution order (SPEC 12).
@@ -484,6 +529,8 @@ struct FlowExec<'a> {
     /// True while the shim has an open flow (startFlow succeeded and no
     /// cancel closed it).
     flow_open: bool,
+    /// Every capture, unmasked, for a dependent file (SPEC 12).
+    captures:  Vec<(String, String)>,
 }
 
 impl FlowExec<'_> {
@@ -902,6 +949,8 @@ impl FlowExec<'_> {
                 state
                     .captures
                     .push((capture.name.text.clone(), self.vars.mask(&value)));
+                self.captures
+                    .push((capture.name.text.clone(), value.clone()));
                 self.vars.set(capture.name.text.clone(), value);
                 StepEnd::Passed
             }
@@ -1126,7 +1175,7 @@ fn file_status(entries: &[EntryReport]) -> Status {
 /// Runs one flow through the given live shim client and returns its
 /// report. The caller (the worker) respawns the client when
 /// [`ShimClient::is_alive`] turns false afterwards.
-pub async fn run_flow(run: &FlowRun<'_>, client: &mut ShimClient) -> FileReport {
+pub async fn run_flow(run: &FlowRun<'_>, client: &mut ShimClient) -> FlowOutcome {
     let started = Instant::now();
     let mut report = FileReport {
         path:          run.file.path.to_string_lossy().into_owned(),
@@ -1138,25 +1187,44 @@ pub async fn run_flow(run: &FlowRun<'_>, client: &mut ShimClient) -> FileReport 
         artifacts:     Vec::new(),
         entries:       Vec::new(),
     };
-    let finish = |mut report: FileReport| {
+    let finish = |mut report: FileReport, vars: &VarStore, captures: Vec<(String, String)>| {
         report.duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-        report
+        FlowOutcome {
+            report,
+            captures,
+            secrets: vars.masker().secrets().to_vec(),
+        }
     };
 
     let mut vars = VarStore::new();
     for (name, value) in run.base_vars {
         vars.set(name.clone(), value.clone());
     }
+    if let Some(setup) = run.setup {
+        for secret in &setup.secrets {
+            vars.record_secret(secret);
+        }
+        for (name, value) in &setup.captures {
+            vars.set_setup(name, value.clone());
+        }
+    }
 
     // Option resolution (SPEC 11): a failure here fails the file before
     // any entry, as the `[setup]` entry of a failed run (exit 1).
     let options = match resolve_options(run.file, run.canonical, &mut vars, run.overrides) {
-        Ok(options) => options,
+        Ok(mut options) => {
+            // A dependent file starts from its setup flow's saved state
+            // (SPEC 12); lint rejects `setup` together with `storage`.
+            if let Some(setup) = run.setup {
+                options.storage = Some(setup.storage_path.clone());
+            }
+            options
+        }
         Err(error) => {
             let message = vars.mask(&error.to_string());
             report.entries.push(setup_entry(Status::Failed, message));
             report.status = Status::Failed;
-            return finish(report);
+            return finish(report, &vars, Vec::new());
         }
     };
 
@@ -1167,7 +1235,7 @@ pub async fn run_flow(run: &FlowRun<'_>, client: &mut ShimClient) -> FileReport 
         );
         report.entries.push(setup_entry(Status::Error, message));
         report.status = Status::Error;
-        return finish(report);
+        return finish(report, &vars, Vec::new());
     }
 
     // Browser context launch; storage loading happens here too. A shim
@@ -1183,7 +1251,7 @@ pub async fn run_flow(run: &FlowRun<'_>, client: &mut ShimClient) -> FileReport 
         };
         report.entries.push(setup_entry(status, message));
         report.status = status;
-        return finish(report);
+        return finish(report, &vars, Vec::new());
     }
 
     let mut exec = FlowExec {
@@ -1192,6 +1260,7 @@ pub async fn run_flow(run: &FlowRun<'_>, client: &mut ShimClient) -> FileReport 
         vars,
         warnings: Vec::new(),
         flow_open: true,
+        captures: Vec::new(),
     };
     let mut failed = false;
     for entry in &run.file.entries {
@@ -1214,7 +1283,13 @@ pub async fn run_flow(run: &FlowRun<'_>, client: &mut ShimClient) -> FileReport 
             .then(|| run.abs_dir.join(artifacts::TRACE_ZIP));
         let end = EndFlowParams {
             save_storage_path: (report.status == Status::Passed)
-                .then(|| run.flags.save_storage.as_deref().map(wire_path))
+                .then(|| {
+                    run.flags
+                        .save_storage
+                        .as_deref()
+                        .or(run.state_out)
+                        .map(wire_path)
+                })
                 .flatten(),
             trace_path:        trace_path.as_deref().map(wire_path),
         };
@@ -1264,7 +1339,7 @@ pub async fn run_flow(run: &FlowRun<'_>, client: &mut ShimClient) -> FileReport 
         }
     }
     report.warnings = exec.warnings;
-    finish(report)
+    finish(report, &exec.vars, exec.captures)
 }
 
 #[cfg(test)]

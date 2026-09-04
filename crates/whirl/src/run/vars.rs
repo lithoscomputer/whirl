@@ -43,6 +43,11 @@ impl Masker {
         self.secrets.insert(position, secret.to_owned());
     }
 
+    /// Every recorded secret, longest first.
+    pub fn secrets(&self) -> &[String] {
+        &self.secrets
+    }
+
     /// Replaces every occurrence of every recorded secret with [`MASK`].
     /// At each position the longest matching secret wins.
     pub fn mask(&self, text: &str) -> String {
@@ -78,13 +83,17 @@ pub enum VarError {
     Undefined { name: String, span: Span },
     #[error("environment variable '{name}' is not set")]
     UnsetEnv { name: String, span: Span },
+    #[error("the setup flow captured no '{name}'")]
+    UndefinedSetup { name: String, span: Span },
 }
 
 impl VarError {
     /// The source span of the value that referenced the variable.
     pub fn span(&self) -> Span {
         match self {
-            Self::Undefined { span, .. } | Self::UnsetEnv { span, .. } => *span,
+            Self::Undefined { span, .. }
+            | Self::UnsetEnv { span, .. }
+            | Self::UndefinedSetup { span, .. } => *span,
         }
     }
 }
@@ -114,6 +123,19 @@ impl VarStore {
     /// The current value of a variable, if defined.
     pub fn get(&self, name: &str) -> Option<&str> {
         self.values.get(name).map(String::as_str)
+    }
+
+    /// Defines a `{{setup.name}}` value: a capture handed over from the
+    /// file's setup flow (SPEC 11). Stored under `setup.name`, which no
+    /// `{{name}}` reference can spell, so the namespaces never collide.
+    pub fn set_setup(&mut self, name: &str, value: impl Into<String>) {
+        self.values.insert(format!("setup.{name}"), value.into());
+    }
+
+    /// Records a secret for masking without defining a variable: the
+    /// setup flow's secrets, so a dependent masks the same values.
+    pub fn record_secret(&mut self, secret: &str) {
+        self.masker.record(secret);
     }
 
     /// The masking registry, for rendering console output, reports, and
@@ -168,6 +190,15 @@ impl VarStore {
                     })?;
                     self.masker.record(&resolved);
                     out.push_str(&resolved);
+                }
+                ValueSegment::SetupVar(name) => {
+                    let resolved = self.values.get(&format!("setup.{name}")).ok_or_else(|| {
+                        VarError::UndefinedSetup {
+                            name: name.clone(),
+                            span: value.span,
+                        }
+                    })?;
+                    out.push_str(resolved);
                 }
             }
         }
@@ -262,6 +293,45 @@ mod tests {
     /// A fake environment with one variable.
     fn fake_env(name: &'static str, value: &'static str) -> impl Fn(&str) -> Option<String> {
         move |queried: &str| (queried == name).then(|| value.to_owned())
+    }
+
+    #[test]
+    fn setup_captures_resolve_under_their_own_namespace() {
+        let mut vars = VarStore::new();
+        vars.set("user_id", "from-var");
+        vars.set_setup("user_id", "from-setup");
+        vars.record_secret("from-setup");
+        let value = Value {
+            segments: vec![
+                ValueSegment::SetupVar("user_id".to_owned()),
+                ValueSegment::Literal("/".to_owned()),
+                ValueSegment::Var("user_id".to_owned()),
+            ],
+            span:     Span {
+                line:   0,
+                column: 0,
+                len:    0,
+            },
+            quoted:   false,
+        };
+        assert_eq!(
+            vars.resolve(&value).expect("resolves"),
+            "from-setup/from-var"
+        );
+        assert_eq!(vars.mask("from-setup/from-var"), "***/from-var");
+        let missing = Value {
+            segments: vec![ValueSegment::SetupVar("nope".to_owned())],
+            span:     Span {
+                line:   0,
+                column: 0,
+                len:    0,
+            },
+            quoted:   false,
+        };
+        assert!(matches!(
+            vars.resolve(&missing),
+            Err(VarError::UndefinedSetup { name, .. }) if name == "nope"
+        ));
     }
 
     #[test]

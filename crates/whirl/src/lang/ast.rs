@@ -25,6 +25,8 @@ pub enum ValueSegment {
     Var(String),
     /// `{{env.NAME}}` environment variable reference.
     EnvVar(String),
+    /// `{{setup.NAME}}`: a capture of the file's `setup` flow (SPEC 11).
+    SetupVar(String),
 }
 
 /// A value: quoted or bare, split into interpolation segments.
@@ -218,6 +220,25 @@ pub enum FileOption {
     Dialogs(OptionValue<DialogPolicy>),
     Storage(Value),
     UserAgent(Value),
+    /// `setup: path`, a flow whose final state this file starts from
+    /// (SPEC 5, 12).
+    Setup(Value),
+}
+
+impl File {
+    /// The `setup:` option line, when the file has one.
+    pub fn setup_option(&self) -> Option<&OptionLine> {
+        self.options
+            .iter()
+            .find(|line| matches!(line.option, FileOption::Setup(_)))
+    }
+
+    /// The `storage:` option line, when the file has one.
+    pub fn storage_option(&self) -> Option<&OptionLine> {
+        self.options
+            .iter()
+            .find(|line| matches!(line.option, FileOption::Storage(_)))
+    }
 }
 
 /// An `[Options]` line with its source position.

@@ -48,6 +48,17 @@ fn run_whirl(dir: &TestDir, args: &[&str]) -> Output {
     run_whirl_env(dir, args, &[])
 }
 
+/// Runs `whirl check` on files in the test directory; `check` takes no
+/// artifacts flag and launches no browser.
+fn run_check(dir: &TestDir, files: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_whirl"))
+        .current_dir(&dir.path)
+        .arg("check")
+        .args(files)
+        .output()
+        .expect("the whirl binary should run")
+}
+
 /// Like [`run_whirl`], with extra environment variables for the child.
 fn run_whirl_env(dir: &TestDir, args: &[&str], env: &[(&str, &str)]) -> Output {
     let shim_js = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../shim/dist/index.js");
@@ -215,6 +226,62 @@ fn type_sends_key_events_where_fill_does_not() {
     let output = run_whirl(&dir, &[flow.to_str().expect("utf-8 path")]);
     let stdout = stdout_text(&output);
     assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+}
+
+#[test]
+fn check_validates_setup_flows_and_their_captures() {
+    let dir = TestDir::new();
+    dir.file(
+        "login.whirl",
+        "VISIT /login\n[Captures]\ntoken: css:\"#token\" text\n",
+    );
+    // A dependent that reads the capture: the setup file's capture counts
+    // as used, so neither file warns.
+    dir.file(
+        "good.whirl",
+        "[Options]\nsetup: login.whirl\n\nVISIT /u/{{setup.token}}\n",
+    );
+    let output = run_check(&dir, &["good.whirl"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(exit_code(&output), 0, "stderr:\n{stderr}");
+    assert!(stderr.trim().is_empty(), "stderr:\n{stderr}");
+
+    dir.file(
+        "bad.whirl",
+        "[Options]\nsetup: login.whirl\nstorage: state.json\n\nVISIT /u/{{setup.nope}}\n",
+    );
+    let output = run_check(&dir, &["bad.whirl"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(exit_code(&output), 2, "stderr:\n{stderr}");
+    assert!(
+        stderr.contains("storage and setup both set the starting state"),
+        "stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("setup flow 'login.whirl' has no capture `nope`"),
+        "stderr:\n{stderr}"
+    );
+
+    dir.file("orphan.whirl", "VISIT /u/{{setup.token}}\n");
+    let output = run_check(&dir, &["orphan.whirl"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(exit_code(&output), 2, "stderr:\n{stderr}");
+    assert!(stderr.contains("needs a setup option"), "stderr:\n{stderr}");
+
+    dir.file("nested.whirl", "[Options]\nsetup: good.whirl\n\nVISIT /\n");
+    let output = run_check(&dir, &["nested.whirl"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(exit_code(&output), 2, "stderr:\n{stderr}");
+    assert!(stderr.contains("names its own setup"), "stderr:\n{stderr}");
+
+    dir.file(
+        "missing.whirl",
+        "[Options]\nsetup: nowhere.whirl\n\nVISIT /\n",
+    );
+    let output = run_check(&dir, &["missing.whirl"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(exit_code(&output), 3, "stderr:\n{stderr}");
+    assert!(stderr.contains("does not exist"), "stderr:\n{stderr}");
 }
 
 #[test]
