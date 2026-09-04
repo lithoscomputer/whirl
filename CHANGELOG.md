@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 (2026-09-04)
 
 - Add the `reduced-motion` option, which sets what the page's
   `prefers-reduced-motion` media query reports, so pages that honor it skip
