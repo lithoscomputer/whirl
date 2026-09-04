@@ -25,8 +25,8 @@
 - Bound shim lifecycle operations and request writes so an unresponsive shim
   cannot stall a run indefinitely.
 - Move filesystem preparation off async workers and improve worker shutdown.
-- Avoid waiting for navigation after a click, including clicks that close
-  their own popup. Subsequent assertions verify the result.
+- Accept a popup closing during a click only when its target received the
+  click; a closure before delivery still fails.
 - Add opt-in diagnostic logging through `WHIRL_LOG`, with sensitive values
   excluded from log fields.
 

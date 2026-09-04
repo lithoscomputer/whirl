@@ -1,6 +1,7 @@
 <!doctype html><html lang="en"><head><title>Provider</title></head><body>
 <h1>Confirm payment</h1><input aria-label="Name">
 <button type="button" onclick="opener.postMessage('Payment complete', '*'); window.close()">Confirm</button>
+<button type="button" disabled>Unavailable</button>
 <button type="button" onclick="window.open('/second.html', '_blank')">Receipt</button>
 <button type="button" onclick="alert('Notice'); this.textContent='Dismissed'">Alert</button>
 <script>opener.postMessage("Provider ready", "*");</script></body></html>

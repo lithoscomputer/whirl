@@ -1111,6 +1111,39 @@ label:Customer value == Alice
 }
 
 #[test]
+fn popup_closure_before_click_delivery_fails_the_action() {
+    let site = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file(
+        "early-close.whirl",
+        &format!(
+            r#"[Options]
+base: {}
+VISIT /popups.html
+CLICK role:button "Pay with provider"
+POPUP payment
+TAB payment
+EVAL "setTimeout(() => window.close(), 50)"
+CLICK role:button Unavailable
+"#,
+            site.base()
+        ),
+    );
+    let output = run_whirl(&dir, &["early-close.whirl"]);
+    assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
+    assert!(
+        stdout_text(&output).contains("step: CLICK role:button Unavailable"),
+        "{}",
+        stdout_text(&output)
+    );
+    assert!(
+        stdout_text(&output).contains("closed"),
+        "{}",
+        stdout_text(&output)
+    );
+}
+
+#[test]
 fn named_tabs_support_nested_popups_and_explicit_close() {
     let site = SiteServer::start();
     let dir = TestDir::new();

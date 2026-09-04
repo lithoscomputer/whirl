@@ -1,6 +1,7 @@
 // The Playwright-backed driver: one browser per process, one context and
 // named pages per flow, and the step implementations (protocol sections 3-6).
 
+import { randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname } from "node:path";
@@ -247,6 +248,14 @@ async function installHostFiltering(
 }
 
 export class PlaywrightDriver implements ShimDriver {
+	readonly #clickReceipts = new WeakMap<
+		Page,
+		{
+			readonly binding: string;
+			next: number;
+			received: number;
+		}
+	>();
 	readonly playwrightVersion: string = playwrightCoreVersion;
 
 	#browser: Browser | null = null;
@@ -498,10 +507,8 @@ export class PlaywrightDriver implements ShimDriver {
 				});
 				return {};
 			case "click":
-				// A click may close its own tab. Later PAGE/assert lines own
-				// verification; do not wait for navigation after dispatching it.
 				await this.#locatorAction(page, params, (locator) =>
-					locator.click({ timeout: timeoutMs, noWaitAfter: true }),
+					this.#click(page, locator, timeoutMs),
 				);
 				return {};
 			case "dblclick":
@@ -757,6 +764,69 @@ export class PlaywrightDriver implements ShimDriver {
 					actual: checked ? "unchecked" : "checked",
 				},
 			);
+		}
+	}
+
+	async #click(page: Page, locator: Locator, timeoutMs: number): Promise<void> {
+		const deadline = performance.now() + timeoutMs;
+		let receipt = this.#clickReceipts.get(page);
+		if (receipt === undefined) {
+			const state = {
+				binding: `__whirlClick_${randomUUID().replaceAll("-", "")}`,
+				next: 0,
+				received: 0,
+			};
+			await page.exposeFunction(state.binding, (token: unknown) => {
+				if (typeof token === "number") state.received = token;
+			});
+			this.#clickReceipts.set(page, state);
+			receipt = state;
+		}
+		const token = ++receipt.next;
+		const listener = await locator.evaluateHandle(
+			(element, { binding, token }) => {
+				const view = element.ownerDocument.defaultView as unknown as Record<
+					string,
+					(token: number) => Promise<void>
+				>;
+				const onClick = (event: Event): void => {
+					if (!event.isTrusted) return;
+					void view[binding]?.(token).catch(() => {
+						// The click handler can destroy the document immediately.
+					});
+				};
+				element.addEventListener("click", onClick, { capture: true });
+				return () => element.removeEventListener("click", onClick, true);
+			},
+			{ binding: receipt.binding, token },
+			{ timeout: Math.max(1, deadline - performance.now()) },
+		);
+		try {
+			await locator.click({
+				timeout: Math.max(1, deadline - performance.now()),
+			});
+		} catch (error: unknown) {
+			// Chromium can close a popup before acknowledging the mouse event.
+			// Only accept that closure when the target received a trusted click.
+			if (
+				!(
+					receipt.received === token &&
+					page.isClosed() &&
+					!this.#cancelRequested &&
+					this.#browser?.isConnected() &&
+					this.#flow?.context.pages().some((other) => !other.isClosed()) &&
+					isTargetClosedError(error)
+				)
+			) {
+				throw error;
+			}
+		} finally {
+			try {
+				await listener.evaluate((remove) => remove());
+			} catch {
+				// Navigation or closure can destroy the listener's document.
+			}
+			await listener.dispose();
 		}
 	}
 
