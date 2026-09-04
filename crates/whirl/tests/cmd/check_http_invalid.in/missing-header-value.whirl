@@ -1,0 +1,2 @@
+VISIT /
+HTTP order GET / header:X-Test

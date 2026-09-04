@@ -1,5 +1,6 @@
 import type { BrowserContext, Page, Request, Response } from "@playwright/test";
-import type { CountOp, StringOp } from "./protocol.js";
+import { createHostAllowlist } from "./host-glob.js";
+import type { CountOp, HttpParams, StringOp } from "./protocol.js";
 import { assertNever, ShimError } from "./protocol.js";
 import { Deadline, pollUntilPass, shortErrorMessage } from "./step-util.js";
 
@@ -18,6 +19,7 @@ export type ResponseCheck =
 
 const maxRequestsPerEntry = 10_000;
 const maxJsonBodyBytes = 1_048_576;
+type NamedResponse = Pick<Response, "status" | "headerValue" | "body">;
 
 async function withinTimeout<T>(
 	operation: Promise<T>,
@@ -118,15 +120,27 @@ function jsonPointerValue(json: unknown, pointer: string): unknown {
 /** Records requests at context level, including popup navigation before the page event. */
 export class FlowNetwork {
 	readonly #context: BrowserContext;
-	readonly #responses = new Map<string, Response>();
-	readonly #jsonBodies = new Map<Response, Promise<unknown>>();
+	readonly #responses = new Map<string, NamedResponse>();
+	readonly #jsonBodies = new Map<NamedResponse, Promise<unknown>>();
+	private readonly httpRequests = new Set<AbortController>();
+	private readonly allowedHost: (hostname: string) => boolean;
+	private readonly blockedHosts: Set<string>;
 	#requests: Request[] = [];
 	#overflow = false;
 
-	constructor(context: BrowserContext) {
+	constructor(
+		context: BrowserContext,
+		allowHosts: readonly string[] | null,
+		blockedHosts: Set<string>,
+	) {
 		this.#context = context;
+		this.allowedHost =
+			allowHosts === null ? () => true : createHostAllowlist(allowHosts);
+		this.blockedHosts = blockedHosts;
 		context.on("request", this.#onRequest);
 		context.once("close", () => {
+			for (const controller of this.httpRequests) controller.abort();
+			this.httpRequests.clear();
 			context.off("request", this.#onRequest);
 			this.#requests = [];
 			this.#responses.clear();
@@ -145,6 +159,98 @@ export class FlowNetwork {
 	beginEntry(): void {
 		this.#requests = [];
 		this.#overflow = false;
+	}
+
+	async http(
+		{ name, method, url, headers, body }: HttpParams,
+		timeoutMs: number,
+	): Promise<void> {
+		if (this.#responses.has(name))
+			throw new ShimError("action", `response ${name} is already named`);
+		let target: URL;
+		try {
+			target = new URL(url);
+		} catch {
+			throw new ShimError(
+				"action",
+				"HTTP needs an absolute HTTP URL or a path with base",
+			);
+		}
+		if (
+			!/^https?:$/.test(target.protocol) ||
+			target.username !== "" ||
+			target.password !== ""
+		) {
+			throw new ShimError(
+				"action",
+				"HTTP needs an HTTP or HTTPS URL without embedded credentials",
+			);
+		}
+		if (!this.allowedHost(target.hostname)) {
+			this.blockedHosts.add(target.hostname);
+			throw new ShimError(
+				"action",
+				`HTTP host ${target.hostname} is blocked by allow-hosts`,
+			);
+		}
+		target.hash = "";
+		const controller = new AbortController();
+		this.httpRequests.add(controller);
+		const signal = AbortSignal.any([
+			controller.signal,
+			AbortSignal.timeout(timeoutMs),
+		]);
+		try {
+			const response = await fetch(target, {
+				method,
+				headers: Object.fromEntries(headers),
+				...(body === null ? {} : { body }),
+				redirect: "manual",
+				signal,
+			});
+			if (
+				response.body !== null &&
+				Number(response.headers.get("content-length")) > maxJsonBodyBytes
+			) {
+				throw new ShimError(
+					"action",
+					"HTTP response exceeds the 1 MiB body limit",
+				);
+			}
+			const chunks: Uint8Array[] = [];
+			let length = 0;
+			if (response.body !== null) {
+				for await (const chunk of response.body) {
+					length += chunk.length;
+					if (length > maxJsonBodyBytes)
+						throw new ShimError(
+							"action",
+							"HTTP response exceeds the 1 MiB body limit",
+						);
+					chunks.push(chunk);
+				}
+			}
+			const bytes = Buffer.concat(chunks, length);
+			this.#responses.set(name, {
+				status: () => response.status,
+				headerValue: async (header) => response.headers.get(header),
+				body: async () => bytes,
+			});
+		} catch (error) {
+			if (error instanceof ShimError) throw error;
+			if (signal.aborted)
+				throw new ShimError(
+					"timeout",
+					`HTTP response ${name} exceeded its ${String(timeoutMs)}ms timeout or was cancelled`,
+				);
+			throw new ShimError(
+				"action",
+				`HTTP request ${name} failed: ${shortErrorMessage(error)}`,
+			);
+		} finally {
+			controller.abort();
+			this.httpRequests.delete(controller);
+		}
 	}
 
 	async capture(
@@ -225,14 +331,14 @@ export class FlowNetwork {
 		this.#responses.set(name, response);
 	}
 
-	#named(name: string): Response {
+	#named(name: string): NamedResponse {
 		const response = this.#responses.get(name);
 		if (response === undefined)
 			throw new ShimError("action", `unknown response ${name}`);
 		return response;
 	}
 
-	async #json(response: Response): Promise<unknown> {
+	async #json(response: NamedResponse): Promise<unknown> {
 		let body = this.#jsonBodies.get(response);
 		if (body === undefined) {
 			body = (async (): Promise<unknown> => {

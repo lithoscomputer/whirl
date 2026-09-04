@@ -215,6 +215,13 @@ pub(crate) struct EndFlowResult {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "cmd", content = "params", rename_all = "camelCase")]
 pub(crate) enum StepCommand {
+    Http {
+        name:    String,
+        method:  String,
+        url:     String,
+        headers: Vec<(String, String)>,
+        body:    Option<String>,
+    },
     Response {
         name:   String,
         method: String,

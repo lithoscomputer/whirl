@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.7.0 (2026-09-04)
+
+- Add `HTTP` requests with explicit headers and bodies, isolated from browser cookies, using existing response assertions and captures.
+
 ## 0.6.0 (2026-09-04)
 
 - Add `chrome`, `firefox`, and `safari` user-agent aliases to flow options and the CLI, and record the resolved string in JSON reports.

@@ -808,7 +808,8 @@ fn split_timeout(tokens: &mut Vec<RawToken>) -> Option<DurationLit> {
     Some(duration)
 }
 
-const ACTION_KEYWORDS: [&str; 19] = [
+const ACTION_KEYWORDS: [&str; 20] = [
+    "HTTP",
     "RESPONSE",
     "POPUP",
     "TAB",
@@ -934,10 +935,21 @@ fn parse_name(mut tokens: Vec<RawToken>, keyword_span: Span) -> Result<Ident, Li
     }
 }
 
-fn parse_response_action(tokens: Vec<RawToken>, span: Span) -> Result<ActionKind, LineError> {
+fn parse_network_action(
+    keyword: &str,
+    mut tokens: Vec<RawToken>,
+    span: Span,
+) -> Result<ActionKind, LineError> {
+    if tokens.len() < 3 || (keyword == "RESPONSE" && tokens.len() != 3) {
+        return Err(LineError::new(
+            span,
+            format!("expected {keyword} name METHOD url"),
+        ));
+    }
+    let options = tokens.split_off(3);
     let [name, method, url]: [RawToken; 3] = tokens
         .try_into()
-        .map_err(|_| LineError::new(span, "expected RESPONSE name METHOD url"))?;
+        .map_err(|_| LineError::new(span, format!("expected {keyword} name METHOD url")))?;
     let name = parse_name(vec![name], span)?;
     let method_text = method
         .bare_single()
@@ -948,10 +960,57 @@ fn parse_response_action(tokens: Vec<RawToken>, span: Span) -> Result<ActionKind
                 "expected an uppercase HTTP method like GET or POST",
             )
         })?;
-    Ok(ActionKind::Response {
+    let method = method_text.to_owned();
+    let url = url.into_value()?;
+    if keyword == "RESPONSE" {
+        return Ok(ActionKind::Response { name, method, url });
+    }
+    let mut headers = Vec::new();
+    let mut body = None;
+    let mut options = options.into_iter();
+    while let Some(token) = options.next() {
+        let token_span = token.span;
+        if let Some(header) = token
+            .bare_single()
+            .and_then(|text| text.strip_prefix("header:"))
+        {
+            if !is_attr_name(header)
+                || headers
+                    .iter()
+                    .any(|(name, _): &(String, Value)| name.eq_ignore_ascii_case(header))
+            {
+                return Err(LineError::new(
+                    token_span,
+                    "invalid or duplicate HTTP header name",
+                ));
+            }
+            let value = options
+                .next()
+                .ok_or_else(|| LineError::new(token_span, "expected an HTTP header value"))?;
+            headers.push((header.to_owned(), value.into_value()?));
+        } else if matches!(token.parts.first(), Some(RawPart::Bare { text, .. }) if text.starts_with("body:"))
+        {
+            if body.is_some() {
+                return Err(LineError::new(token_span, "duplicate HTTP body"));
+            }
+            body = Some(
+                strip_prefix_token(token, 5)
+                    .ok_or_else(|| LineError::new(token_span, "expected an HTTP body"))?
+                    .into_value()?,
+            );
+        } else {
+            return Err(LineError::new(
+                token_span,
+                "expected header:NAME value or body:value",
+            ));
+        }
+    }
+    Ok(ActionKind::Http {
         name,
-        method: method_text.to_owned(),
-        url: url.into_value()?,
+        method,
+        url,
+        headers,
+        body,
     })
 }
 
@@ -1031,7 +1090,7 @@ fn parse_action_body(
     let timeout = split_timeout(&mut tokens);
     let locator_only = |tokens| build_locator(tokens, true, keyword_span);
     let kind = match keyword {
-        "RESPONSE" => parse_response_action(tokens, keyword_span)?,
+        "HTTP" | "RESPONSE" => parse_network_action(keyword, tokens, keyword_span)?,
         "POPUP" => ActionKind::Popup {
             name: parse_name(tokens, keyword_span)?,
         },

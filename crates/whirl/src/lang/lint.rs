@@ -404,6 +404,17 @@ fn collect_entry_refs<'a>(entry: &'a Entry, refs: &mut Vec<VarRef<'a>>) {
 fn collect_action_refs<'a>(action: &'a Action, refs: &mut Vec<VarRef<'a>>) {
     let line = action.line;
     match &action.kind {
+        ActionKind::Http {
+            url, headers, body, ..
+        } => {
+            collect_value_refs(url, line, refs);
+            for (_, value) in headers {
+                collect_value_refs(value, line, refs);
+            }
+            if let Some(body) = body {
+                collect_value_refs(body, line, refs);
+            }
+        }
         ActionKind::Response { url, .. } | ActionKind::Visit { url } => {
             collect_value_refs(url, line, refs);
         }
@@ -558,7 +569,8 @@ fn response_names(file: &File, lints: &mut Vec<Lint>) {
     let mut names = HashSet::new();
     for entry in &file.entries {
         for action in &entry.actions {
-            if let ActionKind::Response { name, .. } = &action.kind {
+            if let ActionKind::Http { name, .. } | ActionKind::Response { name, .. } = &action.kind
+            {
                 if !names.insert(name.text.as_str()) {
                     lints.push(lint_at(
                         file,
@@ -593,7 +605,7 @@ fn response_names(file: &File, lints: &mut Vec<Lint>) {
                     "unknown-response",
                     name.span,
                     format!(
-                        "unknown response `{}`; name it with RESPONSE first",
+                        "unknown response `{}`; name it with HTTP or RESPONSE first",
                         name.text
                     ),
                 ));

@@ -311,6 +311,42 @@ fn push_timeout(out: &mut String, timeout: Option<DurationLit>) {
 fn render_action(action: &Action) -> String {
     let is_final = action.timeout.is_none();
     let mut out = match &action.kind {
+        ActionKind::Http {
+            name,
+            method,
+            url,
+            headers,
+            body,
+        } => {
+            let mut text = format!(
+                "HTTP {} {method} {}",
+                name.text,
+                render_value(
+                    url,
+                    ValueCtx::Plain,
+                    is_final && headers.is_empty() && body.is_none()
+                )
+            );
+            for (index, (header, value)) in headers.iter().enumerate() {
+                let _ = write!(
+                    text,
+                    " header:{header} {}",
+                    render_value(
+                        value,
+                        ValueCtx::Plain,
+                        is_final && index + 1 == headers.len() && body.is_none()
+                    )
+                );
+            }
+            if let Some(body) = body {
+                let _ = write!(
+                    text,
+                    " body:{}",
+                    render_value(body, ValueCtx::Prefixed, is_final)
+                );
+            }
+            text
+        }
         ActionKind::Response { name, method, url } => format!(
             "RESPONSE {} {method} {}",
             name.text,
@@ -829,6 +865,22 @@ mod tests {
         action.span = ZERO;
         action.text = String::new();
         match &mut action.kind {
+            ActionKind::Http {
+                name,
+                url,
+                headers,
+                body,
+                ..
+            } => {
+                scrub_ident(name);
+                scrub_value(url);
+                for (_, value) in headers {
+                    scrub_value(value);
+                }
+                if let Some(body) = body {
+                    scrub_value(body);
+                }
+            }
             ActionKind::Response { name, url, .. } => {
                 scrub_ident(name);
                 scrub_value(url);
@@ -1032,6 +1084,19 @@ mod tests {
         for fixture in FIXTURES {
             assert_round_trip(fixture);
         }
+    }
+
+    #[test]
+    fn http_round_trips_headers_bodies_and_timeout_shaped_values() {
+        assert_round_trip(
+            r#"VISIT /
+HTTP created POST /api/orders header:Authorization "Bearer {{env.API_KEY}}" header:Content-Type application/json body:"{\"name\":\"Ada\"}" @5s
+[Asserts]
+response:created status == 201
+HTTP timeout_value GET / header:X-Value "@10s"
+HTTP timeout_url GET "@10s"
+"#,
+        );
     }
 
     #[test]

@@ -88,9 +88,20 @@ impl SiteServer {
 }
 
 /// Serves one request from `tests/site/`, ignoring the query string.
-fn respond(request: tiny_http::Request) {
+fn respond(mut request: tiny_http::Request) {
     let url = request.url().to_owned();
     let path = url.split('?').next().unwrap_or("/").trim_start_matches('/');
+    if path == "api/large" {
+        let threshold = if url.contains("chunked") {
+            1
+        } else {
+            usize::MAX
+        };
+        let _ = request.respond(
+            Response::from_string("x".repeat(1_048_577)).with_chunked_threshold(threshold),
+        );
+        return;
+    }
     if path == "user-agent" {
         let user_agent = request
             .headers()
@@ -99,6 +110,35 @@ fn respond(request: tiny_http::Request) {
             .map_or("", |header| header.value.as_str())
             .to_owned();
         let _ = request.respond(Response::from_string(user_agent));
+        return;
+    }
+    if path == "api/http-check" {
+        let header = |name: &'static str| {
+            request
+                .headers()
+                .iter()
+                .find(|header| header.field.equiv(name))
+                .map_or("", |header| header.value.as_str())
+                .to_owned()
+        };
+        let cookie = header("Cookie");
+        let authenticated = header("Authorization") == "Bearer whirl-test-key"
+            || cookie.contains("session=browser");
+        let mut body = String::new();
+        request
+            .as_reader()
+            .read_to_string(&mut body)
+            .expect("request body is readable");
+        let json =
+            serde_json::json!({"authenticated": authenticated, "cookie": cookie, "body": body});
+        let _ = request.respond(
+            Response::from_string(json.to_string())
+                .with_status_code(if authenticated { 200 } else { 401 })
+                .with_header(
+                    Header::from_bytes("Set-Cookie", "http-session=changed; Path=/")
+                        .expect("valid header"),
+                ),
+        );
         return;
     }
     // The redirect test needs a server-side 302 to this same server
@@ -1641,4 +1681,160 @@ RESPONSE stalled GET /stall @200ms
         "{}",
         stdout_text(&output)
     );
+}
+
+#[test]
+fn http_authentication_uses_explicit_headers_without_browser_cookies() {
+    let site = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file("http.whirl", r#"VISIT /network.html
+STORE cookie session browser
+HTTP authorized POST /api/http-check header:Authorization "Bearer whirl-test-key" header:Content-Type application/json body:"{\"message\":\"hello\"}"
+[Asserts]
+response:authorized status == 200
+response:authorized json:/authenticated == true
+response:authorized json:/cookie == ""
+response:authorized json:/body == "{\"message\":\"hello\"}"
+[Captures]
+authenticated: response:authorized json:/authenticated
+HTTP unauthorized GET /api/http-check
+[Asserts]
+response:unauthorized status == 401
+response:unauthorized json:/cookie == ""
+EVAL "if (document.cookie !== 'session=browser') throw new Error('HTTP changed browser cookies')"
+VISIT /network.html?authenticated={{authenticated}}
+PAGE /network.html?authenticated=true
+"#);
+    let output = run_whirl(&dir, &["--base", &site.base(), "http.whirl"]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+}
+
+#[test]
+fn http_returns_redirects_without_following_them() {
+    let site = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file("redirect.whirl", "VISIT /network.html\nHTTP redirect GET /redirect-cross\n[Asserts]\nresponse:redirect status == 302\nresponse:redirect header:location contains localhost\n");
+    let output = run_whirl(&dir, &["--base", &site.base(), "redirect.whirl"]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+}
+
+#[test]
+fn http_enforces_host_allowlists_before_sending_a_request() {
+    let site = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file("blocked.whirl", "[Options]\nallow-hosts: 127.0.0.1\nVISIT /network.html\nHTTP blocked GET https://blocked.invalid/\n");
+    let output = run_whirl(&dir, &["--base", &site.base(), "blocked.whirl"]);
+    assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
+    assert!(
+        stdout_text(&output).contains("HTTP host blocked.invalid is blocked"),
+        "{}",
+        stdout_text(&output)
+    );
+}
+
+#[test]
+fn http_enforces_its_step_timeout() {
+    let site = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file(
+        "timeout.whirl",
+        "VISIT /network.html\nHTTP slow GET /stall @200ms\n",
+    );
+    let output = run_whirl(&dir, &["--base", &site.base(), "timeout.whirl"]);
+    assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
+    assert!(
+        stdout_text(&output).contains("timeout"),
+        "{}",
+        stdout_text(&output)
+    );
+}
+
+#[test]
+fn http_limits_declared_and_streamed_response_bodies() {
+    let site = SiteServer::start();
+    let dir = TestDir::new();
+    for path in ["/api/large", "/api/large?chunked"] {
+        dir.file(
+            "large.whirl",
+            &format!("VISIT /network.html\nHTTP large GET {path}\n"),
+        );
+        let output = run_whirl(&dir, &["--base", &site.base(), "large.whirl"]);
+        assert_eq!(exit_code(&output), 1, "{path}: {}", stdout_text(&output));
+        assert!(
+            stdout_text(&output).contains("HTTP response exceeds the 1 MiB body limit"),
+            "{path}: {}",
+            stdout_text(&output)
+        );
+    }
+}
+
+#[test]
+fn http_head_allows_a_large_content_length_without_a_response_body() {
+    let site = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file(
+        "head.whirl",
+        "VISIT /network.html\nHTTP large HEAD /api/large\n[Asserts]\n\
+         response:large status == 200\nresponse:large header:content-length == 1048577\n",
+    );
+    let output = run_whirl(&dir, &["--base", &site.base(), "head.whirl"]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+}
+
+#[test]
+fn http_rejects_non_http_urls_and_embedded_credentials() {
+    let site = SiteServer::start();
+    let dir = TestDir::new();
+    for url in ["data:text/plain,example", "http://user:password@127.0.0.1/"] {
+        dir.file(
+            "url.whirl",
+            &format!("VISIT /network.html\nHTTP invalid GET {url}\n"),
+        );
+        let output = run_whirl(&dir, &["--base", &site.base(), "url.whirl"]);
+        assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
+        assert!(
+            stdout_text(&output).contains("HTTP or HTTPS URL without embedded credentials"),
+            "{}",
+            stdout_text(&output)
+        );
+    }
+}
+
+#[test]
+fn http_interpolates_headers_and_bodies_without_leaking_secrets() {
+    let site = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file(
+        "secret.whirl",
+        "VISIT /network.html\n\
+         HTTP account POST {{endpoint}} header:Authorization \"Bearer {{env.HTTP_TOKEN}}\" body:{{env.HTTP_BODY}}\n\
+         [Asserts]\nresponse:account status == 200\n\
+         response:account json:/body == {{env.HTTP_BODY}}\n\
+         [Captures]\nbody: response:account json:/body\n",
+    );
+    let output = run_whirl_env(
+        &dir,
+        &[
+            "--base",
+            &site.base(),
+            "--var",
+            "endpoint=/api/http-check",
+            "--report-json",
+            "report.json",
+            "secret.whirl",
+        ],
+        &[
+            ("HTTP_TOKEN", "whirl-test-key"),
+            ("HTTP_BODY", "secret-request-body"),
+        ],
+    );
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    let report = fs::read_to_string(dir.path.join("report.json")).expect("report exists");
+    for secret in ["whirl-test-key", "secret-request-body"] {
+        assert!(!report.contains(secret), "report must mask HTTP secrets");
+        assert!(!stdout_text(&output).contains(secret));
+        assert!(!String::from_utf8_lossy(&output.stderr).contains(secret));
+    }
+    let report: serde_json::Value = serde_json::from_str(&report).expect("report is JSON");
+    assert_eq!(report["files"][0]["entries"][0]["captures"]["body"], "***");
 }

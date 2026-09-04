@@ -25,6 +25,7 @@ import { createHostAllowlist } from "./host-glob.js";
 import { buildLocator, describeLocator } from "./locators.js";
 import type { Params } from "./params.js";
 import {
+	decodeHttpParams,
 	fieldArray,
 	fieldArrayOrNull,
 	fieldBoolean,
@@ -354,7 +355,7 @@ export class PlaywrightDriver implements ShimDriver {
 		if (params.trace) {
 			await context.tracing.start({ screenshots: true, snapshots: true });
 		}
-		const network = new FlowNetwork(context);
+		const network = new FlowNetwork(context, params.allowHosts, blockedHosts);
 		const page = await context.newPage();
 		const tabs = new FlowTabs(context, page, params.dialogs);
 		this.#flow = {
@@ -461,6 +462,10 @@ export class PlaywrightDriver implements ShimDriver {
 		params: Params,
 		timeoutMs: number,
 	): Promise<Params> {
+		if (cmd === "http") {
+			await flow.network.http(decodeHttpParams(params), timeoutMs);
+			return {};
+		}
 		if (cmd === "popup") {
 			await flow.tabs.capture(fieldString(params, "name"), timeoutMs);
 			return {};
@@ -909,6 +914,7 @@ export class PlaywrightDriver implements ShimDriver {
 
 function defaultErrorKind(cmd: StepCommand): ErrorKind {
 	switch (cmd) {
+		case "http":
 		case "response":
 		case "popup":
 		case "tab":
