@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.5.0 (2026-09-04)
+
 - Add `RESPONSE` to observe requests made by the browser, with status, header, JSON Pointer assertions, and response captures.
 
 - Add named popups with `POPUP`, explicit tab selection with `TAB`, `CLOSE`, and `tab:name closed` assertions.
@@ -19,6 +21,12 @@
 
 - Reject input paths that select no flow files.
 - Preserve presence assertions before checks that accept an absent element.
+
+- Bound shim lifecycle operations and request writes so an unresponsive shim
+  cannot stall a run indefinitely.
+- Move filesystem preparation off async workers and improve worker shutdown.
+- Add opt-in diagnostic logging through `WHIRL_LOG`, with sensitive values
+  excluded from log fields.
 
 ## 0.4.0 (2026-09-04)
 
