@@ -125,6 +125,7 @@ Each step command runs one SPEC line. Common params on every step command:
   Playwright call or `expect` and must not retry past it. Rust computes it
   (step timeout, `@duration` override, or remaining entry budget, whichever
   is smallest).
+- `entryStart`: optional boolean; true resets the popup observation window before the step runs. Rust sets it on the first action of each entry. False or absent preserves the window.
 - `title`: the rendered, secret-masked step text (for example
   `FILL label:"Password" ***`). When tracing is on, the shim wraps the step
   in `tracing.group(title)` so trace step titles never contain secrets.
@@ -134,6 +135,9 @@ Commands and their extra params (result `{}` unless noted):
 | cmd | params |
 | --- | --- |
 | `visit` | `url` (absolute; Rust resolved `base`); resolves at the new document's `DOMContentLoaded`, not `load` |
+| `popup` | `name` — name an unnamed popup from the selected tab in the current entry, without selecting it |
+| `tab` | `name` — select a named open tab |
+| `close` | `name` — close a named tab without changing selection |
 | `click` | `locator` |
 | `dblclick` | `locator` |
 | `fill` | `locator`, `value` |
@@ -200,6 +204,15 @@ inside the frame. Rust requires an element segment after the final frame.
 
 `nth.index` is 1-based; the shim subtracts 1. Rust guarantees `nth` is never
 first and `index >= 1`. The mapping to Playwright calls is SPEC section 6.1.
+
+Popup names are local to a flow; `main` names the original page. The shim records
+popup events before actions and attaches dialog handling to every page. It keeps
+named closed pages for closure assertions. All page operations use the selected
+tab, including failure screenshots. The main page remains the `--video` source.
+
+A tab closure assertion uses the `assert` command with
+`{"subject":{"type":"tab","name":"payment"},"check":{"type":"closed"}}`.
+It can run after the selected tab closes; no page evaluation is required.
 
 ### 4.2 PAGE expectation
 

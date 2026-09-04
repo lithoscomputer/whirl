@@ -1,0 +1,15 @@
+<!doctype html><html lang="en"><head><title>Checkout</title></head><body>
+<h1>Checkout</h1><input aria-label="Customer"><div id="result"></div>
+<button id="pay" type="button">Pay with provider</button>
+<button id="two" type="button">Open two</button>
+<script>
+const paymentUrl = new URL('/payment-popup.html', location.href);
+paymentUrl.hostname = 'localhost';
+document.querySelector('#pay').onclick = () => window.open(paymentUrl, '_blank');
+document.querySelector('#two').onclick = () => { window.open(paymentUrl); window.open(paymentUrl); };
+let ready = 0;
+window.addEventListener('message', event => {
+  if (event.data === 'Provider ready') document.body.dataset.popups = String(++ready);
+  document.querySelector('#result').textContent = event.data;
+});
+</script></body></html>

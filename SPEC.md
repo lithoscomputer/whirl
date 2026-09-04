@@ -175,6 +175,9 @@ An action is a verb, an optional locator, and an optional value. Element-targeti
 | Syntax | Meaning |
 | --- | --- |
 | `VISIT url` | Navigate, and continue once the new document has parsed. A `url` starting with `/` resolves against `base`. |
+| `POPUP name` | Name an unnamed popup opened by the selected tab in this entry; selection stays unchanged. |
+| `TAB name` | Select an open named tab for subsequent commands. The original tab is `main`. |
+| `CLOSE name` | Close a named tab; selection stays unchanged. Already closed tabs succeed. |
 | `CLICK locator` | Click the element. |
 | `DBLCLICK locator` | Double-click the element. |
 | `FILL locator "text"` | Replace the input's content with `text`. |
@@ -207,6 +210,44 @@ An action is a verb, an optional locator, and an optional value. Element-targeti
 
 `EVAL` is the JavaScript escape hatch — the `css:` of actions — and the one place Whirl runs code it does not read: a script of one or more statements, such as `EVAL "foo(); bar();"`. Whirl runs the script as the body of an async function in the page's main world through Playwright's `page.evaluate`: a script that parses as a single expression runs as `return (expression);`, so its value is the result; any other script runs as written and yields its `return` value, or `undefined` without one. `await` is available in both forms, and a returned Promise is awaited. A syntax error, a thrown exception, a rejected Promise, or the step timeout fails the entry; the action form discards the result. `EVAL` has no target, does not auto-wait, and does not retry: it runs once, after the preceding line completes. `{{name}}` interpolation happens textually before evaluation, so interpolated values become source text — and a value sent into the page escapes the output masking of section 11, so keep secrets out of `EVAL`. A script the page cannot cancel — one that blocks the renderer or never settles — is still bounded: section 12 defines how Whirl enforces timeouts from outside the page.
 
+### 7.1 Popups and tabs
+
+`POPUP payment` waits for a popup from the selected tab and binds it to a name.
+Whirl records popup events before the entry's first action, so a popup that opens
+before `CLICK` returns is available. Only unnamed popups observed in the current
+entry qualify. Multiple qualifying popups fail strictly. A popup that has already
+closed can still be named and checked with `tab:payment closed`.
+
+Names match `[A-Za-z_][A-Za-z0-9_-]*`. `main` is reserved for the original tab.
+Names last for the flow, including after closure. Duplicate names and references
+to names not yet declared are lint errors. Named tabs share their flow's browser
+context; separate flow files remain isolated. Setup transfers storage, not tabs.
+
+`TAB` selects a tab without waiting for navigation. `PAGE`, element assertions,
+captures, screenshots, and `EVAL` then operate on that tab. `POPUP` and `CLOSE`
+never change selection. After a selected tab closes, use `TAB` to select an open
+one; ordinary commands on a closed tab fail. `tab:name closed` can inspect a
+named tab regardless of which tab is selected. Context options, host filtering,
+and dialog handling apply to popups too. Failure screenshots use the selected
+tab; a closed selected tab cannot be screenshotted. Traces cover all tabs;
+`--video` continues to save the original `main` tab's recording.
+
+```whirl
+CLICK role:button "Pay with provider"
+POPUP payment
+TAB payment
+[Asserts]
+role:heading "Confirm payment" visible
+
+CLICK role:button Confirm
+[Asserts]
+tab:payment closed @30s
+
+TAB main
+[Asserts]
+text:"Payment complete" visible
+```
+
 ## 8. PAGE
 
 ```
@@ -236,6 +277,8 @@ subject := locator | "url" | "title"
 `visible`, `hidden`, `enabled`, `disabled`, `checked`, `unchecked`, `focused`.
 
 `hidden` passes when the element is not visible, including when it does not exist. All others require the element to exist.
+
+`tab:name closed` retries until the named tab closes. An unknown name never counts as closed.
 
 ### 9.2 Element value checks
 
@@ -302,7 +345,7 @@ Whirl masks every value sourced from `env.*` in the textual output it generates:
 
 ## 12. Execution model
 
-- **Isolation.** Each file runs in a fresh browser context with its own single page. Without the `storage` option the context starts empty; with it, the context starts from the saved storage state. Files never share live state either way.
+- **Isolation.** Each file runs in a fresh browser context with an initial page named `main` and any popups it opens. Without the `storage` option the context starts empty; with it, the context starts from the saved storage state. Files never share live state either way.
 - **Order.** Entries run top to bottom. Within an entry: actions, then `PAGE`, then asserts, then captures.
 - **Failure.** The first failing step fails the entry, and a failed entry stops its file; remaining entries in that file are skipped and reported as skipped. Other files still run. On failure Whirl saves a full-page screenshot and, with `--trace`, a Playwright trace to the artifacts directory.
 - **Navigation.** `VISIT` completes when the new document reaches `DOMContentLoaded`: the HTML is parsed and its synchronous scripts have run. It does not wait for the `load` event, because images, fonts, iframes, and media hold `load` open for reasons a flow never asserted, and every later line waits for what it needs anyway: actions wait for their element to be actionable, asserts and `PAGE` retry. A page that only becomes usable after `load` needs an assert on that state before an `EVAL` or `SCREENSHOT`, which run once without waiting.
@@ -401,6 +444,7 @@ entry      = action , { action } , [ page ] , [ asserts ] , [ captures ] ;
 
 action     = action-body , [ step-timeout ] ;
 action-body = "VISIT" , value
+           | ( "POPUP" | "TAB" | "CLOSE" ) , artifact-name
            | "CLICK" , locator
            | "DBLCLICK" , locator
            | "FILL" , locator , value
@@ -420,7 +464,8 @@ page       = "PAGE" , ( value | "matches" , regex ) , [ step-timeout ] ;
 
 asserts    = "[Asserts]" , { assert } ;
 assert     = assert-body , [ step-timeout ] ;
-assert-body = locator , state-check
+assert-body = "tab:" , artifact-name , "closed"
+            | locator , state-check
            | locator , value-check
            | locator , "count" , numop , number
            | ( "url" | "title" ) , str-check ;
@@ -464,7 +509,6 @@ Permanent non-goals — these keep the format Hurl-grade:
 
 Deferred beyond V1 (candidate V2 features, not promised):
 
-- Multi-tab and popup handling.
 - Network stubbing and request assertions.
 - Per-entry `[Options]` overrides and mobile device emulation.
 - An LLM-as-judge assertion (a `JUDGE` keyword with an explicit model option and advisory rather than hard-failing verdicts).

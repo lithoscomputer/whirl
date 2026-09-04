@@ -684,3 +684,22 @@ fn doctor_reports_the_selected_missing_browser_and_its_repair() {
         assert!(error.contains("install-deps firefox"), "{error}");
     }
 }
+
+#[test]
+fn tab_names_are_validated_before_launching_the_browser() {
+    let dir = TestDir::new();
+    dir.file(
+        "unknown.whirl",
+        "VISIT /\nTAB missing\n[Asserts]\ntab:absent closed\n",
+    );
+    let unknown = run_check(&dir, &["unknown.whirl"]);
+    assert_eq!(exit_code(&unknown), 2, "{}", stdout_text(&unknown));
+    assert!(String::from_utf8_lossy(&unknown.stderr).contains("unknown tab"));
+    dir.file(
+        "duplicate.whirl",
+        "VISIT /\nPOPUP main\nPOPUP payment\nPOPUP payment\n",
+    );
+    let duplicate = run_check(&dir, &["duplicate.whirl"]);
+    assert_eq!(exit_code(&duplicate), 2, "{}", stdout_text(&duplicate));
+    assert!(String::from_utf8_lossy(&duplicate.stderr).contains("already named"));
+}

@@ -204,6 +204,15 @@ pub struct EndFlowResult {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "cmd", content = "params", rename_all = "camelCase")]
 pub enum StepCommand {
+    Popup {
+        name: String,
+    },
+    Tab {
+        name: String,
+    },
+    Close {
+        name: String,
+    },
     Visit {
         url: String,
     },
@@ -276,9 +285,11 @@ pub enum StepCommand {
 /// secret-masked step text.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StepRequest {
-    pub command:    StepCommand,
-    pub timeout_ms: u64,
-    pub title:      String,
+    /// Starts a new event observation window before this step executes.
+    pub entry_start: bool,
+    pub command:     StepCommand,
+    pub timeout_ms:  u64,
+    pub title:       String,
 }
 
 /// `capture` result (protocol section 4).
@@ -590,6 +601,9 @@ impl ShimClient {
     /// with SIGKILL and reported dead so the owner can respawn.
     pub async fn run_step(&mut self, step: &StepRequest) -> StepOutcome {
         let (cmd, mut params) = step_frame(&step.command);
+        if step.entry_start {
+            params.insert("entryStart".to_owned(), Json::Bool(true));
+        }
         params.insert("timeoutMs".to_owned(), Json::from(step.timeout_ms));
         params.insert("title".to_owned(), Json::from(step.title.clone()));
         let Ok(receiver) = self.send_request(&cmd, Json::Object(params)).await else {

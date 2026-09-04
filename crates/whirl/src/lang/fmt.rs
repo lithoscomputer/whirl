@@ -312,6 +312,9 @@ fn push_timeout(out: &mut String, timeout: Option<DurationLit>) {
 fn render_action(action: &Action) -> String {
     let is_final = action.timeout.is_none();
     let mut out = match &action.kind {
+        ActionKind::Popup { name } => format!("POPUP {}", name.text),
+        ActionKind::Tab { name } => format!("TAB {}", name.text),
+        ActionKind::Close { name } => format!("CLOSE {}", name.text),
         ActionKind::Visit { url } => {
             format!("VISIT {}", render_value(url, ValueCtx::Plain, is_final))
         }
@@ -443,6 +446,7 @@ fn state_check_text(state: StateCheck) -> &'static str {
 fn render_assert(assert: &Assert) -> String {
     let is_final = assert.timeout.is_none();
     let mut out = match &assert.body {
+        AssertBody::TabClosed { name } => format!("tab:{} closed", name.text),
         AssertBody::ElementState { locator, state } => format!(
             "{} {}",
             render_locator(locator, LocatorCtx::Assert, false),
@@ -845,7 +849,11 @@ mod tests {
                 }
                 scrub_value(key);
             }
-            ActionKind::Screenshot { name } | ActionKind::Snapshot { name } => scrub_ident(name),
+            ActionKind::Popup { name }
+            | ActionKind::Tab { name }
+            | ActionKind::Close { name }
+            | ActionKind::Screenshot { name }
+            | ActionKind::Snapshot { name } => scrub_ident(name),
             ActionKind::Eval { script } => scrub_value(script),
             ActionKind::Store { key, value, .. } => {
                 scrub_value(key);
@@ -874,6 +882,7 @@ mod tests {
             assert.span = ZERO;
             assert.text = String::new();
             match &mut assert.body {
+                AssertBody::TabClosed { name } => scrub_ident(name),
                 AssertBody::ElementState { locator, .. }
                 | AssertBody::ElementCount { locator, .. } => scrub_locator(locator),
                 AssertBody::ElementValue { locator, check, .. } => {
@@ -1016,6 +1025,13 @@ mod tests {
         assert_eq!(
             fmt("VISIT /\nCLICK \"Add   to cart\"\nFILL Email \"a\\\"b\"\n"),
             "VISIT /\nCLICK \"Add   to cart\"\nFILL Email \"a\\\"b\"\n"
+        );
+    }
+
+    #[test]
+    fn named_tabs_round_trip() {
+        assert_round_trip(
+            "VISIT /\nCLICK Pay\nPOPUP payment @30s\nTAB payment\nCLOSE payment\n[Asserts]\ntab:payment closed @5s\nTAB main\n",
         );
     }
 

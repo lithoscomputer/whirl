@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add named popups with `POPUP`, explicit tab selection with `TAB`, `CLOSE`, and `tab:name closed` assertions.
+
 - Add `frame:` locator segments for cross-origin and nested iframes in actions, assertions, and captures.
 
 - Allow selected browser installation and add `whirl doctor` with repair commands.

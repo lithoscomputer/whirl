@@ -1,5 +1,5 @@
 // The Playwright-backed driver: one browser per process, one context and
-// page per flow, and the step implementations (protocol sections 3-6).
+// named pages per flow, and the step implementations (protocol sections 3-6).
 
 import { mkdir } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -17,6 +17,7 @@ import { runAssert, runPage } from "./assertions.js";
 import { runCapture } from "./captures.js";
 import type { ShimDriver } from "./driver.js";
 import { buildEvalExpression } from "./eval-support.js";
+import { FlowTabs } from "./flow-tabs.js";
 import { createHostAllowlist } from "./host-glob.js";
 import { buildLocator, describeLocator } from "./locators.js";
 import type { Params } from "./params.js";
@@ -66,6 +67,7 @@ const closeWatchdogMs = 3000;
 interface FlowState {
 	readonly context: BrowserContext;
 	readonly page: Page;
+	readonly tabs: FlowTabs;
 	readonly blockedHosts: Set<string>;
 	readonly traceActive: boolean;
 	readonly video: {
@@ -318,16 +320,11 @@ export class PlaywrightDriver implements ShimDriver {
 			await context.tracing.start({ screenshots: true, snapshots: true });
 		}
 		const page = await context.newPage();
-		page.on("dialog", (dialog) => {
-			const settle =
-				params.dialogs === "accept" ? dialog.accept() : dialog.dismiss();
-			settle.catch(() => {
-				// The dialog is already gone; nothing to do.
-			});
-		});
+		const tabs = new FlowTabs(context, page, params.dialogs);
 		this.#flow = {
 			context,
 			page,
+			tabs,
 			blockedHosts,
 			traceActive: params.trace,
 			video: params.video,
@@ -395,6 +392,7 @@ export class PlaywrightDriver implements ShimDriver {
 
 	async runStep(cmd: StepCommand, params: Params): Promise<Params> {
 		const flow = this.#requireFlow();
+		if (params["entryStart"] === true) flow.tabs.beginEntry();
 		this.#cancelRequested = false;
 		const timeoutMs = fieldNumber(params, "timeoutMs");
 		const title = fieldString(params, "title");
@@ -422,7 +420,26 @@ export class PlaywrightDriver implements ShimDriver {
 		params: Params,
 		timeoutMs: number,
 	): Promise<Params> {
-		const page = flow.page;
+		if (cmd === "popup") {
+			await flow.tabs.capture(fieldString(params, "name"), timeoutMs);
+			return {};
+		}
+		if (cmd === "tab") {
+			flow.tabs.select(fieldString(params, "name"));
+			return {};
+		}
+		if (cmd === "close") {
+			await flow.tabs.close(fieldString(params, "name"));
+			return {};
+		}
+		if (cmd === "assert") {
+			const subject = fieldObject(fieldObject(params, "spec"), "subject");
+			if (subject["type"] === "tab") {
+				await flow.tabs.assertClosed(fieldString(subject, "name"), timeoutMs);
+				return {};
+			}
+		}
+		const page = flow.tabs.current();
 		switch (cmd) {
 			case "visit":
 				// The flow's later lines wait for what they need (SPEC section 12),
@@ -749,6 +766,9 @@ export class PlaywrightDriver implements ShimDriver {
 
 function defaultErrorKind(cmd: StepCommand): ErrorKind {
 	switch (cmd) {
+		case "popup":
+		case "tab":
+		case "close":
 		case "visit":
 		case "click":
 		case "dblclick":

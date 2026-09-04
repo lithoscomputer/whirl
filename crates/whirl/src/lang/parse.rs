@@ -819,7 +819,10 @@ fn split_timeout(tokens: &mut Vec<RawToken>) -> Option<DurationLit> {
     Some(duration)
 }
 
-const ACTION_KEYWORDS: [&str; 15] = [
+const ACTION_KEYWORDS: [&str; 18] = [
+    "POPUP",
+    "TAB",
+    "CLOSE",
     "VISIT",
     "CLICK",
     "DBLCLICK",
@@ -954,6 +957,15 @@ fn parse_action_body(
     let timeout = split_timeout(&mut tokens);
     let locator_only = |tokens| build_locator(tokens, true, keyword_span);
     let kind = match keyword {
+        "POPUP" => ActionKind::Popup {
+            name: parse_name(tokens, keyword_span)?,
+        },
+        "TAB" => ActionKind::Tab {
+            name: parse_name(tokens, keyword_span)?,
+        },
+        "CLOSE" => ActionKind::Close {
+            name: parse_name(tokens, keyword_span)?,
+        },
         "VISIT" => ActionKind::Visit {
             url: one_value(tokens, keyword_span)?,
         },
@@ -1254,6 +1266,18 @@ fn parse_assert_body(
 ) -> Result<(AssertBody, Option<DurationLit>), LineError> {
     let first_span = first.span;
     let body = match first.bare_single() {
+        Some(text) if text.starts_with("tab:") => {
+            let name_token = strip_prefix_token(first.clone(), 4)
+                .ok_or_else(|| LineError::new(first_span, "expected a tab name"))?;
+            let name = parse_name(vec![name_token], first_span)?;
+            let check = cursor
+                .next_token()?
+                .ok_or_else(|| LineError::new(first_span, "expected `closed`"))?;
+            if check.bare_single() != Some("closed") {
+                return Err(LineError::new(check.span, "expected `closed`"));
+            }
+            AssertBody::TabClosed { name }
+        }
         Some("url") => AssertBody::Url(parse_str_check(cursor, first_span)?),
         Some("title") => AssertBody::Title(parse_str_check(cursor, first_span)?),
         _ => {

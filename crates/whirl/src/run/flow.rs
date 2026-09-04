@@ -604,6 +604,15 @@ impl FlowExec<'_> {
 
         let engine = action.kind.default_engine();
         let command = match &action.kind {
+            K::Popup { name } => StepCommand::Popup {
+                name: name.text.clone(),
+            },
+            K::Tab { name } => StepCommand::Tab {
+                name: name.text.clone(),
+            },
+            K::Close { name } => StepCommand::Close {
+                name: name.text.clone(),
+            },
             K::Visit { url } => {
                 let resolved = self.resolve(url)?;
                 let url = if resolved.starts_with('/') {
@@ -860,6 +869,7 @@ impl FlowExec<'_> {
         }
 
         let request = StepRequest {
+            entry_start: state.steps.is_empty(),
             command,
             timeout_ms,
             title: title.clone(),
@@ -1062,7 +1072,8 @@ impl FlowExec<'_> {
             return;
         }
         let request = StepRequest {
-            command:    StepCommand::Screenshot {
+            entry_start: false,
+            command:     StepCommand::Screenshot {
                 path: self
                     .run
                     .abs_dir
@@ -1070,8 +1081,8 @@ impl FlowExec<'_> {
                     .to_string_lossy()
                     .into_owned(),
             },
-            timeout_ms: FAILURE_SCREENSHOT_TIMEOUT_MS,
-            title:      "failure screenshot".to_owned(),
+            timeout_ms:  FAILURE_SCREENSHOT_TIMEOUT_MS,
+            title:       "failure screenshot".to_owned(),
         };
         match client.run_step(&request).await {
             StepOutcome::Ok(_) => {

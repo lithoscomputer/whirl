@@ -314,6 +314,9 @@ export interface EndFlowResult {
 // --- Step commands (protocol 4) ---
 
 export type StepCommand =
+	| "popup"
+	| "tab"
+	| "close"
 	| "visit"
 	| "click"
 	| "dblclick"
@@ -333,6 +336,9 @@ export type StepCommand =
 	| "capture";
 
 const stepCommandList: readonly StepCommand[] = [
+	"popup",
+	"tab",
+	"close",
 	"visit",
 	"click",
 	"dblclick",

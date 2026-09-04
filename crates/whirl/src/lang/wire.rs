@@ -194,6 +194,9 @@ fn locator_subject<E>(locator: &Locator, resolve: &mut Resolve<'_, E>) -> Result
 /// Converts an assert to the wire spec of protocol section 4.3.
 pub fn assert_wire<E>(body: &AssertBody, resolve: &mut Resolve<'_, E>) -> Result<Json, E> {
     let json = match body {
+        AssertBody::TabClosed { name } => {
+            json!({"subject": {"type": "tab", "name": name.text}, "check": {"type": "closed"}})
+        }
         AssertBody::ElementState { locator, state } => json!({
             "subject": locator_subject(locator, resolve)?,
             "check": {"type": "state", "state": state_text(*state)},

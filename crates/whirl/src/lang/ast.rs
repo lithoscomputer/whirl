@@ -276,6 +276,15 @@ pub struct Action {
 /// The verb and operands of an action (SPEC 7, 17).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ActionKind {
+    Popup {
+        name: Ident,
+    },
+    Tab {
+        name: Ident,
+    },
+    Close {
+        name: Ident,
+    },
     Visit {
         url: Value,
     },
@@ -367,7 +376,10 @@ impl ActionKind {
             Self::Click { .. } | Self::Dblclick { .. } | Self::Hover { .. } => {
                 Some(DefaultEngine::Text)
             }
-            Self::Visit { .. }
+            Self::Popup { .. }
+            | Self::Tab { .. }
+            | Self::Close { .. }
+            | Self::Visit { .. }
             | Self::Screenshot { .. }
             | Self::Snapshot { .. }
             | Self::Eval { .. }
@@ -406,6 +418,9 @@ pub struct Assert {
 /// checks only, so the shape is encoded per subject (SPEC 9.3, 17).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AssertBody {
+    TabClosed {
+        name: Ident,
+    },
     ElementState {
         locator: Locator,
         state:   StateCheck,

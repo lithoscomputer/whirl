@@ -1041,3 +1041,150 @@ FILL frame:iframe >> label:Email wrong@example.com @1s
         stdout_text(&output)
     );
 }
+
+#[test]
+fn popups_are_named_without_switching_and_return_after_self_closure() {
+    let site = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file(
+        "popup.whirl",
+        &format!(
+            r#"[Options]
+base: {}
+VISIT /popups.html
+CLICK role:button "Pay with provider"
+POPUP payment
+[Asserts]
+role:heading Checkout visible
+TAB payment
+FILL label:Name Alice
+[Asserts]
+role:heading "Confirm payment" visible
+[Captures]
+name: label:Name value
+CLICK role:button Alert
+[Asserts]
+role:button Dismissed visible
+CLICK role:button Confirm
+[Asserts]
+tab:payment closed @5s
+TAB main
+[Asserts]
+text:"Payment complete" visible
+FILL label:Customer {{{{name}}}}
+[Asserts]
+label:Customer value == Alice
+"#,
+            site.base()
+        ),
+    );
+    let output = run_whirl(&dir, &["--trace", "popup.whirl"]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+}
+
+#[test]
+fn named_tabs_support_nested_popups_and_explicit_close() {
+    let site = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file(
+        "nested.whirl",
+        &format!(
+            r#"[Options]
+base: {}
+VISIT /popups.html
+CLICK role:button "Pay with provider"
+POPUP payment
+TAB payment
+CLICK role:button Receipt
+POPUP receipt
+TAB receipt
+PAGE /second.html
+CLOSE receipt
+[Asserts]
+tab:receipt closed
+TAB payment
+CLOSE payment
+TAB main
+[Asserts]
+role:heading Checkout visible
+"#,
+            site.base()
+        ),
+    );
+    let output = run_whirl(&dir, &["nested.whirl"]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+}
+
+#[test]
+fn a_popup_from_an_earlier_entry_does_not_satisfy_popup() {
+    let site = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file(
+        "stale.whirl",
+        &format!(
+            r#"[Options]
+base: {}
+VISIT /popups.html
+CLICK role:button "Pay with provider"
+[Asserts]
+text:"Provider ready" visible
+POPUP stale @300ms
+"#,
+            site.base()
+        ),
+    );
+    let output = run_whirl(&dir, &["stale.whirl"]);
+    assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
+    assert!(
+        stdout_text(&output).contains("no popup"),
+        "{}",
+        stdout_text(&output)
+    );
+}
+
+#[test]
+fn selecting_a_closed_tab_fails_without_switching_implicitly() {
+    let site = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file(
+        "closed.whirl",
+        &format!(
+            r#"[Options]
+base: {}
+VISIT /popups.html
+CLICK role:button "Pay with provider"
+POPUP payment
+CLOSE payment
+TAB payment
+"#,
+            site.base()
+        ),
+    );
+    let output = run_whirl(&dir, &["closed.whirl"]);
+    assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
+    assert!(
+        stdout_text(&output).contains("tab payment is closed"),
+        "{}",
+        stdout_text(&output)
+    );
+}
+
+#[test]
+fn multiple_unnamed_popups_fail_strictly() {
+    let site = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file("multiple.whirl", &format!(r#"[Options]
+base: {}
+VISIT /popups.html
+CLICK role:button "Open two"
+EVAL "await new Promise(resolve => {{ const observer = new MutationObserver(() => {{ if (document.body.dataset.popups === '2') {{ observer.disconnect(); resolve(); }} }}); if (document.body.dataset.popups === '2') resolve(); else observer.observe(document.body, {{attributes: true}}); }})"
+POPUP payment @1s
+"#, site.base()));
+    let output = run_whirl(&dir, &["multiple.whirl"]);
+    assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
+    assert!(
+        stdout_text(&output).contains("multiple unnamed popups"),
+        "{}",
+        stdout_text(&output)
+    );
+}

@@ -38,6 +38,7 @@ fn spawn_fake_shim() -> ShimClient {
 /// An `evalAction` step whose script directs the fake shim's response.
 fn eval_step(script: &str, timeout_ms: u64) -> StepRequest {
     StepRequest {
+        entry_start: false,
         command: StepCommand::EvalAction {
             script: script.to_owned(),
         },
@@ -120,11 +121,12 @@ async fn step_params_carry_the_common_timeout_and_title() {
     let mut client = spawn_fake_shim();
     let locator = json!([{"type": "text", "text": "Add to cart", "exact": true}]);
     let step = StepRequest {
-        command:    StepCommand::Click {
+        entry_start: false,
+        command:     StepCommand::Click {
             locator: locator.clone(),
         },
-        timeout_ms: 1_000,
-        title:      "CLICK text:\"Add to cart\"".to_owned(),
+        timeout_ms:  1_000,
+        title:       "CLICK text:\"Add to cart\"".to_owned(),
     };
     let outcome = client.run_step(&step).await;
     let StepOutcome::Ok(result) = outcome else {
@@ -239,12 +241,13 @@ async fn requests_after_a_death_fail_without_hanging() {
 async fn a_capture_result_deserializes_to_its_typed_form() {
     let mut client = spawn_fake_shim();
     let step = StepRequest {
-        command:    StepCommand::Capture {
+        entry_start: false,
+        command:     StepCommand::Capture {
             source: json!({"type": "url"}),
             filter: json!(null),
         },
-        timeout_ms: 1_000,
-        title:      "cart_url: url".to_owned(),
+        timeout_ms:  1_000,
+        title:       "cart_url: url".to_owned(),
     };
     let outcome = client.run_step(&step).await;
     let StepOutcome::Ok(result) = outcome else {

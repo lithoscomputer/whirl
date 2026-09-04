@@ -49,6 +49,7 @@ pub fn lint_file(file: &File) -> Vec<Lint> {
 pub fn lint_file_with(file: &File, external_uses: &HashSet<String>) -> Vec<Lint> {
     let mut lints = Vec::new();
     duplicate_artifact_names(file, &mut lints);
+    tab_names(file, &mut lints);
     unused_captures(file, external_uses, &mut lints);
     setup_option_rules(file, &mut lints);
     redundant_presence_counts(file, &mut lints);
@@ -129,7 +130,8 @@ fn redundant_presence_counts(file: &File, lints: &mut Vec<Lint>) {
                     ..
                 }
                 | AssertBody::Url(_)
-                | AssertBody::Title(_) => continue,
+                | AssertBody::Title(_)
+                | AssertBody::TabClosed { .. } => continue,
                 AssertBody::ElementState { locator, .. }
                 | AssertBody::ElementValue { locator, .. } => locator,
                 AssertBody::ElementCount { locator, op, count } => {
@@ -436,13 +438,18 @@ fn collect_action_refs<'a>(action: &'a Action, refs: &mut Vec<VarRef<'a>>) {
             collect_value_refs(key, line, refs);
             collect_value_refs(value, line, refs);
         }
-        ActionKind::Screenshot { .. } | ActionKind::Snapshot { .. } => {}
+        ActionKind::Popup { .. }
+        | ActionKind::Tab { .. }
+        | ActionKind::Close { .. }
+        | ActionKind::Screenshot { .. }
+        | ActionKind::Snapshot { .. } => {}
     }
 }
 
 fn collect_assert_refs<'a>(assert: &'a Assert, refs: &mut Vec<VarRef<'a>>) {
     let line = assert.line;
     match &assert.body {
+        AssertBody::TabClosed { .. } => {}
         AssertBody::ElementState { locator, .. } | AssertBody::ElementCount { locator, .. } => {
             collect_locator_refs(locator, line, refs);
         }
@@ -527,6 +534,52 @@ fn collect_setup_refs(file: &File) -> Vec<VarRef<'_>> {
     refs.retain(|var_ref| var_ref.kind == RefKind::Setup);
     refs.sort_by_key(|var_ref| (var_ref.line, var_ref.span.column));
     refs
+}
+
+fn tab_names(file: &File, lints: &mut Vec<Lint>) {
+    let mut names = HashSet::from(["main"]);
+    for entry in &file.entries {
+        for action in &entry.actions {
+            match &action.kind {
+                ActionKind::Popup { name } => {
+                    if !names.insert(&name.text) {
+                        lints.push(lint_at(
+                            file,
+                            Severity::Error,
+                            "duplicate-tab",
+                            name.span,
+                            format!("tab `{}` is already named", name.text),
+                        ));
+                    }
+                }
+                ActionKind::Tab { name } | ActionKind::Close { name }
+                    if !names.contains(name.text.as_str()) =>
+                {
+                    lints.push(lint_at(
+                        file,
+                        Severity::Error,
+                        "unknown-tab",
+                        name.span,
+                        format!("unknown tab `{}`; name it with POPUP first", name.text),
+                    ));
+                }
+                _ => {}
+            }
+        }
+        for assertion in &entry.asserts {
+            if let AssertBody::TabClosed { name } = &assertion.body {
+                if !names.contains(name.text.as_str()) {
+                    lints.push(lint_at(
+                        file,
+                        Severity::Error,
+                        "unknown-tab",
+                        name.span,
+                        format!("unknown tab `{}`", name.text),
+                    ));
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
