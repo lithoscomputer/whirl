@@ -10,6 +10,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use std::{env, fs, path, process, thread};
 
+use tokio::task::JoinSet;
+
 use crate::lang::ast::File;
 use crate::report::model::{FileReport, RunReport, SETUP_ENTRY, Status};
 use crate::run::artifacts::{self, ArtifactsError, Flow};
@@ -129,14 +131,14 @@ pub(crate) async fn run_files(
             }));
         }
         let setup_jobs: Arc<[FlowJob]> = Arc::from(setup_jobs);
-        let outcomes = run_pool(
+        let outcomes = WorkerSet::new(
             Arc::clone(&setup_jobs),
             Arc::new(HashMap::new()),
             Arc::clone(&settings),
             &launch,
-            workers,
             Arc::clone(&stop),
         )
+        .run(workers)
         .await;
         for (job, outcome) in setup_jobs.iter().zip(outcomes) {
             let Some(outcome) = outcome else {
@@ -160,14 +162,14 @@ pub(crate) async fn run_files(
     }
 
     let main_jobs: Arc<[FlowJob]> = Arc::from(main_jobs);
-    let outcomes = run_pool(
+    let outcomes = WorkerSet::new(
         Arc::clone(&main_jobs),
         Arc::new(handoffs),
         settings,
         &launch,
-        workers,
         stop,
     )
+    .run(workers)
     .await;
     reports.extend(outcomes.into_iter().flatten().map(|outcome| outcome.report));
     // The saved setup states hold session cookies; do not leave them
@@ -229,134 +231,169 @@ fn build_jobs(
         .collect()
 }
 
-/// Runs one job list through `workers` worker slots and returns each
-/// job's outcome in job order (`None` when fail-fast skipped it).
-async fn run_pool(
-    jobs: Arc<[FlowJob]>,
+/// Owns scheduling data shared by this batch's workers. The queue lock
+/// never crosses an await. Results return through the worker tasks.
+struct WorkQueue {
+    jobs:     Arc<[FlowJob]>,
     handoffs: Arc<HashMap<PathBuf, SetupResult>>,
     settings: Arc<RunSettings>,
-    launch: &ShimLaunch,
-    workers: usize,
-    stop: Arc<AtomicBool>,
-) -> Vec<Option<FlowOutcome>> {
-    let job_count = jobs.len();
-    if job_count == 0 {
-        return Vec::new();
-    }
-    let queue = Arc::new(Mutex::new((0..job_count).collect::<VecDeque<usize>>()));
-    let results = Arc::new(Mutex::new(
-        (0..job_count)
-            .map(|_| None::<FlowOutcome>)
-            .collect::<Vec<_>>(),
-    ));
-    let mut handles = Vec::with_capacity(workers);
-    for _ in 0..workers.min(job_count) {
-        handles.push(tokio::spawn(run_worker(
-            Arc::clone(&jobs),
-            Arc::clone(&handoffs),
-            Arc::clone(&queue),
-            Arc::clone(&stop),
-            Arc::clone(&results),
-            Arc::clone(&settings),
-            launch.clone(),
-        )));
-    }
-    for handle in handles {
-        // A worker panic is a bug; surface it instead of hanging the run.
-        handle.await.expect("a worker task does not panic");
-    }
-    let mut collected = results
-        .lock()
-        .expect("no worker holds the results lock after joining");
-    collected.iter_mut().map(Option::take).collect()
+    launch:   ShimLaunch,
+    pending:  Mutex<VecDeque<usize>>,
+    stop:     Arc<AtomicBool>,
 }
 
-/// One worker slot: pulls flows from the queue and runs each on its own
-/// shim process, reused across files and respawned after a death.
-async fn run_worker(
-    jobs: Arc<[FlowJob]>,
-    handoffs: Arc<HashMap<PathBuf, SetupResult>>,
-    queue: Arc<Mutex<VecDeque<usize>>>,
-    stop: Arc<AtomicBool>,
-    results: Arc<Mutex<Vec<Option<FlowOutcome>>>>,
-    settings: Arc<RunSettings>,
-    launch: ShimLaunch,
-) {
-    let mut client: Option<ShimClient> = None;
-    loop {
-        if settings.fail_fast && stop.load(Ordering::SeqCst) {
-            break;
-        }
-        let index = {
-            let mut queue = queue
-                .lock()
-                .expect("queue users do not panic while holding the lock");
-            queue.pop_front()
-        };
-        let Some(index) = index else {
-            break;
-        };
-        let job = &jobs[index];
-        let outcome = run_job(job, &handoffs, &settings, &launch, &mut client).await;
-        if outcome.report.status != Status::Passed {
-            stop.store(true, Ordering::SeqCst);
-        }
-        results
+impl WorkQueue {
+    fn next_job(&self) -> Option<usize> {
+        let mut pending = self
+            .pending
             .lock()
-            .expect("result writers do not panic while holding the lock")[index] = Some(outcome);
+            .expect("queue users do not panic while holding the lock");
+        if self.settings.fail_fast && self.stop.load(Ordering::SeqCst) {
+            return None;
+        }
+        pending.pop_front()
     }
-    if let Some(client) = client {
-        // Best-effort clean shutdown of the worker's shim process.
-        let _ = client.shutdown().await;
+
+    fn record_outcome(&self, outcome: &FlowOutcome) {
+        if outcome.report.status != Status::Passed {
+            self.stop.store(true, Ordering::SeqCst);
+        }
     }
 }
 
-/// Runs one flow on the worker's shim process, spawning or respawning
-/// the process when needed. A spawn or `hello` failure reports as a
-/// runtime error for this file only; the next file retries. A file whose
-/// setup flow failed does not start; it reports that failure as its own
-/// `[setup]` case (SPEC 12).
-async fn run_job(
-    job: &FlowJob,
-    handoffs: &HashMap<PathBuf, SetupResult>,
-    settings: &RunSettings,
-    launch: &ShimLaunch,
-    client: &mut Option<ShimClient>,
-) -> FlowOutcome {
-    let setup = match job.setup_canonical.as_ref().map(|path| handoffs.get(path)) {
-        None => None,
-        Some(Some(SetupResult::Ready(handoff))) => Some(handoff),
-        Some(Some(SetupResult::Failed(message))) => {
-            return synthetic_outcome(job, Status::Failed, message);
+/// Owns a batch's queue and worker tasks. Dropping the set aborts its
+/// tasks; the normal path joins every worker after it shuts down its shim.
+struct WorkerSet {
+    queue: Arc<WorkQueue>,
+    tasks: JoinSet<Vec<(usize, FlowOutcome)>>,
+}
+
+impl WorkerSet {
+    fn new(
+        jobs: Arc<[FlowJob]>,
+        handoffs: Arc<HashMap<PathBuf, SetupResult>>,
+        settings: Arc<RunSettings>,
+        launch: &ShimLaunch,
+        stop: Arc<AtomicBool>,
+    ) -> Self {
+        let pending = Mutex::new((0..jobs.len()).collect());
+        Self {
+            queue: Arc::new(WorkQueue {
+                jobs,
+                handoffs,
+                settings,
+                launch: launch.clone(),
+                pending,
+                stop,
+            }),
+            tasks: JoinSet::new(),
         }
-        Some(None) => {
-            return synthetic_outcome(job, Status::Failed, "the setup flow did not run");
+    }
+
+    async fn run(mut self, workers: usize) -> Vec<Option<FlowOutcome>> {
+        let count = self.queue.jobs.len();
+        for _ in 0..workers.min(count) {
+            self.tasks.spawn(Worker::new(self.queue.clone()).run());
         }
-    };
-    if client.as_ref().is_none_or(|client| !client.is_alive()) {
-        match spawn_client(launch).await {
-            Ok(fresh) => *client = Some(fresh),
-            Err(error) => {
-                *client = None;
-                return synthetic_outcome(job, Status::Error, &error.to_string());
+        let mut results: Vec<Option<FlowOutcome>> = (0..count).map(|_| None).collect();
+        while let Some(result) = self.tasks.join_next().await {
+            // Worker panics are bugs. JoinSet aborts the remaining tasks
+            // on unwind, rather than detaching their shim processes.
+            for (index, outcome) in result.expect("a worker task does not panic") {
+                results[index] = Some(outcome);
             }
         }
+        results
     }
-    let client = client
-        .as_mut()
-        .expect("the worker's client was just spawned or verified alive");
-    let run = FlowRun {
-        file: &job.file,
-        canonical: &job.canonical,
-        report_dir: &job.report_dir,
-        abs_dir: &job.abs_dir,
-        flags: &settings.flags,
-        overrides: &settings.overrides,
-        base_vars: &settings.base_vars,
-        setup,
-        state_out: job.state_out.as_deref(),
-    };
-    run_flow(&run, client).await
+}
+
+/// One worker owns and reuses its shim client across scheduled files.
+struct Worker {
+    queue:  Arc<WorkQueue>,
+    client: Option<ShimClient>,
+}
+
+impl Worker {
+    fn new(queue: Arc<WorkQueue>) -> Self {
+        Self {
+            queue,
+            client: None,
+        }
+    }
+
+    async fn run(mut self) -> Vec<(usize, FlowOutcome)> {
+        let mut results = Vec::new();
+        while let Some(index) = self.queue.next_job() {
+            let outcome = self.run_job(index).await;
+            self.queue.record_outcome(&outcome);
+            results.push((index, outcome));
+        }
+        if let Some(client) = self.client.take() {
+            // Reports are already complete; shutdown is best effort.
+            let _ = client.shutdown().await;
+        }
+        results
+    }
+
+    /// Spawn and complete the handshake before the client becomes usable.
+    async fn ensure_client(&mut self) -> Result<(), ShimError> {
+        if self.client.as_ref().is_some_and(ShimClient::is_alive) {
+            return Ok(());
+        }
+        if let Some(mut previous) = self.client.take() {
+            previous.kill().await;
+        }
+        let mut client = ShimClient::spawn(&self.queue.launch)?;
+        if let Err(error) = client.hello().await {
+            client.kill().await;
+            return Err(error);
+        }
+        self.client = Some(client);
+        Ok(())
+    }
+
+    /// Failed setup dependencies never start a browser. A failed spawn or
+    /// handshake affects only this job; the next job retries.
+    async fn run_job(&mut self, index: usize) -> FlowOutcome {
+        // Clone the shared owner so the job borrow does not borrow the
+        // worker while it replaces its client.
+        let queue = self.queue.clone();
+        let job = &queue.jobs[index];
+        let setup = match job
+            .setup_canonical
+            .as_ref()
+            .map(|path| queue.handoffs.get(path))
+        {
+            None => None,
+            Some(Some(SetupResult::Ready(handoff))) => Some(handoff),
+            Some(Some(SetupResult::Failed(message))) => {
+                return synthetic_outcome(job, Status::Failed, message);
+            }
+            Some(None) => {
+                return synthetic_outcome(job, Status::Failed, "the setup flow did not run");
+            }
+        };
+        if let Err(error) = self.ensure_client().await {
+            return synthetic_outcome(job, Status::Error, &error.to_string());
+        }
+        let client = self
+            .client
+            .as_mut()
+            .expect("the worker's client was just spawned or verified alive");
+        let settings = &queue.settings;
+        let run = FlowRun {
+            file: &job.file,
+            canonical: &job.canonical,
+            report_dir: &job.report_dir,
+            abs_dir: &job.abs_dir,
+            flags: &settings.flags,
+            overrides: &settings.overrides,
+            base_vars: &settings.base_vars,
+            setup,
+            state_out: job.state_out.as_deref(),
+        };
+        run_flow(&run, client).await
+    }
 }
 
 /// The message a dependent reports when its setup flow failed: the setup
@@ -369,13 +406,6 @@ fn setup_failure_message(setup: &File, report: &FileReport) -> String {
         .find_map(|step| step.error.as_ref().map(|error| error.message.clone()))
         .unwrap_or_else(|| format!("{:?}", report.status).to_lowercase());
     format!("setup flow '{}' failed: {detail}", setup.path.display())
-}
-
-/// Spawns a shim process and completes the `hello` handshake.
-async fn spawn_client(launch: &ShimLaunch) -> Result<ShimClient, ShimError> {
-    let mut client = ShimClient::spawn(launch)?;
-    client.hello().await?;
-    Ok(client)
 }
 
 /// A file that could not start at all: a synthetic `[setup]` case, a

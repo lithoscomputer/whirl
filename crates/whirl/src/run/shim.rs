@@ -353,6 +353,16 @@ pub(crate) struct ShimClient {
     alive:             bool,
 }
 
+impl Drop for ShimClient {
+    fn drop(&mut self) {
+        // Child::kill_on_drop handles the process if an owner is cancelled.
+        // Pipe readers own no cleanup-sensitive state and must not detach.
+        for task in [&self.reader_task, &self.stderr_task].into_iter().flatten() {
+            task.abort();
+        }
+    }
+}
+
 impl ShimClient {
     /// Spawns `<node> <shim-js>` with piped stdio and starts the
     /// background stdout reader and stderr capture. The caller sends
