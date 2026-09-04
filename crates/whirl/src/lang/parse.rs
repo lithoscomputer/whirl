@@ -252,12 +252,21 @@ fn scan_var_ref(chars: &[char], column: u32) -> Result<(ValueSegment, usize), Li
             .expecting(["a variable name like {{env.NAME}}"]));
         }
         ValueSegment::EnvVar(env_name.to_owned())
+    } else if let Some(setup_name) = name.strip_prefix("setup.") {
+        if !is_ident(setup_name) {
+            return Err(LineError::new(
+                span,
+                format!("invalid variable reference `{{{{{name}}}}}`"),
+            )
+            .expecting(["a capture name like {{setup.name}}"]));
+        }
+        ValueSegment::SetupVar(setup_name.to_owned())
     } else if is_ident(&name) {
         ValueSegment::Var(name)
     } else {
         return Err(
             LineError::new(span, format!("invalid variable reference `{{{{{name}}}}}`"))
-                .expecting(["a variable name like {{name}} or {{env.NAME}}"]),
+                .expecting(["a variable name like {{name}}, {{env.NAME}}, or {{setup.name}}"]),
         );
     };
     Ok((segment, close + 2))
@@ -1409,7 +1418,7 @@ fn parse_capture_body(
     })
 }
 
-const OPTION_KEYS: [&str; 10] = [
+const OPTION_KEYS: [&str; 11] = [
     "base",
     "browser",
     "viewport",
@@ -1420,6 +1429,7 @@ const OPTION_KEYS: [&str; 10] = [
     "dialogs",
     "storage",
     "user-agent",
+    "setup",
 ];
 
 /// Shape-validates a literal option value at parse time; a value with
@@ -1530,6 +1540,7 @@ fn parse_option_line(first: RawToken, cursor: &mut Cursor) -> Result<FileOption,
         }
         "storage" => Ok(FileOption::Storage(value)),
         "user-agent" => Ok(FileOption::UserAgent(value)),
+        "setup" => Ok(FileOption::Setup(value)),
         key => unreachable!("option key `{key}` was validated against OPTION_KEYS"),
     }
 }
@@ -2492,9 +2503,9 @@ role:alert text contains "Added to cart"
 
     #[test]
     fn every_option_key_parses() {
-        let source = "[Options]\nbase: https://shop.example.com\nbrowser: firefox\nviewport: 1280x800\nstep-timeout: 5s\nentry-timeout: 90s\nnav-timeout: 500ms\nallow-hosts: example.com *.example.com\ndialogs: accept\nstorage: auth/state.json\nuser-agent: \"Whirl/1 (test)\"\nVISIT /\n";
+        let source = "[Options]\nbase: https://shop.example.com\nbrowser: firefox\nviewport: 1280x800\nstep-timeout: 5s\nentry-timeout: 90s\nnav-timeout: 500ms\nallow-hosts: example.com *.example.com\ndialogs: accept\nstorage: auth/state.json\nuser-agent: \"Whirl/1 (test)\"\nsetup: sign-in.whirl\nVISIT /\n";
         let file = parse(source);
-        assert_eq!(file.options.len(), 10);
+        assert_eq!(file.options.len(), 11);
         let options: Vec<&FileOption> = file.options.iter().map(|line| &line.option).collect();
         let FileOption::Base(base) = options[0] else {
             panic!("expected base");
@@ -2552,6 +2563,27 @@ role:alert text contains "Added to cart"
             panic!("expected user-agent");
         };
         assert_eq!(lit(user_agent), "Whirl/1 (test)");
+        let FileOption::Setup(setup) = options[10] else {
+            panic!("expected setup");
+        };
+        assert_eq!(lit(setup), "sign-in.whirl");
+    }
+
+    #[test]
+    fn setup_variable_references_parse_as_their_own_segment() {
+        let ActionKind::Visit { url } = action_kind("VISIT /u/{{setup.user_id}}") else {
+            panic!("expected VISIT");
+        };
+        assert_eq!(url.segments, vec![
+            ValueSegment::Literal("/u/".to_owned()),
+            ValueSegment::SetupVar("user_id".to_owned()),
+        ]);
+        let error = parse_err("VISIT /\nVISIT {{setup.bad-name}}\n");
+        assert!(
+            error.message.contains("invalid variable reference"),
+            "message: {}",
+            error.message
+        );
     }
 
     #[test]

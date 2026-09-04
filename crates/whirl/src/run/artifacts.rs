@@ -108,7 +108,7 @@ pub fn dedup_flows(inputs: &[PathBuf]) -> Result<Vec<(PathBuf, PathBuf)>, Artifa
 }
 
 /// The first 16 hex digits of the SHA-256 of the canonical path string.
-fn path_hash(canonical: &Path) -> String {
+pub fn path_hash(canonical: &Path) -> String {
     use std::fmt::Write as _;
 
     let digest = Sha256::digest(canonical.to_string_lossy().as_bytes());

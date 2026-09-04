@@ -6,6 +6,7 @@
 //! runtime error (3) outranks parse or lint errors (2), which outrank the
 //! command's negative result (1), which outranks success (0).
 
+use std::collections::HashSet;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -17,7 +18,7 @@ use clap::{Args, Parser, Subcommand};
 use tokio::runtime::Runtime;
 
 use crate::install;
-use crate::lang::lint::{Lint, Severity, lint_file};
+use crate::lang::lint::{Lint, Severity, lint_file_with, lint_setup_refs, setup_capture_uses};
 use crate::lang::parse::{ParseError, parse_file};
 use crate::lang::{ast, fmt};
 use crate::report::model::RunReport;
@@ -314,12 +315,21 @@ fn render_lint(lint: &Lint, source: &str) -> String {
     )
 }
 
-/// Parses and lints every input, printing all diagnostics. Returns the
-/// parsed files and the worst outcome: [`Exit::ParseLint`] when any parse
-/// error or lint error was found, [`Exit::Success`] otherwise (lint
-/// warnings never change the exit code, SPEC 16).
-fn check_inputs(sources: Vec<(PathBuf, String)>) -> (Vec<ParsedInput>, Exit) {
-    let (parsed, parse_errors) = parse_inputs(sources);
+/// The parsed inputs plus the `setup` flows they name that are not
+/// inputs themselves (SPEC 12).
+struct CheckedInputs {
+    inputs: Vec<ParsedInput>,
+    setups: Vec<ParsedInput>,
+}
+
+/// Parses and lints every input and every `setup` flow they name,
+/// printing all diagnostics. Returns the parsed files and the worst
+/// outcome: [`Exit::ParseLint`] when any parse error or lint error was
+/// found, [`Exit::Runtime`] when a setup file cannot be read, and
+/// [`Exit::Success`] otherwise (lint warnings never change the exit
+/// code, SPEC 16).
+fn check_inputs(sources: Vec<(PathBuf, String)>) -> (CheckedInputs, Exit) {
+    let (inputs, parse_errors) = parse_inputs(sources);
     for error in &parse_errors {
         print_err(&error.render());
     }
@@ -328,15 +338,87 @@ fn check_inputs(sources: Vec<(PathBuf, String)>) -> (Vec<ParsedInput>, Exit) {
     } else {
         Exit::ParseLint
     };
-    for input in &parsed {
-        for lint in lint_file(&input.file) {
+
+    // Setup flows: those named by an input that are not inputs themselves
+    // are read and parsed here (SPEC 12).
+    let mut setups: Vec<ParsedInput> = Vec::new();
+    let mut setup_of: Vec<(usize, PathBuf)> = Vec::new();
+    for (index, input) in inputs.iter().enumerate() {
+        let Some(path) = flow::setup_path_for(&input.file) else {
+            continue;
+        };
+        let Some(canonical) = path.canonicalize().ok() else {
+            print_err(&format!(
+                "whirl: error: {}: setup flow '{}' does not exist",
+                input.file.path.display(),
+                path.display()
+            ));
+            exit = exit.max(Exit::Runtime);
+            continue;
+        };
+        setup_of.push((index, canonical.clone()));
+        let already_known = inputs
+            .iter()
+            .chain(setups.iter())
+            .any(|known| known.file.path.canonicalize().ok().as_ref() == Some(&canonical));
+        if already_known {
+            continue;
+        }
+        match fs::read_to_string(&path) {
+            Ok(source) => match parse_file(&path, &source) {
+                Ok(file) => setups.push(ParsedInput { file, source }),
+                Err(error) => {
+                    print_err(&error.render());
+                    exit = exit.max(Exit::ParseLint);
+                }
+            },
+            Err(error) => {
+                print_err(&format!(
+                    "whirl: error: cannot read setup flow '{}': {error}",
+                    path.display()
+                ));
+                exit = exit.max(Exit::Runtime);
+            }
+        }
+    }
+
+    // A setup flow's captures count as used when a dependent reads them
+    // as {{setup.name}} (SPEC 16).
+    let find = |canonical: &PathBuf| -> Option<&ParsedInput> {
+        inputs
+            .iter()
+            .chain(setups.iter())
+            .find(|known| known.file.path.canonicalize().ok().as_ref() == Some(canonical))
+    };
+    for input in inputs.iter().chain(setups.iter()) {
+        let mut external = HashSet::new();
+        if let Ok(canonical) = input.file.path.canonicalize() {
+            for (dependent, setup_canonical) in &setup_of {
+                if *setup_canonical == canonical {
+                    external.extend(setup_capture_uses(&inputs[*dependent].file));
+                }
+            }
+        }
+        for lint in lint_file_with(&input.file, &external) {
             print_err(&render_lint(&lint, &input.source));
             if lint.severity == Severity::Error {
                 exit = exit.max(Exit::ParseLint);
             }
         }
     }
-    (parsed, exit)
+    for (dependent, setup_canonical) in &setup_of {
+        let Some(setup) = find(setup_canonical) else {
+            continue;
+        };
+        let input = &inputs[*dependent];
+        for lint in lint_setup_refs(&input.file, &setup.file) {
+            print_err(&render_lint(&lint, &input.source));
+            if lint.severity == Severity::Error {
+                exit = exit.max(Exit::ParseLint);
+            }
+        }
+    }
+    (CheckedInputs { inputs, setups }, exit)
 }
 
 /// `whirl check`: parse and lint only; nothing runs (SPEC 13).
@@ -500,7 +582,7 @@ fn run_command(args: &RunArgs) -> Exit {
         print_err(&format!("whirl: error: {error}"));
         return Exit::Usage;
     }
-    let (parsed, exit) = check_inputs(sources);
+    let (checked, exit) = check_inputs(sources);
     if exit != Exit::Success {
         return exit;
     }
@@ -518,7 +600,8 @@ fn run_command(args: &RunArgs) -> Exit {
         overrides,
         base_vars,
     };
-    let files: Vec<ast::File> = parsed.into_iter().map(|input| input.file).collect();
+    let files: Vec<ast::File> = checked.inputs.into_iter().map(|input| input.file).collect();
+    let setups: Vec<ast::File> = checked.setups.into_iter().map(|input| input.file).collect();
     let runtime = match Runtime::new() {
         Ok(runtime) => runtime,
         Err(error) => {
@@ -526,7 +609,7 @@ fn run_command(args: &RunArgs) -> Exit {
             return Exit::Runtime;
         }
     };
-    match runtime.block_on(runner::run_files(&files, &settings)) {
+    match runtime.block_on(runner::run_files(&files, &setups, &settings)) {
         Ok(report) => {
             print_out(console::render(&report).trim_end());
             let report_exit = write_reports(args, &report);

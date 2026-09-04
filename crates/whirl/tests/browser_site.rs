@@ -615,6 +615,133 @@ css:"#status" text == "logged in"
 }
 
 #[test]
+fn a_setup_flow_runs_once_and_hands_state_and_captures_to_its_dependents() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    // login.whirl signs in and captures the token. Two dependents start
+    // from its saved state and read the capture as {{setup.token}}; the
+    // login button was clicked once in that state, not once per file.
+    dir.file(
+        "login.whirl",
+        &format!(
+            "[Options]\nbase: {base}\n\n\
+             VISIT /login.html\nCLICK \"Log in\"\n\
+             [Asserts]\ncss:\"#status\" text == \"logged in\"\n\
+             [Captures]\ntoken: css:\"#token\" text\n",
+            base = server.base()
+        ),
+    );
+    for name in ["a", "b"] {
+        dir.file(
+            &format!("{name}.whirl"),
+            &format!(
+                "[Options]\nbase: {base}\nsetup: login.whirl\n\n\
+                 VISIT /login.html\n\
+                 EVAL \"document.title = 'token={{{{setup.token}}}}'\"\n\
+                 [Asserts]\n\
+                 css:\"#status\" text == \"already logged in\"\n\
+                 css:\"#logins\" text == 1\n\
+                 title == token=t123\n",
+                base = server.base()
+            ),
+        );
+    }
+    let output = run_whirl(&dir, &[
+        "--report-json",
+        "report.json",
+        "a.whirl",
+        "b.whirl",
+    ]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+    let report: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(dir.path.join("report.json")).expect("report"))
+            .expect("valid JSON report");
+    let paths: Vec<&str> = report["files"]
+        .as_array()
+        .expect("files")
+        .iter()
+        .map(|file| file["path"].as_str().expect("path"))
+        .collect();
+    assert_eq!(
+        paths,
+        vec!["login.whirl", "a.whirl", "b.whirl"],
+        "report:\n{report}"
+    );
+    assert!(stdout.contains("login.whirl passed"), "stdout:\n{stdout}");
+
+    // Naming the setup flow as an input too runs it once, as the setup.
+    let output = run_whirl(&dir, &[
+        "--report-json",
+        "report.json",
+        "login.whirl",
+        "a.whirl",
+    ]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+    let report: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(dir.path.join("report.json")).expect("report"))
+            .expect("valid JSON report");
+    assert_eq!(
+        report["files"].as_array().expect("files").len(),
+        2,
+        "report:\n{report}"
+    );
+}
+
+#[test]
+fn a_failing_setup_flow_fails_its_dependents_without_running_them() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file(
+        "bad-login.whirl",
+        &format!(
+            "[Options]\nbase: {base}\nstep-timeout: 500ms\n\n\
+             VISIT /login.html\n[Asserts]\ncss:\"#status\" text == \"never\"\n",
+            base = server.base()
+        ),
+    );
+    dir.file(
+        "dependent.whirl",
+        &format!(
+            "[Options]\nbase: {base}\nsetup: bad-login.whirl\n\n\
+             VISIT /login.html\n[Asserts]\ncss:\"#status\" text == \"already logged in\"\n",
+            base = server.base()
+        ),
+    );
+    let output = run_whirl(&dir, &["--report-json", "report.json", "dependent.whirl"]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 1, "stdout:\n{stdout}");
+    assert!(
+        stdout.contains("bad-login.whirl FAILED"),
+        "stdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("dependent.whirl FAILED"),
+        "stdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("setup flow 'bad-login.whirl' failed"),
+        "stdout:\n{stdout}"
+    );
+    let report: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(dir.path.join("report.json")).expect("report"))
+            .expect("valid JSON report");
+    assert_eq!(
+        report["files"][1]["entries"][0]["name"], "[setup]",
+        "report:\n{report}"
+    );
+    // The dependent never opened a browser: no failure screenshot.
+    assert!(
+        !dir.artifacts()
+            .join("dependent")
+            .join("failure.png")
+            .exists(),
+        "the dependent should not have run"
+    );
+}
+
+#[test]
 fn update_snapshots_writes_a_baseline_that_a_second_run_matches() {
     let server = SiteServer::start();
     let dir = TestDir::new();
