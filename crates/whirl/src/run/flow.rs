@@ -586,6 +586,22 @@ impl FlowExec<'_> {
                 method: method.clone(),
                 url:    self.resolve_url(url)?,
             },
+            K::Http {
+                name,
+                method,
+                url,
+                headers,
+                body,
+            } => StepCommand::Http {
+                name:    name.text.clone(),
+                method:  method.clone(),
+                url:     self.resolve_url(url)?,
+                headers: headers
+                    .iter()
+                    .map(|(name, value)| Ok((name.clone(), self.resolve(value)?)))
+                    .collect::<Result<_, BuildError>>()?,
+                body:    body.as_ref().map(|value| self.resolve(value)).transpose()?,
+            },
             K::Click { target } => StepCommand::Click {
                 locator: self.locator(target, engine)?,
             },

@@ -278,6 +278,13 @@ pub(crate) struct Action {
 /// The verb and operands of an action (SPEC 7, 17).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ActionKind {
+    Http {
+        name:    Ident,
+        method:  String,
+        url:     Value,
+        headers: Vec<(String, Value)>,
+        body:    Option<Value>,
+    },
     Response {
         name:   Ident,
         method: String,
@@ -383,7 +390,8 @@ impl ActionKind {
             Self::Click { .. } | Self::Dblclick { .. } | Self::Hover { .. } => {
                 Some(DefaultEngine::Text)
             }
-            Self::Response { .. }
+            Self::Http { .. }
+            | Self::Response { .. }
             | Self::Popup { .. }
             | Self::Tab { .. }
             | Self::Close { .. }

@@ -6,6 +6,7 @@
 import type {
 	BrowserEngine,
 	EndFlowParams,
+	HttpParams,
 	StartFlowParams,
 } from "./protocol.js";
 import { ShimError } from "./protocol.js";
@@ -97,6 +98,27 @@ export function fieldArrayOrNull(
 		return null;
 	}
 	return fieldArray(params, key);
+}
+
+export function decodeHttpParams(params: Params): HttpParams {
+	const headers = fieldArray(params, "headers").map((pair) => {
+		if (
+			!Array.isArray(pair) ||
+			pair.length !== 2 ||
+			typeof pair[0] !== "string" ||
+			typeof pair[1] !== "string"
+		) {
+			throw malformed("headers", "an array of string pairs");
+		}
+		return [pair[0], pair[1]] as const;
+	});
+	return {
+		name: fieldString(params, "name"),
+		method: fieldString(params, "method"),
+		url: fieldString(params, "url"),
+		headers,
+		body: fieldStringOrNull(params, "body"),
+	};
 }
 
 export function fieldEnum<T extends string>(

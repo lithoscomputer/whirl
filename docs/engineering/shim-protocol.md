@@ -139,6 +139,7 @@ Commands and their extra params (result `{}` unless noted):
 | --- | --- |
 | `visit` | `url` (absolute; Rust resolved `base`); resolves at the new document's `DOMContentLoaded`, not `load` |
 | `response` | `name`, `method`, `url` (absolute) — select the first matching request from the selected tab in the current entry and await its response headers |
+| `http` | `name`, `method`, `url` (absolute), `headers` (array of `[name, value]` pairs), `body` (string or null) — send a request without browser cookies and name its completed response |
 | `popup` | `name` — name an unnamed popup from the selected tab in the current entry, without selecting it |
 | `tab` | `name` — select a named open tab |
 | `close` | `name` — close a named tab without changing selection |
@@ -225,6 +226,13 @@ A response field is `{"type":"status"}`, `{"type":"header","name":"content-type"
 or `{"type":"json","pointer":"/id"}`. The `capture` command accepts
 `{"type":"response","name":"order","field":{"type":"json","pointer":"/id"}}`
 as its source, with the existing regex filter and string result contract.
+
+`http` uses the runtime's Fetch API with redirects disabled. It checks the host
+allowlist before sending, reads the completed body within the step timeout, and
+limits decoded response bodies to 1 MiB. A context close aborts outstanding HTTP
+requests. The request has no browser cookie store; response cookies do not
+change the browser. Rust resolves URL, header, and body variables and validates
+literal header names before sending the command.
 
 The shim listens to context request events before navigation so popup initial
 requests are included. Selection is scoped to the current entry and selected

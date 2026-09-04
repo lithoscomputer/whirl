@@ -1,0 +1,5 @@
+VISIT /
+[Asserts]
+response:order status == 200
+HTTP order POST /orders
+RESPONSE order POST /orders

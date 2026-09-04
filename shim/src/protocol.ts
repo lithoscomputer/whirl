@@ -313,7 +313,16 @@ export interface EndFlowResult {
 
 // --- Step commands (protocol 4) ---
 
+export interface HttpParams {
+	readonly name: string;
+	readonly method: string;
+	readonly url: string;
+	readonly headers: readonly (readonly [string, string])[];
+	readonly body: string | null;
+}
+
 export type StepCommand =
+	| "http"
 	| "response"
 	| "popup"
 	| "tab"
@@ -337,6 +346,7 @@ export type StepCommand =
 	| "capture";
 
 const stepCommandList: readonly StepCommand[] = [
+	"http",
 	"response",
 	"popup",
 	"tab",

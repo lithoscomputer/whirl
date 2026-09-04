@@ -187,6 +187,7 @@ An action is a verb, an optional locator, and an optional value. Element-targeti
 | --- | --- |
 | `VISIT url` | Navigate, and continue once the new document has parsed. A `url` starting with `/` resolves against `base`. |
 | `RESPONSE name METHOD url` | Name the first matching HTTP request started in this entry and wait for its response headers. |
+| `HTTP name METHOD url [header:NAME value]... [body:value]` | Send an independent HTTP request and name its response for checks and captures. |
 | `POPUP name` | Name an unnamed popup opened by the selected tab in this entry; selection stays unchanged. |
 | `TAB name` | Select an open named tab for subsequent commands. The original tab is `main`. |
 | `CLOSE name` | Close a named tab; selection stays unchanged. Already closed tabs succeed. |
@@ -303,6 +304,37 @@ response:order json:/status == paid
 text:"Order confirmed" visible
 [Captures]
 order_id: response:order json:/id
+```
+
+### 7.3 Independent HTTP requests
+
+`HTTP` sends a request from Whirl's runtime. It neither sends nor changes browser
+cookies, so an API-key assertion cannot accidentally pass using the page's login
+session. Only explicitly supplied headers carry credentials. Header values, URLs,
+and the optional text body support interpolation; header names are literal and
+case-insensitive duplicates are rejected. Set `header:Content-Type application/json`
+when sending a JSON body.
+
+`GET` and `HEAD` cannot have a body. `CONNECT`, `TRACE`, and `TRACK` are not
+supported. These requests fail the action without contacting the server.
+
+Relative paths resolve against `base`. Only HTTP and HTTPS URLs without embedded
+credentials are accepted. `allow-hosts` applies. Redirects and failed requests are
+never retried or followed automatically; assert a 3xx, 4xx, or 5xx like any other
+response. The step timeout covers receiving the entire response, with a 1 MiB
+body limit. HTTP requests are cancelled if their flow closes. Browser CORS rules
+do not apply, and these runtime requests do not appear in the browser's HAR.
+The body limit covers decoded response bytes. A response without a body, such as
+`HEAD`, can advertise a larger `Content-Length` without failing the limit.
+
+Names share the `RESPONSE` namespace. The same `response:name` assertions and
+captures work for either command. The file still begins with `VISIT`.
+
+```whirl
+HTTP account GET /api/account header:Authorization "Bearer {{env.API_KEY}}"
+[Asserts]
+response:account status == 200
+response:account json:/name == Ada
 ```
 
 ## 8. PAGE
@@ -519,6 +551,7 @@ entry      = action , { action } , [ page ] , [ asserts ] , [ captures ] ;
 
 action     = action-body , [ step-timeout ] ;
 action-body = "VISIT" , value
+           | "HTTP" , artifact-name , http-method , value , { http-option }
            | "RESPONSE" , artifact-name , http-method , value
            | ( "POPUP" | "TAB" | "CLOSE" ) , artifact-name
            | "CLICK" , locator
@@ -560,6 +593,7 @@ source     = locator , extractor | "url" | "title" | "eval" , value
            | "response:" , artifact-name , response-field ;
 response-field = "status" | "header:" , value | "json:" , value ;
 http-method = uppercase-letter , { uppercase-letter } ;
+http-option = "header:" , attr-name , value | "body:" , value ; (* at most one body *)
 extractor  = "text" | "value" | "count" | "attr:" , attr-name ;
 
 locator    = segment , { ">>" , segment } ;
