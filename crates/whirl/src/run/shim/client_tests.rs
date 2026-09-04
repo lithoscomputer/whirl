@@ -9,7 +9,8 @@ use std::time::Duration;
 
 use serde_json::json;
 use tokio::time::sleep;
-use whirl::run::shim::{
+
+use super::{
     CaptureResult, EndFlowParams, ShimClient, ShimLaunch, StartFlowParams, StepCommand,
     StepOutcome, StepRequest, ViewportParams,
 };
@@ -31,7 +32,7 @@ fn fake_shim_launch() -> ShimLaunch {
 /// tests stay fast.
 fn spawn_fake_shim() -> ShimClient {
     let mut client = ShimClient::spawn(&fake_shim_launch()).expect("the fake shim should spawn");
-    client.set_watchdog_grace(Duration::from_millis(200));
+    client.watchdog_grace = Duration::from_millis(200);
     client
 }
 

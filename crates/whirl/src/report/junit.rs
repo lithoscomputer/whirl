@@ -11,7 +11,7 @@ use quick_junit::{NonSuccessKind, Report, TestCase, TestCaseStatus, TestSuite};
 use crate::report::model::{EntryReport, RunReport, Status, StepReport};
 
 /// Renders the whole run as a JUnit XML document.
-pub fn render(report: &RunReport) -> String {
+pub(crate) fn render(report: &RunReport) -> String {
     let mut junit = Report::new("whirl");
     junit.set_time(Duration::from_millis(report.duration_ms));
     for file in &report.files {

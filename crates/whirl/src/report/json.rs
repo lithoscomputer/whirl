@@ -26,7 +26,7 @@ struct JsonReport<'a> {
 }
 
 /// Renders the report as pretty-printed JSON with a trailing newline.
-pub fn render(report: &RunReport) -> String {
+pub(crate) fn render(report: &RunReport) -> String {
     let document = JsonReport {
         version:           VERSION,
         working_directory: env::current_dir().unwrap_or_default(),

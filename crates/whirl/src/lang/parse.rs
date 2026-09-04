@@ -1,7 +1,7 @@
 //! Line-oriented parser for `.whirl` files (SPEC sections 3-10, 16, 17).
 //!
 //! [`parse_file`] parses one file and stops at that file's first error.
-//! [`parse_files`] parses many files and reports every file's error, so
+//! The CLI parses every input and reports each file's error, so
 //! `whirl check` can surface all broken files in one pass (SPEC 13).
 
 use std::fmt::{self, Write as _};
@@ -22,25 +22,25 @@ use crate::lang::ast::{
 /// caret under the offending token, and the expected alternatives.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 #[error("{}", self.render())]
-pub struct ParseError {
-    pub path:        PathBuf,
+pub(crate) struct ParseError {
+    pub(crate) path:        PathBuf,
     /// 1-based line of the offending token.
-    pub line:        u32,
+    pub(crate) line:        u32,
     /// 1-based character column of the offending token.
-    pub column:      u32,
+    pub(crate) column:      u32,
     /// Length of the offending token in characters (caret width).
-    pub len:         u32,
+    pub(crate) len:         u32,
     /// The full source line, without its line ending.
-    pub source_line: String,
-    pub message:     String,
+    pub(crate) source_line: String,
+    pub(crate) message:     String,
     /// Expected alternatives, possibly empty.
-    pub expected:    Vec<String>,
+    pub(crate) expected:    Vec<String>,
 }
 
 impl ParseError {
     /// Renders the diagnostic: location and message, the source line, a
     /// caret under the offending token, and the expected alternatives.
-    pub fn render(&self) -> String {
+    pub(crate) fn render(&self) -> String {
         let mut out = String::new();
         let location = format!("{}:{}:{}", self.path.display(), self.line, self.column);
         let _ = writeln!(out, "{location}: error: {}", self.message);
@@ -1747,7 +1747,7 @@ struct Parser {
 }
 
 /// Parses one `.whirl` source, stopping at the file's first error.
-pub fn parse_file(path: &Path, source: &str) -> Result<File, ParseError> {
+pub(crate) fn parse_file(path: &Path, source: &str) -> Result<File, ParseError> {
     let mut parser = Parser {
         options:        Vec::new(),
         entries:        Vec::new(),
@@ -1785,26 +1785,6 @@ pub fn parse_file(path: &Path, source: &str) -> Result<File, ParseError> {
         comments:       parser.comments,
         options_header: parser.options_header,
     })
-}
-
-/// Parses many `.whirl` sources and reports every broken file's first
-/// error, so one `whirl check` run surfaces them all (SPEC 13, 16).
-pub fn parse_files<'a>(
-    files: impl IntoIterator<Item = (&'a Path, &'a str)>,
-) -> Result<Vec<File>, Vec<ParseError>> {
-    let mut parsed = Vec::new();
-    let mut errors = Vec::new();
-    for (path, source) in files {
-        match parse_file(path, source) {
-            Ok(file) => parsed.push(file),
-            Err(error) => errors.push(error),
-        }
-    }
-    if errors.is_empty() {
-        Ok(parsed)
-    } else {
-        Err(errors)
-    }
 }
 
 fn into_parse_error(path: &Path, error: LineError, line_no: u32, line: &str) -> ParseError {
@@ -2083,6 +2063,26 @@ impl Parser {
 
 #[cfg(test)]
 mod tests {
+    /// Parses many `.whirl` sources and reports every broken file's first
+    /// error, so one `whirl check` run surfaces them all (SPEC 13, 16).
+    fn parse_files<'a>(
+        files: impl IntoIterator<Item = (&'a Path, &'a str)>,
+    ) -> Result<Vec<File>, Vec<ParseError>> {
+        let mut parsed = Vec::new();
+        let mut errors = Vec::new();
+        for (path, source) in files {
+            match parse_file(path, source) {
+                Ok(file) => parsed.push(file),
+                Err(error) => errors.push(error),
+            }
+        }
+        if errors.is_empty() {
+            Ok(parsed)
+        } else {
+            Err(errors)
+        }
+    }
+
     use super::*;
     use crate::lang::ast::DefaultEngine;
 

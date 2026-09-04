@@ -4,9 +4,12 @@
 //! formatter and lint rules), the runner, and the reporters. `SPEC.md` at the
 //! repository root is the product authority for everything in here.
 
-pub mod cli;
-pub mod doctor;
-pub mod install;
-pub mod lang;
-pub mod report;
-pub mod run;
+mod cli;
+mod doctor;
+mod install;
+mod lang;
+mod report;
+mod run;
+
+// The binary only needs the command entry point.
+pub use cli::run;

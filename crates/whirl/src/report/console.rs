@@ -24,7 +24,7 @@ fn status_text(status: Status) -> &'static str {
 
 /// Renders the whole console report: the per-file summary lines,
 /// warnings, and the failure detail blocks.
-pub fn render(report: &RunReport) -> String {
+pub(crate) fn render(report: &RunReport) -> String {
     let mut out = String::new();
     for file in &report.files {
         let _ = writeln!(

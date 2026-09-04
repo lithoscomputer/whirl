@@ -20,21 +20,21 @@ use crate::run::shim::{ShimClient, ShimError, ShimLaunch, resolve_launch};
 
 /// Everything a run needs beyond its parsed files.
 #[derive(Clone, Debug)]
-pub struct RunSettings {
+pub(crate) struct RunSettings {
     /// Worker slots (SPEC 12); `None` uses the logical CPU count.
-    pub jobs:          Option<usize>,
-    pub fail_fast:     bool,
+    pub(crate) jobs:          Option<usize>,
+    pub(crate) fail_fast:     bool,
     /// The `--artifacts` directory (possibly relative).
-    pub artifacts_dir: PathBuf,
-    pub flags:         FlowFlags,
-    pub overrides:     Overrides,
+    pub(crate) artifacts_dir: PathBuf,
+    pub(crate) flags:         FlowFlags,
+    pub(crate) overrides:     Overrides,
     /// `--variables-file` entries then `--var` flags, in order.
-    pub base_vars:     Vec<(String, String)>,
+    pub(crate) base_vars:     Vec<(String, String)>,
 }
 
 /// A failure before any flow runs.
 #[derive(Debug, thiserror::Error)]
-pub enum RunnerError {
+pub(crate) enum RunnerError {
     /// A runtime error (exit 3).
     #[error(transparent)]
     Artifacts(#[from] ArtifactsError),
@@ -73,7 +73,7 @@ enum SetupResult {
 /// flows of those files that are not inputs themselves. Setup flows run
 /// first, once each, and their dependents start from the saved state
 /// (SPEC 12).
-pub async fn run_files(
+pub(crate) async fn run_files(
     files: &[File],
     setups: &[File],
     settings: &RunSettings,

@@ -17,37 +17,29 @@ use crate::lang::ast::{
 /// `whirl check` and `whirl` runs with exit code 2; a
 /// [`Severity::Warning`] is reported without changing the exit code.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Severity {
+pub(crate) enum Severity {
     Error,
     Warning,
 }
 
 /// One lint diagnostic, located like a parse error (SPEC 16).
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Lint {
-    pub code:     &'static str,
-    pub severity: Severity,
-    pub path:     PathBuf,
+pub(crate) struct Lint {
+    pub(crate) code:     &'static str,
+    pub(crate) severity: Severity,
+    pub(crate) path:     PathBuf,
     /// 1-based line of the offending token.
-    pub line:     u32,
+    pub(crate) line:     u32,
     /// 1-based character column of the offending token.
-    pub column:   u32,
+    pub(crate) column:   u32,
     /// Length of the offending token in characters.
-    pub len:      u32,
-    pub message:  String,
+    pub(crate) len:      u32,
+    pub(crate) message:  String,
 }
 
-/// Lints one parsed file: duplicate `SCREENSHOT` or `SNAPSHOT` names are
-/// errors (SPEC 14), and a capture whose value no later line reads is a
-/// warning (SPEC 16). Diagnostics come back in line order.
-pub fn lint_file(file: &File) -> Vec<Lint> {
-    lint_file_with(file, &HashSet::new())
-}
-
-/// [`lint_file`] for a file other files depend on through `setup:`:
-/// `external_uses` names the captures those files read as
-/// `{{setup.name}}`, which count as used here (SPEC 16).
-pub fn lint_file_with(file: &File, external_uses: &HashSet<String>) -> Vec<Lint> {
+/// Lints a parsed file. `external_uses` names captures read by dependent
+/// files through `setup:`; those captures count as used (SPEC 16).
+pub(crate) fn lint_file_with(file: &File, external_uses: &HashSet<String>) -> Vec<Lint> {
     let mut lints = Vec::new();
     duplicate_artifact_names(file, &mut lints);
     tab_names(file, &mut lints);
@@ -60,7 +52,7 @@ pub fn lint_file_with(file: &File, external_uses: &HashSet<String>) -> Vec<Lint>
 }
 
 /// The capture names a file reads as `{{setup.name}}`.
-pub fn setup_capture_uses(file: &File) -> HashSet<String> {
+pub(crate) fn setup_capture_uses(file: &File) -> HashSet<String> {
     collect_setup_refs(file)
         .into_iter()
         .map(|var_ref| var_ref.name.to_owned())
@@ -70,7 +62,7 @@ pub fn setup_capture_uses(file: &File) -> HashSet<String> {
 /// Lints a file against its parsed `setup` flow (SPEC 12, 16): the setup
 /// flow may not name a setup of its own, and every `{{setup.name}}` the
 /// file reads must be a capture the setup flow takes.
-pub fn lint_setup_refs(file: &File, setup: &File) -> Vec<Lint> {
+pub(crate) fn lint_setup_refs(file: &File, setup: &File) -> Vec<Lint> {
     let mut lints = Vec::new();
     if let (Some(line), Some(nested)) = (file.setup_option(), setup.setup_option()) {
         let message = format!(
@@ -658,6 +650,10 @@ fn tab_names(file: &File, lints: &mut Vec<Lint>) {
 
 #[cfg(test)]
 mod tests {
+    fn lint_file(file: &File) -> Vec<Lint> {
+        lint_file_with(file, &HashSet::new())
+    }
+
     use std::path::Path;
 
     use super::*;

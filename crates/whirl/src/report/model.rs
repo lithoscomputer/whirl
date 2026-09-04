@@ -11,13 +11,13 @@ use crate::run::shim::ViewportParams;
 /// The name of the synthetic entry that reports a failure before the
 /// first real entry: option resolution, storage loading, or browser
 /// launch (SPEC 14).
-pub const SETUP_ENTRY: &str = "[setup]";
+pub(crate) const SETUP_ENTRY: &str = "[setup]";
 
 /// Outcome of a step, an entry, or a file. Files never report
 /// `Skipped`.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
-pub enum Status {
+pub(crate) enum Status {
     Passed,
     Failed,
     /// A runtime error (SPEC 13, exit 3): shim or browser failure,
@@ -29,7 +29,7 @@ pub enum Status {
 /// What kind of SPEC line a step is.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
-pub enum StepKind {
+pub(crate) enum StepKind {
     Action,
     Page,
     Assert,
@@ -39,15 +39,15 @@ pub enum StepKind {
 /// A failed step's error detail.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct StepError {
-    pub code:       String,
-    pub message:    String,
+pub(crate) struct StepError {
+    pub(crate) code:       String,
+    pub(crate) message:    String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub expected:   Option<String>,
+    pub(crate) expected:   Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub actual:     Option<String>,
+    pub(crate) actual:     Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub candidates: Option<Vec<String>>,
+    pub(crate) candidates: Option<Vec<String>>,
 }
 
 impl Default for StepError {
@@ -65,46 +65,46 @@ impl Default for StepError {
 /// The selected browser environment, reported only after a context starts.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RuntimeMetadata {
-    pub browser:            String,
-    pub viewport:           ViewportParams,
-    pub browser_version:    Option<String>,
-    pub node_version:       Option<String>,
-    pub playwright_version: Option<String>,
+pub(crate) struct RuntimeMetadata {
+    pub(crate) browser:            String,
+    pub(crate) viewport:           ViewportParams,
+    pub(crate) browser_version:    Option<String>,
+    pub(crate) node_version:       Option<String>,
+    pub(crate) playwright_version: Option<String>,
 }
 
 /// One executed (or skipped) step.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct StepReport {
-    pub line:        u32,
-    pub kind:        StepKind,
+pub(crate) struct StepReport {
+    pub(crate) line:        u32,
+    pub(crate) kind:        StepKind,
     /// The rendered, secret-masked step text.
-    pub text:        String,
-    pub status:      Status,
-    pub duration_ms: u64,
+    pub(crate) text:        String,
+    pub(crate) status:      Status,
+    pub(crate) duration_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub error:       Option<StepError>,
+    pub(crate) error:       Option<StepError>,
 }
 
 /// One entry's result: its steps, captures, and artifacts.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct EntryReport {
+pub(crate) struct EntryReport {
     /// The display name (SPEC 14): nearest comment above the entry, or
     /// its first action plus line number; `[setup]` for the synthetic
     /// pre-entry failure.
-    pub name:        String,
-    pub line:        u32,
-    pub status:      Status,
-    pub duration_ms: u64,
-    pub steps:       Vec<StepReport>,
+    pub(crate) name:        String,
+    pub(crate) line:        u32,
+    pub(crate) status:      Status,
+    pub(crate) duration_ms: u64,
+    pub(crate) steps:       Vec<StepReport>,
     /// Captured variables, masked, in capture order. Serialized as a
     /// JSON object (plan doc "JSON report shape").
     #[serde(serialize_with = "serialize_captures")]
-    pub captures:    Vec<(String, String)>,
+    pub(crate) captures:    Vec<(String, String)>,
     /// Artifact paths recorded for this entry.
-    pub artifacts:   Vec<String>,
+    pub(crate) artifacts:   Vec<String>,
 }
 
 /// Serializes ordered `(name, value)` captures as a JSON object.
@@ -122,38 +122,38 @@ fn serialize_captures<S: Serializer>(
 /// One file's result.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct FileReport {
+pub(crate) struct FileReport {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub runtime:       Option<RuntimeMetadata>,
+    pub(crate) runtime:       Option<RuntimeMetadata>,
     /// The input path as given on the command line.
-    pub path:          String,
-    pub status:        Status,
-    pub duration_ms:   u64,
-    pub artifacts_dir: String,
-    pub blocked_hosts: Vec<String>,
+    pub(crate) path:          String,
+    pub(crate) status:        Status,
+    pub(crate) duration_ms:   u64,
+    pub(crate) artifacts_dir: String,
+    pub(crate) blocked_hosts: Vec<String>,
     /// Screenshot warnings (SPEC 7) and other non-failing notices.
-    pub warnings:      Vec<String>,
+    pub(crate) warnings:      Vec<String>,
     /// File-level artifact paths (`video.webm`, `network.har`).
-    pub artifacts:     Vec<String>,
-    pub entries:       Vec<EntryReport>,
+    pub(crate) artifacts:     Vec<String>,
+    pub(crate) entries:       Vec<EntryReport>,
 }
 
 /// The whole run.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RunReport {
-    pub duration_ms: u64,
-    pub files:       Vec<FileReport>,
+pub(crate) struct RunReport {
+    pub(crate) duration_ms: u64,
+    pub(crate) files:       Vec<FileReport>,
 }
 
 impl RunReport {
     /// True when any file hit a runtime error (SPEC 13, exit 3).
-    pub fn has_error(&self) -> bool {
+    pub(crate) fn has_error(&self) -> bool {
         self.files.iter().any(|file| file.status == Status::Error)
     }
 
     /// True when any file failed (SPEC 13, exit 1).
-    pub fn has_failure(&self) -> bool {
+    pub(crate) fn has_failure(&self) -> bool {
         self.files.iter().any(|file| file.status == Status::Failed)
     }
 }

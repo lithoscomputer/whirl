@@ -13,27 +13,23 @@ use std::env;
 use crate::lang::ast::{Span, Value, ValueSegment};
 
 /// The replacement text for a masked secret (SPEC 11).
-pub const MASK: &str = "***";
+pub(crate) const MASK: &str = "***";
 
 /// Registry of secret values to mask in textual output. Every value
 /// resolved from `{{env.NAME}}` is recorded here; [`Masker::mask`]
 /// replaces each occurrence with [`MASK`], longest secret first, so a
 /// secret that contains another secret masks as one unit.
 #[derive(Debug, Default)]
-pub struct Masker {
+pub(crate) struct Masker {
     /// Recorded secrets, sorted longest first.
     secrets: Vec<String>,
 }
 
 impl Masker {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     /// Records a secret value. Empty values are ignored (masking every
     /// empty string would corrupt all output), and duplicates are kept
     /// once.
-    pub fn record(&mut self, secret: &str) {
+    pub(crate) fn record(&mut self, secret: &str) {
         if secret.is_empty() || self.secrets.iter().any(|known| known == secret) {
             return;
         }
@@ -44,13 +40,13 @@ impl Masker {
     }
 
     /// Every recorded secret, longest first.
-    pub fn secrets(&self) -> &[String] {
+    pub(crate) fn secrets(&self) -> &[String] {
         &self.secrets
     }
 
     /// Replaces every occurrence of every recorded secret with [`MASK`].
     /// At each position the longest matching secret wins.
-    pub fn mask(&self, text: &str) -> String {
+    pub(crate) fn mask(&self, text: &str) -> String {
         if self.secrets.is_empty() {
             return text.to_owned();
         }
@@ -78,7 +74,7 @@ impl Masker {
 /// A failed variable resolution (SPEC 11): the step that referenced it
 /// fails, and the report needs the name and the value's source span.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
-pub enum VarError {
+pub(crate) enum VarError {
     #[error("undefined variable '{name}'")]
     Undefined { name: String, span: Span },
     #[error("environment variable '{name}' is not set")]
@@ -87,71 +83,60 @@ pub enum VarError {
     UndefinedSetup { name: String, span: Span },
 }
 
-impl VarError {
-    /// The source span of the value that referenced the variable.
-    pub fn span(&self) -> Span {
-        match self {
-            Self::Undefined { span, .. }
-            | Self::UnsetEnv { span, .. }
-            | Self::UndefinedSetup { span, .. } => *span,
-        }
-    }
-}
-
 /// The layered variable store. Base layers (`--variables-file`, then
 /// `--var` flags) are loaded before the run; captures overwrite as the
 /// file runs. The store owns the masking registry so `{{env.NAME}}`
 /// resolution and output masking stay in step.
 #[derive(Debug, Default)]
-pub struct VarStore {
+pub(crate) struct VarStore {
     values: HashMap<String, String>,
     masker: Masker,
 }
 
 impl VarStore {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
     /// Sets a variable. Later calls overwrite earlier ones, which gives
     /// the SPEC 11 layering when layers are applied in order:
     /// variables-file entries, `--var` flags, then captures.
-    pub fn set(&mut self, name: impl Into<String>, value: impl Into<String>) {
+    pub(crate) fn set(&mut self, name: impl Into<String>, value: impl Into<String>) {
         self.values.insert(name.into(), value.into());
     }
 
     /// The current value of a variable, if defined.
-    pub fn get(&self, name: &str) -> Option<&str> {
+    pub(crate) fn get(&self, name: &str) -> Option<&str> {
         self.values.get(name).map(String::as_str)
     }
 
     /// Defines a `{{setup.name}}` value: a capture handed over from the
     /// file's setup flow (SPEC 11). Stored under `setup.name`, which no
     /// `{{name}}` reference can spell, so the namespaces never collide.
-    pub fn set_setup(&mut self, name: &str, value: impl Into<String>) {
+    pub(crate) fn set_setup(&mut self, name: &str, value: impl Into<String>) {
         self.values.insert(format!("setup.{name}"), value.into());
     }
 
     /// Records a secret for masking without defining a variable: the
     /// setup flow's secrets, so a dependent masks the same values.
-    pub fn record_secret(&mut self, secret: &str) {
+    pub(crate) fn record_secret(&mut self, secret: &str) {
         self.masker.record(secret);
     }
 
     /// The masking registry, for rendering console output, reports, and
     /// step titles.
-    pub fn masker(&self) -> &Masker {
+    pub(crate) fn masker(&self) -> &Masker {
         &self.masker
     }
 
     /// Replaces every recorded secret in `text` with [`MASK`].
-    pub fn mask(&self, text: &str) -> String {
+    pub(crate) fn mask(&self, text: &str) -> String {
         self.masker.mask(text)
     }
 
     /// Resolves `{{env.NAME}}` textually for step-text rendering: reads
     /// the process environment and records the value for masking.
-    pub fn resolve_env(&mut self, name: &str) -> Option<String> {
+    pub(crate) fn resolve_env(&mut self, name: &str) -> Option<String> {
         let value = env::var(name).ok()?;
         self.masker.record(&value);
         Some(value)
@@ -161,7 +146,7 @@ impl VarStore {
     /// pass through, `{{name}}` reads the store, and `{{env.NAME}}`
     /// reads the process environment at call time and records the value
     /// in the masking registry.
-    pub fn resolve(&mut self, value: &Value) -> Result<String, VarError> {
+    pub(crate) fn resolve(&mut self, value: &Value) -> Result<String, VarError> {
         self.resolve_with(value, |name| env::var(name).ok())
     }
 
@@ -209,7 +194,7 @@ impl VarStore {
 /// A malformed variables file or `--var` flag. The CLI maps this to a
 /// usage error (SPEC 13, exit 4).
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
-pub enum VarsFileError {
+pub(crate) enum VarsFileError {
     #[error("line {line}: expected 'name=value', got '{text}'")]
     MissingEquals { line: u32, text: String },
     #[error("line {line}: invalid variable name '{name}'")]
@@ -229,7 +214,7 @@ fn is_valid_name(name: &str) -> bool {
 /// Parses a variables file (SPEC 11): one `name=value` per line, `#`
 /// comment lines and blank lines ignored. The value is everything after
 /// the first `=`, verbatim. Entries are returned in file order.
-pub fn parse_variables_file(source: &str) -> Result<Vec<(String, String)>, VarsFileError> {
+pub(crate) fn parse_variables_file(source: &str) -> Result<Vec<(String, String)>, VarsFileError> {
     let mut entries = Vec::new();
     for (index, raw_line) in source.lines().enumerate() {
         let line = u32::try_from(index).unwrap_or(u32::MAX).saturating_add(1);
@@ -257,7 +242,7 @@ pub fn parse_variables_file(source: &str) -> Result<Vec<(String, String)>, VarsF
 }
 
 /// Parses one `--var name=value` flag (SPEC 13).
-pub fn parse_var_flag(flag: &str) -> Result<(String, String), VarsFileError> {
+pub(crate) fn parse_var_flag(flag: &str) -> Result<(String, String), VarsFileError> {
     let entries = parse_variables_file(flag)?;
     entries
         .into_iter()
@@ -417,7 +402,7 @@ mod tests {
 
     #[test]
     fn masking_prefers_the_longest_secret_at_overlaps() {
-        let mut masker = Masker::new();
+        let mut masker = Masker::default();
         masker.record("abc");
         masker.record("abcdef");
         masker.record("def");
@@ -427,7 +412,7 @@ mod tests {
 
     #[test]
     fn empty_secrets_are_ignored() {
-        let mut masker = Masker::new();
+        let mut masker = Masker::default();
         masker.record("");
         assert_eq!(masker.mask("plain"), "plain");
     }

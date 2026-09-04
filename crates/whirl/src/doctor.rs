@@ -19,7 +19,7 @@ struct NodeInfo {
 
 /// Checks the selected runtime and browser without downloading or repairing
 /// files.
-pub fn run(browser: &str, progress: Progress<'_>) -> anyhow::Result<()> {
+pub(crate) fn run(browser: &str, progress: Progress<'_>) -> anyhow::Result<()> {
     let runtime = Runtime::new().context("starting runtime diagnosis")?;
     runtime.block_on(async {
         timeout(Duration::from_secs(30), inspect(browser, progress))

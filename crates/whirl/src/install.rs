@@ -35,25 +35,25 @@ mod embedded {
 }
 
 /// The pinned Node runtime version (no `v` prefix).
-pub const NODE_VERSION: &str = "24.19.0";
+pub(crate) const NODE_VERSION: &str = "24.19.0";
 /// The pinned Playwright version, matching `shim/package.json`.
-pub const PLAYWRIGHT_VERSION: &str = "1.62.1";
+pub(crate) const PLAYWRIGHT_VERSION: &str = "1.62.1";
 /// The pinned Bun version used to install the bundle's dependencies
 /// (Bun package-management decision). Bun is not a runtime here: the
 /// bundle always runs on the pinned Node.
-pub const BUN_VERSION: &str = "1.4.0";
+pub(crate) const BUN_VERSION: &str = "1.4.0";
 /// Where the pinned Node release tarballs and checksums live.
 const NODE_DIST_BASE: &str = "https://nodejs.org/dist";
 /// Where the pinned Bun release archives and checksums live.
 const BUN_RELEASE_BASE: &str = "https://github.com/oven-sh/bun/releases/download";
 
 /// Progress reporting: one human-readable line per call.
-pub type Progress<'a> = &'a mut dyn FnMut(&str);
+pub(crate) type Progress<'a> = &'a mut dyn FnMut(&str);
 
 /// Runs the full provisioning: Node runtime, shim files, Bun binary,
 /// dependencies, and browser builds. Each step prints a progress line
 /// and is safe to re-run.
-pub fn run(browsers: &[String], progress: Progress<'_>) -> anyhow::Result<()> {
+pub(crate) fn run(browsers: &[String], progress: Progress<'_>) -> anyhow::Result<()> {
     let data_dir = shim::whirl_data_dir()
         .context("no data directory on this platform; set WHIRL_DATA_DIR to choose one")?;
     let bundle = BundleLayout::new(&data_dir);
@@ -550,7 +550,7 @@ fn run_in_shim_dir(bundle: &BundleLayout, mut command: Command) -> anyhow::Resul
 }
 
 /// Opens a trace with the Playwright CLI belonging to the selected shim.
-pub fn show_trace(path: &Path) -> anyhow::Result<()> {
+pub(crate) fn show_trace(path: &Path) -> anyhow::Result<()> {
     let trace = path
         .canonicalize()
         .with_context(|| format!("reading trace '{}'", path.display()))?;
@@ -570,7 +570,7 @@ pub fn show_trace(path: &Path) -> anyhow::Result<()> {
 
 /// Finds Playwright beside an installed shim or above the development dist
 /// tree.
-pub fn playwright_cli_for(launch: &shim::ShimLaunch) -> anyhow::Result<PathBuf> {
+pub(crate) fn playwright_cli_for(launch: &shim::ShimLaunch) -> anyhow::Result<PathBuf> {
     let parent = launch
         .shim_js
         .parent()

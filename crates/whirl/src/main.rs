@@ -3,8 +3,8 @@
 use std::env;
 use std::process::ExitCode;
 
-use whirl::cli;
+use whirl::run;
 
 fn main() -> ExitCode {
-    cli::run(env::args_os())
+    run(env::args_os())
 }

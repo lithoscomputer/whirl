@@ -717,7 +717,7 @@ fn place_comments(regions: &mut [Region], comments: &[Comment]) {
 
 /// Renders a parsed file in canonical form (SPEC 13). The result ends
 /// with a newline; re-parsing it yields a structurally identical file.
-pub fn format_file(file: &File) -> String {
+pub(crate) fn format_file(file: &File) -> String {
     let mut regions: Vec<Region> = Vec::new();
     if let Some(region) = option_region(file) {
         regions.push(region);

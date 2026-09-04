@@ -24,11 +24,11 @@ use crate::run::shim::{
 use crate::run::vars::{VarError, VarStore};
 
 /// Default per-step timeout (SPEC 5).
-pub const DEFAULT_STEP_TIMEOUT_MS: u64 = 10_000;
+pub(crate) const DEFAULT_STEP_TIMEOUT_MS: u64 = 10_000;
 /// Default navigation timeout for `VISIT` (SPEC 5).
-pub const DEFAULT_NAV_TIMEOUT_MS: u64 = 30_000;
+pub(crate) const DEFAULT_NAV_TIMEOUT_MS: u64 = 30_000;
 /// Default viewport (SPEC 5).
-pub const DEFAULT_VIEWPORT: Viewport = Viewport {
+pub(crate) const DEFAULT_VIEWPORT: Viewport = Viewport {
     width:  1280,
     height: 720,
 };
@@ -38,29 +38,29 @@ const FAILURE_SCREENSHOT_TIMEOUT_MS: u64 = 5_000;
 /// Command-line overrides of file options (SPEC 5: the flag beats the
 /// file option). Durations are already parsed to milliseconds.
 #[derive(Clone, Debug, Default)]
-pub struct Overrides {
-    pub base:             Option<String>,
-    pub browser:          Option<BrowserKind>,
-    pub step_timeout_ms:  Option<u64>,
-    pub entry_timeout_ms: Option<u64>,
-    pub headed:           bool,
-    pub storage:          Option<PathBuf>,
-    pub user_agent:       Option<String>,
+pub(crate) struct Overrides {
+    pub(crate) base:             Option<String>,
+    pub(crate) browser:          Option<BrowserKind>,
+    pub(crate) step_timeout_ms:  Option<u64>,
+    pub(crate) entry_timeout_ms: Option<u64>,
+    pub(crate) headed:           bool,
+    pub(crate) storage:          Option<PathBuf>,
+    pub(crate) user_agent:       Option<String>,
 }
 
 /// Run-wide flags the flow needs (SPEC 13).
 #[derive(Clone, Debug, Default)]
-pub struct FlowFlags {
-    pub trace:            bool,
-    pub video:            bool,
-    pub har:              bool,
-    pub update_snapshots: bool,
+pub(crate) struct FlowFlags {
+    pub(crate) trace:            bool,
+    pub(crate) video:            bool,
+    pub(crate) har:              bool,
+    pub(crate) update_snapshots: bool,
     /// Set only when this flow is the run's single file.
-    pub save_storage:     Option<PathBuf>,
+    pub(crate) save_storage:     Option<PathBuf>,
 }
 
 /// A `--step-timeout` / `--entry-timeout` flag value: `500ms` or `10s`.
-pub fn parse_duration_flag(text: &str) -> Option<u64> {
+pub(crate) fn parse_duration_flag(text: &str) -> Option<u64> {
     let (amount, factor) = if let Some(amount) = text.strip_suffix("ms") {
         (amount, 1)
     } else {
@@ -75,7 +75,7 @@ pub fn parse_duration_flag(text: &str) -> Option<u64> {
 }
 
 /// A `--browser` flag value: `chromium`, `firefox`, or `webkit`.
-pub fn parse_browser_flag(text: &str) -> Option<BrowserKind> {
+pub(crate) fn parse_browser_flag(text: &str) -> Option<BrowserKind> {
     match text {
         "chromium" => Some(BrowserKind::Chromium),
         "firefox" => Some(BrowserKind::Firefox),
@@ -85,7 +85,7 @@ pub fn parse_browser_flag(text: &str) -> Option<BrowserKind> {
 }
 
 /// The wire name of a browser engine.
-pub fn browser_name(browser: BrowserKind) -> &'static str {
+pub(crate) fn browser_name(browser: BrowserKind) -> &'static str {
     match browser {
         BrowserKind::Chromium => "chromium",
         BrowserKind::Firefox => "firefox",
@@ -115,32 +115,32 @@ fn url_host(url: &str) -> Option<String> {
 /// A file's options after resolution at file start (SPEC 5, 11), with
 /// command-line overrides applied.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ResolvedOptions {
-    pub base:             Option<String>,
-    pub browser:          BrowserKind,
-    pub viewport:         Viewport,
-    pub step_timeout_ms:  u64,
-    pub entry_timeout_ms: Option<u64>,
-    pub nav_timeout_ms:   u64,
+pub(crate) struct ResolvedOptions {
+    pub(crate) base:             Option<String>,
+    pub(crate) browser:          BrowserKind,
+    pub(crate) viewport:         Viewport,
+    pub(crate) step_timeout_ms:  u64,
+    pub(crate) entry_timeout_ms: Option<u64>,
+    pub(crate) nav_timeout_ms:   u64,
     /// With the `base` host already appended when set (SPEC 5).
-    pub allow_hosts:      Option<Vec<String>>,
-    pub dialogs:          DialogPolicy,
+    pub(crate) allow_hosts:      Option<Vec<String>>,
+    pub(crate) dialogs:          DialogPolicy,
     /// The `prefers-reduced-motion` value the page sees; the engine
     /// default when unset (SPEC 5).
-    pub reduced_motion:   Option<ReducedMotion>,
+    pub(crate) reduced_motion:   Option<ReducedMotion>,
     /// Resolved relative to the `.whirl` file (SPEC 5).
-    pub storage:          Option<PathBuf>,
-    pub headed:           bool,
+    pub(crate) storage:          Option<PathBuf>,
+    pub(crate) headed:           bool,
     /// Browser user agent string; the engine default when unset (SPEC 5).
-    pub user_agent:       Option<String>,
+    pub(crate) user_agent:       Option<String>,
     /// The `setup` flow, resolved relative to the `.whirl` file (SPEC 5).
-    pub setup:            Option<PathBuf>,
+    pub(crate) setup:            Option<PathBuf>,
 }
 
 /// A failure while resolving options at file start. Reported as the
 /// `[setup]` entry of a failed run (SPEC 11, exit 1).
 #[derive(Debug, thiserror::Error)]
-pub enum OptionsError {
+pub(crate) enum OptionsError {
     #[error("{0}")]
     Var(#[from] VarError),
     #[error("line {line}: invalid {key} value '{value}'")]
@@ -210,7 +210,7 @@ fn parse_dialogs_value(text: &str) -> Option<DialogPolicy> {
 /// is appended to `allow-hosts` when that option is set. `canonical` is
 /// the flow's canonical path (SPEC 14): the `storage` path resolves
 /// relative to it, like `UPLOAD` paths and snapshot baselines.
-pub fn resolve_options(
+pub(crate) fn resolve_options(
     file: &File,
     canonical: &Path,
     vars: &mut VarStore,
@@ -359,7 +359,7 @@ fn resolve_beside_file(flow_path: &Path, relative: &str) -> PathBuf {
 /// The path of a file's `setup` flow as written, resolved against the
 /// file's own directory (SPEC 5). `None` without a literal `setup`
 /// option; lint rejects an interpolated one.
-pub fn setup_path_for(file: &File) -> Option<PathBuf> {
+pub(crate) fn setup_path_for(file: &File) -> Option<PathBuf> {
     let line = file.setup_option()?;
     let FileOption::Setup(value) = &line.option else {
         return None;
@@ -373,44 +373,44 @@ pub fn setup_path_for(file: &File) -> Option<PathBuf> {
 /// (SPEC 12): its saved storage state, its captures, and the secrets it
 /// masked, so dependents mask the same values.
 #[derive(Clone, Debug, Default)]
-pub struct SetupHandoff {
-    pub storage_path: PathBuf,
-    pub captures:     Vec<(String, String)>,
-    pub secrets:      Vec<String>,
+pub(crate) struct SetupHandoff {
+    pub(crate) storage_path: PathBuf,
+    pub(crate) captures:     Vec<(String, String)>,
+    pub(crate) secrets:      Vec<String>,
 }
 
 /// One flow's result: its report plus what a dependent file would need
 /// from it as a `setup` flow.
 #[derive(Debug)]
-pub struct FlowOutcome {
-    pub report:   FileReport,
+pub(crate) struct FlowOutcome {
+    pub(crate) report:   FileReport,
     /// Every capture, unmasked, in the order taken.
-    pub captures: Vec<(String, String)>,
+    pub(crate) captures: Vec<(String, String)>,
     /// The secrets the run masked.
-    pub secrets:  Vec<String>,
+    pub(crate) secrets:  Vec<String>,
 }
 
 /// One flow's inputs, prepared by the runner.
 #[derive(Debug)]
-pub struct FlowRun<'a> {
-    pub file:       &'a File,
+pub(crate) struct FlowRun<'a> {
+    pub(crate) file:       &'a File,
     /// The canonical flow path: snapshot baselines and `storage` and
     /// `UPLOAD` paths resolve relative to it.
-    pub canonical:  &'a Path,
+    pub(crate) canonical:  &'a Path,
     /// The per-flow artifact directory as reported (possibly relative).
-    pub report_dir: &'a Path,
+    pub(crate) report_dir: &'a Path,
     /// The same directory, absolute, for shim commands.
-    pub abs_dir:    &'a Path,
-    pub flags:      &'a FlowFlags,
-    pub overrides:  &'a Overrides,
+    pub(crate) abs_dir:    &'a Path,
+    pub(crate) flags:      &'a FlowFlags,
+    pub(crate) overrides:  &'a Overrides,
     /// `--variables-file` entries then `--var` flags, in order.
-    pub base_vars:  &'a [(String, String)],
+    pub(crate) base_vars:  &'a [(String, String)],
     /// The finished `setup` flow this file starts from, when it has one
     /// (SPEC 12).
-    pub setup:      Option<&'a SetupHandoff>,
+    pub(crate) setup:      Option<&'a SetupHandoff>,
     /// Where to save the final storage state when this file is itself a
     /// `setup` flow; only a passed run writes it.
-    pub state_out:  Option<&'a Path>,
+    pub(crate) state_out:  Option<&'a Path>,
 }
 
 /// One step line of an entry, in execution order (SPEC 12).
@@ -1230,7 +1230,7 @@ fn file_status(entries: &[EntryReport]) -> Status {
 /// Runs one flow through the given live shim client and returns its
 /// report. The caller (the worker) respawns the client when
 /// [`ShimClient::is_alive`] turns false afterwards.
-pub async fn run_flow(run: &FlowRun<'_>, client: &mut ShimClient) -> FlowOutcome {
+pub(crate) async fn run_flow(run: &FlowRun<'_>, client: &mut ShimClient) -> FlowOutcome {
     let started = Instant::now();
     let mut report = FileReport {
         runtime:       None,

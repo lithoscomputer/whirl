@@ -30,7 +30,7 @@ fn step(
 /// Builds the fixture report. Strings that carried the secret are
 /// pre-masked, as the runner would deliver them.
 pub(crate) fn sample_report() -> RunReport {
-    let mut masker = Masker::new();
+    let mut masker = Masker::default();
     masker.record(SECRET);
     let fill_text = masker.mask(&format!("FILL \"Password\" {SECRET}"));
     let actual_value = masker.mask(SECRET);

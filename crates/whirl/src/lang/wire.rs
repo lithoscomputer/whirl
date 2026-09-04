@@ -15,7 +15,7 @@ use crate::lang::ast::{
 };
 
 /// Resolves a value to its final string; `E` is the runner's error.
-pub type Resolve<'a, E> = dyn FnMut(&Value) -> Result<String, E> + 'a;
+pub(crate) type Resolve<'a, E> = dyn FnMut(&Value) -> Result<String, E> + 'a;
 
 /// The canonical flag string of a regex literal: `i`, `s`, `m` in that
 /// order.
@@ -63,7 +63,7 @@ fn regex_json(regex: &Regex) -> Json {
 /// Converts a locator to the wire array of protocol section 4.1.
 /// `default_engine` names the engine an unprefixed segment selects; it
 /// must be present when the locator can hold one (actions, SPEC 6.1).
-pub fn locator_wire<E>(
+pub(crate) fn locator_wire<E>(
     locator: &Locator,
     default_engine: Option<DefaultEngine>,
     resolve: &mut Resolve<'_, E>,
@@ -130,7 +130,7 @@ fn segment_wire<E>(
 /// 4.2, classifying a resolved value per SPEC 8: a value starting with
 /// `/` compares the path (or path plus query when it contains `?`); any
 /// other value compares the full URL.
-pub fn page_wire<E>(check: &PageCheck, resolve: &mut Resolve<'_, E>) -> Result<Json, E> {
+pub(crate) fn page_wire<E>(check: &PageCheck, resolve: &mut Resolve<'_, E>) -> Result<Json, E> {
     let json = match check {
         PageCheck::Value(value) => {
             let resolved = resolve(value)?;
@@ -200,7 +200,7 @@ fn response_field_wire<E>(field: &ResponseField, resolve: &mut Resolve<'_, E>) -
 }
 
 /// Converts an assert to the wire spec of protocol section 4.3.
-pub fn assert_wire<E>(body: &AssertBody, resolve: &mut Resolve<'_, E>) -> Result<Json, E> {
+pub(crate) fn assert_wire<E>(body: &AssertBody, resolve: &mut Resolve<'_, E>) -> Result<Json, E> {
     let json = match body {
         AssertBody::ResponseStatus { name, op, status } => {
             json!({"subject": {"type": "response", "name": name.text}, "check": {"type": "status", "op": num_op_text(*op), "value": status}})
@@ -245,7 +245,7 @@ pub fn assert_wire<E>(body: &AssertBody, resolve: &mut Resolve<'_, E>) -> Result
 }
 
 /// Converts a capture source to the wire shape of protocol section 4.4.
-pub fn capture_source_wire<E>(
+pub(crate) fn capture_source_wire<E>(
     source: &CaptureSource,
     resolve: &mut Resolve<'_, E>,
 ) -> Result<Json, E> {
@@ -272,7 +272,7 @@ pub fn capture_source_wire<E>(
 
 /// Converts a capture's optional `regex` filter to the wire `filter`
 /// param of protocol section 4.4: an object, or JSON `null`.
-pub fn filter_wire(filter: Option<&Regex>) -> Json {
+pub(crate) fn filter_wire(filter: Option<&Regex>) -> Json {
     match filter {
         Some(regex) => regex_json(regex),
         None => Json::Null,

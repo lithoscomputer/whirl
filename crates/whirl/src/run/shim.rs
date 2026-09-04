@@ -24,27 +24,27 @@ use tokio::task::JoinHandle;
 use tokio::time::{Instant, timeout, timeout_at};
 
 /// Environment variable naming the built shim entry (protocol section 8).
-pub const SHIM_JS_ENV: &str = "WHIRL_SHIM_JS";
+pub(crate) const SHIM_JS_ENV: &str = "WHIRL_SHIM_JS";
 /// Environment variable naming the node executable (protocol section 8).
-pub const NODE_ENV: &str = "WHIRL_NODE";
+pub(crate) const NODE_ENV: &str = "WHIRL_NODE";
 /// The default node executable when only [`SHIM_JS_ENV`] is set.
-pub const DEFAULT_NODE: &str = "node";
+pub(crate) const DEFAULT_NODE: &str = "node";
 
 /// Whirl's directory under the platform data dir (`dirs::data_dir()`).
-pub const DATA_DIR_NAME: &str = "whirl";
+pub(crate) const DATA_DIR_NAME: &str = "whirl";
 /// Environment override for the Whirl data directory. Used by tests to
 /// point shim resolution and `whirl install` at a scratch directory; the
 /// value replaces `dirs::data_dir()/whirl` entirely.
-pub const DATA_DIR_ENV: &str = "WHIRL_DATA_DIR";
+pub(crate) const DATA_DIR_ENV: &str = "WHIRL_DATA_DIR";
 /// The bundled node executable, relative to the data dir.
-pub const BUNDLE_NODE: &str = "bundle/node/bin/node";
+pub(crate) const BUNDLE_NODE: &str = "bundle/node/bin/node";
 /// The bundled shim entry, relative to the data dir.
-pub const BUNDLE_SHIM_JS: &str = "bundle/shim/index.js";
+pub(crate) const BUNDLE_SHIM_JS: &str = "bundle/shim/index.js";
 
 /// How long past a step's `timeoutMs` the external watchdog waits before
 /// it sends `cancelFlow`, and then how long it waits for the
 /// `cancelFlow` reply before killing the process (protocol section 5).
-pub const WATCHDOG_GRACE: Duration = Duration::from_secs(2);
+pub(crate) const WATCHDOG_GRACE: Duration = Duration::from_secs(2);
 
 /// How long `shutdown` waits for the shim to acknowledge and exit
 /// before killing it.
@@ -58,15 +58,15 @@ const STDERR_TAIL_LIMIT: usize = 8 * 1024;
 
 /// How to launch the shim: the node executable and the shim entry.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ShimLaunch {
-    pub node:    PathBuf,
-    pub shim_js: PathBuf,
+pub(crate) struct ShimLaunch {
+    pub(crate) node:    PathBuf,
+    pub(crate) shim_js: PathBuf,
 }
 
 /// A shim process or protocol failure. Protocol-level step errors are
 /// not in here; they surface as [`StepOutcome::ShimError`].
 #[derive(Debug, thiserror::Error)]
-pub enum ShimError {
+pub(crate) enum ShimError {
     #[error(
         "no browser shim found: set {SHIM_JS_ENV} or run `whirl install` to provision the bundle"
     )]
@@ -90,22 +90,22 @@ pub enum ShimError {
 /// The wire error object (protocol section 2).
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ErrorObject {
-    pub kind:       String,
-    pub message:    String,
+pub(crate) struct ErrorObject {
+    pub(crate) kind:       String,
+    pub(crate) message:    String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expected:   Option<String>,
+    pub(crate) expected:   Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub actual:     Option<String>,
+    pub(crate) actual:     Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub candidates: Option<Vec<String>>,
+    pub(crate) candidates: Option<Vec<String>>,
 }
 
 /// Resolves how to launch the shim (protocol section 8): the
 /// `WHIRL_SHIM_JS`/`WHIRL_NODE` environment, then the installed bundle
 /// under the platform data dir. Neither present is a runtime error
 /// naming `whirl install`.
-pub fn resolve_launch() -> Result<ShimLaunch, ShimError> {
+pub(crate) fn resolve_launch() -> Result<ShimLaunch, ShimError> {
     resolve_launch_from(
         env::var_os(SHIM_JS_ENV).map(PathBuf::from),
         env::var_os(NODE_ENV).map(PathBuf::from),
@@ -116,7 +116,7 @@ pub fn resolve_launch() -> Result<ShimLaunch, ShimError> {
 /// The Whirl data directory: the [`DATA_DIR_ENV`] override when set,
 /// otherwise `dirs::data_dir()/whirl`. `None` only when the platform has
 /// no data directory and no override is set.
-pub fn whirl_data_dir() -> Option<PathBuf> {
+pub(crate) fn whirl_data_dir() -> Option<PathBuf> {
     data_dir_from(
         env::var_os(DATA_DIR_ENV).map(PathBuf::from),
         dirs::data_dir(),
@@ -151,59 +151,59 @@ fn resolve_launch_from(
 /// `hello` result (protocol section 3).
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct HelloResult {
-    pub protocol:           u64,
-    pub playwright_version: String,
+pub(crate) struct HelloResult {
+    pub(crate) protocol:           u64,
+    pub(crate) playwright_version: String,
 }
 
 /// `startFlow` viewport params.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
-pub struct ViewportParams {
-    pub width:  u64,
-    pub height: u64,
+pub(crate) struct ViewportParams {
+    pub(crate) width:  u64,
+    pub(crate) height: u64,
 }
 
 /// `startFlow` video params: record into `temp_dir`, move the recording
 /// to `final_path` at `endFlow`.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct VideoParams {
-    pub temp_dir:   String,
-    pub final_path: String,
+pub(crate) struct VideoParams {
+    pub(crate) temp_dir:   String,
+    pub(crate) final_path: String,
 }
 
 /// `startFlow` params (protocol section 3).
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct StartFlowParams {
-    pub browser:            String,
-    pub headed:             bool,
-    pub viewport:           ViewportParams,
-    pub storage_state_path: Option<String>,
-    pub dialogs:            String,
-    pub allow_hosts:        Option<Vec<String>>,
-    pub nav_timeout_ms:     u64,
-    pub user_agent:         Option<String>,
-    pub reduced_motion:     Option<String>,
-    pub video:              Option<VideoParams>,
-    pub har_path:           Option<String>,
-    pub trace:              bool,
+pub(crate) struct StartFlowParams {
+    pub(crate) browser:            String,
+    pub(crate) headed:             bool,
+    pub(crate) viewport:           ViewportParams,
+    pub(crate) storage_state_path: Option<String>,
+    pub(crate) dialogs:            String,
+    pub(crate) allow_hosts:        Option<Vec<String>>,
+    pub(crate) nav_timeout_ms:     u64,
+    pub(crate) user_agent:         Option<String>,
+    pub(crate) reduced_motion:     Option<String>,
+    pub(crate) video:              Option<VideoParams>,
+    pub(crate) har_path:           Option<String>,
+    pub(crate) trace:              bool,
 }
 
 /// `endFlow` params (protocol section 3).
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct EndFlowParams {
-    pub save_storage_path: Option<String>,
-    pub trace_path:        Option<String>,
+pub(crate) struct EndFlowParams {
+    pub(crate) save_storage_path: Option<String>,
+    pub(crate) trace_path:        Option<String>,
 }
 
 /// `endFlow` result (protocol section 3).
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct EndFlowResult {
-    pub blocked_hosts: Vec<String>,
-    pub video_path:    Option<String>,
+pub(crate) struct EndFlowResult {
+    pub(crate) blocked_hosts: Vec<String>,
+    pub(crate) video_path:    Option<String>,
 }
 
 /// A step command's own params (protocol section 4). Locator, PAGE
@@ -211,7 +211,7 @@ pub struct EndFlowResult {
 /// [`crate::lang::wire`] as JSON values.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "cmd", content = "params", rename_all = "camelCase")]
-pub enum StepCommand {
+pub(crate) enum StepCommand {
     Response {
         name:   String,
         method: String,
@@ -297,32 +297,26 @@ pub enum StepCommand {
 /// `title` params (protocol section 4). `title` is the rendered,
 /// secret-masked step text.
 #[derive(Clone, Debug, PartialEq)]
-pub struct StepRequest {
+pub(crate) struct StepRequest {
     /// Starts a new event observation window before this step executes.
-    pub entry_start: bool,
-    pub command:     StepCommand,
-    pub timeout_ms:  u64,
-    pub title:       String,
+    pub(crate) entry_start: bool,
+    pub(crate) command:     StepCommand,
+    pub(crate) timeout_ms:  u64,
+    pub(crate) title:       String,
 }
 
 /// `capture` result (protocol section 4).
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-pub struct CaptureResult {
-    pub value: String,
-}
-
-/// `snapshot` result with `update: true` (protocol section 4).
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-pub struct SnapshotUpdatedResult {
-    pub updated: bool,
+pub(crate) struct CaptureResult {
+    pub(crate) value: String,
 }
 
 /// The outcome of one step run under the external watchdog.
 #[derive(Debug)]
-pub enum StepOutcome {
+pub(crate) enum StepOutcome {
     /// The shim answered `ok: true`; the raw result object. `capture`
-    /// deserializes to [`CaptureResult`], `snapshot` with `update` to
-    /// [`SnapshotUpdatedResult`]; other steps return `{}`.
+    /// deserializes to [`CaptureResult`]; snapshot updates return
+    /// `{"updated": true}` and other steps return `{}`.
     Ok(Json),
     /// The shim answered `ok: false` with a protocol error object.
     ShimError(ErrorObject),
@@ -346,7 +340,7 @@ type PendingMap = Arc<Mutex<Option<HashMap<u64, oneshot::Sender<RawResponse>>>>>
 /// An async client for one shim process (one worker slot). The owner
 /// respawns a fresh client when [`ShimClient::is_alive`] turns false.
 #[derive(Debug)]
-pub struct ShimClient {
+pub(crate) struct ShimClient {
     child:             Child,
     stdin:             ChildStdin,
     next_id:           u64,
@@ -363,7 +357,7 @@ impl ShimClient {
     /// Spawns `<node> <shim-js>` with piped stdio and starts the
     /// background stdout reader and stderr capture. The caller sends
     /// `hello` next (protocol section 3).
-    pub fn spawn(launch: &ShimLaunch) -> Result<Self, ShimError> {
+    pub(crate) fn spawn(launch: &ShimLaunch) -> Result<Self, ShimError> {
         let mut child = Command::new(&launch.node)
             .arg(&launch.shim_js)
             .stdin(Stdio::piped())
@@ -410,18 +404,12 @@ impl ShimClient {
     /// True while the process is believed to be running and usable.
     /// After a kill (unresponsive shim, failed shutdown) or an observed
     /// process death this turns false and the owner must respawn.
-    pub fn is_alive(&self) -> bool {
+    pub(crate) fn is_alive(&self) -> bool {
         self.alive
     }
 
-    /// Overrides the watchdog grace period (default
-    /// [`WATCHDOG_GRACE`]).
-    pub fn set_watchdog_grace(&mut self, grace: Duration) {
-        self.watchdog_grace = grace;
-    }
-
     /// The most recent stderr output of the shim process (bounded).
-    pub fn stderr_tail(&self) -> String {
+    pub(crate) fn stderr_tail(&self) -> String {
         let tail = self
             .stderr_tail
             .lock()
@@ -523,20 +511,23 @@ impl ShimClient {
     }
 
     /// `hello` (protocol section 3): sent once after spawn.
-    pub async fn hello(&mut self) -> Result<HelloResult, ShimError> {
+    pub(crate) async fn hello(&mut self) -> Result<HelloResult, ShimError> {
         self.request("hello", serde_json::json!({})).await
     }
 
     /// `startFlow` (protocol section 3): creates the browser context
     /// and page for one flow.
-    pub async fn start_flow(&mut self, params: &StartFlowParams) -> Result<Json, ShimError> {
+    pub(crate) async fn start_flow(&mut self, params: &StartFlowParams) -> Result<Json, ShimError> {
         let params = serde_json::to_value(params).expect("startFlow params always serialize");
         self.request::<Json>("startFlow", params).await
     }
 
     /// `endFlow` (protocol section 3): ends the flow and closes the
     /// context.
-    pub async fn end_flow(&mut self, params: &EndFlowParams) -> Result<EndFlowResult, ShimError> {
+    pub(crate) async fn end_flow(
+        &mut self,
+        params: &EndFlowParams,
+    ) -> Result<EndFlowResult, ShimError> {
         let params = serde_json::to_value(params).expect("endFlow params always serialize");
         self.request("endFlow", params).await
     }
@@ -621,7 +612,7 @@ impl ShimClient {
     /// `cancelFlow` (protocol section 6): the out-of-band abort. The
     /// shim force-closes the page and context; the in-flight step, if
     /// any, fails with error kind `cancelled`.
-    pub async fn cancel_flow(&mut self) -> Result<(), ShimError> {
+    pub(crate) async fn cancel_flow(&mut self) -> Result<(), ShimError> {
         self.request::<Json>("cancelFlow", serde_json::json!({}))
             .await?;
         Ok(())
@@ -632,7 +623,7 @@ impl ShimClient {
     /// plus the grace period, then sends `cancelFlow`; if `cancelFlow`
     /// gets no reply within another grace period, the process is killed
     /// with SIGKILL and reported dead so the owner can respawn.
-    pub async fn run_step(&mut self, step: &StepRequest) -> StepOutcome {
+    pub(crate) async fn run_step(&mut self, step: &StepRequest) -> StepOutcome {
         let (cmd, mut params) = step_frame(&step.command);
         if step.entry_start {
             params.insert("entryStart".to_owned(), Json::Bool(true));
@@ -691,7 +682,7 @@ impl ShimClient {
 
     /// Kills the shim process with SIGKILL and marks the client dead.
     /// The owner respawns a replacement client for the worker slot.
-    pub async fn kill(&mut self) {
+    pub(crate) async fn kill(&mut self) {
         self.alive = false;
         let _ = self.child.start_kill();
         let _ = timeout(SHUTDOWN_GRACE, self.child.wait()).await;
@@ -704,7 +695,7 @@ impl ShimClient {
 
     /// Clean shutdown (protocol section 3): send `shutdown`, wait a
     /// bounded time for the reply and process exit, then kill.
-    pub async fn shutdown(mut self) -> Result<(), ShimError> {
+    pub(crate) async fn shutdown(mut self) -> Result<(), ShimError> {
         let acknowledged = match timeout(
             SHUTDOWN_GRACE,
             self.exchange::<Json>("shutdown", serde_json::json!({})),
@@ -982,3 +973,6 @@ mod tests {
 
 #[cfg(test)]
 mod timeout_tests;
+
+#[cfg(test)]
+mod client_tests;

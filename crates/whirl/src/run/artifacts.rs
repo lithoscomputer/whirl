@@ -8,32 +8,32 @@ use std::{env, io};
 use sha2::{Digest as _, Sha256};
 
 /// Fixed artifact file name: the on-failure full-page screenshot.
-pub const FAILURE_PNG: &str = "failure.png";
+pub(crate) const FAILURE_PNG: &str = "failure.png";
 /// Fixed artifact file name: the Playwright trace of a failed flow.
-pub const TRACE_ZIP: &str = "trace.zip";
+pub(crate) const TRACE_ZIP: &str = "trace.zip";
 /// Fixed artifact file name: the `--video` recording.
-pub const VIDEO_WEBM: &str = "video.webm";
+pub(crate) const VIDEO_WEBM: &str = "video.webm";
 /// Fixed artifact file name: the `--har` network log.
-pub const NETWORK_HAR: &str = "network.har";
+pub(crate) const NETWORK_HAR: &str = "network.har";
 
 /// The artifact file name of a `SCREENSHOT name` action: `<name>.png`.
-pub fn screenshot_file(name: &str) -> String {
+pub(crate) fn screenshot_file(name: &str) -> String {
     format!("{name}.png")
 }
 
 /// The artifact file name of a failed snapshot's captured frame.
-pub fn snapshot_actual_file(name: &str) -> String {
+pub(crate) fn snapshot_actual_file(name: &str) -> String {
     format!("snapshot-{name}-actual.png")
 }
 
 /// The artifact file name of a failed snapshot's diff image.
-pub fn snapshot_diff_file(name: &str) -> String {
+pub(crate) fn snapshot_diff_file(name: &str) -> String {
     format!("snapshot-{name}-diff.png")
 }
 
 /// The platform tag in snapshot baseline names (SPEC 7): `linux`,
 /// `darwin`, or `win32`.
-pub fn platform_tag() -> &'static str {
+pub(crate) fn platform_tag() -> &'static str {
     match env::consts::OS {
         "linux" => "linux",
         "macos" => "darwin",
@@ -45,7 +45,7 @@ pub fn platform_tag() -> &'static str {
 /// The baseline image path of `SNAPSHOT name` (SPEC 7):
 /// `<flow>.whirl-snapshots/<name>-<browser>-<platform>.png` next to the
 /// flow file.
-pub fn snapshot_baseline_path(flow_path: &Path, name: &str, browser: &str) -> PathBuf {
+pub(crate) fn snapshot_baseline_path(flow_path: &Path, name: &str, browser: &str) -> PathBuf {
     let file_name = flow_path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -60,7 +60,7 @@ pub fn snapshot_baseline_path(flow_path: &Path, name: &str, browser: &str) -> Pa
 /// A failure while mapping flows to artifact directories. Both variants
 /// are runtime errors (SPEC 13, exit 3).
 #[derive(Debug, thiserror::Error)]
-pub enum ArtifactsError {
+pub(crate) enum ArtifactsError {
     #[error("cannot resolve '{path}': {source}")]
     Canonicalize { path: PathBuf, source: io::Error },
     #[error(
@@ -79,19 +79,19 @@ pub enum ArtifactsError {
 /// One unique flow: the input path as given, its canonical path
 /// (absolute, symlinks resolved), and its artifact directory.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Flow {
+pub(crate) struct Flow {
     /// The first input path that named this flow.
-    pub input:     PathBuf,
+    pub(crate) input:     PathBuf,
     /// The canonical path; the identity that dedups flows.
-    pub canonical: PathBuf,
+    pub(crate) canonical: PathBuf,
     /// The flow's artifact directory under the artifacts dir.
-    pub dir:       PathBuf,
+    pub(crate) dir:       PathBuf,
 }
 
 /// Deduplicates input paths by canonical path, preserving first-seen
 /// order (SPEC 14: overlapping inputs or symlinked duplicates of one
 /// file resolve to one flow, run once).
-pub fn dedup_flows(inputs: &[PathBuf]) -> Result<Vec<(PathBuf, PathBuf)>, ArtifactsError> {
+pub(crate) fn dedup_flows(inputs: &[PathBuf]) -> Result<Vec<(PathBuf, PathBuf)>, ArtifactsError> {
     let mut seen: Vec<(PathBuf, PathBuf)> = Vec::new();
     for input in inputs {
         let canonical = input
@@ -108,7 +108,7 @@ pub fn dedup_flows(inputs: &[PathBuf]) -> Result<Vec<(PathBuf, PathBuf)>, Artifa
 }
 
 /// The first 16 hex digits of the SHA-256 of the canonical path string.
-pub fn path_hash(canonical: &Path) -> String {
+pub(crate) fn path_hash(canonical: &Path) -> String {
     use std::fmt::Write as _;
 
     let digest = Sha256::digest(canonical.to_string_lossy().as_bytes());
@@ -134,7 +134,7 @@ fn without_whirl_extension(path: &Path) -> PathBuf {
 /// outside it, `<file stem>-<16-hex-hash>` so absolute paths and `..`
 /// segments never escape the artifacts directory. `cwd` must itself be
 /// canonical.
-pub fn flow_dir(artifacts_dir: &Path, cwd: &Path, canonical: &Path) -> PathBuf {
+pub(crate) fn flow_dir(artifacts_dir: &Path, cwd: &Path, canonical: &Path) -> PathBuf {
     if let Ok(relative) = canonical.strip_prefix(cwd) {
         return artifacts_dir.join(without_whirl_extension(relative));
     }
@@ -148,7 +148,7 @@ pub fn flow_dir(artifacts_dir: &Path, cwd: &Path, canonical: &Path) -> PathBuf {
 /// Maps every input to a unique flow with its artifact directory:
 /// canonicalizes, dedups by canonical path (first-seen order), assigns
 /// directories, and verifies that no two flows collide (SPEC 14).
-pub fn plan_flows(
+pub(crate) fn plan_flows(
     artifacts_dir: &Path,
     cwd: &Path,
     inputs: &[PathBuf],
