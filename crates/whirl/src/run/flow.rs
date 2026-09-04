@@ -13,7 +13,6 @@ use crate::lang::ast::{
     self, BrowserKind, DialogPolicy, DurationLit, File, FileOption, OptionValue, ReducedMotion,
     Value, Viewport,
 };
-use crate::lang::wire;
 use crate::report::model::{
     EntryReport, FileReport, ReportViewport, RuntimeMetadata, SETUP_ENTRY, Status, StepError,
     StepKind, StepReport,
@@ -21,7 +20,7 @@ use crate::report::model::{
 use crate::run::artifacts;
 use crate::run::shim::{
     CaptureResult, EndFlowParams, ErrorObject, ShimClient, ShimError, StartFlowParams, StepCommand,
-    StepOutcome, StepRequest, VideoParams, ViewportParams,
+    StepOutcome, StepRequest, VideoParams, ViewportParams, wire,
 };
 use crate::run::vars::{VarError, VarStore};
 

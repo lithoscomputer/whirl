@@ -24,6 +24,8 @@ use tokio::task::JoinHandle;
 use tokio::time::{Instant, timeout, timeout_at};
 use tracing::{Instrument as _, debug, debug_span, warn};
 
+pub(super) mod wire;
+
 /// Environment variable naming the built shim entry (protocol section 8).
 pub(crate) const SHIM_JS_ENV: &str = "WHIRL_SHIM_JS";
 /// Environment variable naming the node executable (protocol section 8).
@@ -209,7 +211,7 @@ pub(crate) struct EndFlowResult {
 
 /// A step command's own params (protocol section 4). Locator, PAGE
 /// expectation, assert spec, and capture source/filter bodies come from
-/// [`crate::lang::wire`] as JSON values.
+/// [`wire`] as JSON values.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "cmd", content = "params", rename_all = "camelCase")]
 pub(crate) enum StepCommand {
