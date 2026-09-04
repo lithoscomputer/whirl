@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.8.0 (2026-09-04)
+
 - Add portable HTML reports with embedded recordings and screenshots, execution checkpoints, failure details, and optional author-written report metadata.
 
 ## 0.7.0 (2026-09-04)
