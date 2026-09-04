@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.6.0 (2026-09-04)
+
 - Add `chrome`, `firefox`, and `safari` user-agent aliases to flow options and the CLI, and record the resolved string in JSON reports.
 
 ## 0.5.0 (2026-09-04)
