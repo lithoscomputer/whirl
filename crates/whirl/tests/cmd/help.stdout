@@ -27,6 +27,8 @@ Options:
       --trace                     Record a Playwright trace per file; saved only when the file fails
       --report-junit <PATH>       Write a JUnit XML report
       --report-json <PATH>        Write a JSON report
+      --report-html <PATH>        Write a standalone HTML report with embedded recordings and screenshots
+      --report-metadata <PATH>    Read author-written report and flow descriptions from a JSON file
       --fail-fast                 Stop scheduling new files after the first failure
       --update-snapshots          Write or refresh SNAPSHOT baselines instead of comparing
       --video                     Record a .webm video of each file's run

@@ -118,6 +118,7 @@ $ whirl --rerun-failed report.json --trace
 $ whirl fmt flows/          # rewrite files to the canonical form
 $ whirl --headed flow.whirl # watch the browser
 $ whirl --trace flow.whirl  # save a trace when the flow fails
+$ whirl --video --report-html evidence.html flows/
 $ whirl show-trace whirl-artifacts/flow/trace.zip
 ```
 
@@ -125,13 +126,28 @@ Run the complete [sample shop](examples/shop/README.md) with
 `mise run example:test`. It covers login, validation, shared setup, snapshots,
 and CI reports. See [examples/](examples/) for more flows.
 
+## HTML reports
+
+Create a portable browser test report with recordings and screenshots:
+
+```console
+$ whirl --video --report-html evidence.html flows/
+$ whirl --video --report-html evidence.html --report-metadata context.json flows/
+```
+
+The HTML opens offline. It shows results, execution checkpoints, failure details,
+and browser recordings. Missing recordings are shown separately from test status.
+Use optional [report metadata](SPEC.md#141-html-reports) to add a title, scope note,
+and flow descriptions. Metadata paths resolve relative to the metadata file.
+
 ## Secrets
 
 Reference secrets with `{{env.NAME}}`; Whirl masks every env-sourced value
 in its console output, reports, and trace step titles. Browser-recorded
 artifacts — screenshots, video, HAR files, and saved storage state — can
 still contain secrets the flow typed or received. Treat the artifacts
-directory as sensitive and prefer dedicated test credentials.
+directory and HTML reports containing embedded media as sensitive, and prefer
+dedicated test credentials.
 
 ## Development
 

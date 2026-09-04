@@ -1838,3 +1838,345 @@ fn http_interpolates_headers_and_bodies_without_leaking_secrets() {
     let report: serde_json::Value = serde_json::from_str(&report).expect("report is JSON");
     assert_eq!(report["files"][0]["entries"][0]["captures"]["body"], "***");
 }
+
+#[test]
+fn html_report_is_portable_and_preserves_results_and_author_context() {
+    let dir = TestDir::new();
+    let server = SiteServer::start();
+    dir.file("pass.whirl", "# Inspect the page.\nVISIT /stable.html\nSCREENSHOT page\n[Asserts]\ntitle == \"Stable Page\"\n");
+    dir.file("fail.whirl", "# A failed check.\nVISIT /stable.html\n[Asserts]\ntitle == Wrong @100ms\n# Never executed.\nVISIT /form.html\n");
+    fs::create_dir(dir.path.join("context")).expect("metadata directory");
+    dir.file("context/report.json", r#"{
+        "title": "Critical browser evidence",
+        "description": "Local services.\nAuthor-written scope.",
+        "files": {"../pass.whirl": {"title": "Page access", "description": "Open the page and verify its title."}}
+    }"#);
+    let output = run_whirl(&dir, &[
+        "--base",
+        &server.base(),
+        "--video",
+        "--report-html",
+        "report.html",
+        "--report-json",
+        "report.json",
+        "--report-junit",
+        "junit.xml",
+        "--report-metadata",
+        "context/report.json",
+        "pass.whirl",
+        "fail.whirl",
+    ]);
+    assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
+    let html = fs::read_to_string(dir.path.join("report.html")).expect("HTML report");
+    assert!(html.contains("data:video/webm;base64,"));
+    assert!(html.contains("data:image/png;base64,"));
+    assert!(html.contains("Critical browser evidence"));
+    assert!(html.contains("Never executed."));
+    let json: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(dir.path.join("report.json")).expect("JSON report"),
+    )
+    .expect("valid JSON");
+    assert_eq!(
+        json["metadata"]["files"]["pass.whirl"]["title"],
+        "Page access"
+    );
+    assert!(
+        json["files"]
+            .as_array()
+            .expect("files")
+            .iter()
+            .any(|file| file["path"] == "fail.whirl" && file["status"] == "failed")
+    );
+    assert!(dir.path.join("junit.xml").is_file());
+
+    // A different directory and no source artifacts: the browser must decode
+    // the embedded media and retain all results without a server or sidecars.
+    fs::create_dir(dir.path.join("moved")).expect("moved directory");
+    let moved = dir.path.join("moved/evidence.html");
+    fs::rename(dir.path.join("report.html"), &moved).expect("move report");
+    fs::remove_dir_all(dir.artifacts()).expect("remove source media");
+    let url = reqwest::Url::from_file_path(&moved).expect("file URL");
+    dir.file("verify.whirl", &format!(r#"VISIT "{url}"
+[Asserts]
+role:heading "Critical browser evidence" visible
+role:heading "Page access" visible
+css:article count == 2
+css:article[data-status=passed] count == 1
+css:article[data-status=failed] count == 1
+css:.entry[data-status=skipped] count == 1
+EVAL "const v = document.querySelector('video'); await v.play(); await new Promise((resolve, reject) => {{ if (v.videoWidth > 0) resolve(); else {{ v.addEventListener('loadeddata', resolve, {{once:true}}); v.addEventListener('error', () => reject(new Error('Video failed')), {{once:true}}); }} }}); if (!v.videoWidth) throw new Error('No video pixels'); v.pause();"
+EVAL "for (const d of document.querySelectorAll('details')) d.open = true; for (const img of document.images) {{ img.loading = 'eager'; await img.decode(); if (!img.naturalWidth) throw new Error('No screenshot pixels'); }}"
+EVAL "if (document.documentElement.scrollWidth > innerWidth) throw new Error('Report overflows viewport')"
+"#));
+    let verify = run_whirl(&dir, &["verify.whirl"]);
+    assert_eq!(exit_code(&verify), 0, "{}", stdout_text(&verify));
+    let source = fs::read_to_string(dir.path.join("verify.whirl")).expect("verification flow");
+    dir.file(
+        "mobile.whirl",
+        &format!("[Options]\nviewport: 390x844\n{source}"),
+    );
+    let mobile = run_whirl(&dir, &["mobile.whirl"]);
+    assert_eq!(exit_code(&mobile), 0, "{}", stdout_text(&mobile));
+}
+
+#[test]
+fn html_report_escapes_hostile_text_and_keeps_environment_values_masked() {
+    let dir = TestDir::new();
+    let server = SiteServer::start();
+    let hostile = "</title><script>document.body.dataset.injected='yes'</script><img src=x onerror=alert(1)> & \"quoted\"";
+    dir.file("context.json", &serde_json::json!({"title": hostile, "description": hostile, "files": {"flow.whirl": {"title": hostile, "description": hostile}}}).to_string());
+    dir.file("flow.whirl", &format!("# {hostile}\nVISIT /form.html\nEVAL \"document.title = 'safe'\"\n[Asserts]\ntitle == {{{{env.WHIRL_TEST_SECRET}}}} @100ms\n"));
+    let output = run_whirl_env(
+        &dir,
+        &[
+            "--base",
+            &server.base(),
+            "--report-html",
+            "report.html",
+            "--report-metadata",
+            "context.json",
+            "flow.whirl",
+        ],
+        &[("WHIRL_TEST_SECRET", "never-show-this-secret")],
+    );
+    assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
+    let html = fs::read_to_string(dir.path.join("report.html")).expect("HTML report");
+    assert!(!html.contains("never-show-this-secret"));
+    assert!(!html.contains("<script>"));
+    assert!(!html.contains("<img src=x"));
+    assert!(html.contains("&lt;script&gt;"));
+    assert!(html.contains("&amp; &quot;quoted&quot;"));
+    assert!(html.contains("Recording not requested."));
+    let url = reqwest::Url::from_file_path(dir.path.join("report.html")).expect("file URL");
+    dir.file("verify.whirl", &format!("VISIT \"{url}\"\n[Asserts]\ncss:script count == 0\ncss:body attr:data-injected != yes\ncss:article[data-status=failed] count == 1\n"));
+    let verify = run_whirl(&dir, &["verify.whirl"]);
+    assert_eq!(exit_code(&verify), 0, "{}", stdout_text(&verify));
+}
+
+#[test]
+fn html_output_errors_preserve_other_reports_and_do_not_replace_inputs() {
+    let dir = TestDir::new();
+    let server = SiteServer::start();
+    let flow = "VISIT /stable.html\n";
+    dir.file("flow.whirl", flow);
+    let conflict = run_whirl(&dir, &[
+        "--base",
+        &server.base(),
+        "--report-html",
+        "flow.whirl",
+        "flow.whirl",
+    ]);
+    assert_eq!(exit_code(&conflict), 4);
+    assert_eq!(
+        fs::read_to_string(dir.path.join("flow.whirl")).expect("flow"),
+        flow
+    );
+    let collision = run_whirl(&dir, &[
+        "--report-html",
+        "same",
+        "--report-json",
+        "./same",
+        "flow.whirl",
+    ]);
+    assert_eq!(exit_code(&collision), 4);
+    let output = run_whirl(&dir, &[
+        "--base",
+        &server.base(),
+        "--report-html",
+        "missing/report.html",
+        "--report-json",
+        "report.json",
+        "flow.whirl",
+    ]);
+    assert_eq!(exit_code(&output), 3);
+    assert!(dir.path.join("report.json").is_file());
+    assert!(!dir.path.join("missing/report.html").exists());
+    // An existing directory cannot be replaced by the temporary report.
+    fs::create_dir(dir.path.join("existing.html")).expect("destination directory");
+    dir.file("existing.html/keep", "untouched");
+    let output = run_whirl(&dir, &[
+        "--base",
+        &server.base(),
+        "--report-html",
+        "existing.html",
+        "flow.whirl",
+    ]);
+    assert_eq!(exit_code(&output), 3);
+    assert_eq!(
+        fs::read_to_string(dir.path.join("existing.html/keep")).expect("existing content"),
+        "untouched"
+    );
+}
+
+#[test]
+fn html_report_marks_runtime_failure_and_missing_recording_separately() {
+    let dir = TestDir::new();
+    dir.file("flow.whirl", "VISIT /stable.html\n");
+    let output = run_whirl_env(
+        &dir,
+        &["--video", "--report-html", "report.html", "flow.whirl"],
+        &[("WHIRL_NODE", "/definitely/missing/node")],
+    );
+    assert_eq!(exit_code(&output), 3);
+    let html = fs::read_to_string(dir.path.join("report.html")).expect("HTML report");
+    assert!(html.contains("data-status=\"error\""));
+    assert!(html.contains("Recording unavailable."));
+    assert!(!html.contains("<video"));
+}
+
+#[test]
+fn html_metadata_errors_preempt_execution_and_preserve_inputs() {
+    let dir = TestDir::new();
+    dir.file("flow.whirl", "VISIT /\n");
+    for content in [
+        "{broken",
+        r#"{"title": 5}"#,
+        r#"{"status": "passed"}"#,
+        r#"{"files": {"flow.whirl": {"status": "passed"}}}"#,
+        r#"{"files": {"missing.whirl": {"title": "Missing"}}}"#,
+        r#"{"files": {"flow.whirl": {}, "./flow.whirl": {}}}"#,
+        r#"{"files": {"flow.whirl": {}, "flow.whirl": {}}}"#,
+    ] {
+        dir.file("metadata.json", content);
+        let output = run_whirl(&dir, &[
+            "--report-html",
+            "report.html",
+            "--report-metadata",
+            "metadata.json",
+            "flow.whirl",
+        ]);
+        assert_eq!(exit_code(&output), 4, "metadata: {content}");
+        assert!(!dir.path.join("report.html").exists());
+        assert!(
+            !dir.artifacts().exists(),
+            "invalid metadata must not start a run"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path.join("metadata.json")).expect("metadata input"),
+            content
+        );
+    }
+}
+
+#[test]
+fn html_missing_screenshot_does_not_turn_a_pass_into_a_failure() {
+    let dir = TestDir::new();
+    dir.file(
+        "flow.whirl",
+        "VISIT https://example.test/\nSCREENSHOT absent\n",
+    );
+    let shim = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake_shim.js");
+    let output = run_whirl_env(
+        &dir,
+        &["--video", "--report-html", "report.html", "flow.whirl"],
+        &[("WHIRL_SHIM_JS", shim.to_str().expect("shim path"))],
+    );
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    let html = fs::read_to_string(dir.path.join("report.html")).expect("HTML report");
+    assert!(html.contains("data-status=\"passed\""));
+    assert!(html.contains("Screenshot unavailable:"));
+    assert!(html.contains("Recording unavailable."));
+    assert!(html.contains("Blocked hosts: a.example, b.example"));
+}
+
+#[test]
+#[cfg(unix)]
+fn html_report_rejects_artifact_symlinks_and_invalid_media() {
+    use std::os::unix::fs::symlink;
+
+    let dir = TestDir::new();
+    dir.file(
+        "flow.whirl",
+        "VISIT https://example.test/\nSCREENSHOT image\n",
+    );
+    let artifact_dir = dir.artifacts().join("flow");
+    fs::create_dir_all(&artifact_dir).expect("artifact directory");
+    let external = dir.path.join("private.png");
+    fs::write(&external, b"\x89PNG\r\n\x1a\nPRIVATE-OUTSIDE-ARTIFACTS").expect("external file");
+    let artifact = artifact_dir.join("image.png");
+    symlink(&external, &artifact).expect("artifact symlink");
+    let shim = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake_shim.js");
+    let run = || {
+        run_whirl_env(&dir, &["--report-html", "report.html", "flow.whirl"], &[(
+            "WHIRL_SHIM_JS",
+            shim.to_str().expect("shim path"),
+        )])
+    };
+    let output = run();
+    assert_eq!(exit_code(&output), 0);
+    let html = fs::read_to_string(dir.path.join("report.html")).expect("HTML report");
+    assert!(html.contains("artifact is outside its flow directory"));
+    assert!(!html.contains("data:image/png;base64,"));
+    fs::remove_file(&artifact).expect("remove symlink");
+    fs::write(&artifact, b"<svg onload=alert(1)>").expect("invalid image");
+    let output = run();
+    assert_eq!(exit_code(&output), 0);
+    let html = fs::read_to_string(dir.path.join("report.html")).expect("HTML report");
+    assert!(html.contains("artifact has an invalid media header"));
+    assert!(!html.contains("data:image/png;base64,"));
+    assert_eq!(
+        fs::read(&external).expect("external preserved"),
+        b"\x89PNG\r\n\x1a\nPRIVATE-OUTSIDE-ARTIFACTS"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn html_metadata_matches_symlinked_flows_and_ignores_unselected_flows() {
+    use std::os::unix::fs::symlink;
+
+    let dir = TestDir::new();
+    let server = SiteServer::start();
+    dir.file("flow.whirl", "VISIT /stable.html\n");
+    dir.file("unused.whirl", "VISIT /form.html\n");
+    symlink("flow.whirl", dir.path.join("alias.whirl")).expect("flow alias");
+    dir.file("metadata.json", r#"{"files":{"flow.whirl":{"title":"Canonical title"},"unused.whirl":{"title":"Must not appear"}}}"#);
+    let output = run_whirl(&dir, &[
+        "--base",
+        &server.base(),
+        "--report-html",
+        "report.html",
+        "--report-json",
+        "report.json",
+        "--report-metadata",
+        "metadata.json",
+        "alias.whirl",
+    ]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    let html = fs::read_to_string(dir.path.join("report.html")).expect("HTML report");
+    assert!(html.contains("Canonical title"));
+    assert!(!html.contains("Must not appear"));
+    let json: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(dir.path.join("report.json")).expect("JSON report"),
+    )
+    .expect("valid JSON");
+    let path = json["files"][0]["path"].as_str().expect("flow path");
+    assert_eq!(json["metadata"]["files"][path]["title"], "Canonical title");
+    assert_eq!(
+        json["metadata"]["files"]
+            .as_object()
+            .expect("metadata files")
+            .len(),
+        1
+    );
+    let conflict = run_whirl(&dir, &["--report-html", "flow.whirl", "alias.whirl"]);
+    assert_eq!(exit_code(&conflict), 4);
+}
+
+#[test]
+fn html_report_does_not_replace_a_recorded_artifact() {
+    let dir = TestDir::new();
+    let server = SiteServer::start();
+    dir.file("flow.whirl", "VISIT /stable.html\nSCREENSHOT image\n");
+    let output = run_whirl(&dir, &[
+        "--base",
+        &server.base(),
+        "--report-html",
+        "artifacts/flow/image.png",
+        "flow.whirl",
+    ]);
+    assert_eq!(exit_code(&output), 3);
+    let image = fs::read(dir.artifacts().join("flow/image.png")).expect("screenshot remains");
+    assert!(image.starts_with(b"\x89PNG\r\n\x1a\n"));
+    assert!(!String::from_utf8_lossy(&image).contains("<!doctype html>"));
+}

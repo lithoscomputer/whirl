@@ -217,7 +217,7 @@ An action is a verb, an optional locator, and an optional value. Element-targeti
 
 `STORE` sets browser storage that a page reads to decide what to show — an onboarding flag, a dismissed banner, a feature switch — so a flow can skip a one-time screen without clicking through it or reaching for `EVAL`. `local` names `localStorage` and `session` names `sessionStorage`; both are per origin, so `STORE` runs against the origin of the current page, after a `VISIT` has landed there. `cookie` sets a session cookie for the current page's host with path `/` and no other attributes: no `Secure`, `HttpOnly`, `SameSite`, or expiry. That covers routing flags and feature switches, which is what `STORE` is for; a flow that needs an `HttpOnly` cookie is testing the server and should start from a saved `storage` state instead. A cookie is sent with the next request, so a page whose server reads it needs a second `VISIT`. `cookie` on a page without an http or https origin, such as a `data:` URL, fails the entry. `STORE` writes once and does not retry. A page that reads the key only while loading needs a second `VISIT` to see the value; a page that re-reads it on render picks the value up on its own. Values are strings, as in the browser; write `"true"` or `done`, not a number or a boolean. Section 11's masking applies to `STORE` values like any other line, so a masked variable stays masked in reports.
 
-`SCREENSHOT` never fails the entry, even when it goes wrong: if the capture or the file write fails — a crashed page, an I/O error, or its step timeout expiring — Whirl skips the artifact and records a warning naming the screenshot and the cause, in the console output and in both reports, so a missing artifact is always explained. One cap outranks this: an expiring `entry-timeout` fails the entry as usual, whatever line is in flight.
+`SCREENSHOT` never fails the entry, even when it goes wrong: if the capture or the file write fails — a crashed page, an I/O error, or its step timeout expiring — Whirl skips the artifact and records a warning naming the screenshot and the cause, in the console output and in reports, so a missing artifact is always explained. One cap outranks this: an expiring `entry-timeout` fails the entry as usual, whatever line is in flight.
 
 `SNAPSHOT` is retried like an assert through a shim-owned polling loop and uses Playwright's image comparator; V1 exposes no tuning knobs. Whirl captures frames until two consecutive frames are identical, then compares against the baseline at `<flow>.whirl-snapshots/<name>-<browser>-<platform>.png` next to the flow file. Images match only when their dimensions are identical and no pixel differs; a pixel differs when its color distance exceeds the comparator's default per-pixel threshold (0.2 on a 0–1 scale), which absorbs invisible anti-aliasing noise and nothing more. On a mismatch Whirl recaptures and recompares until the step timeout, so a difference that settles late can still pass; a stable mismatch fails the entry when the timeout expires and writes the actual and diff images to the artifacts directory. The platform tag (`linux`, `darwin`, `win32`) keeps baselines rendered on one OS from failing on another; the viewport is not part of the key, because the flow's `viewport` option already pins it. A missing baseline fails the run; `--update-snapshots` writes or refreshes baselines instead of comparing.
 
@@ -490,6 +490,8 @@ whirl fmt [--check] <PATH>...    Rewrite files to canonical form
 | `--trace` | Record a Playwright trace per file; the trace is saved only when the file fails |
 | `--report-junit PATH` | Write a JUnit XML report |
 | `--report-json PATH` | Write a JSON report |
+| `--report-html PATH` | Write a standalone HTML report with embedded recordings and screenshots |
+| `--report-metadata PATH` | Read author-written HTML report context from JSON; requires `--report-html` |
 | `--fail-fast` | Stop scheduling new files after the first failure |
 | `--update-snapshots` | Write or refresh SNAPSHOT baselines instead of comparing |
 | `--video` | Record a .webm video of each file's run into the artifacts directory |
@@ -523,6 +525,31 @@ Whirl parses and lints every input file before it launches any browser: a parse 
 - The version 1 JSON report includes `workingDirectory`, `whirlVersion`, `platform`, and `architecture`. Files whose browser context starts include `runtime`: browser engine, viewport, the actual user agent string (with section 11's masking), and actual browser, Node, and Playwright versions. Unavailable user agent and version fields are null. Each step error has a stable `code`, separate from its human-readable message. Additive fields do not change the report version; readers must ignore unknown fields. See [machine-readable output](docs/engineering/machine-output.md) for schemas and codes.
 - The JSON report is the machine-readable superset: per-step timing, captures (with values sourced from `env.*` masked), and artifact paths.
 - Artifacts: each flow writes to `<artifacts>/<flow path without the .whirl extension>/`. The mirrored path is the flow file's canonical path (made absolute, symlinks resolved) relative to the current working directory, so parallel flows never collide, and overlapping inputs or symlinked duplicates of one file resolve to one flow, run once, and write to one directory. A flow outside the working directory writes to `<file stem>-<hash>/` instead, where `<hash>` is the first 16 hex digits of the SHA-256 of the canonical path, so absolute paths and `..` segments never escape the artifacts directory. Because all inputs are known before the run starts, Whirl verifies that no two flows map to the same directory; a collision is a runtime error. Names inside are fixed: screenshots by their given name, `snapshot-<name>-actual.png` and `snapshot-<name>-diff.png`, `failure.png`, `trace.zip`, `video.webm`, and `network.har`. Duplicate `SCREENSHOT` names or duplicate `SNAPSHOT` names within one flow are a lint error; the two keywords have separate name spaces, because their artifact files never collide.
+
+### 14.1 HTML reports
+
+`--report-html evidence.html` writes a standalone HTML file after the run, including failed runs. It renders the same masked results as the other reports: file and entry outcomes, steps and timings, failures with expected and actual values, captures, warnings, blocked hosts, and browser environment details. The report embeds available PNG screenshots and, with `--video`, WebM recordings from the current run. It opens offline and can be moved without its artifacts directory. Trace and HAR paths are shown as text; these files are not embedded.
+
+Test outcomes and media availability are separate. A missing or unreadable recording never changes a passed test to failed, and a recording never makes a failed test pass. The report explains absent or invalid media. Whirl reads only listed media artifacts inside their flow's artifact directory. A media read failure during embedding or an output write failure is a runtime error (exit 3). HTML output is written to a temporary file and replaces its destination only after generation succeeds. Its parent directory must exist. The HTML destination must not conflict with an input, another requested report, or a recorded artifact.
+
+The HTML contains no executable scripts or remote resources. Text is escaped, including flow paths, comments, errors, captures, and author metadata. Embedded browser images and recordings have the same secret exposure as their original artifacts (section 11); textual masking does not redact their pixels.
+
+`--report-metadata context.json` supplies optional plain-text presentation fields:
+
+```json
+{
+  "title": "Critical browser evidence",
+  "description": "Local services, development accounts, and simulated model responses.",
+  "files": {
+    "flows/login.whirl": {
+      "title": "Account access",
+      "description": "Sign in and verify that the account page is available."
+    }
+  }
+}
+```
+
+All fields are optional. Without a title, the report uses `Browser test report` and each flow uses its path. `files` keys resolve relative to the metadata file; Whirl matches canonical paths, including symlinks. Paths must name existing files; duplicate canonical paths, invalid JSON, wrong field types, and unknown fields are usage errors before execution. Metadata for unselected flows is ignored. Metadata is not interpolated or executed and cannot change results. When JSON output is also requested, its optional `metadata` field contains the author context with selected file keys matching the report's file paths.
 
 ## 15. Architecture
 

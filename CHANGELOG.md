@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add portable HTML reports with embedded recordings and screenshots, execution checkpoints, failure details, and optional author-written report metadata.
+
 ## 0.7.0 (2026-09-04)
 
 - Add `HTTP` requests with explicit headers and bodies, isolated from browser cookies, using existing response assertions and captures.

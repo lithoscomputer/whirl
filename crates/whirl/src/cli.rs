@@ -21,8 +21,9 @@ use tokio::runtime::Runtime;
 use crate::lang::lint::{Lint, Severity, lint_file_with, lint_setup_refs, setup_capture_uses};
 use crate::lang::parse::{ParseError, parse_file};
 use crate::lang::{ast, fmt};
+use crate::report::metadata::ReportMetadata;
 use crate::report::model::{RunReport, Status};
-use crate::report::{console, json, junit};
+use crate::report::{console, html, json, junit};
 use crate::run::{artifacts, flow, runner, vars};
 use crate::{doctor, install, telemetry};
 
@@ -166,6 +167,14 @@ struct RunArgs {
     /// Write a JSON report.
     #[arg(long, value_name = "PATH")]
     report_json: Option<PathBuf>,
+
+    /// Write a standalone HTML report with embedded recordings and screenshots.
+    #[arg(long, value_name = "PATH")]
+    report_html: Option<PathBuf>,
+
+    /// Read author-written report and flow descriptions from a JSON file.
+    #[arg(long, value_name = "PATH", requires = "report_html")]
+    report_metadata: Option<PathBuf>,
 
     /// Stop scheduling new files after the first failure.
     #[arg(long)]
@@ -773,6 +782,20 @@ fn run_command(args: &RunArgs) -> Exit {
             return Exit::Usage;
         }
     };
+    let mut metadata = match args
+        .report_metadata
+        .as_deref()
+        .map(ReportMetadata::load)
+        .transpose()
+    {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            print_err(&format!(
+                "whirl: error: cannot load report metadata: {error:#}"
+            ));
+            return Exit::Usage;
+        }
+    };
     let mut selected = args.clone();
     if let Some(path) = &args.rerun_failed {
         match failed_paths(path) {
@@ -796,11 +819,37 @@ fn run_command(args: &RunArgs) -> Exit {
         print_err(&format!("whirl: error: {error}"));
         return Exit::Usage;
     }
+    if let Some(html_path) = &args.report_html {
+        if let Err(error) = check_html_path(
+            args,
+            html_path,
+            sources.iter().map(|(path, _)| path.as_path()),
+        ) {
+            print_err(&format!("whirl: error: {error:#}"));
+            return Exit::Usage;
+        }
+    }
     let mut diagnostics = Vec::new();
     let (checked, exit) = check_inputs(sources, &mut diagnostics);
     print_diagnostics(&diagnostics, false, exit);
     if exit != Exit::Success {
         return exit;
+    }
+    let paths = || {
+        checked
+            .inputs
+            .iter()
+            .chain(&checked.setups)
+            .map(|input| input.file.path.as_path())
+    };
+    if let Some(html_path) = &args.report_html {
+        if let Err(error) = check_html_path(args, html_path, paths()) {
+            print_err(&format!("whirl: error: {error:#}"));
+            return Exit::Usage;
+        }
+    }
+    if let Some(metadata) = &mut metadata {
+        metadata.select(paths());
     }
     let settings = runner::RunSettings {
         jobs: args.jobs,
@@ -828,7 +877,7 @@ fn run_command(args: &RunArgs) -> Exit {
     match runtime.block_on(runner::run_files(&files, &setups, &settings)) {
         Ok(report) => {
             print_out(console::render(&report).trim_end());
-            let report_exit = write_reports(args, &report);
+            let report_exit = write_reports(args, &report, metadata.as_ref());
             let run_exit = if report.has_error() {
                 Exit::Runtime
             } else if report.has_failure() {
@@ -849,19 +898,77 @@ fn run_command(args: &RunArgs) -> Exit {
     }
 }
 
-/// Writes the requested `--report-json` and `--report-junit` files
+/// Writes the requested JSON, JUnit, and HTML files
 /// (SPEC 13, 14). Reports are written whenever a run happened, whatever
 /// its outcome; a report that cannot be written is an environmental
 /// failure (exit 3).
-fn write_reports(args: &RunArgs, report: &RunReport) -> Exit {
+fn write_reports(args: &RunArgs, report: &RunReport, metadata: Option<&ReportMetadata>) -> Exit {
     let mut exit = Exit::Success;
     if let Some(path) = &args.report_json {
-        exit = exit.max(write_report_file(path, &json::render(report)));
+        exit = exit.max(write_report_file(path, &json::render(report, metadata)));
     }
     if let Some(path) = &args.report_junit {
         exit = exit.max(write_report_file(path, &junit::render(report)));
     }
+    if let Some(path) = &args.report_html {
+        if let Err(error) = html::write(
+            path,
+            report,
+            metadata.unwrap_or(&ReportMetadata::default()),
+            args.video,
+        ) {
+            print_err(&format!(
+                "whirl: error: cannot write HTML report '{}': {error:#}",
+                path.display()
+            ));
+            exit = exit.max(Exit::Runtime);
+        }
+    }
     exit
+}
+
+/// Prevent the new report destination from replacing inputs or another output.
+fn check_html_path<'a>(
+    args: &'a RunArgs,
+    html: &Path,
+    inputs: impl Iterator<Item = &'a Path>,
+) -> anyhow::Result<()> {
+    let identity = |path: &Path| {
+        path.canonicalize().or_else(|_| {
+            let parent = path
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new("."));
+            Ok::<_, io::Error>(
+                parent
+                    .canonicalize()?
+                    .join(path.file_name().unwrap_or_default()),
+            )
+        })
+    };
+    let Ok(target) = identity(html) else {
+        return Ok(());
+    };
+    for path in inputs.chain(
+        [
+            args.report_json.as_deref(),
+            args.report_junit.as_deref(),
+            args.report_metadata.as_deref(),
+            args.variables_file.as_deref(),
+            args.save_storage.as_deref(),
+            args.storage.as_deref(),
+            args.rerun_failed.as_deref(),
+        ]
+        .into_iter()
+        .flatten(),
+    ) {
+        anyhow::ensure!(
+            identity(path).ok().as_ref() != Some(&target),
+            "HTML report destination conflicts with '{}'",
+            path.display()
+        );
+    }
+    Ok(())
 }
 
 /// Writes one report file, printing any error.

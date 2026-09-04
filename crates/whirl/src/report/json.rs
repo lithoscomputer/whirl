@@ -7,6 +7,7 @@ use std::path::PathBuf;
 
 use serde::Serialize;
 
+use crate::report::metadata::ReportMetadata;
 use crate::report::model::{FileReport, RunReport};
 
 /// The stable JSON report shape version.
@@ -23,18 +24,21 @@ struct JsonReport<'a> {
     architecture:      &'static str,
     duration_ms:       u64,
     files:             &'a [FileReport],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    metadata:          Option<&'a ReportMetadata>,
 }
 
 /// Renders the report as pretty-printed JSON with a trailing newline.
-pub(crate) fn render(report: &RunReport) -> String {
+pub(crate) fn render(report: &RunReport, metadata: Option<&ReportMetadata>) -> String {
     let document = JsonReport {
-        version:           VERSION,
+        version: VERSION,
         working_directory: env::current_dir().unwrap_or_default(),
-        whirl_version:     env!("CARGO_PKG_VERSION"),
-        platform:          env::consts::OS,
-        architecture:      env::consts::ARCH,
-        duration_ms:       report.duration_ms,
-        files:             &report.files,
+        whirl_version: env!("CARGO_PKG_VERSION"),
+        platform: env::consts::OS,
+        architecture: env::consts::ARCH,
+        duration_ms: report.duration_ms,
+        files: &report.files,
+        metadata,
     };
     let mut text = serde_json::to_string_pretty(&document)
         .expect("the report model should always serialize to JSON");
@@ -50,7 +54,7 @@ mod tests {
     use crate::report::fixture::{SECRET, sample_report};
 
     fn rendered() -> Value {
-        let text = render(&sample_report());
+        let text = render(&sample_report(), None);
         serde_json::from_str(&text).expect("the rendered report should parse as JSON")
     }
 
@@ -130,7 +134,7 @@ mod tests {
 
     #[test]
     fn the_env_sourced_secret_never_appears() {
-        let text = render(&sample_report());
+        let text = render(&sample_report(), None);
         assert!(!text.contains(SECRET), "report:\n{text}");
         assert!(
             text.contains("FILL \\\"Password\\\" ***"),
