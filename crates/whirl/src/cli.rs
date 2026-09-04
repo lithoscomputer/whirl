@@ -89,6 +89,11 @@ enum Command {
     },
     /// Provision the shim bundle and browsers.
     Install,
+    /// Open a Playwright trace with Whirl's private runtime.
+    ShowTrace {
+        /// Trace archive to open.
+        path: PathBuf,
+    },
 }
 
 /// Flags for the default run command (SPEC 13). The runner is a later
@@ -191,6 +196,20 @@ fn execute(argv: impl IntoIterator<Item = OsString>) -> u8 {
         Some(Command::Check { paths }) => check_command(&paths),
         Some(Command::Fmt { check, paths }) => fmt_command(check, &paths),
         Some(Command::Install) => install_command(),
+        Some(Command::ShowTrace { path }) => {
+            if !path.is_file() {
+                print_err(&format!(
+                    "whirl: error: trace '{}' is not a file",
+                    path.display()
+                ));
+                Exit::Usage
+            } else if let Err(error) = install::show_trace(&path) {
+                print_err(&format!("whirl: error: {error:#}"));
+                Exit::Runtime
+            } else {
+                Exit::Success
+            }
+        }
         None => run_command(&cli.run),
     };
     exit.code()

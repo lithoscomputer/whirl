@@ -308,6 +308,7 @@ Whirl masks every value sourced from `env.*` in the textual output it generates:
 whirl [OPTIONS] <PATH>...        Run files; directories recurse to *.whirl
 whirl check <PATH>...            Parse and lint only; nothing runs
 whirl install                    Provision the shim bundle and browsers
+whirl show-trace <PATH>          Open a trace with the private runtime
 whirl fmt [--check] <PATH>...    Rewrite files to canonical form
 ```
 
@@ -351,6 +352,7 @@ Whirl parses and lints every input file before it launches any browser: a parse 
 
 ## 14. Output and reports
 
+- Action failures retain Playwright's actionability log, including the locator being awaited and any element blocking interaction. Output masking applies to the log. Each trace artifact includes a shell-quoted `whirl show-trace -- <PATH>` command. The viewer uses Whirl's private runtime; a missing trace is a usage error, and a viewer launch failure is a runtime error.
 - Default console output: one line per file with pass/fail and duration, then a failure detail block per failed entry: file, line, the failing step, expected versus actual, and the artifact paths.
 - The JUnit report maps one file to one test suite and one entry to one test case. An entry is named by the comment line directly above it — the nearest comment line with no other content line between it and the entry's first action (`# Log in.`) — falling back to its first action line and line number. A failure before the first entry — option resolution, storage loading, or browser launch — reports as a synthetic test case named `[setup]` in that file's suite: an `<error>` for runtime errors, a `<failure>` otherwise. The JSON report carries the same synthetic entry, and masking applies to it like any other output.
 - The JSON report is the machine-readable superset: per-step timing, captures (with values sourced from `env.*` masked), and artifact paths.

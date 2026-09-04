@@ -46,6 +46,7 @@ import type {
 import { assertNever, ShimError } from "./protocol.js";
 import { runSnapshot } from "./snapshots.js";
 import {
+	actionErrorMessage,
 	isStrictModeViolation,
 	isTargetClosedError,
 	isTimeoutError,
@@ -721,10 +722,10 @@ export class PlaywrightDriver implements ShimDriver {
 			return new ShimError("cancelled", "step aborted by cancelFlow");
 		}
 		if (isTimeoutError(error)) {
-			return new ShimError("timeout", shortErrorMessage(error));
+			return new ShimError("timeout", actionErrorMessage(error));
 		}
 		const fallback: ErrorKind = defaultErrorKind(cmd);
-		return new ShimError(fallback, shortErrorMessage(error));
+		return new ShimError(fallback, actionErrorMessage(error));
 	}
 
 	async dispose(): Promise<void> {

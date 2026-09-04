@@ -151,3 +151,8 @@ export function normalizeWhitespace(text: string): string {
 export function escapeRegExp(text: string): string {
 	return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
+
+/** Keep Playwright's actionability log: it explains what prevented the action. */
+export function actionErrorMessage(error: unknown): string {
+	return (error instanceof Error ? error.message : String(error)).trim();
+}

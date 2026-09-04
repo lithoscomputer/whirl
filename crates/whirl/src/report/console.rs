@@ -77,7 +77,7 @@ fn render_entry_failure(out: &mut String, file: &FileReport, entry: &EntryReport
     if let Some(step) = step {
         let _ = writeln!(out, "  step: {}", step.text);
         if let Some(error) = &step.error {
-            let _ = writeln!(out, "  error: {}", error.message);
+            let _ = writeln!(out, "  error: {}", error.message.replace('\n', "\n    "));
             if let Some(expected) = &error.expected {
                 let _ = writeln!(out, "  expected: {expected}");
             }
@@ -91,6 +91,10 @@ fn render_entry_failure(out: &mut String, file: &FileReport, entry: &EntryReport
     }
     for artifact in &entry.artifacts {
         let _ = writeln!(out, "  artifact: {artifact}");
+        if artifact.ends_with("/trace.zip") {
+            let quoted = artifact.replace('\'', "'\"'\"'");
+            let _ = writeln!(out, "  open trace: whirl show-trace -- '{quoted}'");
+        }
     }
 }
 

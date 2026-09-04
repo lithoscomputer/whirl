@@ -507,3 +507,69 @@ fn presence_before_hidden_requires_the_element_to_appear() {
     assert!(String::from_utf8_lossy(&output.stderr).is_empty());
     assert!(stdout_text(&output).contains("actual: 0"));
 }
+
+#[test]
+fn a_missing_element_reports_what_the_action_waited_for() {
+    let dir = TestDir::new();
+    dir.file(
+        "missing.whirl",
+        "VISIT \"data:text/html,<button>Sign in</button>\"\nCLICK role:button \"Log in\" @200ms\n",
+    );
+    let output = run_whirl(&dir, &["missing.whirl"]);
+    assert_eq!(exit_code(&output), 1);
+    assert!(
+        stdout_text(&output).contains("waiting for getByRole"),
+        "{}",
+        stdout_text(&output)
+    );
+}
+
+#[test]
+fn a_covered_element_reports_the_overlay_and_masks_its_secret() {
+    let dir = TestDir::new();
+    dir.file("covered.whirl", "VISIT \"data:text/html,<button>Sign in</button><div style=position:fixed;inset:0>{{env.OVERLAY}}</div>\"\nCLICK role:button \"Sign in\" @200ms\n");
+    let output = run_whirl_env(
+        &dir,
+        &["--trace", "--report-json", "report.json", "covered.whirl"],
+        &[("OVERLAY", "private-overlay-token")],
+    );
+    assert_eq!(exit_code(&output), 1);
+    let text = stdout_text(&output);
+    assert!(text.contains("intercepts pointer events"), "{text}");
+    assert!(text.contains("whirl show-trace -- '"), "{text}");
+    assert!(!text.contains("private-overlay-token"));
+    let json = fs::read_to_string(dir.path.join("report.json")).expect("report exists");
+    assert!(json.contains("intercepts pointer events"));
+    assert!(!json.contains("private-overlay-token"));
+}
+
+#[test]
+fn show_trace_uses_the_selected_runtime_and_preserves_the_path_argument() {
+    let dir = TestDir::new();
+    let shim = dir.file("index.js", "");
+    let package = dir.path.join("node_modules/@playwright/test");
+    fs::create_dir_all(&package).expect("package directory exists");
+    fs::write(
+        package.join("cli.js"),
+        "require('node:fs').writeFileSync('args.json', JSON.stringify(process.argv.slice(2))); ",
+    )
+    .expect("CLI fixture exists");
+    let trace = dir.file("trace with 'quotes'.zip", "fixture");
+    let output = Command::new(env!("CARGO_BIN_EXE_whirl"))
+        .current_dir(&dir.path)
+        .env("WHIRL_NODE", "node")
+        .env("WHIRL_SHIM_JS", shim)
+        .arg("show-trace")
+        .arg(&trace)
+        .output()
+        .expect("CLI runs");
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    let args: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(dir.path.join("args.json")).expect("arguments recorded"),
+    )
+    .expect("valid JSON");
+    assert_eq!(
+        args,
+        serde_json::json!(["show-trace", trace.canonicalize().expect("trace exists")])
+    );
+}

@@ -110,6 +110,8 @@ More commands:
 $ whirl check flows/        # parse and lint only; nothing runs
 $ whirl fmt flows/          # rewrite files to the canonical form
 $ whirl --headed flow.whirl # watch the browser
+$ whirl --trace flow.whirl  # save a trace when the flow fails
+$ whirl show-trace whirl-artifacts/flow/trace.zip
 ```
 
 See [examples/](examples/) for more flows.

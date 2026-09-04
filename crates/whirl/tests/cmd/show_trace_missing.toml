@@ -1,0 +1,4 @@
+bin.name = "whirl"
+args = ["show-trace", "missing.zip"]
+fs.sandbox = true
+status.code = 4

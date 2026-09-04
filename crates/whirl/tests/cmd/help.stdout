@@ -4,10 +4,11 @@ Usage: whirl [OPTIONS] <PATH>...
        whirl <COMMAND>
 
 Commands:
-  check    Parse and lint files; nothing runs
-  fmt      Rewrite files to the canonical form
-  install  Provision the shim bundle and browsers
-  help     Print this message or the help of the given subcommand(s)
+  check       Parse and lint files; nothing runs
+  fmt         Rewrite files to the canonical form
+  install     Provision the shim bundle and browsers
+  show-trace  Open a Playwright trace with Whirl's private runtime
+  help        Print this message or the help of the given subcommand(s)
 
 Arguments:
   <PATH>...  Files to run; directories recurse to *.whirl
