@@ -7,6 +7,8 @@
 
 use std::path::PathBuf;
 
+mod options;
+
 /// Source position of a token or step: 1-based line, 1-based character
 /// column, and length in characters (for caret rendering).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

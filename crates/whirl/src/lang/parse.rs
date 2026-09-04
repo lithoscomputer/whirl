@@ -12,10 +12,10 @@ use std::vec::IntoIter;
 
 use crate::lang::ast::{
     Action, ActionKind, Assert, AssertBody, BrowserKind, Capture, CaptureSource, Comment,
-    DialogPolicy, DurationLit, DurationUnit, Entry, Extractor, File, FileOption, Ident, Locator,
-    LocatorSegment, NumOp, OptionLine, OptionValue, Page, PageCheck, ReducedMotion, Regex,
-    RegexFlags, ResponseField, SegmentKind, Span, StateCheck, StoreScope, StrCheck, TextPrefix,
-    Value, ValueSegment, ValueSource, Viewport,
+    DialogPolicy, DurationLit, Entry, Extractor, File, FileOption, Ident, Locator, LocatorSegment,
+    NumOp, OptionLine, OptionValue, Page, PageCheck, ReducedMotion, Regex, RegexFlags,
+    ResponseField, SegmentKind, Span, StateCheck, StoreScope, StrCheck, TextPrefix, Value,
+    ValueSegment, ValueSource, Viewport,
 };
 
 /// A parse diagnostic (SPEC 16): file, line, column, the source line, a
@@ -109,17 +109,6 @@ fn parse_number(text: &str) -> Option<u64> {
         return None;
     }
     text.parse().ok()
-}
-
-/// Parses a duration literal: integer plus `ms` or `s` (SPEC 3.1).
-pub(crate) fn parse_duration(text: &str) -> Option<DurationLit> {
-    let (digits, unit) = if let Some(digits) = text.strip_suffix("ms") {
-        (digits, DurationUnit::Milliseconds)
-    } else {
-        let digits = text.strip_suffix('s')?;
-        (digits, DurationUnit::Seconds)
-    };
-    parse_number(digits).map(|amount| DurationLit { amount, unit })
 }
 
 /// One whitespace-free run of source: adjacent bare runs and quoted
@@ -814,7 +803,7 @@ fn split_timeout(tokens: &mut Vec<RawToken>) -> Option<DurationLit> {
         .last()?
         .bare_single()
         .and_then(|text| text.strip_prefix('@'))
-        .and_then(parse_duration)?;
+        .and_then(|text| text.parse::<DurationLit>().ok())?;
     tokens.pop();
     Some(duration)
 }
@@ -1262,7 +1251,7 @@ fn parse_operand(cursor: &mut Cursor, op_span: Span) -> Result<Value, LineError>
     let is_trailing_timeout = token
         .bare_single()
         .and_then(|text| text.strip_prefix('@'))
-        .is_some_and(|rest| parse_duration(rest).is_some())
+        .is_some_and(|rest| rest.parse::<DurationLit>().is_ok())
         && cursor.at_line_end();
     if is_trailing_timeout {
         return Err(LineError::new(
@@ -1443,7 +1432,7 @@ fn parse_page_body(
         let is_trailing_timeout = token
             .bare_single()
             .and_then(|text| text.strip_prefix('@'))
-            .is_some_and(|rest| parse_duration(rest).is_some())
+            .is_some_and(|rest| rest.parse::<DurationLit>().is_ok())
             && cursor.at_line_end();
         if is_trailing_timeout {
             return Err(
@@ -1615,14 +1604,6 @@ fn option_shape<T>(
     }
 }
 
-fn parse_viewport(text: &str) -> Option<Viewport> {
-    let (width, height) = text.split_once('x')?;
-    Some(Viewport {
-        width:  parse_number(width)?,
-        height: parse_number(height)?,
-    })
-}
-
 /// Parses one `key: value` line in `[Options]` (SPEC 5).
 fn parse_option_line(first: RawToken, cursor: &mut Cursor) -> Result<FileOption, LineError> {
     let first_span = first.span;
@@ -1670,44 +1651,35 @@ fn parse_option_line(first: RawToken, cursor: &mut Cursor) -> Result<FileOption,
             LineError::new(after_span(first_span), "expected a value").expecting(["a value"])
         );
     };
-    let duration = |value| option_shape(value, parse_duration, &["a duration like 500ms or 10s"]);
+    let duration = |value| {
+        option_shape(value, |text| text.parse::<DurationLit>().ok(), &[
+            "a duration like 500ms or 10s",
+        ])
+    };
     match key.as_str() {
         "base" => Ok(FileOption::Base(value)),
         "browser" => {
-            let parse = |text: &str| match text {
-                "chromium" => Some(BrowserKind::Chromium),
-                "firefox" => Some(BrowserKind::Firefox),
-                "webkit" => Some(BrowserKind::Webkit),
-                _ => None,
-            };
+            let parse = |text: &str| text.parse::<BrowserKind>().ok();
             Ok(FileOption::Browser(option_shape(value, parse, &[
                 "chromium", "firefox", "webkit",
             ])?))
         }
         "viewport" => Ok(FileOption::Viewport(option_shape(
             value,
-            parse_viewport,
+            |text| text.parse::<Viewport>().ok(),
             &["WIDTHxHEIGHT like 1280x800"],
         )?)),
         "step-timeout" => Ok(FileOption::StepTimeout(duration(value)?)),
         "entry-timeout" => Ok(FileOption::EntryTimeout(duration(value)?)),
         "nav-timeout" => Ok(FileOption::NavTimeout(duration(value)?)),
         "dialogs" => {
-            let parse = |text: &str| match text {
-                "dismiss" => Some(DialogPolicy::Dismiss),
-                "accept" => Some(DialogPolicy::Accept),
-                _ => None,
-            };
+            let parse = |text: &str| text.parse::<DialogPolicy>().ok();
             Ok(FileOption::Dialogs(option_shape(value, parse, &[
                 "dismiss", "accept",
             ])?))
         }
         "reduced-motion" => {
-            let parse = |text: &str| match text {
-                "reduce" => Some(ReducedMotion::Reduce),
-                "no-preference" => Some(ReducedMotion::NoPreference),
-                _ => None,
-            };
+            let parse = |text: &str| text.parse::<ReducedMotion>().ok();
             Ok(FileOption::ReducedMotion(option_shape(value, parse, &[
                 "reduce",
                 "no-preference",
@@ -2063,6 +2035,7 @@ impl Parser {
 
 #[cfg(test)]
 mod tests {
+    use crate::lang::ast::DurationUnit;
     /// Parses many `.whirl` sources and reports every broken file's first
     /// error, so one `whirl check` run surfaces them all (SPEC 13, 16).
     fn parse_files<'a>(

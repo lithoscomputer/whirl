@@ -17,12 +17,11 @@
 use std::fmt::Write as _;
 
 use crate::lang::ast::{
-    Action, ActionKind, Assert, AssertBody, BrowserKind, Capture, CaptureSource, Comment,
-    DialogPolicy, DurationLit, DurationUnit, Entry, Extractor, File, FileOption, Locator, NumOp,
-    OptionValue, Page, PageCheck, ReducedMotion, Regex, ResponseField, SegmentKind, StateCheck,
-    StrCheck, TextPrefix, Value, ValueSegment, ValueSource, Viewport,
+    Action, ActionKind, Assert, AssertBody, Capture, CaptureSource, Comment, DurationLit,
+    DurationUnit, Entry, Extractor, File, FileOption, Locator, NumOp, OptionValue, Page, PageCheck,
+    Regex, ResponseField, SegmentKind, StateCheck, StrCheck, TextPrefix, Value, ValueSegment,
+    ValueSource, Viewport,
 };
-use crate::lang::parse::parse_duration;
 
 /// Where a rendered value sits in its line. The context decides which
 /// bare spellings would change the parse and therefore need quotes.
@@ -135,7 +134,7 @@ fn bare_changes_parse(text: &str, ctx: ValueCtx, is_final: bool) -> bool {
         && ctx != ValueCtx::Prefixed
         && text
             .strip_prefix('@')
-            .is_some_and(|rest| parse_duration(rest).is_some())
+            .is_some_and(|rest| rest.parse::<DurationLit>().is_ok())
     {
         // A final bare token of the form `@duration` is the timeout
         // suffix (SPEC 3.1); any other `@...` token is an ordinary value.
@@ -548,28 +547,6 @@ fn render_option_value<T>(value: &OptionValue<T>, literal: impl Fn(&T) -> String
     }
 }
 
-fn browser_text(browser: BrowserKind) -> &'static str {
-    match browser {
-        BrowserKind::Chromium => "chromium",
-        BrowserKind::Firefox => "firefox",
-        BrowserKind::Webkit => "webkit",
-    }
-}
-
-fn reduced_motion_text(value: ReducedMotion) -> &'static str {
-    match value {
-        ReducedMotion::Reduce => "reduce",
-        ReducedMotion::NoPreference => "no-preference",
-    }
-}
-
-fn dialogs_text(policy: DialogPolicy) -> &'static str {
-    match policy {
-        DialogPolicy::Dismiss => "dismiss",
-        DialogPolicy::Accept => "accept",
-    }
-}
-
 fn viewport_text(viewport: Viewport) -> String {
     format!("{}x{}", viewport.width, viewport.height)
 }
@@ -581,7 +558,7 @@ fn render_option(option: &FileOption) -> String {
         FileOption::Base(value) => format!("base: {}", plain(value)),
         FileOption::Browser(value) => format!(
             "browser: {}",
-            render_option_value(value, |browser| browser_text(*browser).to_owned())
+            render_option_value(value, |browser| browser.as_str().to_owned())
         ),
         FileOption::Viewport(value) => format!(
             "viewport: {}",
@@ -605,11 +582,11 @@ fn render_option(option: &FileOption) -> String {
         }
         FileOption::Dialogs(value) => format!(
             "dialogs: {}",
-            render_option_value(value, |policy| dialogs_text(*policy).to_owned())
+            render_option_value(value, |policy| policy.as_str().to_owned())
         ),
         FileOption::ReducedMotion(value) => format!(
             "reduced-motion: {}",
-            render_option_value(value, |motion| reduced_motion_text(*motion).to_owned())
+            render_option_value(value, |motion| motion.as_str().to_owned())
         ),
         FileOption::Storage(value) => format!("storage: {}", plain(value)),
         FileOption::UserAgent(value) => format!("user-agent: {}", plain(value)),

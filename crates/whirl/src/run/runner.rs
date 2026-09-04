@@ -12,6 +12,7 @@ use std::{env, path, process, thread};
 
 use tokio::fs;
 use tokio::task::{JoinSet, spawn_blocking};
+use tracing::{Instrument as _, debug, info, info_span, warn};
 
 use crate::lang::ast::File;
 use crate::report::model::{FileReport, RunReport, SETUP_ENTRY, Status};
@@ -81,82 +82,92 @@ pub(crate) async fn run_files(
     setups: &[File],
     settings: &RunSettings,
 ) -> Result<RunReport, RunnerError> {
-    let started = Instant::now();
-    let files = files.to_vec();
-    let setups = setups.to_vec();
-    let settings = settings.clone();
-    let PreparedRun {
-        setup_jobs,
-        main_jobs,
-        state_dir,
-        launch,
-        workers,
-        settings,
-    } = spawn_blocking(move || PreparedRun::try_new(&files, &setups, settings))
-        .await
-        .expect("run preparation does not panic")?;
-    let stop = Arc::new(AtomicBool::new(false));
-    let settings = Arc::new(settings);
+    async {
+        let started = Instant::now();
+        info!(
+            file_count = files.len(),
+            setup_count = setups.len(),
+            "run started"
+        );
+        let files = files.to_vec();
+        let setups = setups.to_vec();
+        let settings = settings.clone();
+        let PreparedRun {
+            setup_jobs,
+            main_jobs,
+            state_dir,
+            launch,
+            workers,
+            settings,
+        } = spawn_blocking(move || PreparedRun::try_new(&files, &setups, settings))
+            .await
+            .expect("run preparation does not panic")?;
+        let stop = Arc::new(AtomicBool::new(false));
+        let settings = Arc::new(settings);
 
-    let mut reports = Vec::new();
-    let mut handoffs: HashMap<PathBuf, SetupResult> = HashMap::new();
-    if !setup_jobs.is_empty() {
-        if let Err(error) = fs::create_dir_all(&state_dir).await {
-            return Err(RunnerError::Artifacts(ArtifactsError::Canonicalize {
-                path:   state_dir,
-                source: error,
-            }));
+        let mut reports = Vec::new();
+        let mut handoffs: HashMap<PathBuf, SetupResult> = HashMap::new();
+        if !setup_jobs.is_empty() {
+            if let Err(error) = fs::create_dir_all(&state_dir).await {
+                return Err(RunnerError::Artifacts(ArtifactsError::Canonicalize {
+                    path:   state_dir,
+                    source: error,
+                }));
+            }
+            let setup_jobs: Arc<[FlowJob]> = Arc::from(setup_jobs);
+            let outcomes = WorkerSet::new(
+                setup_jobs.clone(),
+                Arc::new(HashMap::new()),
+                settings.clone(),
+                &launch,
+                stop.clone(),
+            )
+            .run(workers)
+            .await;
+            for (job, outcome) in setup_jobs.iter().zip(outcomes) {
+                let Some(outcome) = outcome else {
+                    continue;
+                };
+                let result = if outcome.report.status == Status::Passed {
+                    SetupResult::Ready(SetupHandoff {
+                        storage_path: job
+                            .state_out
+                            .clone()
+                            .expect("every setup job has a state path"),
+                        captures:     outcome.captures,
+                        secrets:      outcome.secrets,
+                    })
+                } else {
+                    SetupResult::Failed(setup_failure_message(&job.file, &outcome.report))
+                };
+                handoffs.insert(job.canonical.clone(), result);
+                reports.push(outcome.report);
+            }
         }
-        let setup_jobs: Arc<[FlowJob]> = Arc::from(setup_jobs);
+
+        let main_jobs: Arc<[FlowJob]> = Arc::from(main_jobs);
         let outcomes = WorkerSet::new(
-            Arc::clone(&setup_jobs),
-            Arc::new(HashMap::new()),
-            Arc::clone(&settings),
+            main_jobs.clone(),
+            Arc::new(handoffs),
+            settings,
             &launch,
-            Arc::clone(&stop),
+            stop,
         )
         .run(workers)
         .await;
-        for (job, outcome) in setup_jobs.iter().zip(outcomes) {
-            let Some(outcome) = outcome else {
-                continue;
-            };
-            let result = if outcome.report.status == Status::Passed {
-                SetupResult::Ready(SetupHandoff {
-                    storage_path: job
-                        .state_out
-                        .clone()
-                        .expect("every setup job has a state path"),
-                    captures:     outcome.captures,
-                    secrets:      outcome.secrets,
-                })
-            } else {
-                SetupResult::Failed(setup_failure_message(&job.file, &outcome.report))
-            };
-            handoffs.insert(job.canonical.clone(), result);
-            reports.push(outcome.report);
-        }
+        reports.extend(outcomes.into_iter().flatten().map(|outcome| outcome.report));
+        // The saved setup states hold session cookies; do not leave them
+        // behind (SPEC 11).
+        let _ = fs::remove_dir_all(&state_dir).await;
+
+        info!(file_count = reports.len(), "run finished");
+        Ok(RunReport {
+            duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            files:       reports,
+        })
     }
-
-    let main_jobs: Arc<[FlowJob]> = Arc::from(main_jobs);
-    let outcomes = WorkerSet::new(
-        Arc::clone(&main_jobs),
-        Arc::new(handoffs),
-        settings,
-        &launch,
-        stop,
-    )
-    .run(workers)
-    .await;
-    reports.extend(outcomes.into_iter().flatten().map(|outcome| outcome.report));
-    // The saved setup states hold session cookies; do not leave them
-    // behind (SPEC 11).
-    let _ = fs::remove_dir_all(&state_dir).await;
-
-    Ok(RunReport {
-        duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-        files:       reports,
-    })
+    .instrument(info_span!("run"))
+    .await
 }
 
 /// Filesystem preparation runs on the blocking pool, including path
@@ -348,8 +359,12 @@ impl WorkerSet {
 
     async fn run(mut self, workers: usize) -> Vec<Option<FlowOutcome>> {
         let count = self.queue.jobs.len();
-        for _ in 0..workers.min(count) {
-            self.tasks.spawn(Worker::new(self.queue.clone()).run());
+        for worker_index in 0..workers.min(count) {
+            self.tasks.spawn(
+                Worker::new(self.queue.clone())
+                    .run()
+                    .instrument(info_span!("worker", worker_index)),
+            );
         }
         let mut results: Vec<Option<FlowOutcome>> = (0..count).map(|_| None).collect();
         while let Some(result) = self.tasks.join_next().await {
@@ -380,13 +395,17 @@ impl Worker {
     async fn run(mut self) -> Vec<(usize, FlowOutcome)> {
         let mut results = Vec::new();
         while let Some(index) = self.queue.next_job() {
+            debug!(job_index = index, "starting flow job");
             let outcome = self.run_job(index).await;
+            debug!(job_index = index, status = ?outcome.report.status, "flow job finished");
             self.queue.record_outcome(&outcome);
             results.push((index, outcome));
         }
         if let Some(client) = self.client.take() {
             // Reports are already complete; shutdown is best effort.
-            let _ = client.shutdown().await;
+            if client.shutdown().await.is_err() {
+                warn!("worker shim shutdown failed");
+            }
         }
         results
     }
@@ -396,11 +415,13 @@ impl Worker {
         if self.client.as_ref().is_some_and(ShimClient::is_alive) {
             return Ok(());
         }
+        debug!(restarting = self.client.is_some(), "starting shim process");
         if let Some(mut previous) = self.client.take() {
             previous.kill().await;
         }
         let mut client = ShimClient::spawn(&self.queue.launch)?;
         if let Err(error) = client.hello().await {
+            warn!("shim handshake failed");
             client.kill().await;
             return Err(error);
         }

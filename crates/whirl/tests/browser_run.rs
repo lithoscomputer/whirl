@@ -414,7 +414,7 @@ fn a_run_writes_json_and_junit_reports_with_masking() {
             pass.to_str().expect("utf-8 path"),
             fail.to_str().expect("utf-8 path"),
         ],
-        &[("WHIRL_TEST_SECRET", secret)],
+        &[("WHIRL_TEST_SECRET", secret), ("WHIRL_LOG", "debug")],
     );
     let stdout = stdout_text(&output);
     assert_eq!(exit_code(&output), 1, "stdout:\n{stdout}");
@@ -423,6 +423,31 @@ fn a_run_writes_json_and_junit_reports_with_masking() {
         fs::read_to_string(dir.path.join("report.json")).expect("report.json should exist");
     let junit_text =
         fs::read_to_string(dir.path.join("report.xml")).expect("report.xml should exist");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("starting flow job"), "telemetry:\n{stderr}");
+    assert!(
+        stderr.contains("shim step completed"),
+        "telemetry:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains(secret),
+        "telemetry must not contain secrets"
+    );
+    assert!(
+        !stderr.contains("data:text/html"),
+        "telemetry must not contain URLs"
+    );
+    // Lint diagnostics intentionally name the input file. Only tracing
+    // lines carry a Rust module target such as whirl::run::runner.
+    let telemetry = stderr
+        .lines()
+        .filter(|line| line.contains("whirl::"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !telemetry.contains(&*dir.path.to_string_lossy()),
+        "telemetry must not contain paths"
+    );
     assert_json_report(&json_text, secret);
     assert_junit_report(&junit_text, secret);
 }

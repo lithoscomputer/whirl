@@ -7,6 +7,7 @@ use std::time::Instant;
 
 use serde_json::Value as Json;
 use tokio::fs;
+use tracing::{Instrument as _, debug, debug_span, info_span};
 
 use crate::lang::ast::{
     self, BrowserKind, DialogPolicy, DurationLit, File, FileOption, OptionValue, ReducedMotion,
@@ -59,40 +60,6 @@ pub(crate) struct FlowFlags {
     pub(crate) save_storage:     Option<PathBuf>,
 }
 
-/// A `--step-timeout` / `--entry-timeout` flag value: `500ms` or `10s`.
-pub(crate) fn parse_duration_flag(text: &str) -> Option<u64> {
-    let (amount, factor) = if let Some(amount) = text.strip_suffix("ms") {
-        (amount, 1)
-    } else {
-        let amount = text.strip_suffix('s')?;
-        (amount, 1000)
-    };
-    if amount.is_empty() || !amount.bytes().all(|byte| byte.is_ascii_digit()) {
-        return None;
-    }
-    let amount: u64 = amount.parse().ok()?;
-    Some(amount.saturating_mul(factor))
-}
-
-/// A `--browser` flag value: `chromium`, `firefox`, or `webkit`.
-pub(crate) fn parse_browser_flag(text: &str) -> Option<BrowserKind> {
-    match text {
-        "chromium" => Some(BrowserKind::Chromium),
-        "firefox" => Some(BrowserKind::Firefox),
-        "webkit" => Some(BrowserKind::Webkit),
-        _ => None,
-    }
-}
-
-/// The wire name of a browser engine.
-pub(crate) fn browser_name(browser: BrowserKind) -> &'static str {
-    match browser {
-        BrowserKind::Chromium => "chromium",
-        BrowserKind::Firefox => "firefox",
-        BrowserKind::Webkit => "webkit",
-    }
-}
-
 /// The hostname of a URL, textually: scheme and userinfo stripped, cut
 /// at the first `/`, `?`, or `#`, port removed (IPv6 brackets kept
 /// textual per SPEC 5). `None` when the URL has no host (`data:`).
@@ -115,32 +82,32 @@ fn url_host(url: &str) -> Option<String> {
 /// A file's options after resolution at file start (SPEC 5, 11), with
 /// command-line overrides applied.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ResolvedOptions {
-    pub(crate) base:             Option<String>,
-    pub(crate) browser:          BrowserKind,
-    pub(crate) viewport:         Viewport,
-    pub(crate) step_timeout_ms:  u64,
-    pub(crate) entry_timeout_ms: Option<u64>,
-    pub(crate) nav_timeout_ms:   u64,
+struct ResolvedOptions {
+    base:             Option<String>,
+    browser:          BrowserKind,
+    viewport:         Viewport,
+    step_timeout_ms:  u64,
+    entry_timeout_ms: Option<u64>,
+    nav_timeout_ms:   u64,
     /// With the `base` host already appended when set (SPEC 5).
-    pub(crate) allow_hosts:      Option<Vec<String>>,
-    pub(crate) dialogs:          DialogPolicy,
+    allow_hosts:      Option<Vec<String>>,
+    dialogs:          DialogPolicy,
     /// The `prefers-reduced-motion` value the page sees; the engine
     /// default when unset (SPEC 5).
-    pub(crate) reduced_motion:   Option<ReducedMotion>,
+    reduced_motion:   Option<ReducedMotion>,
     /// Resolved relative to the `.whirl` file (SPEC 5).
-    pub(crate) storage:          Option<PathBuf>,
-    pub(crate) headed:           bool,
+    storage:          Option<PathBuf>,
+    headed:           bool,
     /// Browser user agent string; the engine default when unset (SPEC 5).
-    pub(crate) user_agent:       Option<String>,
+    user_agent:       Option<String>,
     /// The `setup` flow, resolved relative to the `.whirl` file (SPEC 5).
-    pub(crate) setup:            Option<PathBuf>,
+    setup:            Option<PathBuf>,
 }
 
 /// A failure while resolving options at file start. Reported as the
 /// `[setup]` entry of a failed run (SPEC 11, exit 1).
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum OptionsError {
+enum OptionsError {
     #[error("{0}")]
     Var(#[from] VarError),
     #[error("line {line}: invalid {key} value '{value}'")]
@@ -173,154 +140,136 @@ fn resolve_option<T: Copy>(
     }
 }
 
-/// Parses a resolved duration option value: `500ms` or `10s`.
-fn parse_duration_value(text: &str) -> Option<u64> {
-    parse_duration_flag(text)
-}
-
-/// Parses a resolved viewport option value: `WIDTHxHEIGHT`.
-fn parse_viewport_value(text: &str) -> Option<Viewport> {
-    let (width, height) = text.split_once('x')?;
-    Some(Viewport {
-        width:  width.parse().ok()?,
-        height: height.parse().ok()?,
-    })
-}
-
-/// Parses a resolved dialogs option value.
-fn parse_reduced_motion_value(text: &str) -> Option<ReducedMotion> {
-    match text {
-        "reduce" => Some(ReducedMotion::Reduce),
-        "no-preference" => Some(ReducedMotion::NoPreference),
-        _ => None,
-    }
-}
-
-fn parse_dialogs_value(text: &str) -> Option<DialogPolicy> {
-    match text {
-        "dismiss" => Some(DialogPolicy::Dismiss),
-        "accept" => Some(DialogPolicy::Accept),
-        _ => None,
-    }
-}
-
 /// Resolves a file's options at file start (SPEC 5, 11): only
 /// variables-file entries, `--var` flags, and `{{env.NAME}}` are
 /// available; command-line flags override file options; the `base` host
 /// is appended to `allow-hosts` when that option is set. `canonical` is
 /// the flow's canonical path (SPEC 14): the `storage` path resolves
 /// relative to it, like `UPLOAD` paths and snapshot baselines.
-pub(crate) fn resolve_options(
-    file: &File,
-    canonical: &Path,
-    vars: &mut VarStore,
-    overrides: &Overrides,
-) -> Result<ResolvedOptions, OptionsError> {
-    let mut base = None;
-    let mut browser = BrowserKind::Chromium;
-    let mut viewport = DEFAULT_VIEWPORT;
-    let mut step_timeout_ms = DEFAULT_STEP_TIMEOUT_MS;
-    let mut entry_timeout_ms = None;
-    let mut nav_timeout_ms = DEFAULT_NAV_TIMEOUT_MS;
-    let mut allow_hosts: Option<Vec<String>> = None;
-    let mut dialogs = DialogPolicy::Dismiss;
-    let mut reduced_motion = None;
-    let mut storage: Option<String> = None;
-    let mut user_agent: Option<String> = None;
-    let mut setup: Option<String> = None;
+impl ResolvedOptions {
+    fn try_new(
+        file: &File,
+        canonical: &Path,
+        vars: &mut VarStore,
+        overrides: &Overrides,
+    ) -> Result<Self, OptionsError> {
+        let mut base = None;
+        let mut browser = BrowserKind::Chromium;
+        let mut viewport = DEFAULT_VIEWPORT;
+        let mut step_timeout_ms = DEFAULT_STEP_TIMEOUT_MS;
+        let mut entry_timeout_ms = None;
+        let mut nav_timeout_ms = DEFAULT_NAV_TIMEOUT_MS;
+        let mut allow_hosts: Option<Vec<String>> = None;
+        let mut dialogs = DialogPolicy::Dismiss;
+        let mut reduced_motion = None;
+        let mut storage: Option<String> = None;
+        let mut user_agent: Option<String> = None;
+        let mut setup: Option<String> = None;
 
-    for option in &file.options {
-        let line = option.line;
-        match &option.option {
-            FileOption::Base(value) => base = Some(vars.resolve(value)?),
-            FileOption::Browser(value) => {
-                browser = resolve_option(value, "browser", line, vars, parse_browser_flag)?;
-            }
-            FileOption::Viewport(value) => {
-                viewport = resolve_option(value, "viewport", line, vars, parse_viewport_value)?;
-            }
-            FileOption::StepTimeout(value) => {
-                step_timeout_ms = resolve_duration(value, "step-timeout", line, vars)?;
-            }
-            FileOption::EntryTimeout(value) => {
-                entry_timeout_ms = Some(resolve_duration(value, "entry-timeout", line, vars)?);
-            }
-            FileOption::NavTimeout(value) => {
-                nav_timeout_ms = resolve_duration(value, "nav-timeout", line, vars)?;
-            }
-            FileOption::AllowHosts(values) => {
-                let mut hosts = Vec::with_capacity(values.len());
-                for value in values {
-                    hosts.push(vars.resolve(value)?);
+        for option in &file.options {
+            let line = option.line;
+            match &option.option {
+                FileOption::Base(value) => base = Some(vars.resolve(value)?),
+                FileOption::Browser(value) => {
+                    browser = resolve_option(value, "browser", line, vars, |text| {
+                        text.parse::<BrowserKind>().ok()
+                    })?;
                 }
-                allow_hosts = Some(hosts);
+                FileOption::Viewport(value) => {
+                    viewport = resolve_option(value, "viewport", line, vars, |text| {
+                        text.parse::<Viewport>().ok()
+                    })?;
+                }
+                FileOption::StepTimeout(value) => {
+                    step_timeout_ms = resolve_duration(value, "step-timeout", line, vars)?;
+                }
+                FileOption::EntryTimeout(value) => {
+                    entry_timeout_ms = Some(resolve_duration(value, "entry-timeout", line, vars)?);
+                }
+                FileOption::NavTimeout(value) => {
+                    nav_timeout_ms = resolve_duration(value, "nav-timeout", line, vars)?;
+                }
+                FileOption::AllowHosts(values) => {
+                    let mut hosts = Vec::with_capacity(values.len());
+                    for value in values {
+                        hosts.push(vars.resolve(value)?);
+                    }
+                    allow_hosts = Some(hosts);
+                }
+                FileOption::Dialogs(value) => {
+                    dialogs = resolve_option(value, "dialogs", line, vars, |text| {
+                        text.parse::<DialogPolicy>().ok()
+                    })?;
+                }
+                FileOption::ReducedMotion(value) => {
+                    reduced_motion = Some(resolve_option(
+                        value,
+                        "reduced-motion",
+                        line,
+                        vars,
+                        |text| text.parse::<ReducedMotion>().ok(),
+                    )?);
+                }
+                FileOption::Storage(value) => storage = Some(vars.resolve(value)?),
+                FileOption::UserAgent(value) => user_agent = Some(vars.resolve(value)?),
+                FileOption::Setup(value) => setup = Some(vars.resolve(value)?),
             }
-            FileOption::Dialogs(value) => {
-                dialogs = resolve_option(value, "dialogs", line, vars, parse_dialogs_value)?;
-            }
-            FileOption::ReducedMotion(value) => {
-                reduced_motion = Some(resolve_option(
-                    value,
-                    "reduced-motion",
-                    line,
-                    vars,
-                    parse_reduced_motion_value,
-                )?);
-            }
-            FileOption::Storage(value) => storage = Some(vars.resolve(value)?),
-            FileOption::UserAgent(value) => user_agent = Some(vars.resolve(value)?),
-            FileOption::Setup(value) => setup = Some(vars.resolve(value)?),
         }
-    }
 
-    // Command-line overrides (SPEC 5, 13).
-    if let Some(flag) = &overrides.base {
-        base = Some(flag.clone());
-    }
-    if let Some(flag) = overrides.browser {
-        browser = flag;
-    }
-    if let Some(flag) = overrides.step_timeout_ms {
-        step_timeout_ms = flag;
-    }
-    if let Some(flag) = overrides.entry_timeout_ms {
-        entry_timeout_ms = Some(flag);
-    }
-    if let Some(flag) = &overrides.user_agent {
-        user_agent = Some(flag.clone());
-    }
-
-    // The base host is always allowed (SPEC 5).
-    if let (Some(hosts), Some(base)) = (allow_hosts.as_mut(), base.as_deref()) {
-        if let Some(host) = url_host(base) {
-            hosts.push(host);
+        // Command-line overrides (SPEC 5, 13).
+        if let Some(flag) = &overrides.base {
+            base = Some(flag.clone());
         }
+        if let Some(flag) = overrides.browser {
+            browser = flag;
+        }
+        if let Some(flag) = overrides.step_timeout_ms {
+            step_timeout_ms = flag;
+        }
+        if let Some(flag) = overrides.entry_timeout_ms {
+            entry_timeout_ms = Some(flag);
+        }
+        if let Some(flag) = &overrides.user_agent {
+            user_agent = Some(flag.clone());
+        }
+
+        // The base host is always allowed (SPEC 5).
+        if let (Some(hosts), Some(base)) = (allow_hosts.as_mut(), base.as_deref()) {
+            if let Some(host) = url_host(base) {
+                hosts.push(host);
+            }
+        }
+
+        // `storage` resolves relative to the `.whirl` file — its canonical
+        // path, so a symlinked input resolves like `UPLOAD` paths do
+        // (SPEC 5, 14); the `--storage` flag overrides and resolves like any
+        // CLI path.
+        let storage = match &overrides.storage {
+            Some(flag) => Some(flag.clone()),
+            None => storage.map(|path| resolve_beside_file(canonical, &path)),
+        };
+
+        Ok(Self {
+            base,
+            browser,
+            viewport,
+            step_timeout_ms,
+            entry_timeout_ms,
+            nav_timeout_ms,
+            allow_hosts,
+            dialogs,
+            reduced_motion,
+            storage,
+            headed: overrides.headed,
+            user_agent,
+            setup: setup.map(|path| resolve_beside_file(canonical, &path)),
+        })
     }
 
-    // `storage` resolves relative to the `.whirl` file — its canonical
-    // path, so a symlinked input resolves like `UPLOAD` paths do
-    // (SPEC 5, 14); the `--storage` flag overrides and resolves like any
-    // CLI path.
-    let storage = match &overrides.storage {
-        Some(flag) => Some(flag.clone()),
-        None => storage.map(|path| resolve_beside_file(canonical, &path)),
-    };
-
-    Ok(ResolvedOptions {
-        base,
-        browser,
-        viewport,
-        step_timeout_ms,
-        entry_timeout_ms,
-        nav_timeout_ms,
-        allow_hosts,
-        dialogs,
-        reduced_motion,
-        storage,
-        headed: overrides.headed,
-        user_agent,
-        setup: setup.map(|path| resolve_beside_file(canonical, &path)),
-    })
+    /// Apply the validated setup handoff before creating a browser context.
+    fn use_setup(&mut self, setup: &SetupHandoff) {
+        self.storage = Some(setup.storage_path.clone());
+    }
 }
 
 /// Resolves a duration option value.
@@ -334,11 +283,15 @@ fn resolve_duration(
         OptionValue::Literal(lit) => Ok(lit.millis()),
         OptionValue::Interpolated(raw) => {
             let resolved = vars.resolve(raw)?;
-            parse_duration_value(&resolved).ok_or(OptionsError::InvalidValue {
-                key,
-                value: resolved,
-                line,
-            })
+            resolved
+                .parse::<DurationLit>()
+                .ok()
+                .map(DurationLit::millis)
+                .ok_or(OptionsError::InvalidValue {
+                    key,
+                    value: resolved,
+                    line,
+                })
         }
     }
 }
@@ -689,7 +642,7 @@ impl FlowExec<'_> {
                 let baseline = artifacts::snapshot_baseline_path(
                     self.run.canonical,
                     &name.text,
-                    browser_name(self.options.browser),
+                    self.options.browser.as_str(),
                 );
                 // The shim's snapshot writer creates the baseline directory.
                 StepCommand::Snapshot {
@@ -879,7 +832,10 @@ impl FlowExec<'_> {
             title: title.clone(),
         };
         let started = Instant::now();
-        let outcome = client.run_step(&request).await;
+        let outcome = client
+            .run_step(&request)
+            .instrument(debug_span!("step", line = node.line(), step_kind = ?node.kind()))
+            .await;
         let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         if let Some(remaining) = state.remaining_ms.as_mut() {
             *remaining = remaining.saturating_sub(elapsed_ms);
@@ -1170,27 +1126,20 @@ fn wire_path(path: &Path) -> String {
 /// The `startFlow` params of one flow (protocol section 3).
 fn start_flow_params(run: &FlowRun<'_>, options: &ResolvedOptions) -> StartFlowParams {
     StartFlowParams {
-        browser:            browser_name(options.browser).to_owned(),
+        browser:            options.browser.as_str().to_owned(),
         headed:             options.headed,
         viewport:           ViewportParams {
             width:  options.viewport.width,
             height: options.viewport.height,
         },
         storage_state_path: options.storage.as_deref().map(wire_path),
-        dialogs:            match options.dialogs {
-            DialogPolicy::Dismiss => "dismiss".to_owned(),
-            DialogPolicy::Accept => "accept".to_owned(),
-        },
+        dialogs:            options.dialogs.as_str().to_owned(),
         allow_hosts:        options.allow_hosts.clone(),
         nav_timeout_ms:     options.nav_timeout_ms,
         user_agent:         options.user_agent.clone(),
-        reduced_motion:     options.reduced_motion.map(|motion| {
-            match motion {
-                ReducedMotion::Reduce => "reduce",
-                ReducedMotion::NoPreference => "no-preference",
-            }
-            .to_owned()
-        }),
+        reduced_motion:     options
+            .reduced_motion
+            .map(|motion| motion.as_str().to_owned()),
         video:              run.flags.video.then(|| VideoParams {
             temp_dir:   wire_path(&run.abs_dir.join("video-temp")),
             final_path: wire_path(&run.abs_dir.join(artifacts::VIDEO_WEBM)),
@@ -1218,187 +1167,193 @@ fn file_status(entries: &[EntryReport]) -> Status {
 /// report. The caller (the worker) respawns the client when
 /// [`ShimClient::is_alive`] turns false afterwards.
 pub(crate) async fn run_flow(run: &FlowRun<'_>, client: &mut ShimClient) -> FlowOutcome {
-    let started = Instant::now();
-    let mut report = FileReport {
-        runtime:       None,
-        path:          run.file.path.to_string_lossy().into_owned(),
-        status:        Status::Passed,
-        duration_ms:   0,
-        artifacts_dir: run.report_dir.to_string_lossy().into_owned(),
-        blocked_hosts: Vec::new(),
-        warnings:      Vec::new(),
-        artifacts:     Vec::new(),
-        entries:       Vec::new(),
-    };
-    let finish = |mut report: FileReport, vars: &VarStore, captures: Vec<(String, String)>| {
-        report.duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-        FlowOutcome {
-            report,
-            captures,
-            secrets: vars.masker().secrets().to_vec(),
-        }
-    };
-
-    let mut vars = VarStore::new();
-    for (name, value) in run.base_vars {
-        vars.set(name.clone(), value.clone());
-    }
-    if let Some(setup) = run.setup {
-        for secret in &setup.secrets {
-            vars.record_secret(secret);
-        }
-        for (name, value) in &setup.captures {
-            vars.set_setup(name, value.clone());
-        }
-    }
-
-    // Option resolution (SPEC 11): a failure here fails the file before
-    // any entry, as the `[setup]` entry of a failed run (exit 1).
-    let options = match resolve_options(run.file, run.canonical, &mut vars, run.overrides) {
-        Ok(mut options) => {
-            // A dependent file starts from its setup flow's saved state
-            // (SPEC 12); lint rejects `setup` together with `storage`.
-            if let Some(setup) = run.setup {
-                options.storage = Some(setup.storage_path.clone());
-            }
-            options
-        }
-        Err(error) => {
-            let message = vars.mask(&error.to_string());
-            report.entries.push(setup_entry(Status::Failed, message));
-            report.status = Status::Failed;
-            return finish(report, &vars, Vec::new());
-        }
-    };
-
-    if let Err(error) = fs::create_dir_all(run.abs_dir).await {
-        let message = format!(
-            "cannot create artifact directory '{dir}': {error}",
-            dir = run.abs_dir.display()
-        );
-        report.entries.push(setup_entry(Status::Error, message));
-        report.status = Status::Error;
-        return finish(report, &vars, Vec::new());
-    }
-
-    // Browser context launch; storage loading happens here too. A shim
-    // `internal` error is a runtime error; other errors are setup
-    // failures (SPEC 14).
-    let params = start_flow_params(run, &options);
-    let runtime_result = match client.start_flow(&params).await {
-        Ok(result) => result,
-        Err(error) => {
-            let (status, message) = match &error {
-                ShimError::Shim(object) if !is_runtime_kind(&object.kind) => {
-                    (Status::Failed, vars.mask(&object.message))
-                }
-                _ => (Status::Error, vars.mask(&error.to_string())),
-            };
-            report.entries.push(setup_entry(status, message));
-            report.status = status;
-            return finish(report, &vars, Vec::new());
-        }
-    };
-    let version = |key: &str| {
-        runtime_result
-            .get(key)
-            .and_then(Json::as_str)
-            .map(str::to_owned)
-    };
-    report.runtime = Some(RuntimeMetadata {
-        browser:            params.browser.clone(),
-        viewport:           params.viewport,
-        browser_version:    version("browserVersion"),
-        node_version:       version("nodeVersion"),
-        playwright_version: version("playwrightVersion"),
-    });
-
-    let mut exec = FlowExec {
-        run,
-        options,
-        vars,
-        warnings: Vec::new(),
-        flow_open: true,
-        captures: Vec::new(),
-    };
-    let mut failed = false;
-    for entry in &run.file.entries {
-        if failed {
-            report
-                .entries
-                .push(skipped_entry(run.file, entry, &exec.vars));
-            continue;
-        }
-        let entry_report = exec.run_entry(entry, client).await;
-        failed = entry_report.status != Status::Passed;
-        report.entries.push(entry_report);
-    }
-    report.status = file_status(&report.entries);
-
-    // endFlow (protocol section 3): always, unless the flow was already
-    // torn down by a cancel or the process died.
-    if exec.flow_open && client.is_alive() {
-        let trace_path = (report.status != Status::Passed && run.flags.trace)
-            .then(|| run.abs_dir.join(artifacts::TRACE_ZIP));
-        let end = EndFlowParams {
-            save_storage_path: (report.status == Status::Passed)
-                .then(|| {
-                    run.flags
-                        .save_storage
-                        .as_deref()
-                        .or(run.state_out)
-                        .map(wire_path)
-                })
-                .flatten(),
-            trace_path:        trace_path.as_deref().map(wire_path),
+    async {
+        let started = Instant::now();
+        let mut report = FileReport {
+            runtime:       None,
+            path:          run.file.path.to_string_lossy().into_owned(),
+            status:        Status::Passed,
+            duration_ms:   0,
+            artifacts_dir: run.report_dir.to_string_lossy().into_owned(),
+            blocked_hosts: Vec::new(),
+            warnings:      Vec::new(),
+            artifacts:     Vec::new(),
+            entries:       Vec::new(),
         };
-        match client.end_flow(&end).await {
-            Ok(result) => {
-                report.blocked_hosts = result.blocked_hosts;
-                if trace_path.is_some() {
-                    if let Some(entry) = report.entries.iter_mut().find(|entry| {
-                        entry.status != Status::Passed && entry.status != Status::Skipped
-                    }) {
-                        entry.artifacts.push(
+        let finish = |mut report: FileReport, vars: &VarStore, captures: Vec<(String, String)>| {
+            report.duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+            debug!(status = ?report.status, duration_ms = report.duration_ms, "flow finished");
+            FlowOutcome {
+                report,
+                captures,
+                secrets: vars.masker().secrets().to_vec(),
+            }
+        };
+
+        let mut vars = VarStore::new();
+        for (name, value) in run.base_vars {
+            vars.set(name.clone(), value.clone());
+        }
+        if let Some(setup) = run.setup {
+            for secret in &setup.secrets {
+                vars.record_secret(secret);
+            }
+            for (name, value) in &setup.captures {
+                vars.set_setup(name, value.clone());
+            }
+        }
+
+        // Option resolution (SPEC 11): a failure here fails the file before
+        // any entry, as the `[setup]` entry of a failed run (exit 1).
+        let options =
+            match ResolvedOptions::try_new(run.file, run.canonical, &mut vars, run.overrides) {
+                Ok(mut options) => {
+                    // A dependent file starts from its setup flow's saved state
+                    // (SPEC 12); lint rejects `setup` together with `storage`.
+                    if let Some(setup) = run.setup {
+                        options.use_setup(setup);
+                    }
+                    options
+                }
+                Err(error) => {
+                    let message = vars.mask(&error.to_string());
+                    report.entries.push(setup_entry(Status::Failed, message));
+                    report.status = Status::Failed;
+                    return finish(report, &vars, Vec::new());
+                }
+            };
+
+        if let Err(error) = fs::create_dir_all(run.abs_dir).await {
+            let message = format!(
+                "cannot create artifact directory '{dir}': {error}",
+                dir = run.abs_dir.display()
+            );
+            report.entries.push(setup_entry(Status::Error, message));
+            report.status = Status::Error;
+            return finish(report, &vars, Vec::new());
+        }
+
+        // Browser context launch; storage loading happens here too. A shim
+        // `internal` error is a runtime error; other errors are setup
+        // failures (SPEC 14).
+        let params = start_flow_params(run, &options);
+        let runtime_result = match client.start_flow(&params).await {
+            Ok(result) => result,
+            Err(error) => {
+                let (status, message) = match &error {
+                    ShimError::Shim(object) if !is_runtime_kind(&object.kind) => {
+                        (Status::Failed, vars.mask(&object.message))
+                    }
+                    _ => (Status::Error, vars.mask(&error.to_string())),
+                };
+                report.entries.push(setup_entry(status, message));
+                report.status = status;
+                return finish(report, &vars, Vec::new());
+            }
+        };
+        let version = |key: &str| {
+            runtime_result
+                .get(key)
+                .and_then(Json::as_str)
+                .map(str::to_owned)
+        };
+        report.runtime = Some(RuntimeMetadata {
+            browser:            params.browser.clone(),
+            viewport:           params.viewport,
+            browser_version:    version("browserVersion"),
+            node_version:       version("nodeVersion"),
+            playwright_version: version("playwrightVersion"),
+        });
+
+        let mut exec = FlowExec {
+            run,
+            options,
+            vars,
+            warnings: Vec::new(),
+            flow_open: true,
+            captures: Vec::new(),
+        };
+        let mut failed = false;
+        for entry in &run.file.entries {
+            if failed {
+                report
+                    .entries
+                    .push(skipped_entry(run.file, entry, &exec.vars));
+                continue;
+            }
+            let entry_report = exec.run_entry(entry, client).await;
+            failed = entry_report.status != Status::Passed;
+            report.entries.push(entry_report);
+        }
+        report.status = file_status(&report.entries);
+
+        // endFlow (protocol section 3): always, unless the flow was already
+        // torn down by a cancel or the process died.
+        if exec.flow_open && client.is_alive() {
+            let trace_path = (report.status != Status::Passed && run.flags.trace)
+                .then(|| run.abs_dir.join(artifacts::TRACE_ZIP));
+            let end = EndFlowParams {
+                save_storage_path: (report.status == Status::Passed)
+                    .then(|| {
+                        run.flags
+                            .save_storage
+                            .as_deref()
+                            .or(run.state_out)
+                            .map(wire_path)
+                    })
+                    .flatten(),
+                trace_path:        trace_path.as_deref().map(wire_path),
+            };
+            match client.end_flow(&end).await {
+                Ok(result) => {
+                    report.blocked_hosts = result.blocked_hosts;
+                    if trace_path.is_some() {
+                        if let Some(entry) = report.entries.iter_mut().find(|entry| {
+                            entry.status != Status::Passed && entry.status != Status::Skipped
+                        }) {
+                            entry.artifacts.push(
+                                run.report_dir
+                                    .join(artifacts::TRACE_ZIP)
+                                    .to_string_lossy()
+                                    .into_owned(),
+                            );
+                        }
+                    }
+                    if result.video_path.is_some() {
+                        report.artifacts.push(
                             run.report_dir
-                                .join(artifacts::TRACE_ZIP)
+                                .join(artifacts::VIDEO_WEBM)
+                                .to_string_lossy()
+                                .into_owned(),
+                        );
+                    }
+                    if run.flags.har {
+                        report.artifacts.push(
+                            run.report_dir
+                                .join(artifacts::NETWORK_HAR)
                                 .to_string_lossy()
                                 .into_owned(),
                         );
                     }
                 }
-                if result.video_path.is_some() {
-                    report.artifacts.push(
-                        run.report_dir
-                            .join(artifacts::VIDEO_WEBM)
-                            .to_string_lossy()
-                            .into_owned(),
-                    );
-                }
-                if run.flags.har {
-                    report.artifacts.push(
-                        run.report_dir
-                            .join(artifacts::NETWORK_HAR)
-                            .to_string_lossy()
-                            .into_owned(),
-                    );
-                }
-            }
-            Err(error) => {
-                exec.warnings.push(format!(
-                    "endFlow failed: {}",
-                    exec.vars.mask(&error.to_string())
-                ));
-                if report.status == Status::Passed {
-                    // A clean run whose teardown (storage save, video
-                    // move) failed is a runtime error, not a silent pass.
-                    report.status = Status::Error;
+                Err(error) => {
+                    exec.warnings.push(format!(
+                        "endFlow failed: {}",
+                        exec.vars.mask(&error.to_string())
+                    ));
+                    if report.status == Status::Passed {
+                        // A clean run whose teardown (storage save, video
+                        // move) failed is a runtime error, not a silent pass.
+                        report.status = Status::Error;
+                    }
                 }
             }
         }
+        report.warnings = exec.warnings;
+        finish(report, &exec.vars, exec.captures)
     }
-    report.warnings = exec.warnings;
-    finish(report, &exec.vars, exec.captures)
+    .instrument(info_span!("flow", entry_count = run.file.entries.len()))
+    .await
 }
 
 #[cfg(test)]
@@ -1426,21 +1381,11 @@ mod tests {
     }
 
     #[test]
-    fn duration_flags_parse_ms_and_s() {
-        assert_eq!(parse_duration_flag("500ms"), Some(500));
-        assert_eq!(parse_duration_flag("10s"), Some(10_000));
-        assert_eq!(parse_duration_flag("0ms"), Some(0));
-        assert_eq!(parse_duration_flag("10"), None);
-        assert_eq!(parse_duration_flag("s"), None);
-        assert_eq!(parse_duration_flag("1.5s"), None);
-    }
-
-    #[test]
     fn visit_gets_the_nav_timeout_and_others_the_step_timeout() {
         let file = parse("VISIT /a\nCLICK \"Go\"\n[Asserts]\ntitle == x\n");
         let entry = &file.entries[0];
         let mut vars = VarStore::new();
-        let options = resolve_options(&file, &file.path, &mut vars, &Overrides::default())
+        let options = ResolvedOptions::try_new(&file, &file.path, &mut vars, &Overrides::default())
             .expect("options resolve");
         let steps = entry_steps(entry);
         assert_eq!(line_budget_ms(steps[0], &options), DEFAULT_NAV_TIMEOUT_MS);
@@ -1455,7 +1400,7 @@ mod tests {
         let file = parse("[Options]\nstorage: st.json\nVISIT /a\n");
         let mut vars = VarStore::new();
         let canonical = Path::new("/real/dir/flow.whirl");
-        let options = resolve_options(&file, canonical, &mut vars, &Overrides::default())
+        let options = ResolvedOptions::try_new(&file, canonical, &mut vars, &Overrides::default())
             .expect("options resolve");
         assert_eq!(options.storage, Some(PathBuf::from("/real/dir/st.json")));
     }
@@ -1464,7 +1409,7 @@ mod tests {
     fn a_duration_suffix_overrides_the_line_budget() {
         let file = parse("VISIT /a @2s\nCLICK \"Go\" @500ms\n");
         let mut vars = VarStore::new();
-        let options = resolve_options(&file, &file.path, &mut vars, &Overrides::default())
+        let options = ResolvedOptions::try_new(&file, &file.path, &mut vars, &Overrides::default())
             .expect("options resolve");
         let steps = entry_steps(&file.entries[0]);
         assert_eq!(line_budget_ms(steps[0], &options), 2_000);

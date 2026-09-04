@@ -24,7 +24,7 @@ use crate::lang::{ast, fmt};
 use crate::report::model::{RunReport, Status};
 use crate::report::{console, json, junit};
 use crate::run::{artifacts, flow, runner, vars};
-use crate::{doctor, install};
+use crate::{doctor, install, telemetry};
 
 /// Outcome of one invocation, ordered by SPEC 13 precedence: `max` of two
 /// outcomes is the one that wins the process exit code.
@@ -203,6 +203,7 @@ struct RunArgs {
 /// Runs the CLI for the given argv (including the program name) and
 /// returns the process exit code.
 pub fn run(argv: impl IntoIterator<Item = OsString>) -> ExitCode {
+    telemetry::init();
     ExitCode::from(execute(argv))
 }
 
@@ -641,9 +642,13 @@ fn build_overrides(args: &RunArgs) -> Result<flow::Overrides, UsageError> {
         value
             .as_deref()
             .map(|text| {
-                flow::parse_duration_flag(text).ok_or_else(|| UsageError {
-                    message: format!("invalid {flag} value '{text}': expected e.g. 500ms or 10s"),
-                })
+                text.parse::<ast::DurationLit>()
+                    .map(ast::DurationLit::millis)
+                    .map_err(|_| UsageError {
+                        message: format!(
+                            "invalid {flag} value '{text}': expected e.g. 500ms or 10s"
+                        ),
+                    })
             })
             .transpose()
     };
@@ -651,7 +656,7 @@ fn build_overrides(args: &RunArgs) -> Result<flow::Overrides, UsageError> {
         .browser
         .as_deref()
         .map(|text| {
-            flow::parse_browser_flag(text).ok_or_else(|| UsageError {
+            text.parse::<ast::BrowserKind>().map_err(|_| UsageError {
                 message: format!(
                     "invalid --browser value '{text}': expected chromium, firefox, or webkit"
                 ),

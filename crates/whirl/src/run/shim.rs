@@ -22,6 +22,7 @@ use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, timeout, timeout_at};
+use tracing::{Instrument as _, debug, debug_span, warn};
 
 /// Environment variable naming the built shim entry (protocol section 8).
 pub(crate) const SHIM_JS_ENV: &str = "WHIRL_SHIM_JS";
@@ -393,9 +394,9 @@ impl ShimClient {
             .expect("stderr was configured as piped at spawn");
 
         let pending: PendingMap = Arc::new(Mutex::new(Some(HashMap::new())));
-        let reader_task = tokio::spawn(read_responses(stdout, Arc::clone(&pending)));
+        let reader_task = tokio::spawn(read_responses(stdout, pending.clone()));
         let stderr_tail = Arc::new(Mutex::new(Vec::new()));
-        let stderr_task = tokio::spawn(read_stderr(stderr, Arc::clone(&stderr_tail)));
+        let stderr_task = tokio::spawn(read_stderr(stderr, stderr_tail.clone()));
 
         Ok(Self {
             child,
@@ -487,9 +488,20 @@ impl ShimClient {
         params: Json,
     ) -> Result<T, ShimError> {
         let budget = self.lifecycle_timeout;
-        if let Ok(result) = timeout(budget, self.exchange(cmd, params)).await {
+        if let Ok(result) = timeout(
+            budget,
+            self.exchange(cmd, params)
+                .instrument(debug_span!("shim_lifecycle", command = cmd)),
+        )
+        .await
+        {
             result
         } else {
+            warn!(
+                command = cmd,
+                timeout_ms = u64::try_from(budget.as_millis()).unwrap_or(u64::MAX),
+                "shim lifecycle timed out"
+            );
             self.kill().await;
             Err(ShimError::TimedOut {
                 command:    cmd,
@@ -648,6 +660,7 @@ impl ShimClient {
                 Ok(Err(_)) => return self.died_outcome(),
                 Err(_) => {
                     // A partial JSON frame cannot be followed by cancelFlow.
+                    warn!("shim request write timed out");
                     self.kill().await;
                     return StepOutcome::StepTimeout {
                         process_killed: true,
@@ -655,7 +668,10 @@ impl ShimClient {
                 }
             };
         match timeout_at(deadline, receiver).await {
-            Ok(Ok(Ok(result))) => StepOutcome::Ok(result),
+            Ok(Ok(Ok(result))) => {
+                debug!("shim step completed");
+                StepOutcome::Ok(result)
+            }
             Ok(Ok(Err(error))) => StepOutcome::ShimError(error),
             Ok(Err(_)) => self.died_outcome(),
             Err(_) => self.watchdog_cancel().await,
@@ -674,12 +690,14 @@ impl ShimClient {
     /// The watchdog fired: cancel the flow, and kill the process when
     /// the shim does not answer `cancelFlow` within the grace period.
     async fn watchdog_cancel(&mut self) -> StepOutcome {
+        warn!("step watchdog expired");
         let grace = self.watchdog_grace;
         let cancelled = match timeout(grace, self.cancel_flow()).await {
             Ok(Ok(())) => true,
             Ok(Err(_)) | Err(_) => false,
         };
         if cancelled {
+            debug!("shim cancelled the flow");
             return StepOutcome::StepTimeout {
                 process_killed: false,
             };
@@ -693,6 +711,7 @@ impl ShimClient {
     /// Kills the shim process with SIGKILL and marks the client dead.
     /// The owner respawns a replacement client for the worker slot.
     pub(crate) async fn kill(&mut self) {
+        debug!("terminating shim process");
         self.alive = false;
         let _ = self.child.start_kill();
         let _ = timeout(SHUTDOWN_GRACE, self.child.wait()).await;

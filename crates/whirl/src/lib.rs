@@ -10,6 +10,7 @@ mod install;
 mod lang;
 mod report;
 mod run;
+mod telemetry;
 
 // The binary only needs the command entry point.
 pub use cli::run;
