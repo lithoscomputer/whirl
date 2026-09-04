@@ -4,7 +4,9 @@
 //! already secret-masked by the runner (SPEC 11).
 
 use serde::ser::SerializeMap as _;
-use serde::{Serialize, Serializer};
+use serde::{Deserialize, Serialize, Serializer};
+
+use crate::run::shim::ViewportParams;
 
 /// The name of the synthetic entry that reports a failure before the
 /// first real entry: option resolution, storage loading, or browser
@@ -13,7 +15,7 @@ pub const SETUP_ENTRY: &str = "[setup]";
 
 /// Outcome of a step, an entry, or a file. Files never report
 /// `Skipped`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Status {
     Passed,
@@ -35,9 +37,10 @@ pub enum StepKind {
 }
 
 /// A failed step's error detail.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StepError {
+    pub code:       String,
     pub message:    String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expected:   Option<String>,
@@ -45,6 +48,29 @@ pub struct StepError {
     pub actual:     Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub candidates: Option<Vec<String>>,
+}
+
+impl Default for StepError {
+    fn default() -> Self {
+        Self {
+            code:       "internal".to_owned(),
+            message:    String::new(),
+            expected:   None,
+            actual:     None,
+            candidates: None,
+        }
+    }
+}
+
+/// The selected browser environment, reported only after a context starts.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeMetadata {
+    pub browser:            String,
+    pub viewport:           ViewportParams,
+    pub browser_version:    Option<String>,
+    pub node_version:       Option<String>,
+    pub playwright_version: Option<String>,
 }
 
 /// One executed (or skipped) step.
@@ -97,6 +123,8 @@ fn serialize_captures<S: Serializer>(
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FileReport {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime:       Option<RuntimeMetadata>,
     /// The input path as given on the command line.
     pub path:          String,
     pub status:        Status,

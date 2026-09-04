@@ -1,0 +1,16 @@
+{
+  "diagnostics": [
+    {
+      "code": "input-selection",
+      "column": null,
+      "expected": [],
+      "length": null,
+      "line": null,
+      "message": "whirl: error: no .whirl files found in the input paths",
+      "path": null,
+      "severity": "error"
+    }
+  ],
+  "exitCode": 4,
+  "version": 1
+}

@@ -11,7 +11,7 @@ import type {
 
 export interface ShimDriver {
 	readonly playwrightVersion: string;
-	startFlow(params: StartFlowParams): Promise<void>;
+	startFlow(params: StartFlowParams): Promise<Params>;
 	endFlow(params: EndFlowParams): Promise<EndFlowResult>;
 	cancelFlow(): Promise<void>;
 	runStep(cmd: StepCommand, params: Params): Promise<Params>;

@@ -1,0 +1,16 @@
+{
+  "diagnostics": [
+    {
+      "code": "setup-io",
+      "column": null,
+      "expected": [],
+      "length": null,
+      "line": null,
+      "message": "whirl: error: flow.whirl: setup flow 'missing.whirl' does not exist",
+      "path": null,
+      "severity": "error"
+    }
+  ],
+  "exitCode": 3,
+  "version": 1
+}

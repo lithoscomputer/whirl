@@ -108,6 +108,8 @@ More commands:
 
 ```console
 $ whirl check flows/        # parse and lint only; nothing runs
+$ whirl check --json flows/ # diagnostics for editors and agents
+$ whirl --rerun-failed report.json --trace
 $ whirl fmt flows/          # rewrite files to the canonical form
 $ whirl --headed flow.whirl # watch the browser
 $ whirl --trace flow.whirl  # save a trace when the flow fails

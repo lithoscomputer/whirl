@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add JSON check diagnostics, stable error codes, runtime report metadata,
+  and `--rerun-failed` for complete failed flows and their setup.
+
 - Add a runnable sample shop and a CI task with reports and failure artifacts.
 
 - Keep actionability details in failures and add `whirl show-trace`.

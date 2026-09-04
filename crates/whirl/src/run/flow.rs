@@ -14,7 +14,7 @@ use crate::lang::ast::{
 };
 use crate::lang::wire;
 use crate::report::model::{
-    EntryReport, FileReport, SETUP_ENTRY, Status, StepError, StepKind, StepReport,
+    EntryReport, FileReport, RuntimeMetadata, SETUP_ENTRY, Status, StepError, StepKind, StepReport,
 };
 use crate::run::artifacts;
 use crate::run::shim::{
@@ -750,6 +750,7 @@ fn is_timeout_kind(kind: &str) -> bool {
 /// The entry-timeout failure detail (SPEC 12).
 fn entry_timeout_error(budget_ms: u64) -> StepError {
     StepError {
+        code: "entry-timeout".to_owned(),
         message: format!("entry timeout: the entry's {budget_ms}ms budget expired on this step"),
         ..StepError::default()
     }
@@ -759,6 +760,7 @@ fn entry_timeout_error(budget_ms: u64) -> StepError {
 fn step_error(vars: &VarStore, error: &ErrorObject) -> StepError {
     let mask = |text: &String| vars.mask(text);
     StepError {
+        code:       error.kind.clone(),
         message:    format!(
             "{kind}: {message}",
             kind = error.kind,
@@ -839,6 +841,7 @@ impl FlowExec<'_> {
             Err(error) => {
                 let text = render_step_text(node.raw_text(), &mut self.vars);
                 let end = StepEnd::Failed(StepError {
+                    code: "variable-resolution".to_owned(),
                     message: self.vars.mask(&error.to_string()),
                     ..StepError::default()
                 });
@@ -935,6 +938,7 @@ impl FlowExec<'_> {
                      the browser context was closed"
                 };
                 StepEnd::Failed(StepError {
+                    code: "timeout".to_owned(),
                     message: format!("timeout: {detail}"),
                     ..StepError::default()
                 })
@@ -942,6 +946,7 @@ impl FlowExec<'_> {
             StepOutcome::ProcessDied { stderr_tail } => {
                 self.flow_open = false;
                 StepEnd::Error(StepError {
+                    code: "shim-crash".to_owned(),
                     message: self.vars.mask(&format!(
                         "the shim process died while running this step; stderr:\n{stderr_tail}"
                     )),
@@ -1132,6 +1137,7 @@ impl EntryReport {
             status:      self.status,
             duration_ms: 0,
             error:       Some(StepError {
+                code: "setup-failed".to_owned(),
                 message,
                 ..StepError::default()
             }),
@@ -1208,6 +1214,7 @@ fn file_status(entries: &[EntryReport]) -> Status {
 pub async fn run_flow(run: &FlowRun<'_>, client: &mut ShimClient) -> FlowOutcome {
     let started = Instant::now();
     let mut report = FileReport {
+        runtime:       None,
         path:          run.file.path.to_string_lossy().into_owned(),
         status:        Status::Passed,
         duration_ms:   0,
@@ -1272,17 +1279,33 @@ pub async fn run_flow(run: &FlowRun<'_>, client: &mut ShimClient) -> FlowOutcome
     // `internal` error is a runtime error; other errors are setup
     // failures (SPEC 14).
     let params = start_flow_params(run, &options);
-    if let Err(error) = client.start_flow(&params).await {
-        let (status, message) = match &error {
-            ShimError::Shim(object) if !is_runtime_kind(&object.kind) => {
-                (Status::Failed, vars.mask(&object.message))
-            }
-            _ => (Status::Error, vars.mask(&error.to_string())),
-        };
-        report.entries.push(setup_entry(status, message));
-        report.status = status;
-        return finish(report, &vars, Vec::new());
-    }
+    let runtime_result = match client.start_flow(&params).await {
+        Ok(result) => result,
+        Err(error) => {
+            let (status, message) = match &error {
+                ShimError::Shim(object) if !is_runtime_kind(&object.kind) => {
+                    (Status::Failed, vars.mask(&object.message))
+                }
+                _ => (Status::Error, vars.mask(&error.to_string())),
+            };
+            report.entries.push(setup_entry(status, message));
+            report.status = status;
+            return finish(report, &vars, Vec::new());
+        }
+    };
+    let version = |key: &str| {
+        runtime_result
+            .get(key)
+            .and_then(Json::as_str)
+            .map(str::to_owned)
+    };
+    report.runtime = Some(RuntimeMetadata {
+        browser:            params.browser.clone(),
+        viewport:           params.viewport,
+        browser_version:    version("browserVersion"),
+        node_version:       version("nodeVersion"),
+        playwright_version: version("playwrightVersion"),
+    });
 
     let mut exec = FlowExec {
         run,

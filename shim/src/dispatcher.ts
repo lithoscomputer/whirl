@@ -166,8 +166,10 @@ export class Dispatcher {
 				return;
 			}
 			if (cmd === "startFlow") {
-				await this.#driver.startFlow(decodeStartFlowParams(params));
-				this.#respondOk(id, slot, {});
+				const result = await this.#driver.startFlow(
+					decodeStartFlowParams(params),
+				);
+				this.#respondOk(id, slot, result);
 				return;
 			}
 			if (cmd === "endFlow") {

@@ -385,6 +385,7 @@ fn synthetic_outcome(job: &FlowJob, status: Status, message: &str) -> FlowOutcom
 
     FlowOutcome {
         report:   FileReport {
+            runtime: None,
             path: job.file.path.to_string_lossy().into_owned(),
             status,
             duration_ms: 0,
@@ -404,6 +405,7 @@ fn synthetic_outcome(job: &FlowJob, status: Status, message: &str) -> FlowOutcom
                     status,
                     duration_ms: 0,
                     error: Some(StepError {
+                        code: "setup-failed".to_owned(),
                         message: message.to_owned(),
                         ..StepError::default()
                     }),

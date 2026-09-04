@@ -2,7 +2,7 @@ error: unexpected argument '--frobnicate' found
 
   tip: to pass '--frobnicate' as a value, use '-- --frobnicate'
 
-Usage: whirl [OPTIONS] <PATH>...
+Usage: whirl [OPTIONS] [PATH]...
        whirl <COMMAND>
 
 For more information, try '--help'.

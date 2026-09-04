@@ -573,3 +573,70 @@ fn show_trace_uses_the_selected_runtime_and_preserves_the_path_argument() {
         serde_json::json!(["show-trace", trace.canonicalize().expect("trace exists")])
     );
 }
+
+#[test]
+fn json_reports_include_actual_runtime_versions_and_error_codes() {
+    let dir = TestDir::new();
+    dir.file(
+        "flow.whirl",
+        "VISIT \"data:text/html,<title>Hello</title>\"\n[Asserts]\ntitle == Wrong @100ms\n",
+    );
+    let output = run_whirl(&dir, &["--report-json", "report.json", "flow.whirl"]);
+    assert_eq!(exit_code(&output), 1);
+    let report: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(dir.path.join("report.json")).expect("report exists"),
+    )
+    .expect("report is JSON");
+    assert_eq!(report["whirlVersion"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(report["platform"], env::consts::OS);
+    assert_eq!(report["files"][0]["runtime"]["browser"], "chromium");
+    assert_eq!(report["files"][0]["runtime"]["playwrightVersion"], "1.62.1");
+    assert!(
+        report["files"][0]["runtime"]["browserVersion"]
+            .as_str()
+            .is_some_and(|v| !v.is_empty())
+    );
+    assert!(
+        report["files"][0]["runtime"]["nodeVersion"]
+            .as_str()
+            .is_some_and(|v| !v.is_empty())
+    );
+    assert_eq!(report["files"][0]["runtime"]["viewport"]["width"], 1280);
+    assert_eq!(
+        report["files"][0]["entries"][0]["steps"][1]["error"]["code"],
+        "assert"
+    );
+}
+
+#[test]
+fn rerun_selects_only_failed_files_and_runs_their_setup_again_from_another_directory() {
+    let dir = TestDir::new();
+    dir.file(
+        "setup.whirl",
+        "VISIT \"data:text/html,<title>first</title>\"\n[Captures]\ntoken: title\n",
+    );
+    dir.file("dependent.whirl", "[Options]\nsetup: setup.whirl\nVISIT \"data:text/html,<title>{{setup.token}}</title>\"\n[Asserts]\ntitle == second @100ms\n");
+    dir.file("passed.whirl", "VISIT \"data:text/html,<p>Hello</p>\"\n");
+    let first = run_whirl(&dir, &[
+        "--report-json",
+        "report.json",
+        "dependent.whirl",
+        "passed.whirl",
+    ]);
+    assert_eq!(exit_code(&first), 1);
+    dir.file("passed.whirl", "BOGUS must not be selected\n");
+    dir.file(
+        "setup.whirl",
+        "VISIT \"data:text/html,<title>second</title>\"\n[Captures]\ntoken: title\n",
+    );
+    let other = TestDir::new();
+    let report_path = dir.path.join("report.json");
+    let rerun = run_whirl(&other, &[
+        "--rerun-failed",
+        report_path.to_str().expect("UTF-8 path"),
+    ]);
+    assert_eq!(exit_code(&rerun), 0, "{}", stdout_text(&rerun));
+    assert!(stdout_text(&rerun).contains("dependent.whirl passed"));
+    assert!(stdout_text(&rerun).contains("setup.whirl passed"));
+    assert!(!stdout_text(&rerun).contains("passed.whirl"));
+}

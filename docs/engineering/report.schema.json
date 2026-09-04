@@ -1,0 +1,260 @@
+{
+  "type": "object",
+  "required": [
+    "version",
+    "workingDirectory",
+    "whirlVersion",
+    "platform",
+    "architecture",
+    "durationMs",
+    "files"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "workingDirectory": {
+      "type": "string"
+    },
+    "whirlVersion": {
+      "type": "string"
+    },
+    "platform": {
+      "type": "string"
+    },
+    "architecture": {
+      "type": "string"
+    },
+    "durationMs": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "path",
+          "status",
+          "durationMs",
+          "artifactsDir",
+          "blockedHosts",
+          "warnings",
+          "artifacts",
+          "entries"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "passed",
+              "failed",
+              "error",
+              "skipped"
+            ]
+          },
+          "durationMs": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "artifactsDir": {
+            "type": "string"
+          },
+          "blockedHosts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "artifacts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "line",
+                "status",
+                "durationMs",
+                "steps",
+                "captures",
+                "artifacts"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "line": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "status": {
+                  "enum": [
+                    "passed",
+                    "failed",
+                    "error",
+                    "skipped"
+                  ]
+                },
+                "durationMs": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "steps": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "line",
+                      "kind",
+                      "text",
+                      "status",
+                      "durationMs"
+                    ],
+                    "properties": {
+                      "line": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "kind": {
+                        "enum": [
+                          "action",
+                          "page",
+                          "assert",
+                          "capture"
+                        ]
+                      },
+                      "text": {
+                        "type": "string"
+                      },
+                      "status": {
+                        "enum": [
+                          "passed",
+                          "failed",
+                          "error",
+                          "skipped"
+                        ]
+                      },
+                      "durationMs": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "error": {
+                        "type": "object",
+                        "required": [
+                          "code",
+                          "message"
+                        ],
+                        "properties": {
+                          "code": {
+                            "type": "string"
+                          },
+                          "message": {
+                            "type": "string"
+                          },
+                          "expected": {
+                            "type": "string"
+                          },
+                          "actual": {
+                            "type": "string"
+                          },
+                          "candidates": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                },
+                "captures": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                },
+                "artifacts": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "runtime": {
+            "type": "object",
+            "required": [
+              "browser",
+              "viewport",
+              "browserVersion",
+              "nodeVersion",
+              "playwrightVersion"
+            ],
+            "properties": {
+              "browser": {
+                "enum": [
+                  "chromium",
+                  "firefox",
+                  "webkit"
+                ]
+              },
+              "viewport": {
+                "type": "object",
+                "required": [
+                  "width",
+                  "height"
+                ],
+                "properties": {
+                  "width": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "height": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                }
+              },
+              "browserVersion": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "nodeVersion": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "playwrightVersion": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Whirl run report v1"
+}

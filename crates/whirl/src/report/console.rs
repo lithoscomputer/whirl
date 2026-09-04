@@ -119,6 +119,7 @@ mod tests {
             duration_ms: 2_000,
             files:       vec![
                 FileReport {
+                    runtime:       None,
                     path:          "flows/pass.whirl".to_owned(),
                     status:        Status::Passed,
                     duration_ms:   1_234,
@@ -129,6 +130,7 @@ mod tests {
                     entries:       Vec::new(),
                 },
                 FileReport {
+                    runtime:       None,
                     path:          "flows/fail.whirl".to_owned(),
                     status:        Status::Failed,
                     duration_ms:   700,

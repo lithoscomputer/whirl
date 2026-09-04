@@ -47,6 +47,7 @@ pub(crate) fn sample_report() -> RunReport {
 
 fn passed_file() -> FileReport {
     FileReport {
+        runtime:       None,
         path:          "flows/pass.whirl".to_owned(),
         status:        Status::Passed,
         duration_ms:   1_200,
@@ -71,6 +72,7 @@ fn passed_file() -> FileReport {
 
 fn failed_file(fill_text: &str, actual_value: &str) -> FileReport {
     FileReport {
+        runtime:       None,
         path:          "flows/fail.whirl".to_owned(),
         status:        Status::Failed,
         duration_ms:   800,
@@ -92,6 +94,7 @@ fn failed_file(fill_text: &str, actual_value: &str) -> FileReport {
                         "label:Password value == expected",
                         Status::Failed,
                         Some(StepError {
+                            code:       "assert".to_owned(),
                             message:    "assert: value mismatch".to_owned(),
                             expected:   Some("expected".to_owned()),
                             actual:     Some(actual_value.to_owned()),
@@ -123,6 +126,7 @@ fn failed_file(fill_text: &str, actual_value: &str) -> FileReport {
 
 fn setup_failed_file() -> FileReport {
     FileReport {
+        runtime:       None,
         path:          "flows/setup.whirl".to_owned(),
         status:        Status::Failed,
         duration_ms:   10,
@@ -144,6 +148,7 @@ fn setup_failed_file() -> FileReport {
 
 fn error_file() -> FileReport {
     FileReport {
+        runtime:       None,
         path:          "flows/crash.whirl".to_owned(),
         status:        Status::Error,
         duration_ms:   50,
@@ -162,6 +167,7 @@ fn error_file() -> FileReport {
                 "browser launch",
                 Status::Error,
                 Some(StepError {
+                    code:       "shim-crash".to_owned(),
                     message:    "the shim process died".to_owned(),
                     expected:   None,
                     actual:     None,

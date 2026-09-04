@@ -2,6 +2,9 @@
 //! from the shared [`RunReport`] model in the plan doc's stable shape
 //! (version 1). Every string in the model is already secret-masked.
 
+use std::env;
+use std::path::PathBuf;
+
 use serde::Serialize;
 
 use crate::report::model::{FileReport, RunReport};
@@ -13,17 +16,25 @@ const VERSION: u32 = 1;
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct JsonReport<'a> {
-    version:     u32,
-    duration_ms: u64,
-    files:       &'a [FileReport],
+    version:           u32,
+    working_directory: PathBuf,
+    whirl_version:     &'static str,
+    platform:          &'static str,
+    architecture:      &'static str,
+    duration_ms:       u64,
+    files:             &'a [FileReport],
 }
 
 /// Renders the report as pretty-printed JSON with a trailing newline.
 pub fn render(report: &RunReport) -> String {
     let document = JsonReport {
-        version:     VERSION,
-        duration_ms: report.duration_ms,
-        files:       &report.files,
+        version:           VERSION,
+        working_directory: env::current_dir().unwrap_or_default(),
+        whirl_version:     env!("CARGO_PKG_VERSION"),
+        platform:          env::consts::OS,
+        architecture:      env::consts::ARCH,
+        duration_ms:       report.duration_ms,
+        files:             &report.files,
     };
     let mut text = serde_json::to_string_pretty(&document)
         .expect("the report model should always serialize to JSON");
@@ -97,6 +108,7 @@ mod tests {
         assert_eq!(
             step["error"],
             json!({
+                "code": "assert",
                 "message": "assert: value mismatch",
                 "expected": "expected",
                 "actual": "***",

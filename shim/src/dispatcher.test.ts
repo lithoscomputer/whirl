@@ -34,8 +34,9 @@ class FakeDriver implements ShimDriver {
 	stepGate: Deferred | null = null;
 	cancelled = 0;
 
-	async startFlow(_params: StartFlowParams): Promise<void> {
+	async startFlow(_params: StartFlowParams): Promise<Params> {
 		this.log.push("startFlow");
+		return {};
 	}
 
 	async endFlow(_params: EndFlowParams): Promise<EndFlowResult> {

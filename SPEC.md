@@ -306,7 +306,7 @@ Whirl masks every value sourced from `env.*` in the textual output it generates:
 
 ```
 whirl [OPTIONS] <PATH>...        Run files; directories recurse to *.whirl
-whirl check <PATH>...            Parse and lint only; nothing runs
+whirl check [--json] <PATH>...            Parse and lint only; nothing runs
 whirl install                    Provision the shim bundle and browsers
 whirl show-trace <PATH>          Open a trace with the private runtime
 whirl fmt [--check] <PATH>...    Rewrite files to canonical form
@@ -316,6 +316,7 @@ whirl fmt [--check] <PATH>...    Rewrite files to canonical form
 
 | Flag | Meaning |
 | --- | --- |
+| `--rerun-failed REPORT` | Run only failed or errored files from a JSON report; replaces PATH arguments |
 | `--base URL` | Override the `base` option |
 | `--browser NAME` | Override the `browser` option |
 | `--step-timeout DURATION` | Override the `step-timeout` option |
@@ -346,6 +347,8 @@ Exit codes:
 | 3 | Runtime error (browser or shim failure) |
 | 4 | Usage error |
 
+`--rerun-failed` reads a version 1 report with an absolute `workingDirectory`. Relative file paths resolve against that directory, even when the report is moved. Each selected file runs from the beginning, including its setup. Existing CLI overrides and secrets must be supplied again; a report is not executable configuration. An unsupported or malformed report is a usage error. A report with no failed or errored files exits 0 with a message and launches no browser.
+
 If the input paths select no `.whirl` files, run, `check`, and `fmt` report a usage error (exit 4).
 
 Whirl parses and lints every input file before it launches any browser: a parse or lint error anywhere stops the invocation with exit 2 and nothing runs. When one invocation hits several categories, the highest applicable code wins — a usage error (4) is detected before parsing and preempts everything, and within a run a runtime error (3) outranks failed entries (1), which outrank 0.
@@ -355,6 +358,7 @@ Whirl parses and lints every input file before it launches any browser: a parse 
 - Action failures retain Playwright's actionability log, including the locator being awaited and any element blocking interaction. Output masking applies to the log. Each trace artifact includes a shell-quoted `whirl show-trace -- <PATH>` command. The viewer uses Whirl's private runtime; a missing trace is a usage error, and a viewer launch failure is a runtime error.
 - Default console output: one line per file with pass/fail and duration, then a failure detail block per failed entry: file, line, the failing step, expected versus actual, and the artifact paths.
 - The JUnit report maps one file to one test suite and one entry to one test case. An entry is named by the comment line directly above it — the nearest comment line with no other content line between it and the entry's first action (`# Log in.`) — falling back to its first action line and line number. A failure before the first entry — option resolution, storage loading, or browser launch — reports as a synthetic test case named `[setup]` in that file's suite: an `<error>` for runtime errors, a `<failure>` otherwise. The JSON report carries the same synthetic entry, and masking applies to it like any other output.
+- The version 1 JSON report includes `workingDirectory`, `whirlVersion`, `platform`, and `architecture`. Files whose browser context starts include `runtime`: browser engine, viewport, and actual browser, Node, and Playwright versions. Unavailable version fields are null. Each step error has a stable `code`, separate from its human-readable message. Additive fields do not change the report version; readers must ignore unknown fields. See [machine-readable output](docs/engineering/machine-output.md) for schemas and codes.
 - The JSON report is the machine-readable superset: per-step timing, captures (with values sourced from `env.*` masked), and artifact paths.
 - Artifacts: each flow writes to `<artifacts>/<flow path without the .whirl extension>/`. The mirrored path is the flow file's canonical path (made absolute, symlinks resolved) relative to the current working directory, so parallel flows never collide, and overlapping inputs or symlinked duplicates of one file resolve to one flow, run once, and write to one directory. A flow outside the working directory writes to `<file stem>-<hash>/` instead, where `<hash>` is the first 16 hex digits of the SHA-256 of the canonical path, so absolute paths and `..` segments never escape the artifacts directory. Because all inputs are known before the run starts, Whirl verifies that no two flows map to the same directory; a collision is a runtime error. Names inside are fixed: screenshots by their given name, `snapshot-<name>-actual.png` and `snapshot-<name>-diff.png`, `failure.png`, `trace.zip`, `video.webm`, and `network.har`. Duplicate `SCREENSHOT` names or duplicate `SNAPSHOT` names within one flow are a lint error; the two keywords have separate name spaces, because their artifact files never collide.
 
@@ -369,6 +373,7 @@ Rust source, configuration, and project setup follow the [Brynary Rust Style Gui
 
 ## 16. Errors
 
+- **JSON diagnostics.** `whirl check --json` writes one version 1 JSON document to stdout, containing `exitCode` and `diagnostics`, with no diagnostic text on stderr. Each diagnostic includes a stable code, severity, path, line, column, length, message, and expected alternatives. Positions are 1-based Unicode character positions; locations unavailable for input or I/O errors are null. CLI argument syntax errors still use the ordinary usage message.
 - **Parse errors** (exit 2) are reported with file, line, column, a caret under the offending token, and the expected alternatives. `whirl check` surfaces them without launching a browser. Lint warnings do not change the exit code. Whirl warns about a capture that is never used, and about a `count >= 1` assert directly followed by a check on the same locator, only when the following check requires at least one element. A `hidden` check or a count comparison that accepts zero does not make the presence check redundant.
 - **Test failures** (exit 1) report the failing step the same way, plus expected versus actual and the artifacts.
 - **Runtime errors** (exit 3) cover shim crashes, missing browsers, and similar environmental failures.

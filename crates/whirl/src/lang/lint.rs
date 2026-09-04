@@ -24,6 +24,7 @@ pub enum Severity {
 /// One lint diagnostic, located like a parse error (SPEC 16).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Lint {
+    pub code:     &'static str,
     pub severity: Severity,
     pub path:     PathBuf,
     /// 1-based line of the offending token.
@@ -74,7 +75,13 @@ pub fn lint_setup_refs(file: &File, setup: &File) -> Vec<Lint> {
             setup.path.display(),
             nested.line
         );
-        lints.push(lint_at(file, Severity::Error, line.span, message));
+        lints.push(lint_at(
+            file,
+            Severity::Error,
+            "nested-setup",
+            line.span,
+            message,
+        ));
     }
     let captured: HashSet<&str> = setup
         .entries
@@ -89,7 +96,13 @@ pub fn lint_setup_refs(file: &File, setup: &File) -> Vec<Lint> {
                 setup.path.display(),
                 var_ref.name
             );
-            lints.push(lint_at(file, Severity::Error, var_ref.span, message));
+            lints.push(lint_at(
+                file,
+                Severity::Error,
+                "unknown-setup-capture",
+                var_ref.span,
+                message,
+            ));
         }
     }
     lints.sort_by_key(|lint| (lint.line, lint.column));
@@ -136,6 +149,7 @@ fn redundant_presence_counts(file: &File, lints: &mut Vec<Lint>) {
                 lints.push(lint_at(
                     file,
                     Severity::Warning,
+                    "redundant-presence",
                     pair[0].span,
                     format!(
                         "this presence check is redundant; the check on line {} already waits for the element",
@@ -205,6 +219,7 @@ fn setup_option_rules(file: &File, lints: &mut Vec<Lint>) {
                 lints.push(lint_at(
                     file,
                     Severity::Error,
+                    "interpolated-setup",
                     value.span,
                     "the setup path must be literal; it is resolved before any variable exists"
                         .to_owned(),
@@ -215,6 +230,7 @@ fn setup_option_rules(file: &File, lints: &mut Vec<Lint>) {
             lints.push(lint_at(
                 file,
                 Severity::Error,
+                "conflicting-storage",
                 storage.span,
                 "storage and setup both set the starting state; use one".to_owned(),
             ));
@@ -225,13 +241,26 @@ fn setup_option_rules(file: &File, lints: &mut Vec<Lint>) {
                 "`{{{{setup.{}}}}}` needs a setup option naming the flow that captures it",
                 var_ref.name
             );
-            lints.push(lint_at(file, Severity::Error, var_ref.span, message));
+            lints.push(lint_at(
+                file,
+                Severity::Error,
+                "missing-setup",
+                var_ref.span,
+                message,
+            ));
         }
     }
 }
 
-fn lint_at(file: &File, severity: Severity, span: Span, message: String) -> Lint {
+fn lint_at(
+    file: &File,
+    severity: Severity,
+    code: &'static str,
+    span: Span,
+    message: String,
+) -> Lint {
     Lint {
+        code,
         severity,
         path: file.path.clone(),
         line: span.line,
@@ -265,7 +294,13 @@ fn duplicate_artifact_names(file: &File, lints: &mut Vec<Lint>) {
                     "duplicate {kind} name `{}`; first used on line {first_line}",
                     name.text
                 );
-                lints.push(lint_at(file, Severity::Error, name.span, message));
+                lints.push(lint_at(
+                    file,
+                    Severity::Error,
+                    "duplicate-artifact",
+                    name.span,
+                    message,
+                ));
             }
             None => {
                 first_lines.insert((kind, name.text.as_str()), name.span.line);
@@ -319,7 +354,13 @@ fn unused_captures(file: &File, external_uses: &HashSet<String>, lints: &mut Vec
             });
         if !used {
             let message = format!("capture `{}` is never used", capture.name.text);
-            lints.push(lint_at(file, Severity::Warning, capture.name.span, message));
+            lints.push(lint_at(
+                file,
+                Severity::Warning,
+                "unused-capture",
+                capture.name.span,
+                message,
+            ));
         }
     }
 }

@@ -1,0 +1,29 @@
+{
+  "diagnostics": [
+    {
+      "code": "parse-error",
+      "column": 1,
+      "expected": [
+        "[Options]",
+        "VISIT"
+      ],
+      "length": 5,
+      "line": 1,
+      "message": "expected `[Options]` or an action; the first action must be VISIT",
+      "path": "./broken.whirl",
+      "severity": "error"
+    },
+    {
+      "code": "unused-capture",
+      "column": 1,
+      "expected": [],
+      "length": 6,
+      "line": 3,
+      "message": "capture `unused` is never used",
+      "path": "./warning.whirl",
+      "severity": "warning"
+    }
+  ],
+  "exitCode": 2,
+  "version": 1
+}

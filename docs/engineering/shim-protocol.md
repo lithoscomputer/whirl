@@ -73,7 +73,7 @@ Creates the browser context and page for one flow. Params:
 }
 ```
 
-Result: `{}`.
+Result: `{"browserVersion": "...", "nodeVersion": "...", "playwrightVersion": "..."}`. These are the active browser, Node process, and Playwright library versions. Older protocol 1 shims may omit these additive fields; reports then use null version values.
 
 - `allowHosts: null` means all hosts are allowed. When it is a list, Rust has
   already appended the `base` host; the shim routes all requests and aborts

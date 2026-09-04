@@ -1,0 +1,4 @@
+bin.name = "whirl"
+args = ["--rerun-failed", "report.json"]
+fs.sandbox = true
+status.code = 0

@@ -485,10 +485,9 @@ impl ShimClient {
 
     /// `startFlow` (protocol section 3): creates the browser context
     /// and page for one flow.
-    pub async fn start_flow(&mut self, params: &StartFlowParams) -> Result<(), ShimError> {
+    pub async fn start_flow(&mut self, params: &StartFlowParams) -> Result<Json, ShimError> {
         let params = serde_json::to_value(params).expect("startFlow params always serialize");
-        self.request::<Json>("startFlow", params).await?;
-        Ok(())
+        self.request::<Json>("startFlow", params).await
     }
 
     /// `endFlow` (protocol section 3): ends the flow and closes the

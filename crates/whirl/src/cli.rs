@@ -15,13 +15,14 @@ use std::{fs, io};
 use anyhow::Context as _;
 use clap::error::ErrorKind;
 use clap::{Args, Parser, Subcommand};
+use serde::{Deserialize, Serialize};
 use tokio::runtime::Runtime;
 
 use crate::install;
 use crate::lang::lint::{Lint, Severity, lint_file_with, lint_setup_refs, setup_capture_uses};
 use crate::lang::parse::{ParseError, parse_file};
 use crate::lang::{ast, fmt};
-use crate::report::model::RunReport;
+use crate::report::model::{RunReport, Status};
 use crate::report::{console, json, junit};
 use crate::run::{artifacts, flow, runner, vars};
 
@@ -74,6 +75,9 @@ struct Cli {
 enum Command {
     /// Parse and lint files; nothing runs.
     Check {
+        /// Write versioned JSON diagnostics to stdout.
+        #[arg(long)]
+        json:  bool,
         /// Files to check; directories recurse to *.whirl.
         #[arg(required = true, value_name = "PATH")]
         paths: Vec<PathBuf>,
@@ -98,11 +102,15 @@ enum Command {
 
 /// Flags for the default run command (SPEC 13). The runner is a later
 /// phase; the flags are accepted now so the surface is stable.
-#[derive(Debug, Args)]
+#[derive(Clone, Debug, Args)]
 struct RunArgs {
     /// Files to run; directories recurse to *.whirl.
-    #[arg(required = true, value_name = "PATH")]
+    #[arg(required_unless_present = "rerun_failed", value_name = "PATH")]
     paths: Vec<PathBuf>,
+
+    /// Rerun whole failed or errored files from a JSON report.
+    #[arg(long, value_name = "REPORT", conflicts_with = "paths")]
+    rerun_failed: Option<PathBuf>,
 
     /// Override the `base` option.
     #[arg(long, value_name = "URL")]
@@ -193,7 +201,7 @@ fn execute(argv: impl IntoIterator<Item = OsString>) -> u8 {
         Err(error) => return exit_for_clap_error(&error),
     };
     let exit = match cli.command {
-        Some(Command::Check { paths }) => check_command(&paths),
+        Some(Command::Check { paths, json }) => check_command(&paths, json),
         Some(Command::Fmt { check, paths }) => fmt_command(check, &paths),
         Some(Command::Install) => install_command(),
         Some(Command::ShowTrace { path }) => {
@@ -339,6 +347,84 @@ fn render_lint(lint: &Lint, source: &str) -> String {
     )
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Diagnostic {
+    code:     &'static str,
+    severity: &'static str,
+    path:     Option<PathBuf>,
+    line:     Option<u32>,
+    column:   Option<u32>,
+    length:   Option<u32>,
+    message:  String,
+    expected: Vec<String>,
+    #[serde(skip)]
+    rendered: String,
+}
+
+impl Diagnostic {
+    fn parse(error: &ParseError) -> Self {
+        Self {
+            code:     "parse-error",
+            severity: "error",
+            path:     Some(error.path.clone()),
+            line:     Some(error.line),
+            column:   Some(error.column),
+            length:   Some(error.len),
+            message:  error.message.clone(),
+            expected: error.expected.clone(),
+            rendered: error.render(),
+        }
+    }
+
+    fn lint(lint: &Lint, source: &str) -> Self {
+        Self {
+            code:     lint.code,
+            severity: if lint.severity == Severity::Warning {
+                "warning"
+            } else {
+                "error"
+            },
+            path:     Some(lint.path.clone()),
+            line:     Some(lint.line),
+            column:   Some(lint.column),
+            length:   Some(lint.len),
+            message:  lint.message.clone(),
+            expected: Vec::new(),
+            rendered: render_lint(lint, source),
+        }
+    }
+
+    fn environment(code: &'static str, message: String) -> Self {
+        Self {
+            code,
+            severity: "error",
+            path: None,
+            line: None,
+            column: None,
+            length: None,
+            rendered: message.clone(),
+            message,
+            expected: Vec::new(),
+        }
+    }
+}
+
+fn print_diagnostics(diagnostics: &[Diagnostic], json: bool, exit: Exit) {
+    if json {
+        print_out(
+            &serde_json::to_string_pretty(&serde_json::json!({
+                "version": 1, "exitCode": exit.code(), "diagnostics": diagnostics
+            }))
+            .expect("diagnostics serialize"),
+        );
+    } else {
+        for diagnostic in diagnostics {
+            print_err(&diagnostic.rendered);
+        }
+    }
+}
+
 /// The parsed inputs plus the `setup` flows they name that are not
 /// inputs themselves (SPEC 12).
 struct CheckedInputs {
@@ -352,10 +438,13 @@ struct CheckedInputs {
 /// found, [`Exit::Runtime`] when a setup file cannot be read, and
 /// [`Exit::Success`] otherwise (lint warnings never change the exit
 /// code, SPEC 16).
-fn check_inputs(sources: Vec<(PathBuf, String)>) -> (CheckedInputs, Exit) {
+fn check_inputs(
+    sources: Vec<(PathBuf, String)>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> (CheckedInputs, Exit) {
     let (inputs, parse_errors) = parse_inputs(sources);
     for error in &parse_errors {
-        print_err(&error.render());
+        diagnostics.push(Diagnostic::parse(error));
     }
     let mut exit = if parse_errors.is_empty() {
         Exit::Success
@@ -372,10 +461,13 @@ fn check_inputs(sources: Vec<(PathBuf, String)>) -> (CheckedInputs, Exit) {
             continue;
         };
         let Some(canonical) = path.canonicalize().ok() else {
-            print_err(&format!(
-                "whirl: error: {}: setup flow '{}' does not exist",
-                input.file.path.display(),
-                path.display()
+            diagnostics.push(Diagnostic::environment(
+                "setup-io",
+                format!(
+                    "whirl: error: {}: setup flow '{}' does not exist",
+                    input.file.path.display(),
+                    path.display()
+                ),
             ));
             exit = exit.max(Exit::Runtime);
             continue;
@@ -392,14 +484,17 @@ fn check_inputs(sources: Vec<(PathBuf, String)>) -> (CheckedInputs, Exit) {
             Ok(source) => match parse_file(&path, &source) {
                 Ok(file) => setups.push(ParsedInput { file, source }),
                 Err(error) => {
-                    print_err(&error.render());
+                    diagnostics.push(Diagnostic::parse(&error));
                     exit = exit.max(Exit::ParseLint);
                 }
             },
             Err(error) => {
-                print_err(&format!(
-                    "whirl: error: cannot read setup flow '{}': {error}",
-                    path.display()
+                diagnostics.push(Diagnostic::environment(
+                    "setup-io",
+                    format!(
+                        "whirl: error: cannot read setup flow '{}': {error}",
+                        path.display()
+                    ),
                 ));
                 exit = exit.max(Exit::Runtime);
             }
@@ -424,7 +519,7 @@ fn check_inputs(sources: Vec<(PathBuf, String)>) -> (CheckedInputs, Exit) {
             }
         }
         for lint in lint_file_with(&input.file, &external) {
-            print_err(&render_lint(&lint, &input.source));
+            diagnostics.push(Diagnostic::lint(&lint, &input.source));
             if lint.severity == Severity::Error {
                 exit = exit.max(Exit::ParseLint);
             }
@@ -436,7 +531,7 @@ fn check_inputs(sources: Vec<(PathBuf, String)>) -> (CheckedInputs, Exit) {
         };
         let input = &inputs[*dependent];
         for lint in lint_setup_refs(&input.file, &setup.file) {
-            print_err(&render_lint(&lint, &input.source));
+            diagnostics.push(Diagnostic::lint(&lint, &input.source));
             if lint.severity == Severity::Error {
                 exit = exit.max(Exit::ParseLint);
             }
@@ -446,11 +541,29 @@ fn check_inputs(sources: Vec<(PathBuf, String)>) -> (CheckedInputs, Exit) {
 }
 
 /// `whirl check`: parse and lint only; nothing runs (SPEC 13).
-fn check_command(paths: &[PathBuf]) -> Exit {
-    match prepare_sources(paths) {
-        Ok(sources) => check_inputs(sources).1,
-        Err(exit) => exit,
-    }
+fn check_command(paths: &[PathBuf], json: bool) -> Exit {
+    let mut diagnostics = Vec::new();
+    let exit = match expand_paths(paths) {
+        Err(error) => {
+            diagnostics.push(Diagnostic::environment(
+                "input-selection",
+                format!("whirl: error: {error}"),
+            ));
+            Exit::Usage
+        }
+        Ok(files) => match load_sources(&files) {
+            Err(error) => {
+                diagnostics.push(Diagnostic::environment(
+                    "input-io",
+                    format!("whirl: error: {error:#}"),
+                ));
+                Exit::Runtime
+            }
+            Ok(sources) => check_inputs(sources, &mut diagnostics).1,
+        },
+    };
+    print_diagnostics(&diagnostics, json, exit);
+    exit
 }
 
 /// Expands path arguments and reads every file, printing any error.
@@ -584,6 +697,43 @@ fn check_save_storage_inputs(
     Ok(())
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RerunReport {
+    version:           u32,
+    working_directory: PathBuf,
+    files:             Vec<RerunFile>,
+}
+
+#[derive(Deserialize)]
+struct RerunFile {
+    path:   PathBuf,
+    status: Status,
+}
+
+fn failed_paths(path: &Path) -> anyhow::Result<Vec<PathBuf>> {
+    let report: RerunReport = serde_json::from_str(
+        &fs::read_to_string(path)
+            .with_context(|| format!("reading rerun report '{}'", path.display()))?,
+    )
+    .context("invalid rerun report; use a Whirl JSON report with workingDirectory metadata")?;
+    anyhow::ensure!(
+        report.version == 1,
+        "unsupported report version {}",
+        report.version
+    );
+    anyhow::ensure!(
+        report.working_directory.is_absolute(),
+        "report workingDirectory must be absolute"
+    );
+    Ok(report
+        .files
+        .into_iter()
+        .filter(|file| matches!(file.status, Status::Failed | Status::Error))
+        .map(|file| report.working_directory.join(file.path))
+        .collect())
+}
+
 /// The default run command (SPEC 13): parse and lint everything, then
 /// run the files through the worker pool and print the console report.
 fn run_command(args: &RunArgs) -> Exit {
@@ -598,6 +748,21 @@ fn run_command(args: &RunArgs) -> Exit {
             return Exit::Usage;
         }
     };
+    let mut selected = args.clone();
+    if let Some(path) = &args.rerun_failed {
+        match failed_paths(path) {
+            Ok(paths) if paths.is_empty() => {
+                print_out("No failed files to rerun.");
+                return Exit::Success;
+            }
+            Ok(paths) => selected.paths = paths,
+            Err(error) => {
+                print_err(&format!("whirl: error: {error:#}"));
+                return Exit::Usage;
+            }
+        }
+    }
+    let args = &selected;
     let sources = match prepare_sources(&args.paths) {
         Ok(sources) => sources,
         Err(exit) => return exit,
@@ -606,7 +771,9 @@ fn run_command(args: &RunArgs) -> Exit {
         print_err(&format!("whirl: error: {error}"));
         return Exit::Usage;
     }
-    let (checked, exit) = check_inputs(sources);
+    let mut diagnostics = Vec::new();
+    let (checked, exit) = check_inputs(sources, &mut diagnostics);
+    print_diagnostics(&diagnostics, false, exit);
     if exit != Exit::Success {
         return exit;
     }

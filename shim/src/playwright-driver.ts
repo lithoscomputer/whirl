@@ -279,7 +279,7 @@ export class PlaywrightDriver implements ShimDriver {
 		return this.#flow;
 	}
 
-	async startFlow(params: StartFlowParams): Promise<void> {
+	async startFlow(params: StartFlowParams): Promise<Params> {
 		if (this.#flow !== null) {
 			throw new ShimError("internal", "a flow is already active");
 		}
@@ -331,6 +331,11 @@ export class PlaywrightDriver implements ShimDriver {
 			blockedHosts,
 			traceActive: params.trace,
 			video: params.video,
+		};
+		return {
+			browserVersion: browser.version(),
+			nodeVersion: process.versions.node,
+			playwrightVersion: this.playwrightVersion,
 		};
 	}
 
