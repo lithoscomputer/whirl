@@ -703,3 +703,26 @@ fn tab_names_are_validated_before_launching_the_browser() {
     assert_eq!(exit_code(&duplicate), 2, "{}", stdout_text(&duplicate));
     assert!(String::from_utf8_lossy(&duplicate.stderr).contains("already named"));
 }
+
+#[test]
+fn response_names_and_json_pointers_are_checked_without_a_browser() {
+    let dir = TestDir::new();
+    dir.file(
+        "unknown.whirl",
+        "VISIT /\n[Asserts]\nresponse:missing status == 200\n",
+    );
+    let unknown = run_check(&dir, &["unknown.whirl"]);
+    assert_eq!(exit_code(&unknown), 2);
+    assert!(String::from_utf8_lossy(&unknown.stderr).contains("unknown response"));
+    dir.file(
+        "duplicate.whirl",
+        "VISIT /\nRESPONSE order POST /api/orders\nRESPONSE order POST /api/orders\n",
+    );
+    let duplicate = run_check(&dir, &["duplicate.whirl"]);
+    assert_eq!(exit_code(&duplicate), 2);
+    assert!(String::from_utf8_lossy(&duplicate.stderr).contains("already named"));
+    dir.file("pointer.whirl", "VISIT /\nRESPONSE order POST /api/orders\n[Asserts]\nresponse:order json:/bad~2escape == value\n");
+    let pointer = run_check(&dir, &["pointer.whirl"]);
+    assert_eq!(exit_code(&pointer), 2);
+    assert!(String::from_utf8_lossy(&pointer.stderr).contains("invalid JSON Pointer"));
+}

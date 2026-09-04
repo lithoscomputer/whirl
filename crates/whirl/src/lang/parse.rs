@@ -14,8 +14,8 @@ use crate::lang::ast::{
     Action, ActionKind, Assert, AssertBody, BrowserKind, Capture, CaptureSource, Comment,
     DialogPolicy, DurationLit, DurationUnit, Entry, Extractor, File, FileOption, Ident, Locator,
     LocatorSegment, NumOp, OptionLine, OptionValue, Page, PageCheck, ReducedMotion, Regex,
-    RegexFlags, SegmentKind, Span, StateCheck, StoreScope, StrCheck, TextPrefix, Value,
-    ValueSegment, ValueSource, Viewport,
+    RegexFlags, ResponseField, SegmentKind, Span, StateCheck, StoreScope, StrCheck, TextPrefix,
+    Value, ValueSegment, ValueSource, Viewport,
 };
 
 /// A parse diagnostic (SPEC 16): file, line, column, the source line, a
@@ -819,7 +819,8 @@ fn split_timeout(tokens: &mut Vec<RawToken>) -> Option<DurationLit> {
     Some(duration)
 }
 
-const ACTION_KEYWORDS: [&str; 18] = [
+const ACTION_KEYWORDS: [&str; 19] = [
+    "RESPONSE",
     "POPUP",
     "TAB",
     "CLOSE",
@@ -944,6 +945,90 @@ fn parse_name(mut tokens: Vec<RawToken>, keyword_span: Span) -> Result<Ident, Li
     }
 }
 
+fn parse_response_action(tokens: Vec<RawToken>, span: Span) -> Result<ActionKind, LineError> {
+    let [name, method, url]: [RawToken; 3] = tokens
+        .try_into()
+        .map_err(|_| LineError::new(span, "expected RESPONSE name METHOD url"))?;
+    let name = parse_name(vec![name], span)?;
+    let method_text = method
+        .bare_single()
+        .filter(|text| !text.is_empty() && text.chars().all(|ch| ch.is_ascii_uppercase()))
+        .ok_or_else(|| {
+            LineError::new(
+                method.span,
+                "expected an uppercase HTTP method like GET or POST",
+            )
+        })?;
+    Ok(ActionKind::Response {
+        name,
+        method: method_text.to_owned(),
+        url: url.into_value()?,
+    })
+}
+
+fn response_name(token: RawToken) -> Result<Ident, LineError> {
+    let span = token.span;
+    let name = strip_prefix_token(token, "response:".len())
+        .ok_or_else(|| LineError::new(span, "expected a response name"))?;
+    parse_name(vec![name], span)
+}
+
+fn parse_response_field(cursor: &mut Cursor, span: Span) -> Result<ResponseField, LineError> {
+    let token = cursor
+        .next_token()?
+        .ok_or_else(|| LineError::new(span, "expected status, header:NAME, or json:POINTER"))?;
+    if token.bare_single() == Some("status") {
+        return Ok(ResponseField::Status);
+    }
+    let head = match token.parts.first() {
+        Some(RawPart::Bare { text, .. }) => text.as_str(),
+        _ => "",
+    };
+    let prefix = if head.starts_with("header:") {
+        "header:"
+    } else if head.starts_with("json:") {
+        "json:"
+    } else {
+        return Err(LineError::new(
+            token.span,
+            "expected status, header:NAME, or json:POINTER",
+        ));
+    };
+    let field_span = token.span;
+    let value = strip_prefix_token(token, prefix.len())
+        .ok_or_else(|| LineError::new(field_span, "expected a response field after the prefix"))?
+        .into_value()?;
+    if let Some(literal) = value.as_literal() {
+        if prefix == "header:" && !is_attr_name(&literal) {
+            return Err(LineError::new(field_span, "invalid response header name"));
+        }
+        if prefix == "json:" && !valid_json_pointer(&literal) {
+            return Err(LineError::new(
+                field_span,
+                "invalid JSON Pointer; use /field and escape ~ as ~0 and / as ~1",
+            ));
+        }
+    }
+    Ok(if prefix == "header:" {
+        ResponseField::Header(value)
+    } else {
+        ResponseField::Json(value)
+    })
+}
+
+fn valid_json_pointer(pointer: &str) -> bool {
+    if !pointer.is_empty() && !pointer.starts_with('/') {
+        return false;
+    }
+    let mut chars = pointer.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '~' && !matches!(chars.next(), Some('0' | '1')) {
+            return false;
+        }
+    }
+    true
+}
+
 /// Parses an action line after its keyword (SPEC 7, 17).
 fn parse_action_body(
     keyword: &str,
@@ -957,6 +1042,7 @@ fn parse_action_body(
     let timeout = split_timeout(&mut tokens);
     let locator_only = |tokens| build_locator(tokens, true, keyword_span);
     let kind = match keyword {
+        "RESPONSE" => parse_response_action(tokens, keyword_span)?,
         "POPUP" => ActionKind::Popup {
             name: parse_name(tokens, keyword_span)?,
         },
@@ -1266,6 +1352,20 @@ fn parse_assert_body(
 ) -> Result<(AssertBody, Option<DurationLit>), LineError> {
     let first_span = first.span;
     let body = match first.bare_single() {
+        Some(text) if text.starts_with("response:") => {
+            let name = response_name(first.clone())?;
+            let field = parse_response_field(cursor, first_span)?;
+            if field == ResponseField::Status {
+                let (op, status) = parse_count_check(cursor, first_span)?;
+                AssertBody::ResponseStatus { name, op, status }
+            } else {
+                AssertBody::ResponseValue {
+                    name,
+                    field,
+                    check: parse_str_check(cursor, first_span)?,
+                }
+            }
+        }
         Some(text) if text.starts_with("tab:") => {
             let name_token = strip_prefix_token(first.clone(), 4)
                 .ok_or_else(|| LineError::new(first_span, "expected a tab name"))?;
@@ -1402,6 +1502,14 @@ fn parse_capture_body(
         })?,
     };
     let source = match first.bare_single() {
+        Some(text) if text.starts_with("response:") => {
+            let response = response_name(first.clone())?;
+            let field = parse_response_field(cursor, first.span)?;
+            CaptureSource::Response {
+                name: response,
+                field,
+            }
+        }
         Some("url") => CaptureSource::Url,
         Some("title") => CaptureSource::Title,
         Some("eval") => {

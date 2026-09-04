@@ -276,6 +276,11 @@ pub struct Action {
 /// The verb and operands of an action (SPEC 7, 17).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ActionKind {
+    Response {
+        name:   Ident,
+        method: String,
+        url:    Value,
+    },
     Popup {
         name: Ident,
     },
@@ -376,7 +381,8 @@ impl ActionKind {
             Self::Click { .. } | Self::Dblclick { .. } | Self::Hover { .. } => {
                 Some(DefaultEngine::Text)
             }
-            Self::Popup { .. }
+            Self::Response { .. }
+            | Self::Popup { .. }
             | Self::Tab { .. }
             | Self::Close { .. }
             | Self::Visit { .. }
@@ -418,6 +424,16 @@ pub struct Assert {
 /// checks only, so the shape is encoded per subject (SPEC 9.3, 17).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AssertBody {
+    ResponseStatus {
+        name:   Ident,
+        op:     NumOp,
+        status: u64,
+    },
+    ResponseValue {
+        name:  Ident,
+        field: ResponseField,
+        check: StrCheck,
+    },
     TabClosed {
         name: Ident,
     },
@@ -496,6 +512,10 @@ pub struct Capture {
 /// Where a capture's value comes from (SPEC 10).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CaptureSource {
+    Response {
+        name:  Ident,
+        field: ResponseField,
+    },
     Element {
         locator:   Locator,
         extractor: Extractor,
@@ -503,6 +523,14 @@ pub enum CaptureSource {
     Url,
     Title,
     Eval(Value),
+}
+
+/// A field from one named HTTP response.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ResponseField {
+    Status,
+    Header(Value),
+    Json(Value),
 }
 
 /// Element extractors for captures (SPEC 10).

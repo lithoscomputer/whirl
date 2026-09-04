@@ -204,6 +204,11 @@ pub struct EndFlowResult {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "cmd", content = "params", rename_all = "camelCase")]
 pub enum StepCommand {
+    Response {
+        name:   String,
+        method: String,
+        url:    String,
+    },
     Popup {
         name: String,
     },

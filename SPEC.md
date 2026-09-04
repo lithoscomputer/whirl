@@ -175,6 +175,7 @@ An action is a verb, an optional locator, and an optional value. Element-targeti
 | Syntax | Meaning |
 | --- | --- |
 | `VISIT url` | Navigate, and continue once the new document has parsed. A `url` starting with `/` resolves against `base`. |
+| `RESPONSE name METHOD url` | Name the first matching HTTP request started in this entry and wait for its response headers. |
 | `POPUP name` | Name an unnamed popup opened by the selected tab in this entry; selection stays unchanged. |
 | `TAB name` | Select an open named tab for subsequent commands. The original tab is `main`. |
 | `CLOSE name` | Close a named tab; selection stays unchanged. Already closed tabs succeed. |
@@ -248,6 +249,51 @@ TAB main
 text:"Payment complete" visible
 ```
 
+### 7.2 Observing network responses
+
+`RESPONSE order POST /api/orders` names the response to the first request whose
+method and URL match. The request must start during the current entry and belong
+to the selected tab or one of its frames. Relative URLs resolve against `base`
+the same way as `VISIT`. HTTP and HTTPS URLs are matched exactly after URL
+normalization, including their query; fragments are ignored. Methods are literal
+uppercase names, such as `GET`, `POST`, or `PATCH`.
+
+Whirl observes requests at browser-context level before actions execute. A fast
+response, including a popup's initial navigation, remains available after the
+triggering action returns. Earlier entries' requests and other tabs' requests
+cannot satisfy the command. Put the action and its `RESPONSE` in the same entry.
+
+Selection uses method and URL only. It never skips a failed request or an error
+status to choose a later retry. A transport failure fails the command. An HTTP
+error status is a response that can be asserted. Each redirect hop is a separate
+request; select the final URL to check the final response.
+
+Names match `[A-Za-z_][A-Za-z0-9_-]*` and last for the flow. Duplicate names and
+references before declaration are lint errors. Named responses can be asserted
+or captured in later entries, including after their tab closes. Selecting the
+same method and URL under another name in one entry selects the same first
+request. Names and observed requests are not transferred by `setup`.
+
+The command waits for response headers, not a completed body. Its timeout covers
+both finding the request and receiving those headers. JSON operations wait for
+the body within their own step timeout. Network observation does not change
+service-worker settings; worker-originated requests without a page frame are
+outside the selected-tab scope. Observation retains at most 10,000 requests per
+entry; exceeding this limit fails `RESPONSE` explicitly. JSON bodies are limited
+to 1 MiB, with declared content length checked before reading when available.
+
+```whirl
+CLICK role:button "Place order"
+RESPONSE order POST /api/orders
+[Asserts]
+response:order status == 201
+response:order header:content-type contains application/json
+response:order json:/status == paid
+text:"Order confirmed" visible
+[Captures]
+order_id: response:order json:/id
+```
+
 ## 8. PAGE
 
 ```
@@ -265,7 +311,7 @@ PAGE matches /regex/
 
 ## 9. Asserts
 
-An `[Asserts]` section holds one check per line. Checks run in order. Every check retries until it passes or the step timeout expires; the first check that times out fails the entry.
+An `[Asserts]` section holds one check per line. Checks run in order. Page and element checks retry until they pass or the step timeout expires. Response checks wait for immutable data and fail on a mismatch. The first failing check fails the entry.
 
 ```
 assert  := subject check
@@ -303,19 +349,37 @@ subject := locator | "url" | "title"
 - String operators (`op`): `==`, `!=`, `contains`, `matches /re/`.
 - Count operators (`numop`): `==`, `!=`, `<`, `<=`, `>`, `>=`.
 
+### 9.5 Response checks
+
+`response:name status numop number` compares the HTTP status using the same
+numeric operators as `count`. `response:name header:NAME str-check` checks a
+case-insensitive header name. `response:name json:POINTER str-check` checks a
+JSON value using JSON Pointer: `/items/0/id` selects an array item's field, `~1`
+escapes `/`, `~0` escapes `~`, and `json:""` selects the whole body. Header names
+follow `attr-name`. Header names and pointers support value interpolation.
+
+Strings are compared as-is, without whitespace normalization. Other JSON values
+are serialized as compact JSON (`true`, `null`, `42`, arrays, or objects). Missing
+headers, missing pointer targets, invalid pointers, and malformed JSON fail even
+with `!=`. All checks for a name examine the same response. Once its data is
+available, a mismatch fails immediately: an immutable response is not retried.
+A successful status alone does not prove streaming output or a background job
+completed; assert the user's result separately.
+
 ## 10. Captures
 
 A `[Captures]` section extracts values into variables for later entries.
 
 ```
 capture   := name ":" source ["regex" /re/]
-source    := locator extractor | "url" | "title" | "eval" value
+source    := locator extractor | "url" | "title" | "eval" value | "response:" name response-field
 extractor := "text" | "value" | "count" | "attr:" NAME
 ```
 
 - `name` matches `[A-Za-z_][A-Za-z0-9_]*`.
 - The optional `regex` filter applies the pattern to the extracted string and stores capture group 1 (the whole match if there is no group). No match fails the entry.
 - Extraction waits like an assert: `text`, `value`, and `attr:` wait for the locator to resolve to exactly one element, up to the step timeout. Once the element resolves, an absent attribute fails the entry — it does not wait further and does not become an empty value. `count` never waits: it records the current number of matches immediately, and zero is a valid result; assert a `count` first when the flow must wait for elements to appear.
+- A `response:name` source extracts `status`, `header:NAME`, or `json:POINTER` using the response-check rules above. The existing `regex` filter and interpolation work on the extracted string.
 - An `eval` source runs a script under the rules of section 7 and stores the result. Whirl owns the result contract, independent of Playwright's transport: a string is stored as-is; `null`, booleans, finite numbers, arrays, and plain objects that recursively contain only those values are stored as compact JSON; anything else — `undefined`, non-finite numbers, `BigInt`, functions, symbols, cyclic structures, and browser objects — fails the entry.
 - A capture that reuses a name overwrites it.
 
@@ -444,6 +508,7 @@ entry      = action , { action } , [ page ] , [ asserts ] , [ captures ] ;
 
 action     = action-body , [ step-timeout ] ;
 action-body = "VISIT" , value
+           | "RESPONSE" , artifact-name , http-method , value
            | ( "POPUP" | "TAB" | "CLOSE" ) , artifact-name
            | "CLICK" , locator
            | "DBLCLICK" , locator
@@ -464,7 +529,9 @@ page       = "PAGE" , ( value | "matches" , regex ) , [ step-timeout ] ;
 
 asserts    = "[Asserts]" , { assert } ;
 assert     = assert-body , [ step-timeout ] ;
-assert-body = "tab:" , artifact-name , "closed"
+assert-body = "response:" , artifact-name , "status" , numop , number
+           | "response:" , artifact-name , ( "header:" , value | "json:" , value ) , str-check
+           | "tab:" , artifact-name , "closed"
             | locator , state-check
            | locator , value-check
            | locator , "count" , numop , number
@@ -478,7 +545,10 @@ numop      = "==" | "!=" | "<" | "<=" | ">" | ">=" ;
 
 captures   = "[Captures]" , { capture } ;
 capture    = name , ":" , source , [ "regex" , regex ] , [ step-timeout ] ;
-source     = locator , extractor | "url" | "title" | "eval" , value ;
+source     = locator , extractor | "url" | "title" | "eval" , value
+           | "response:" , artifact-name , response-field ;
+response-field = "status" | "header:" , value | "json:" , value ;
+http-method = uppercase-letter , { uppercase-letter } ;
 extractor  = "text" | "value" | "count" | "attr:" , attr-name ;
 
 locator    = segment , { ">>" , segment } ;
@@ -509,6 +579,6 @@ Permanent non-goals — these keep the format Hurl-grade:
 
 Deferred beyond V1 (candidate V2 features, not promised):
 
-- Network stubbing and request assertions.
+- Network stubbing and request-body or request-count assertions.
 - Per-entry `[Options]` overrides and mobile device emulation.
 - An LLM-as-judge assertion (a `JUDGE` keyword with an explicit model option and advisory rather than hard-failing verdicts).

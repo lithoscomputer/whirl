@@ -11,7 +11,7 @@ use serde_json::{Value as Json, json};
 
 use crate::lang::ast::{
     AssertBody, CaptureSource, DefaultEngine, Extractor, Locator, NumOp, PageCheck, Regex,
-    SegmentKind, StateCheck, StrCheck, TextPrefix, Value, ValueSource,
+    ResponseField, SegmentKind, StateCheck, StrCheck, TextPrefix, Value, ValueSource,
 };
 
 /// Resolves a value to its final string; `E` is the runner's error.
@@ -191,9 +191,23 @@ fn locator_subject<E>(locator: &Locator, resolve: &mut Resolve<'_, E>) -> Result
     Ok(json!({"type": "locator", "locator": locator}))
 }
 
+fn response_field_wire<E>(field: &ResponseField, resolve: &mut Resolve<'_, E>) -> Result<Json, E> {
+    Ok(match field {
+        ResponseField::Status => json!({"type": "status"}),
+        ResponseField::Header(value) => json!({"type": "header", "name": resolve(value)?}),
+        ResponseField::Json(value) => json!({"type": "json", "pointer": resolve(value)?}),
+    })
+}
+
 /// Converts an assert to the wire spec of protocol section 4.3.
 pub fn assert_wire<E>(body: &AssertBody, resolve: &mut Resolve<'_, E>) -> Result<Json, E> {
     let json = match body {
+        AssertBody::ResponseStatus { name, op, status } => {
+            json!({"subject": {"type": "response", "name": name.text}, "check": {"type": "status", "op": num_op_text(*op), "value": status}})
+        }
+        AssertBody::ResponseValue { name, field, check } => {
+            json!({"subject": {"type": "response", "name": name.text}, "check": {"type": "value", "field": response_field_wire(field, resolve)?, "op": str_check_wire(check, resolve)?}})
+        }
         AssertBody::TabClosed { name } => {
             json!({"subject": {"type": "tab", "name": name.text}, "check": {"type": "closed"}})
         }
@@ -236,6 +250,9 @@ pub fn capture_source_wire<E>(
     resolve: &mut Resolve<'_, E>,
 ) -> Result<Json, E> {
     let json = match source {
+        CaptureSource::Response { name, field } => {
+            json!({"type": "response", "name": name.text, "field": response_field_wire(field, resolve)?})
+        }
         CaptureSource::Element { locator, extractor } => {
             let extract = match extractor {
                 Extractor::Text => json!({"type": "text"}),

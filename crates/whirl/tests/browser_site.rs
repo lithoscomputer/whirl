@@ -119,6 +119,31 @@ fn respond(request: tiny_http::Request) {
         let _ = request.respond(Response::empty(302).with_header(location));
         return;
     }
+    if path == "api/orders" {
+        if request.method().as_str() != "POST" {
+            let _ = request.respond(Response::empty(405));
+            return;
+        }
+        let status = request
+            .headers()
+            .iter()
+            .find(|header| header.field.equiv("X-Test-Status"))
+            .and_then(|header| header.value.as_str().parse::<u16>().ok())
+            .unwrap_or(201);
+        let content_type =
+            Header::from_bytes("Content-Type", "application/json").expect("valid header");
+        let body = r#"{"id":"order-42","status":"paid","active":true,"items":[{"id":"item-1"}],"a/b":{"~key":"escaped"},"none":null}"#;
+        let _ = request.respond(
+            Response::from_string(body)
+                .with_status_code(status)
+                .with_header(content_type),
+        );
+        return;
+    }
+    if path == "api/malformed" {
+        let _ = request.respond(Response::from_string("not-json"));
+        return;
+    }
     let file = site_root().join(path);
     let Ok(bytes) = fs::read(&file) else {
         let _ = request.respond(Response::empty(404));
@@ -1184,6 +1209,290 @@ POPUP payment @1s
     assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
     assert!(
         stdout_text(&output).contains("multiple unnamed popups"),
+        "{}",
+        stdout_text(&output)
+    );
+}
+
+#[test]
+fn response_assertions_and_captures_observe_the_request_before_click_returns() {
+    let site = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file(
+        "response.whirl",
+        &format!(
+            r#"[Options]
+base: {}
+VISIT /network.html
+EVAL "await fetch('/api/orders')"
+CLICK role:button "Place order"
+EVAL "await window.orderRequest"
+RESPONSE order POST /api/orders
+[Asserts]
+response:order status == 201
+response:order status >= 200
+response:order status < 300
+response:order header:Content-Type contains application/json
+response:order json:/status == paid
+response:order json:/active == true
+response:order json:/none == null
+response:order json:/a~1b/~0key == escaped
+response:order json:/items/0/id matches /^item-/
+text:"Order confirmed" visible
+[Captures]
+order_id: response:order json:/id
+item_number: response:order json:/items/0/id regex /item-(\d+)/
+VISIT /network.html?id={{{{order_id}}}}&item={{{{item_number}}}}
+PAGE /network.html?id=order-42&item=1
+[Asserts]
+response:order json:/status == paid
+"#,
+            site.base()
+        ),
+    );
+    let output = run_whirl(&dir, &["--report-json", "report.json", "response.whirl"]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    let report = fs::read_to_string(dir.path.join("report.json")).expect("report exists");
+    assert!(report.contains("order-42"));
+}
+
+#[test]
+fn response_selection_does_not_replace_a_failed_request_with_a_successful_retry() {
+    let site = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file(
+        "retry.whirl",
+        &format!(
+            r#"[Options]
+base: {}
+VISIT /network.html
+CLICK role:button "Retry order"
+EVAL "await window.orderRequest"
+RESPONSE order POST /api/orders
+[Asserts]
+response:order status == 201
+"#,
+            site.base()
+        ),
+    );
+    let output = run_whirl(&dir, &["retry.whirl"]);
+    assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
+    assert!(
+        stdout_text(&output).contains("500"),
+        "{}",
+        stdout_text(&output)
+    );
+}
+
+#[test]
+fn response_selection_excludes_requests_from_previous_entries() {
+    let site = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file(
+        "stale-response.whirl",
+        &format!(
+            r#"[Options]
+base: {}
+VISIT /network.html
+CLICK role:button "Place order"
+[Asserts]
+text:"Order confirmed" visible
+RESPONSE stale POST /api/orders @300ms
+"#,
+            site.base()
+        ),
+    );
+    let output = run_whirl(&dir, &["stale-response.whirl"]);
+    assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
+    assert!(
+        stdout_text(&output).contains("no matching request"),
+        "{}",
+        stdout_text(&output)
+    );
+}
+
+#[test]
+fn responses_from_cross_origin_frames_and_popup_navigation_are_observed() {
+    let site = SiteServer::start();
+    let dir = TestDir::new();
+    let cross = site.base().replace("127.0.0.1", "localhost");
+    dir.file(
+        "contexts.whirl",
+        &format!(
+            r##"[Options]
+base: {}
+VISIT /network.html
+CLICK frame:"#checkout" >> role:button "Place order"
+RESPONSE embedded POST {cross}/api/orders
+[Asserts]
+response:embedded status == 201
+CLICK role:button "Open checkout"
+POPUP checkout
+TAB checkout
+RESPONSE navigation GET /network.html?embedded=1
+[Asserts]
+response:navigation status == 200
+CLICK role:button "Place order"
+RESPONSE order POST /api/orders
+[Asserts]
+response:order json:/id == order-42
+CLOSE checkout
+[Asserts]
+tab:checkout closed
+response:order json:/status == paid
+TAB main
+"##,
+            site.base()
+        ),
+    );
+    let engines: &[&str] = if env::var_os("WHIRL_TEST_ALL_BROWSERS").is_some() {
+        &["chromium", "firefox", "webkit"]
+    } else {
+        &["chromium"]
+    };
+    for engine in engines {
+        let output = run_whirl(&dir, &["--browser", engine, "contexts.whirl"]);
+        assert_eq!(exit_code(&output), 0, "{engine}: {}", stdout_text(&output));
+    }
+}
+
+#[test]
+fn response_selection_does_not_use_another_tabs_requests() {
+    let site = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file(
+        "wrong-tab.whirl",
+        &format!(
+            r#"[Options]
+base: {}
+VISIT /network.html
+CLICK role:button "Place order"
+EVAL "await window.orderRequest"
+CLICK role:button "Open checkout"
+POPUP checkout
+TAB checkout
+RESPONSE wrong POST /api/orders @300ms
+"#,
+            site.base()
+        ),
+    );
+    let output = run_whirl(&dir, &["wrong-tab.whirl"]);
+    assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
+    assert!(
+        stdout_text(&output).contains("no matching request"),
+        "{}",
+        stdout_text(&output)
+    );
+}
+
+#[test]
+fn missing_json_fields_do_not_pass_inequality_assertions() {
+    let site = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file(
+        "missing.whirl",
+        &format!(
+            r#"[Options]
+base: {}
+VISIT /network.html
+CLICK role:button "Place order"
+RESPONSE order POST /api/orders
+[Asserts]
+response:order json:/missing != paid
+"#,
+            site.base()
+        ),
+    );
+    let output = run_whirl(&dir, &["missing.whirl"]);
+    assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
+    assert!(
+        stdout_text(&output).contains("does not exist"),
+        "{}",
+        stdout_text(&output)
+    );
+}
+
+#[test]
+fn absent_headers_and_malformed_json_fail_response_assertions() {
+    let site = SiteServer::start();
+    for (check, diagnostic) in [
+        (
+            "header:x-missing != present",
+            "response header x-missing is absent",
+        ),
+        ("json:/status != paid", "JSON"),
+    ] {
+        let dir = TestDir::new();
+        dir.file(
+            "invalid-response.whirl",
+            &format!(
+                r#"[Options]
+base: {}
+VISIT /network.html
+EVAL "await fetch('/api/malformed')"
+RESPONSE invalid GET /api/malformed
+[Asserts]
+response:invalid {check}
+"#,
+                site.base()
+            ),
+        );
+        let output = run_whirl(&dir, &["invalid-response.whirl"]);
+        assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
+        assert!(
+            stdout_text(&output).contains(diagnostic),
+            "{}",
+            stdout_text(&output)
+        );
+    }
+}
+
+#[test]
+fn failed_network_requests_report_failure_instead_of_waiting_for_a_retry() {
+    let site = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file(
+        "failed-request.whirl",
+        &format!(
+            r#"[Options]
+base: {}
+allow-hosts: 127.0.0.1
+VISIT /network.html
+EVAL "void fetch('https://blocked.invalid/fail').catch(() => {{}})"
+RESPONSE rejected GET https://blocked.invalid/fail @2s
+"#,
+            site.base()
+        ),
+    );
+    let output = run_whirl(&dir, &["failed-request.whirl"]);
+    assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
+    assert!(
+        stdout_text(&output).contains("request for response rejected failed"),
+        "{}",
+        stdout_text(&output)
+    );
+}
+
+#[test]
+fn waiting_for_response_headers_obeys_the_step_timeout() {
+    let site = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file(
+        "slow-response.whirl",
+        &format!(
+            r#"[Options]
+base: {}
+VISIT /network.html
+EVAL "void fetch('/stall').catch(() => {{}})"
+RESPONSE stalled GET /stall @200ms
+"#,
+            site.base()
+        ),
+    );
+    let output = run_whirl(&dir, &["slow-response.whirl"]);
+    assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
+    assert!(
+        stdout_text(&output).contains("tim"),
         "{}",
         stdout_text(&output)
     );

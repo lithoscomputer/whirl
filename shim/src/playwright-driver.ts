@@ -14,9 +14,11 @@ import type {
 } from "@playwright/test";
 import { chromium, expect, firefox, webkit } from "@playwright/test";
 import { runAssert, runPage } from "./assertions.js";
-import { runCapture } from "./captures.js";
+import { applyCaptureFilter, runCapture } from "./captures.js";
 import type { ShimDriver } from "./driver.js";
 import { buildEvalExpression } from "./eval-support.js";
+import type { ResponseCheck, ResponseField } from "./flow-network.js";
+import { FlowNetwork } from "./flow-network.js";
 import { FlowTabs } from "./flow-tabs.js";
 import { createHostAllowlist } from "./host-glob.js";
 import { buildLocator, describeLocator } from "./locators.js";
@@ -68,6 +70,7 @@ interface FlowState {
 	readonly context: BrowserContext;
 	readonly page: Page;
 	readonly tabs: FlowTabs;
+	readonly network: FlowNetwork;
 	readonly blockedHosts: Set<string>;
 	readonly traceActive: boolean;
 	readonly video: {
@@ -319,12 +322,14 @@ export class PlaywrightDriver implements ShimDriver {
 		if (params.trace) {
 			await context.tracing.start({ screenshots: true, snapshots: true });
 		}
+		const network = new FlowNetwork(context);
 		const page = await context.newPage();
 		const tabs = new FlowTabs(context, page, params.dialogs);
 		this.#flow = {
 			context,
 			page,
 			tabs,
+			network,
 			blockedHosts,
 			traceActive: params.trace,
 			video: params.video,
@@ -392,7 +397,10 @@ export class PlaywrightDriver implements ShimDriver {
 
 	async runStep(cmd: StepCommand, params: Params): Promise<Params> {
 		const flow = this.#requireFlow();
-		if (params["entryStart"] === true) flow.tabs.beginEntry();
+		if (params["entryStart"] === true) {
+			flow.tabs.beginEntry();
+			flow.network.beginEntry();
+		}
 		this.#cancelRequested = false;
 		const timeoutMs = fieldNumber(params, "timeoutMs");
 		const title = fieldString(params, "title");
@@ -434,13 +442,52 @@ export class PlaywrightDriver implements ShimDriver {
 		}
 		if (cmd === "assert") {
 			const subject = fieldObject(fieldObject(params, "spec"), "subject");
+			if (subject["type"] === "response") {
+				const check = fieldObject(
+					fieldObject(params, "spec"),
+					"check",
+				) as unknown as ResponseCheck;
+				await flow.network.assert(
+					fieldString(subject, "name"),
+					check,
+					timeoutMs,
+				);
+				return {};
+			}
 			if (subject["type"] === "tab") {
 				await flow.tabs.assertClosed(fieldString(subject, "name"), timeoutMs);
 				return {};
 			}
 		}
+		if (cmd === "capture") {
+			const source = fieldObject(params, "source");
+			if (source["type"] === "response") {
+				const field = fieldObject(source, "field") as unknown as ResponseField;
+				const value = await flow.network.read(
+					fieldString(source, "name"),
+					field,
+					timeoutMs,
+				);
+				const filter = fieldObjectOrNull(
+					params,
+					"filter",
+				) as CaptureFilter | null;
+				return {
+					value: filter === null ? value : applyCaptureFilter(value, filter),
+				};
+			}
+		}
 		const page = flow.tabs.current();
 		switch (cmd) {
+			case "response":
+				await flow.network.capture(
+					fieldString(params, "name"),
+					fieldString(params, "method"),
+					fieldString(params, "url"),
+					page,
+					timeoutMs,
+				);
+				return {};
 			case "visit":
 				// The flow's later lines wait for what they need (SPEC section 12),
 				// so VISIT only needs a parsed document, not the `load` event that
@@ -766,6 +813,7 @@ export class PlaywrightDriver implements ShimDriver {
 
 function defaultErrorKind(cmd: StepCommand): ErrorKind {
 	switch (cmd) {
+		case "response":
 		case "popup":
 		case "tab":
 		case "close":

@@ -598,6 +598,18 @@ impl FlowExec<'_> {
         }
     }
 
+    fn resolve_url(&mut self, value: &ast::Value) -> Result<String, BuildError> {
+        let resolved = self.resolve(value)?;
+        if resolved.starts_with('/') {
+            let Some(base) = self.options.base.as_deref() else {
+                return Err(BuildError::NoBase { url: resolved });
+            };
+            Ok(format!("{}{resolved}", base.trim_end_matches('/')))
+        } else {
+            Ok(resolved)
+        }
+    }
+
     /// Builds the wire command of one action line (SPEC 7).
     fn build_action(&mut self, action: &ast::Action) -> Result<StepCommand, BuildError> {
         use ast::ActionKind as K;
@@ -613,18 +625,14 @@ impl FlowExec<'_> {
             K::Close { name } => StepCommand::Close {
                 name: name.text.clone(),
             },
-            K::Visit { url } => {
-                let resolved = self.resolve(url)?;
-                let url = if resolved.starts_with('/') {
-                    let Some(base) = self.options.base.as_deref() else {
-                        return Err(BuildError::NoBase { url: resolved });
-                    };
-                    format!("{}{resolved}", base.trim_end_matches('/'))
-                } else {
-                    resolved
-                };
-                StepCommand::Visit { url }
-            }
+            K::Visit { url } => StepCommand::Visit {
+                url: self.resolve_url(url)?,
+            },
+            K::Response { name, method, url } => StepCommand::Response {
+                name:   name.text.clone(),
+                method: method.clone(),
+                url:    self.resolve_url(url)?,
+            },
             K::Click { target } => StepCommand::Click {
                 locator: self.locator(target, engine)?,
             },

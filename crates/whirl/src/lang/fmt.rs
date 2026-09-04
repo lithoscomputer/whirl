@@ -19,8 +19,8 @@ use std::fmt::Write as _;
 use crate::lang::ast::{
     Action, ActionKind, Assert, AssertBody, BrowserKind, Capture, CaptureSource, Comment,
     DialogPolicy, DurationLit, DurationUnit, Entry, Extractor, File, FileOption, Locator, NumOp,
-    OptionValue, Page, PageCheck, ReducedMotion, Regex, SegmentKind, StateCheck, StrCheck,
-    TextPrefix, Value, ValueSegment, ValueSource, Viewport,
+    OptionValue, Page, PageCheck, ReducedMotion, Regex, ResponseField, SegmentKind, StateCheck,
+    StrCheck, TextPrefix, Value, ValueSegment, ValueSource, Viewport,
 };
 use crate::lang::parse::parse_duration;
 
@@ -312,6 +312,11 @@ fn push_timeout(out: &mut String, timeout: Option<DurationLit>) {
 fn render_action(action: &Action) -> String {
     let is_final = action.timeout.is_none();
     let mut out = match &action.kind {
+        ActionKind::Response { name, method, url } => format!(
+            "RESPONSE {} {method} {}",
+            name.text,
+            render_value(url, ValueCtx::Plain, is_final)
+        ),
         ActionKind::Popup { name } => format!("POPUP {}", name.text),
         ActionKind::Tab { name } => format!("TAB {}", name.text),
         ActionKind::Close { name } => format!("CLOSE {}", name.text),
@@ -446,6 +451,17 @@ fn state_check_text(state: StateCheck) -> &'static str {
 fn render_assert(assert: &Assert) -> String {
     let is_final = assert.timeout.is_none();
     let mut out = match &assert.body {
+        AssertBody::ResponseStatus { name, op, status } => format!(
+            "response:{} status {} {status}",
+            name.text,
+            num_op_text(*op)
+        ),
+        AssertBody::ResponseValue { name, field, check } => format!(
+            "response:{} {} {}",
+            name.text,
+            render_response_field(field),
+            render_str_check(check, is_final)
+        ),
         AssertBody::TabClosed { name } => format!("tab:{} closed", name.text),
         AssertBody::ElementState { locator, state } => format!(
             "{} {}",
@@ -480,10 +496,25 @@ fn render_assert(assert: &Assert) -> String {
     out
 }
 
+fn render_response_field(field: &ResponseField) -> String {
+    match field {
+        ResponseField::Status => "status".to_owned(),
+        ResponseField::Header(value) => {
+            format!("header:{}", render_value(value, ValueCtx::Prefixed, false))
+        }
+        ResponseField::Json(value) => {
+            format!("json:{}", render_value(value, ValueCtx::Prefixed, false))
+        }
+    }
+}
+
 /// Renders a `[Captures]` line (SPEC 10).
 fn render_capture(capture: &Capture) -> String {
     let is_final = capture.filter.is_none() && capture.timeout.is_none();
     let source = match &capture.source {
+        CaptureSource::Response { name, field } => {
+            format!("response:{} {}", name.text, render_response_field(field))
+        }
         CaptureSource::Element { locator, extractor } => {
             let extractor = match extractor {
                 Extractor::Text => "text".to_owned(),
@@ -821,6 +852,10 @@ mod tests {
         action.span = ZERO;
         action.text = String::new();
         match &mut action.kind {
+            ActionKind::Response { name, url, .. } => {
+                scrub_ident(name);
+                scrub_value(url);
+            }
             ActionKind::Visit { url } => scrub_value(url),
             ActionKind::Click { target }
             | ActionKind::Dblclick { target }
@@ -862,6 +897,13 @@ mod tests {
         }
     }
 
+    fn scrub_response_field(field: &mut ResponseField) {
+        match field {
+            ResponseField::Status => {}
+            ResponseField::Header(value) | ResponseField::Json(value) => scrub_value(value),
+        }
+    }
+
     fn scrub_entry(entry: &mut Entry) {
         for action in &mut entry.actions {
             scrub_action(action);
@@ -882,7 +924,14 @@ mod tests {
             assert.span = ZERO;
             assert.text = String::new();
             match &mut assert.body {
-                AssertBody::TabClosed { name } => scrub_ident(name),
+                AssertBody::ResponseValue { name, field, check } => {
+                    scrub_ident(name);
+                    scrub_response_field(field);
+                    scrub_str_check(check);
+                }
+                AssertBody::ResponseStatus { name, .. } | AssertBody::TabClosed { name } => {
+                    scrub_ident(name);
+                }
                 AssertBody::ElementState { locator, .. }
                 | AssertBody::ElementCount { locator, .. } => scrub_locator(locator),
                 AssertBody::ElementValue { locator, check, .. } => {
@@ -898,6 +947,10 @@ mod tests {
             capture.text = String::new();
             scrub_ident(&mut capture.name);
             match &mut capture.source {
+                CaptureSource::Response { name, field } => {
+                    scrub_ident(name);
+                    scrub_response_field(field);
+                }
                 CaptureSource::Element { locator, .. } => scrub_locator(locator),
                 CaptureSource::Eval(script) => scrub_value(script),
                 CaptureSource::Url | CaptureSource::Title => {}
@@ -1025,6 +1078,26 @@ mod tests {
         assert_eq!(
             fmt("VISIT /\nCLICK \"Add   to cart\"\nFILL Email \"a\\\"b\"\n"),
             "VISIT /\nCLICK \"Add   to cart\"\nFILL Email \"a\\\"b\"\n"
+        );
+    }
+
+    #[test]
+    fn responses_round_trip_with_fields_captures_and_interpolation() {
+        assert_round_trip(
+            r#"VISIT /
+CLICK Order
+RESPONSE order POST /api/orders @30s
+[Asserts]
+response:order status >= 200
+response:order header:Content-Type contains application/json
+response:order json:"/key with space" == true
+response:order json:{{pointer}} matches /paid/i
+[Captures]
+body: response:order json:""
+id: response:order json:/id regex /order-(\d+)/ @2s
+status: response:order status
+header: response:order header:{{header_name}}
+"#,
         );
     }
 

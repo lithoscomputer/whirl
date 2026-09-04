@@ -1,0 +1,25 @@
+<!doctype html><html lang="en"><head><title>Network checkout</title></head><body>
+<h1>Checkout</h1><div id="result"></div>
+<button id="order" type="button">Place order</button>
+<button id="retry" type="button">Retry order</button>
+<button id="popup" type="button">Open checkout</button>
+<iframe id="checkout" title="Embedded checkout"></iframe>
+<script>
+const query = new URLSearchParams(location.search);
+if (!query.has('embedded')) {
+  const embedded = new URL('/network.html?embedded=1', location.href);
+  embedded.hostname = 'localhost';
+  document.querySelector('#checkout').src = embedded;
+} else document.querySelector('#checkout').remove();
+async function placeOrder(status = '201') {
+  const response = await fetch('/api/orders', { method: 'POST', headers: { 'X-Test-Status': status } });
+  const order = await response.json();
+  document.querySelector('#result').textContent = 'Order confirmed';
+  return order;
+}
+document.querySelector('#order').onclick = () => { window.orderRequest = placeOrder(); };
+document.querySelector('#retry').onclick = () => {
+  window.orderRequest = (async () => { await placeOrder('500'); await placeOrder(); })();
+};
+document.querySelector('#popup').onclick = () => window.open('/network.html?embedded=1', '_blank');
+</script></body></html>

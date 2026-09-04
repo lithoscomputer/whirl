@@ -9,7 +9,8 @@ use std::path::PathBuf;
 
 use crate::lang::ast::{
     Action, ActionKind, Assert, AssertBody, Capture, CaptureSource, Entry, File, FileOption,
-    Locator, NumOp, PageCheck, SegmentKind, Span, StateCheck, StrCheck, Value, ValueSegment,
+    Locator, NumOp, PageCheck, ResponseField, SegmentKind, Span, StateCheck, StrCheck, Value,
+    ValueSegment,
 };
 
 /// How serious a lint diagnostic is: an [`Severity::Error`] fails
@@ -50,6 +51,7 @@ pub fn lint_file_with(file: &File, external_uses: &HashSet<String>) -> Vec<Lint>
     let mut lints = Vec::new();
     duplicate_artifact_names(file, &mut lints);
     tab_names(file, &mut lints);
+    response_names(file, &mut lints);
     unused_captures(file, external_uses, &mut lints);
     setup_option_rules(file, &mut lints);
     redundant_presence_counts(file, &mut lints);
@@ -131,7 +133,9 @@ fn redundant_presence_counts(file: &File, lints: &mut Vec<Lint>) {
                 }
                 | AssertBody::Url(_)
                 | AssertBody::Title(_)
-                | AssertBody::TabClosed { .. } => continue,
+                | AssertBody::TabClosed { .. }
+                | AssertBody::ResponseStatus { .. }
+                | AssertBody::ResponseValue { .. } => continue,
                 AssertBody::ElementState { locator, .. }
                 | AssertBody::ElementValue { locator, .. } => locator,
                 AssertBody::ElementCount { locator, op, count } => {
@@ -393,6 +397,9 @@ fn collect_entry_refs<'a>(entry: &'a Entry, refs: &mut Vec<VarRef<'a>>) {
     }
     for capture in &entry.captures {
         match &capture.source {
+            CaptureSource::Response { field, .. } => {
+                collect_response_field_refs(field, capture.line, refs);
+            }
             CaptureSource::Element { locator, .. } => {
                 collect_locator_refs(locator, capture.line, refs);
             }
@@ -405,7 +412,9 @@ fn collect_entry_refs<'a>(entry: &'a Entry, refs: &mut Vec<VarRef<'a>>) {
 fn collect_action_refs<'a>(action: &'a Action, refs: &mut Vec<VarRef<'a>>) {
     let line = action.line;
     match &action.kind {
-        ActionKind::Visit { url } => collect_value_refs(url, line, refs),
+        ActionKind::Response { url, .. } | ActionKind::Visit { url } => {
+            collect_value_refs(url, line, refs);
+        }
         ActionKind::Click { target }
         | ActionKind::Dblclick { target }
         | ActionKind::Check { target }
@@ -449,7 +458,11 @@ fn collect_action_refs<'a>(action: &'a Action, refs: &mut Vec<VarRef<'a>>) {
 fn collect_assert_refs<'a>(assert: &'a Assert, refs: &mut Vec<VarRef<'a>>) {
     let line = assert.line;
     match &assert.body {
-        AssertBody::TabClosed { .. } => {}
+        AssertBody::ResponseValue { field, check, .. } => {
+            collect_response_field_refs(field, line, refs);
+            collect_check_refs(check, line, refs);
+        }
+        AssertBody::ResponseStatus { .. } | AssertBody::TabClosed { .. } => {}
         AssertBody::ElementState { locator, .. } | AssertBody::ElementCount { locator, .. } => {
             collect_locator_refs(locator, line, refs);
         }
@@ -534,6 +547,67 @@ fn collect_setup_refs(file: &File) -> Vec<VarRef<'_>> {
     refs.retain(|var_ref| var_ref.kind == RefKind::Setup);
     refs.sort_by_key(|var_ref| (var_ref.line, var_ref.span.column));
     refs
+}
+
+fn collect_response_field_refs<'a>(
+    field: &'a ResponseField,
+    line: u32,
+    refs: &mut Vec<VarRef<'a>>,
+) {
+    match field {
+        ResponseField::Status => {}
+        ResponseField::Header(value) | ResponseField::Json(value) => {
+            collect_value_refs(value, line, refs);
+        }
+    }
+}
+
+fn response_names(file: &File, lints: &mut Vec<Lint>) {
+    let mut names = HashSet::new();
+    for entry in &file.entries {
+        for action in &entry.actions {
+            if let ActionKind::Response { name, .. } = &action.kind {
+                if !names.insert(name.text.as_str()) {
+                    lints.push(lint_at(
+                        file,
+                        Severity::Error,
+                        "duplicate-response",
+                        name.span,
+                        format!("response `{}` is already named", name.text),
+                    ));
+                }
+            }
+        }
+        let assertion_names = entry
+            .asserts
+            .iter()
+            .filter_map(|assertion| match &assertion.body {
+                AssertBody::ResponseStatus { name, .. }
+                | AssertBody::ResponseValue { name, .. } => Some(name),
+                _ => None,
+            });
+        let capture_names = entry
+            .captures
+            .iter()
+            .filter_map(|capture| match &capture.source {
+                CaptureSource::Response { name, .. } => Some(name),
+                _ => None,
+            });
+        for name in assertion_names.chain(capture_names) {
+            if !names.contains(name.text.as_str()) {
+                lints.push(lint_at(
+                    file,
+                    Severity::Error,
+                    "unknown-response",
+                    name.span,
+                    format!(
+                        "unknown response `{}`; name it with RESPONSE first",
+                        name.text
+                    ),
+                ));
+            }
+        }
+    }
 }
 
 fn tab_names(file: &File, lints: &mut Vec<Lint>) {
