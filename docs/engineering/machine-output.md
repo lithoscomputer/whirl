@@ -46,6 +46,29 @@ come from the active shim and browser. User agent and version fields can be null
 when an older shim omits them. A failure before context startup has no runtime
 object.
 
+## Saved reports and run records
+
+```sh
+whirl report report.json --html evidence.html
+whirl report report.json --html evidence.html --metadata context.json
+```
+
+The saved command reads version 1 reports and available media without execution. It retains the original producer context and results. Successful HTML generation exits 0 even if the saved tests failed. Metadata keys match recorded flow paths exactly and do not require source files. `--working-directory DIR` changes the base for relative artifact paths; absolute paths stay absolute. Keep distinct artifact directories for runs whose evidence you need to retain.
+
+New reports add the following optional fields to version 1:
+
+| Location | Field | Meaning |
+| --- | --- | --- |
+| Run and file | `startedAt`, `finishedAt` | UTC RFC 3339 boundaries; file boundaries cover a scheduled attempt, including pre-browser failure |
+| File | `sourceSha256` | Lowercase SHA-256 of the exact parsed flow bytes, before interpolation |
+| File | `roles.requested` | Selected by input paths or rerun selection |
+| File | `roles.setup` | Used as another selected flow's setup |
+| Run | `videoRequested` | Whether the run requested browser recordings |
+
+Both roles can be true; that flow runs once. `[setup]` is an entry name for a pre-entry failure, not a file role. Fail-fast files that were never scheduled are absent. Hashes cover flow files only. They do not cover fixtures, variables, artifacts, or application code. Durations still use the monotonic clock.
+
+Compare parsed timestamps to choose the latest result. File modification times do not identify when a run happened. Older reports lack these fields; consumers must handle missing information without inventing an execution time. See [SPEC 14.2 and 14.3](../../SPEC.md#142-html-from-saved-results).
+
 ## Rerunning failures
 
 ```sh

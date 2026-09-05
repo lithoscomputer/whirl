@@ -470,6 +470,7 @@ whirl install [BROWSER]...       Provision the shim bundle and selected browsers
 whirl doctor [--browser NAME]    Check the runtime and browser; print repair commands
 whirl show-trace <PATH>          Open a trace with the private runtime
 whirl fmt [--check] <PATH>...    Rewrite files to canonical form
+whirl report <REPORT> --html <PATH>  Generate HTML from saved results
 ```
 
 `whirl install chromium` provisions only Chromium; any combination of `chromium`, `firefox`, and `webkit` may be named. Without names, all three engines are provisioned. `whirl doctor` checks the selected Node runtime, shim protocol, Playwright version, and a real headless browser launch (Chromium by default). It installs nothing, finishes within 30 seconds, exits 0 when ready or 3 when diagnosis fails, and prints repair commands. On Linux, a failed launch also prints the private-runtime command for installing system libraries. Unsupported browser names are usage errors.
@@ -550,6 +551,26 @@ The HTML contains no executable scripts or remote resources. Text is escaped, in
 ```
 
 All fields are optional. Without a title, the report uses `Browser test report` and each flow uses its path. `files` keys resolve relative to the metadata file; Whirl matches canonical paths, including symlinks. Paths must name existing files; duplicate canonical paths, invalid JSON, wrong field types, and unknown fields are usage errors before execution. Metadata for unselected flows is ignored. Metadata is not interpolated or executed and cannot change results. When JSON output is also requested, its optional `metadata` field contains the author context with selected file keys matching the report's file paths.
+
+### 14.2 HTML from saved results
+
+`whirl report report.json --html evidence.html` renders a version 1 JSON report without parsing flows, resolving variables, installing a runtime, or starting browsers. It preserves the recorded results, original Whirl version, platform, browser environment, and run timestamps. It never uses the JSON file's modification time as execution time.
+
+`--metadata context.json` replaces the saved author context. It uses the section 14.1 schema, but `files` keys match recorded `files[].path` strings exactly. Source files do not need to exist. Unmatched keys are ignored. Invalid author metadata remains a usage error.
+
+Relative artifact paths resolve against the report's absolute `workingDirectory`, even if the JSON is moved. `--working-directory DIR` selects another directory for relative artifact paths, such as a copied project tree. Absolute artifact paths remain absolute. Keep each run's JSON and artifacts together in a distinct output location if later runs would overwrite the media. The command embeds the available files at their recorded paths; source hashes do not authenticate artifacts.
+
+A successful render exits 0, including when the saved tests failed or media is missing. Invalid or unsupported input is a usage error (exit 4); an output failure is a runtime error (exit 3). The protection and atomic-write rules in section 14.1 also apply. The command never changes the input JSON. Older version 1 reports with `workingDirectory` are supported; absent timestamps, hashes, roles, and recording settings are shown as not recorded.
+
+### 14.3 Run records
+
+New JSON reports include `startedAt` and `finishedAt` as UTC RFC 3339 timestamps for the run and each reported file. Run timestamps enclose preparation, scheduled flows, and cleanup. File timestamps enclose each scheduled attempt, including failures before browser startup. Files not scheduled because of `--fail-fast` remain absent. `durationMs` continues to use the monotonic clock; wall-clock adjustments can affect timestamps.
+
+Each file includes `sourceSha256`: the lowercase SHA-256 of the exact UTF-8 bytes parsed, including comments and line endings, before interpolation. Whirl retains this hash even if the source changes during execution. The hash covers only that flow file, not external fixtures, variable values, browser artifacts, or application code.
+
+Each file includes `roles` with independent `requested` and `setup` booleans. `requested` means the file was selected by the invocation's input paths or `--rerun-failed`. `setup` means another selected flow names it through the `setup` option. Both can be true; the flow still runs once as setup. A synthetic `[setup]` entry in a requested scenario does not make that scenario a setup flow. HTML labels these roles and shows both counts; a flow with both roles appears in both counts. Status totals count each reported file once.
+
+The run's `videoRequested` boolean distinguishes an absent requested recording from a run made without `--video`. These fields are additive within report version 1. Consumers must parse timestamps to compare execution times and must ignore unknown fields.
 
 ## 15. Architecture
 

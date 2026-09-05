@@ -1,49 +1,96 @@
-//! The JSON report (SPEC 14): the machine-readable superset, rendered
-//! from the shared [`RunReport`] model in the plan doc's stable shape
-//! (version 1). Every string in the model is already secret-masked.
+//! The versioned JSON report, shared by live and saved report generation.
 
-use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::{env, fs};
 
-use serde::Serialize;
+use anyhow::Context as _;
+use serde::{Deserialize, Serialize};
 
 use crate::report::metadata::ReportMetadata;
-use crate::report::model::{FileReport, RunReport};
+use crate::report::model::RunReport;
 
-/// The stable JSON report shape version.
 const VERSION: u32 = 1;
 
-/// The top-level JSON document: the run report under a `version` tag.
-#[derive(Serialize)]
+/// The producer's context stays attached when a saved report is rendered later.
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct JsonReport<'a> {
-    version:           u32,
-    working_directory: PathBuf,
-    whirl_version:     &'static str,
-    platform:          &'static str,
-    architecture:      &'static str,
-    duration_ms:       u64,
-    files:             &'a [FileReport],
+pub(crate) struct Document {
+    version: u32,
+    pub(crate) working_directory: PathBuf,
+    pub(crate) whirl_version: String,
+    pub(crate) platform: String,
+    pub(crate) architecture: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    metadata:          Option<&'a ReportMetadata>,
+    pub(crate) video_requested: Option<bool>,
+    #[serde(flatten)]
+    pub(crate) report: RunReport,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) metadata: Option<ReportMetadata>,
 }
 
-/// Renders the report as pretty-printed JSON with a trailing newline.
-pub(crate) fn render(report: &RunReport, metadata: Option<&ReportMetadata>) -> String {
-    let document = JsonReport {
-        version: VERSION,
-        working_directory: env::current_dir().unwrap_or_default(),
-        whirl_version: env!("CARGO_PKG_VERSION"),
-        platform: env::consts::OS,
-        architecture: env::consts::ARCH,
-        duration_ms: report.duration_ms,
-        files: &report.files,
-        metadata,
-    };
-    let mut text = serde_json::to_string_pretty(&document)
-        .expect("the report model should always serialize to JSON");
-    text.push('\n');
-    text
+impl Document {
+    pub(crate) fn new(report: RunReport, metadata: Option<ReportMetadata>, video: bool) -> Self {
+        Self {
+            version: VERSION,
+            working_directory: env::current_dir().unwrap_or_default(),
+            whirl_version: env!("CARGO_PKG_VERSION").to_owned(),
+            platform: env::consts::OS.to_owned(),
+            architecture: env::consts::ARCH.to_owned(),
+            video_requested: Some(video),
+            report,
+            metadata,
+        }
+    }
+
+    pub(crate) fn read(path: &Path) -> anyhow::Result<Self> {
+        // Check the version before interpreting its result shape.
+        #[derive(Deserialize)]
+        struct Version {
+            version: u32,
+        }
+        let source = fs::read_to_string(path)
+            .with_context(|| format!("reading report '{}'", path.display()))?;
+        let version: Version =
+            serde_json::from_str(&source).context("invalid Whirl JSON report")?;
+        anyhow::ensure!(
+            version.version == VERSION,
+            "unsupported report version {}",
+            version.version
+        );
+        let document: Self = serde_json::from_str(&source).context("invalid Whirl JSON report")?;
+        anyhow::ensure!(
+            document.working_directory.is_absolute(),
+            "report workingDirectory must be absolute"
+        );
+        for file in &document.report.files {
+            if let Some(hash) = &file.source_sha256 {
+                anyhow::ensure!(
+                    hash.len() == 64
+                        && hash
+                            .bytes()
+                            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+                    "invalid sourceSha256 for '{}'",
+                    file.path
+                );
+            }
+            if let Some(roles) = file.roles {
+                anyhow::ensure!(
+                    roles.requested || roles.setup,
+                    "flow '{}' has no role",
+                    file.path
+                );
+            }
+        }
+        Ok(document)
+    }
+
+    /// Pretty-printed JSON with a trailing newline.
+    pub(crate) fn render(&self) -> String {
+        let mut text = serde_json::to_string_pretty(self)
+            .expect("the report model should always serialize to JSON");
+        text.push('\n');
+        text
+    }
 }
 
 #[cfg(test)]
@@ -54,7 +101,7 @@ mod tests {
     use crate::report::fixture::{SECRET, sample_report};
 
     fn rendered() -> Value {
-        let text = render(&sample_report(), None);
+        let text = Document::new(sample_report(), None, false).render();
         serde_json::from_str(&text).expect("the rendered report should parse as JSON")
     }
 
@@ -134,7 +181,7 @@ mod tests {
 
     #[test]
     fn the_env_sourced_secret_never_appears() {
-        let text = render(&sample_report(), None);
+        let text = Document::new(sample_report(), None, false).render();
         assert!(!text.contains(SECRET), "report:\n{text}");
         assert!(
             text.contains("FILL \\\"Password\\\" ***"),

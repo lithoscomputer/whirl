@@ -1,0 +1,3 @@
+bin.name = "whirl"
+args = ["report", "--help"]
+status = "success"

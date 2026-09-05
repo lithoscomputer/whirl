@@ -1,6 +1,5 @@
 //! Portable HTML reports built from the same masked results as JSON and JUnit.
 
-use std::env;
 use std::fs::File;
 use std::io::{self, BufWriter, Read as _, Seek as _, Write as _};
 use std::path::Path;
@@ -10,20 +9,17 @@ use base64::engine::general_purpose::STANDARD;
 use base64::write::EncoderWriter;
 use tempfile::NamedTempFile;
 
+use crate::report::json::Document;
 use crate::report::metadata::ReportMetadata;
-use crate::report::model::{EntryReport, FileReport, RunReport, Status, StepReport};
+use crate::report::model::{EntryReport, FileReport, Status, StepReport, Timing};
 
 const STYLE: &str = include_str!("html.css");
 
 /// Stream media to a sibling temporary file, then atomically replace the
 /// report. Missing or invalid media is shown as unavailable; output errors fail
 /// the write.
-pub(crate) fn write(
-    path: &Path,
-    report: &RunReport,
-    metadata: &ReportMetadata,
-    video_requested: bool,
-) -> anyhow::Result<()> {
+pub(crate) fn write(path: &Path, document: &Document, base: &Path) -> anyhow::Result<()> {
+    let report = &document.report;
     if let Ok(target) = path.canonicalize() {
         for artifact in report.files.iter().flat_map(|file| {
             file.artifacts
@@ -31,7 +27,7 @@ pub(crate) fn write(
                 .chain(file.entries.iter().flat_map(|entry| &entry.artifacts))
         }) {
             anyhow::ensure!(
-                Path::new(artifact).canonicalize().ok().as_ref() != Some(&target),
+                base.join(artifact).canonicalize().ok().as_ref() != Some(&target),
                 "HTML report destination conflicts with artifact '{artifact}'"
             );
         }
@@ -43,19 +39,17 @@ pub(crate) fn write(
     let mut temporary = NamedTempFile::new_in(parent).context("creating temporary HTML report")?;
     {
         let mut output = BufWriter::new(temporary.as_file_mut());
-        render(&mut output, report, metadata, video_requested).context("writing HTML report")?;
+        render(&mut output, document, base).context("writing HTML report")?;
         output.flush().context("flushing HTML report")?;
     }
     temporary.persist(path).context("saving HTML report")?;
     Ok(())
 }
 
-fn render(
-    output: &mut impl io::Write,
-    report: &RunReport,
-    metadata: &ReportMetadata,
-    video_requested: bool,
-) -> io::Result<()> {
+fn render(output: &mut impl io::Write, document: &Document, base: &Path) -> io::Result<()> {
+    let report = &document.report;
+    let empty_metadata = ReportMetadata::default();
+    let metadata = document.metadata.as_ref().unwrap_or(&empty_metadata);
     let title = metadata.title.as_deref().unwrap_or("Browser test report");
     write!(
         output,
@@ -73,6 +67,28 @@ fn render(
         escape(title),
         report.files.len()
     )?;
+    write!(
+        output,
+        "<dl class=\"run-record\" aria-label=\"Run timestamps\">"
+    )?;
+    render_timing(output, &report.timing)?;
+    write!(output, "</dl>")?;
+    if report.files.iter().all(|file| file.roles.is_some()) {
+        let requested = report
+            .files
+            .iter()
+            .filter(|file| file.roles.is_some_and(|roles| roles.requested))
+            .count();
+        let setups = report
+            .files
+            .iter()
+            .filter(|file| file.roles.is_some_and(|roles| roles.setup))
+            .count();
+        write!(
+            output,
+            "<p>{requested} requested flows · {setups} setup flows. Status totals include all flow files.</p>"
+        )?;
+    }
     if let Some(description) = &metadata.description {
         write!(
             output,
@@ -120,22 +136,30 @@ fn render(
             .unwrap_or(&file.path);
         write!(
             output,
-            "<li><a href=\"#flow-{index}\">{}</a>{}</li>",
+            "<li><a href=\"#flow-{index}\">{} <span class=\"flow-role\">({})</span></a>{}</li>",
             escape(title),
+            role_label(file),
             badge(file.status)
         )?;
     }
     write!(output, "</ol></nav></details>")?;
     for (index, file) in report.files.iter().enumerate() {
-        render_file(output, index, file, metadata, video_requested)?;
+        render_file(
+            output,
+            index,
+            file,
+            metadata,
+            document.video_requested,
+            base,
+        )?;
     }
     writeln!(
         output,
         "<footer><p>Whirl {} · {} / {} · Test status is independent of recording availability.</p>\
         <a href=\"#top\">Back to top</a></footer></main></body></html>",
-        env!("CARGO_PKG_VERSION"),
-        env::consts::OS,
-        env::consts::ARCH
+        escape(&document.whirl_version),
+        escape(&document.platform),
+        escape(&document.architecture)
     )
 }
 
@@ -144,7 +168,8 @@ fn render_file(
     index: usize,
     file: &FileReport,
     metadata: &ReportMetadata,
-    video_requested: bool,
+    video_requested: Option<bool>,
+    base: &Path,
 ) -> io::Result<()> {
     let context = metadata.files.get(&file.path);
     let title = context
@@ -153,10 +178,11 @@ fn render_file(
     write!(
         output,
         "<article id=\"flow-{index}\" data-status=\"{}\">\
-        <div class=\"flow-heading\"><div><p class=\"eyebrow\">Flow {:02}</p>\
+        <div class=\"flow-heading\"><div><p class=\"eyebrow\">Flow {:02} · {}</p>\
         <h2>{}</h2>",
         status_text(file.status).0,
         index + 1,
+        role_label(file),
         escape(title)
     )?;
     if let Some(description) = context.and_then(|file| file.description.as_deref()) {
@@ -194,12 +220,12 @@ fn render_file(
         .iter()
         .find(|path| Path::new(path).extension().is_some_and(|ext| ext == "webm"));
     if let Some(path) = video {
-        render_media(output, file, path, true)?;
+        render_media(output, file, path, true, base)?;
     } else {
-        let message = if video_requested {
-            "Recording unavailable."
-        } else {
-            "Recording not requested."
+        let message = match video_requested {
+            Some(true) => "Recording unavailable.",
+            Some(false) => "Recording not requested.",
+            None => "Recording unavailable; recording settings were not recorded.",
         };
         write!(
             output,
@@ -250,9 +276,19 @@ fn render_file(
         }
     )?;
     for entry in &file.entries {
-        render_entry(output, file, entry)?;
+        render_entry(output, file, entry, base)?;
     }
     write!(output, "</ol></details>")?;
+    write!(
+        output,
+        "<details class=\"runtime\"><summary>Run record</summary><dl>"
+    )?;
+    render_timing(output, &file.timing)?;
+    write!(
+        output,
+        "<dt>Source SHA-256</dt><dd><code>{}</code></dd></dl></details>",
+        escape(file.source_sha256.as_deref().unwrap_or("Not recorded"))
+    )?;
     if let Some(runtime) = &file.runtime {
         write!(
             output,
@@ -290,6 +326,7 @@ fn render_entry(
     output: &mut impl io::Write,
     file: &FileReport,
     entry: &EntryReport,
+    base: &Path,
 ) -> io::Result<()> {
     write!(
         output,
@@ -330,7 +367,7 @@ fn render_entry(
     }
     for path in &entry.artifacts {
         if Path::new(path).extension().is_some_and(|ext| ext == "png") {
-            render_media(output, file, path, false)?;
+            render_media(output, file, path, false, base)?;
         } else {
             write!(
                 output,
@@ -374,9 +411,9 @@ fn render_error(output: &mut impl io::Write, step: &StepReport) -> io::Result<()
     Ok(())
 }
 
-fn open_media(file: &FileReport, path: &str, video: bool) -> anyhow::Result<File> {
-    let root = Path::new(&file.artifacts_dir).canonicalize()?;
-    let canonical = Path::new(path).canonicalize()?;
+fn open_media(file: &FileReport, path: &str, video: bool, base: &Path) -> anyhow::Result<File> {
+    let root = base.join(&file.artifacts_dir).canonicalize()?;
+    let canonical = base.join(path).canonicalize()?;
     anyhow::ensure!(
         canonical.starts_with(root),
         "artifact is outside its flow directory"
@@ -409,8 +446,9 @@ fn render_media(
     file: &FileReport,
     path: &str,
     video: bool,
+    base: &Path,
 ) -> io::Result<()> {
-    let mut input = match open_media(file, path, video) {
+    let mut input = match open_media(file, path, video, base) {
         Ok(input) => input,
         Err(error) => {
             return write!(
@@ -463,6 +501,32 @@ fn status_text(status: Status) -> (&'static str, &'static str) {
         Status::Error => ("error", "Error"),
         Status::Skipped => ("skipped", "Skipped"),
     }
+}
+
+fn role_label(file: &FileReport) -> &'static str {
+    match file.roles {
+        Some(roles) if roles.requested && roles.setup => "Requested flow and setup",
+        Some(roles) if roles.setup => "Setup flow",
+        Some(_) => "Requested scenario",
+        None => "Role not recorded",
+    }
+}
+
+fn render_timing(output: &mut impl io::Write, timing: &Timing) -> io::Result<()> {
+    for (label, timestamp) in [
+        ("Started", timing.started_at),
+        ("Finished", timing.finished_at),
+    ] {
+        write!(output, "<dt>{label}</dt><dd>")?;
+        if let Some(timestamp) = timestamp {
+            let value = timestamp.to_rfc3339();
+            write!(output, "<time datetime=\"{value}\">{value}</time>")?;
+        } else {
+            write!(output, "Not recorded")?;
+        }
+        write!(output, "</dd>")?;
+    }
+    Ok(())
 }
 
 fn badge(status: Status) -> String {

@@ -15,7 +15,7 @@ use crate::lang::ast::{
 };
 use crate::report::model::{
     EntryReport, FileReport, ReportViewport, RuntimeMetadata, SETUP_ENTRY, Status, StepError,
-    StepKind, StepReport,
+    StepKind, StepReport, Timing,
 };
 use crate::run::artifacts;
 use crate::run::shim::{
@@ -1186,6 +1186,9 @@ pub(crate) async fn run_flow(run: &FlowRun<'_>, client: &mut ShimClient) -> Flow
     async {
         let started = Instant::now();
         let mut report = FileReport {
+            timing:        Timing::default(),
+            source_sha256: None,
+            roles:         None,
             runtime:       None,
             path:          run.file.path.to_string_lossy().into_owned(),
             status:        Status::Passed,

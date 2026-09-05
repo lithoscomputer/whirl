@@ -101,7 +101,7 @@ fn render_entry_failure(out: &mut String, file: &FileReport, entry: &EntryReport
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::report::model::{StepError, StepKind};
+    use crate::report::model::{StepError, StepKind, Timing};
 
     fn step(line: u32, text: &str, status: Status, error: Option<StepError>) -> StepReport {
         StepReport {
@@ -116,9 +116,13 @@ mod tests {
 
     fn sample_report() -> RunReport {
         RunReport {
+            timing:      Timing::default(),
             duration_ms: 2_000,
             files:       vec![
                 FileReport {
+                    timing:        Timing::default(),
+                    source_sha256: None,
+                    roles:         None,
                     runtime:       None,
                     path:          "flows/pass.whirl".to_owned(),
                     status:        Status::Passed,
@@ -130,6 +134,9 @@ mod tests {
                     entries:       Vec::new(),
                 },
                 FileReport {
+                    timing:        Timing::default(),
+                    source_sha256: None,
+                    roles:         None,
                     runtime:       None,
                     path:          "flows/fail.whirl".to_owned(),
                     status:        Status::Failed,

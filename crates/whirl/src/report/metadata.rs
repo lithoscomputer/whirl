@@ -9,7 +9,6 @@ use serde::de::{Error as _, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct FileMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) title:       Option<String>,
@@ -18,7 +17,6 @@ pub(crate) struct FileMetadata {
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct ReportMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) title:       Option<String>,
@@ -53,10 +51,35 @@ fn unique_files<'de, D: Deserializer<'de>>(
 }
 
 impl ReportMetadata {
+    /// Author files are strict; saved report readers ignore additive fields.
+    pub(crate) fn read_author(path: &Path) -> anyhow::Result<Self> {
+        let source = fs::read_to_string(path)?;
+        let value: serde_json::Value =
+            serde_json::from_str(&source).context("invalid report metadata")?;
+        let check_keys = |value: &serde_json::Value, allowed: &[&str]| -> anyhow::Result<()> {
+            if let Some(object) = value.as_object() {
+                for key in object.keys() {
+                    anyhow::ensure!(
+                        allowed.contains(&key.as_str()),
+                        "unknown field `{key}` in report metadata"
+                    );
+                }
+            }
+            Ok(())
+        };
+        check_keys(&value, &["title", "description", "files"])?;
+        if let Some(files) = value.get("files").and_then(serde_json::Value::as_object) {
+            for file in files.values() {
+                check_keys(file, &["title", "description"])?;
+            }
+        }
+        // Parse the original text to retain duplicate-key detection.
+        serde_json::from_str(&source).context("invalid report metadata")
+    }
+
     /// Resolve metadata keys relative to its file, before a browser starts.
     pub(crate) fn load(path: &Path) -> anyhow::Result<Self> {
-        let mut metadata: Self =
-            serde_json::from_str(&fs::read_to_string(path)?).context("invalid report metadata")?;
+        let mut metadata = Self::read_author(path)?;
         let parent = path.parent().unwrap_or_else(|| Path::new("."));
         let mut files = BTreeMap::new();
         for (key, value) in metadata.files {

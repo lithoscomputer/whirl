@@ -847,11 +847,21 @@ fn a_setup_flow_runs_once_and_hands_state_and_captures_to_its_dependents() {
     );
     assert!(stdout.contains("login.whirl passed"), "stdout:\n{stdout}");
 
+    assert_eq!(
+        report["files"][0]["roles"],
+        serde_json::json!({"requested": false, "setup": true})
+    );
+    assert_eq!(
+        report["files"][1]["roles"],
+        serde_json::json!({"requested": true, "setup": false})
+    );
+    assert_run_record(&report, &dir);
+
     // Naming the setup flow as an input too runs it once, as the setup.
     let output = run_whirl(&dir, &[
         "--report-json",
         "report.json",
-        "login.whirl",
+        "./login.whirl",
         "a.whirl",
     ]);
     let stdout = stdout_text(&output);
@@ -864,6 +874,11 @@ fn a_setup_flow_runs_once_and_hands_state_and_captures_to_its_dependents() {
         2,
         "report:\n{report}"
     );
+    assert_eq!(
+        report["files"][0]["roles"],
+        serde_json::json!({"requested": true, "setup": true})
+    );
+    assert_run_record(&report, &dir);
 }
 
 #[test]
@@ -908,6 +923,12 @@ fn a_failing_setup_flow_fails_its_dependents_without_running_them() {
         report["files"][1]["entries"][0]["name"], "[setup]",
         "report:\n{report}"
     );
+    assert_run_record(&report, &dir);
+    assert_eq!(
+        report["files"][1]["roles"],
+        serde_json::json!({"requested": true, "setup": false})
+    );
+    assert!(report["files"][1].get("runtime").is_none());
     // The dependent never opened a browser: no failure screenshot.
     assert!(
         !dir.artifacts()
@@ -1889,6 +1910,34 @@ fn html_report_is_portable_and_preserves_results_and_author_context() {
     );
     assert!(dir.path.join("junit.xml").is_file());
 
+    // The saved command must produce identical HTML after sources disappear,
+    // even from another directory and without an available browser runtime.
+    fs::remove_file(dir.path.join("pass.whirl")).expect("remove flow");
+    fs::remove_file(dir.path.join("fail.whirl")).expect("remove flow");
+    fs::create_dir(dir.path.join("saved")).expect("saved directory");
+    fs::copy(
+        dir.path.join("report.json"),
+        dir.path.join("saved/report.json"),
+    )
+    .expect("copy JSON");
+    let saved = Command::new(env!("CARGO_BIN_EXE_whirl"))
+        .current_dir(dir.path.join("saved"))
+        .env("WHIRL_NODE", "/missing/runtime")
+        .env("WHIRL_SHIM_JS", "/missing/shim")
+        .args(["report", "report.json", "--html", "evidence.html"])
+        .output()
+        .expect("saved report command");
+    assert_eq!(exit_code(&saved), 0, "{saved:?}");
+    assert_eq!(
+        fs::read_to_string(dir.path.join("saved/evidence.html")).expect("saved HTML"),
+        html
+    );
+    fs::copy(
+        dir.path.join("saved/evidence.html"),
+        dir.path.join("report.html"),
+    )
+    .expect("use saved HTML");
+
     // A different directory and no source artifacts: the browser must decode
     // the embedded media and retain all results without a server or sidecars.
     fs::create_dir(dir.path.join("moved")).expect("moved directory");
@@ -2179,4 +2228,26 @@ fn html_report_does_not_replace_a_recorded_artifact() {
     let image = fs::read(dir.artifacts().join("flow/image.png")).expect("screenshot remains");
     assert!(image.starts_with(b"\x89PNG\r\n\x1a\n"));
     assert!(!String::from_utf8_lossy(&image).contains("<!doctype html>"));
+}
+
+/// Check wall-clock ordering and SHA-256 against the flow bytes on disk.
+fn assert_run_record(report: &serde_json::Value, dir: &TestDir) {
+    use chrono::{DateTime, FixedOffset};
+    use sha2::{Digest as _, Sha256};
+    let timestamp = |value: &serde_json::Value| -> DateTime<FixedOffset> {
+        DateTime::parse_from_rfc3339(value.as_str().expect("timestamp")).expect("RFC3339 timestamp")
+    };
+    let start = timestamp(&report["startedAt"]);
+    let finish = timestamp(&report["finishedAt"]);
+    assert!(start <= finish);
+    for file in report["files"].as_array().expect("files") {
+        let file_start = timestamp(&file["startedAt"]);
+        let file_finish = timestamp(&file["finishedAt"]);
+        assert!(start <= file_start && file_start <= file_finish && file_finish <= finish);
+        let source = fs::read(dir.path.join(file["path"].as_str().expect("path"))).expect("source");
+        assert_eq!(
+            file["sourceSha256"],
+            format!("{:x}", Sha256::digest(source))
+        );
+    }
 }

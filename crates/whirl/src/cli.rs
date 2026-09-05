@@ -10,19 +10,20 @@ use std::collections::HashSet;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::{fs, io};
+use std::{fs, io, iter};
 
 use anyhow::Context as _;
 use clap::error::ErrorKind;
 use clap::{Args, Parser, Subcommand};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
 use tokio::runtime::Runtime;
 
 use crate::lang::lint::{Lint, Severity, lint_file_with, lint_setup_refs, setup_capture_uses};
 use crate::lang::parse::{ParseError, parse_file};
 use crate::lang::{ast, fmt};
 use crate::report::metadata::ReportMetadata;
-use crate::report::model::{RunReport, Status};
+use crate::report::model::Status;
 use crate::report::{console, html, json, junit};
 use crate::run::{artifacts, flow, runner, vars};
 use crate::{doctor, install, telemetry};
@@ -74,6 +75,8 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Generate HTML from saved results without running browsers.
+    Report(ReportArgs),
     /// Parse and lint files; nothing runs.
     Check {
         /// Write versioned JSON diagnostics to stdout.
@@ -110,6 +113,22 @@ enum Command {
         /// Trace archive to open.
         path: PathBuf,
     },
+}
+
+#[derive(Debug, Args)]
+struct ReportArgs {
+    /// A version 1 Whirl JSON report.
+    #[arg(value_name = "REPORT")]
+    report:            PathBuf,
+    /// Write a standalone HTML report.
+    #[arg(long, value_name = "PATH")]
+    html:              PathBuf,
+    /// Replace saved author context; flow keys match recorded paths exactly.
+    #[arg(long, value_name = "PATH")]
+    metadata:          Option<PathBuf>,
+    /// Resolve relative artifact paths here instead of the recorded directory.
+    #[arg(long, value_name = "DIR")]
+    working_directory: Option<PathBuf>,
 }
 
 /// Flags for the default run command (SPEC 13). The runner is a later
@@ -222,6 +241,7 @@ fn execute(argv: impl IntoIterator<Item = OsString>) -> u8 {
         Err(error) => return exit_for_clap_error(&error),
     };
     let exit = match cli.command {
+        Some(Command::Report(args)) => report_command(&args),
         Some(Command::Check { paths, json }) => check_command(&paths, json),
         Some(Command::Fmt { check, paths }) => fmt_command(check, &paths),
         Some(Command::Install { browsers }) => install_command(&browsers),
@@ -852,6 +872,17 @@ fn run_command(args: &RunArgs) -> Exit {
         metadata.select(paths());
     }
     let settings = runner::RunSettings {
+        source_hashes: checked
+            .inputs
+            .iter()
+            .chain(&checked.setups)
+            .map(|input| {
+                (
+                    input.file.path.clone(),
+                    format!("{:x}", Sha256::digest(input.source.as_bytes())),
+                )
+            })
+            .collect(),
         jobs: args.jobs,
         fail_fast: args.fail_fast,
         artifacts_dir: args.artifacts.clone(),
@@ -877,7 +908,6 @@ fn run_command(args: &RunArgs) -> Exit {
     match runtime.block_on(runner::run_files(&files, &setups, &settings)) {
         Ok(report) => {
             print_out(console::render(&report).trim_end());
-            let report_exit = write_reports(args, &report, metadata.as_ref());
             let run_exit = if report.has_error() {
                 Exit::Runtime
             } else if report.has_failure() {
@@ -885,6 +915,8 @@ fn run_command(args: &RunArgs) -> Exit {
             } else {
                 Exit::Success
             };
+            let document = json::Document::new(report, metadata, args.video);
+            let report_exit = write_reports(args, &document);
             run_exit.max(report_exit)
         }
         Err(error @ runner::RunnerError::SaveStorageManyFiles { .. }) => {
@@ -902,21 +934,16 @@ fn run_command(args: &RunArgs) -> Exit {
 /// (SPEC 13, 14). Reports are written whenever a run happened, whatever
 /// its outcome; a report that cannot be written is an environmental
 /// failure (exit 3).
-fn write_reports(args: &RunArgs, report: &RunReport, metadata: Option<&ReportMetadata>) -> Exit {
+fn write_reports(args: &RunArgs, document: &json::Document) -> Exit {
     let mut exit = Exit::Success;
     if let Some(path) = &args.report_json {
-        exit = exit.max(write_report_file(path, &json::render(report, metadata)));
+        exit = exit.max(write_report_file(path, &document.render()));
     }
     if let Some(path) = &args.report_junit {
-        exit = exit.max(write_report_file(path, &junit::render(report)));
+        exit = exit.max(write_report_file(path, &junit::render(&document.report)));
     }
     if let Some(path) = &args.report_html {
-        if let Err(error) = html::write(
-            path,
-            report,
-            metadata.unwrap_or(&ReportMetadata::default()),
-            args.video,
-        ) {
+        if let Err(error) = html::write(path, document, &document.working_directory) {
             print_err(&format!(
                 "whirl: error: cannot write HTML report '{}': {error:#}",
                 path.display()
@@ -930,6 +957,28 @@ fn write_reports(args: &RunArgs, report: &RunReport, metadata: Option<&ReportMet
 /// Prevent the new report destination from replacing inputs or another output.
 fn check_html_path<'a>(
     args: &'a RunArgs,
+    html: &Path,
+    inputs: impl Iterator<Item = &'a Path>,
+) -> anyhow::Result<()> {
+    check_report_destination(
+        html,
+        inputs.chain(
+            [
+                args.report_json.as_deref(),
+                args.report_junit.as_deref(),
+                args.report_metadata.as_deref(),
+                args.variables_file.as_deref(),
+                args.save_storage.as_deref(),
+                args.storage.as_deref(),
+                args.rerun_failed.as_deref(),
+            ]
+            .into_iter()
+            .flatten(),
+        ),
+    )
+}
+
+fn check_report_destination<'a>(
     html: &Path,
     inputs: impl Iterator<Item = &'a Path>,
 ) -> anyhow::Result<()> {
@@ -949,19 +998,7 @@ fn check_html_path<'a>(
     let Ok(target) = identity(html) else {
         return Ok(());
     };
-    for path in inputs.chain(
-        [
-            args.report_json.as_deref(),
-            args.report_junit.as_deref(),
-            args.report_metadata.as_deref(),
-            args.variables_file.as_deref(),
-            args.save_storage.as_deref(),
-            args.storage.as_deref(),
-            args.rerun_failed.as_deref(),
-        ]
-        .into_iter()
-        .flatten(),
-    ) {
+    for path in inputs {
         anyhow::ensure!(
             identity(path).ok().as_ref() != Some(&target),
             "HTML report destination conflicts with '{}'",
@@ -969,6 +1006,69 @@ fn check_html_path<'a>(
         );
     }
     Ok(())
+}
+
+/// Saved results are data, never executable configuration.
+fn report_command(args: &ReportArgs) -> Exit {
+    let prepared = (|| -> anyhow::Result<_> {
+        check_report_destination(
+            &args.html,
+            iter::once(args.report.as_path()).chain(args.metadata.as_deref()),
+        )?;
+        let mut document = json::Document::read(&args.report)?;
+        let sources: Vec<PathBuf> = document
+            .report
+            .files
+            .iter()
+            .map(|file| document.working_directory.join(&file.path))
+            .collect();
+        check_report_destination(&args.html, sources.iter().map(PathBuf::as_path))?;
+        if let Some(path) = &args.metadata {
+            let mut metadata = ReportMetadata::read_author(path)?;
+            metadata
+                .files
+                .retain(|path, _| document.report.files.iter().any(|file| file.path == *path));
+            document.metadata = Some(metadata);
+        }
+        let base = args
+            .working_directory
+            .as_deref()
+            .map(Path::canonicalize)
+            .transpose()
+            .context("resolving artifact working directory")?
+            .unwrap_or_else(|| document.working_directory.clone());
+        if args.working_directory.is_some() {
+            anyhow::ensure!(
+                base.is_dir(),
+                "artifact working directory must be a directory"
+            );
+            let copied_sources: Vec<PathBuf> = document
+                .report
+                .files
+                .iter()
+                .map(|file| base.join(&file.path))
+                .collect();
+            check_report_destination(&args.html, copied_sources.iter().map(PathBuf::as_path))?;
+        }
+        Ok((document, base))
+    })();
+    let (document, base) = match prepared {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            print_err(&format!("whirl: error: {error:#}"));
+            return Exit::Usage;
+        }
+    };
+    match html::write(&args.html, &document, &base) {
+        Ok(()) => Exit::Success,
+        Err(error) => {
+            print_err(&format!(
+                "whirl: error: cannot write HTML report '{}': {error:#}",
+                args.html.display()
+            ));
+            Exit::Runtime
+        }
+    }
 }
 
 /// Writes one report file, printing any error.
@@ -1000,7 +1100,7 @@ fn install_command(browsers: &[String]) -> Exit {
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
-    use std::{env, iter, process, slice};
+    use std::{env, process, slice};
 
     use super::*;
 

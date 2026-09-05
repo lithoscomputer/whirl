@@ -3,8 +3,44 @@
 //! and JUnit reporters all render from it. Every string in the model is
 //! already secret-masked by the runner (SPEC 11).
 
+use std::fmt;
+use std::time::SystemTime;
+
+use chrono::{DateTime, Utc};
+use serde::de::{MapAccess, Visitor};
 use serde::ser::SerializeMap as _;
-use serde::{Deserialize, Serialize, Serializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+/// UTC wall-clock boundaries. Durations are measured separately with Instant.
+/// Absent fields belong to reports written before timestamps were recorded.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct Timing {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) started_at:  Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) finished_at: Option<DateTime<Utc>>,
+}
+
+impl Timing {
+    pub(crate) fn start() -> Self {
+        Self {
+            started_at:  Some(SystemTime::now().into()),
+            finished_at: None,
+        }
+    }
+
+    pub(crate) fn finish(&mut self) {
+        self.finished_at = Some(SystemTime::now().into());
+    }
+}
+
+/// A requested flow can also supply setup state, while still running once.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct FlowRoles {
+    pub(crate) requested: bool,
+    pub(crate) setup:     bool,
+}
 
 /// The name of the synthetic entry that reports a failure before the
 /// first real entry: option resolution, storage loading, or browser
@@ -25,7 +61,7 @@ pub(crate) enum Status {
 }
 
 /// What kind of SPEC line a step is.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum StepKind {
     Action,
@@ -35,7 +71,7 @@ pub(crate) enum StepKind {
 }
 
 /// A failed step's error detail.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct StepError {
     pub(crate) code:       String,
@@ -61,14 +97,14 @@ impl Default for StepError {
 }
 
 /// The viewport recorded in a report, in CSS pixels.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct ReportViewport {
     pub(crate) width:  u64,
     pub(crate) height: u64,
 }
 
 /// The selected browser environment, reported only after a context starts.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RuntimeMetadata {
     pub(crate) browser:            String,
@@ -80,7 +116,7 @@ pub(crate) struct RuntimeMetadata {
 }
 
 /// One executed (or skipped) step.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct StepReport {
     pub(crate) line:        u32,
@@ -94,7 +130,7 @@ pub(crate) struct StepReport {
 }
 
 /// One entry's result: its steps, captures, and artifacts.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct EntryReport {
     /// The display name (SPEC 14): nearest comment above the entry, or
@@ -107,7 +143,10 @@ pub(crate) struct EntryReport {
     pub(crate) steps:       Vec<StepReport>,
     /// Captured variables, masked, in capture order. Serialized as a
     /// JSON object (plan doc "JSON report shape").
-    #[serde(serialize_with = "serialize_captures")]
+    #[serde(
+        serialize_with = "serialize_captures",
+        deserialize_with = "deserialize_captures"
+    )]
     pub(crate) captures:    Vec<(String, String)>,
     /// Artifact paths recorded for this entry.
     pub(crate) artifacts:   Vec<String>,
@@ -125,10 +164,37 @@ fn serialize_captures<S: Serializer>(
     map.end()
 }
 
+/// Preserve capture order, including repeated names in reports from older runs.
+fn deserialize_captures<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<(String, String)>, D::Error> {
+    struct CapturesVisitor;
+    impl<'de> Visitor<'de> for CapturesVisitor {
+        type Value = Vec<(String, String)>;
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("an object of captured string values")
+        }
+        fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+            let mut captures = Vec::new();
+            while let Some(capture) = map.next_entry()? {
+                captures.push(capture);
+            }
+            Ok(captures)
+        }
+    }
+    deserializer.deserialize_map(CapturesVisitor)
+}
+
 /// One file's result.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct FileReport {
+    #[serde(flatten)]
+    pub(crate) timing:        Timing,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) source_sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) roles:         Option<FlowRoles>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) runtime:       Option<RuntimeMetadata>,
     /// The input path as given on the command line.
@@ -145,9 +211,11 @@ pub(crate) struct FileReport {
 }
 
 /// The whole run.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RunReport {
+    #[serde(flatten)]
+    pub(crate) timing:      Timing,
     pub(crate) duration_ms: u64,
     pub(crate) files:       Vec<FileReport>,
 }

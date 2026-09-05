@@ -140,6 +140,18 @@ and browser recordings. Missing recordings are shown separately from test status
 Use optional [report metadata](SPEC.md#141-html-reports) to add a title, scope note,
 and flow descriptions. Metadata paths resolve relative to the metadata file.
 
+Save JSON and artifacts once, then regenerate HTML without repeating browser actions:
+
+```console
+$ whirl --video --report-json report.json --artifacts run-artifacts flows/
+$ whirl report report.json --html evidence.html
+$ whirl report report.json --html evidence.html --metadata revised-context.json
+```
+
+For the saved command, metadata flow keys match the JSON's `files[].path` exactly. Source files and a browser installation are not required. Relative media paths use the original working directory; use `--working-directory DIR` for a copied project tree. Keep the original artifacts to embed them again, and use a distinct artifact location for each run.
+
+New reports record UTC start and finish times, the SHA-256 of each parsed flow, and whether each flow was requested, used as setup, or both. These details survive copied JSON files and regenerated HTML. See [run records](SPEC.md#143-run-records) for their scope.
+
 ## Secrets
 
 Reference secrets with `{{env.NAME}}`; Whirl masks every env-sourced value

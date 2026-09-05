@@ -15,7 +15,7 @@ use tokio::task::{JoinSet, spawn_blocking};
 use tracing::{Instrument as _, debug, info, info_span, warn};
 
 use crate::lang::ast::File;
-use crate::report::model::{FileReport, RunReport, SETUP_ENTRY, Status};
+use crate::report::model::{FileReport, FlowRoles, RunReport, SETUP_ENTRY, Status, Timing};
 use crate::run::artifacts::{self, ArtifactsError, Flow};
 use crate::run::flow::{
     FlowFlags, FlowOutcome, FlowRun, Overrides, SetupHandoff, run_flow, setup_path_for,
@@ -34,6 +34,9 @@ pub(crate) struct RunSettings {
     pub(crate) overrides:     Overrides,
     /// `--variables-file` entries then `--var` flags, in order.
     pub(crate) base_vars:     Vec<(String, String)>,
+    /// Hashes of the exact source bytes that the CLI parsed, keyed by input
+    /// path.
+    pub(crate) source_hashes: HashMap<PathBuf, String>,
 }
 
 /// A failure before any flow runs.
@@ -57,6 +60,7 @@ struct FlowJob {
     canonical:       PathBuf,
     report_dir:      PathBuf,
     abs_dir:         PathBuf,
+    roles:           FlowRoles,
     /// The canonical path of this file's `setup` flow, when it has one.
     setup_canonical: Option<PathBuf>,
     /// Where this flow saves its final state when other files depend on
@@ -84,6 +88,7 @@ pub(crate) async fn run_files(
 ) -> Result<RunReport, RunnerError> {
     async {
         let started = Instant::now();
+        let mut timing = Timing::start();
         info!(
             file_count = files.len(),
             setup_count = setups.len(),
@@ -161,9 +166,11 @@ pub(crate) async fn run_files(
         let _ = fs::remove_dir_all(&state_dir).await;
 
         info!(file_count = reports.len(), "run finished");
+        timing.finish();
         Ok(RunReport {
+            timing,
             duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-            files:       reports,
+            files: reports,
         })
     }
     .instrument(info_span!("run"))
@@ -188,9 +195,10 @@ impl PreparedRun {
         mut settings: RunSettings,
     ) -> Result<Self, RunnerError> {
         let inputs: Vec<PathBuf> = files.iter().map(|file| file.path.clone()).collect();
-        if settings.flags.save_storage.is_some() && artifacts::dedup_flows(&inputs)?.len() > 1 {
+        let requested = artifacts::dedup_flows(&inputs)?;
+        if settings.flags.save_storage.is_some() && requested.len() > 1 {
             return Err(RunnerError::SaveStorageManyFiles {
-                count: artifacts::dedup_flows(&inputs)?.len(),
+                count: requested.len(),
             });
         }
         let cwd = PathBuf::from(".");
@@ -216,7 +224,15 @@ impl PreparedRun {
         let launch = resolve_launch()?;
 
         let all_files: Vec<&File> = files.iter().chain(setups.iter()).collect();
-        let jobs = build_jobs(&all_files, &flows, &setup_canonicals, &state_dir)?;
+        let requested_canonicals: Vec<PathBuf> =
+            requested.into_iter().map(|(_, path)| path).collect();
+        let jobs = build_jobs(
+            &all_files,
+            &flows,
+            &setup_canonicals,
+            &requested_canonicals,
+            &state_dir,
+        )?;
         let (setup_jobs, main_jobs): (Vec<FlowJob>, Vec<FlowJob>) = jobs
             .into_iter()
             .partition(|job| setup_canonicals.contains(&job.canonical));
@@ -260,6 +276,7 @@ fn build_jobs(
     files: &[&File],
     flows: &[Flow],
     setup_canonicals: &[PathBuf],
+    requested_canonicals: &[PathBuf],
     state_dir: &Path,
 ) -> Result<Vec<FlowJob>, RunnerError> {
     let canonical_of = |input: &Path| -> Option<PathBuf> {
@@ -275,6 +292,11 @@ fn build_jobs(
             let file = files
                 .iter()
                 .find(|file| file.path == flow.input)
+                .or_else(|| {
+                    files
+                        .iter()
+                        .find(|file| canonical_of(&file.path).as_ref() == Some(&flow.canonical))
+                })
                 .expect("every planned flow came from an input or setup file");
             let abs_dir = path::absolute(&flow.dir).map_err(|source| {
                 RunnerError::Artifacts(ArtifactsError::Canonicalize {
@@ -289,6 +311,10 @@ fn build_jobs(
                 canonical: flow.canonical.clone(),
                 report_dir: flow.dir.clone(),
                 abs_dir,
+                roles: FlowRoles {
+                    requested: requested_canonicals.contains(&flow.canonical),
+                    setup:     is_setup,
+                },
                 setup_canonical,
                 state_out: is_setup.then(|| {
                     state_dir.join(format!("{}.json", artifacts::path_hash(&flow.canonical)))
@@ -396,7 +422,20 @@ impl Worker {
         let mut results = Vec::new();
         while let Some(index) = self.queue.next_job() {
             debug!(job_index = index, "starting flow job");
-            let outcome = self.run_job(index).await;
+            let mut timing = Timing::start();
+            let mut outcome = self.run_job(index).await;
+            timing.finish();
+            outcome.report.timing = timing;
+            let job = &self.queue.jobs[index];
+            outcome.report.roles = Some(job.roles);
+            outcome.report.source_sha256 = Some(
+                self.queue
+                    .settings
+                    .source_hashes
+                    .get(&job.file.path)
+                    .expect("every parsed flow has its source hash")
+                    .clone(),
+            );
             debug!(job_index = index, status = ?outcome.report.status, "flow job finished");
             self.queue.record_outcome(&outcome);
             results.push((index, outcome));
@@ -492,6 +531,9 @@ fn synthetic_outcome(job: &FlowJob, status: Status, message: &str) -> FlowOutcom
 
     FlowOutcome {
         report:   FileReport {
+            timing: Timing::default(),
+            source_sha256: None,
+            roles: None,
             runtime: None,
             path: job.file.path.to_string_lossy().into_owned(),
             status,

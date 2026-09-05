@@ -1,0 +1,12 @@
+Generate HTML from saved results without running browsers
+
+Usage: whirl report [OPTIONS] --html <PATH> <REPORT>
+
+Arguments:
+  <REPORT>  A version 1 Whirl JSON report
+
+Options:
+      --html <PATH>              Write a standalone HTML report
+      --metadata <PATH>          Replace saved author context; flow keys match recorded paths exactly
+      --working-directory <DIR>  Resolve relative artifact paths here instead of the recorded directory
+  -h, --help                     Print help

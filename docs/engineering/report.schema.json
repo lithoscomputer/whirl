@@ -256,6 +256,49 @@
                 ]
               }
             }
+          },
+          "startedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "finishedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "sourceSha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "roles": {
+            "type": "object",
+            "required": [
+              "requested",
+              "setup"
+            ],
+            "properties": {
+              "requested": {
+                "type": "boolean"
+              },
+              "setup": {
+                "type": "boolean"
+              }
+            },
+            "anyOf": [
+              {
+                "properties": {
+                  "requested": {
+                    "const": true
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "setup": {
+                    "const": true
+                  }
+                }
+              }
+            ]
           }
         }
       }
@@ -284,6 +327,17 @@
           }
         }
       }
+    },
+    "startedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "finishedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "videoRequested": {
+      "type": "boolean"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",

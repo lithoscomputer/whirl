@@ -4,6 +4,7 @@ Usage: whirl [OPTIONS] [PATH]...
        whirl <COMMAND>
 
 Commands:
+  report      Generate HTML from saved results without running browsers
   check       Parse and lint files; nothing runs
   fmt         Rewrite files to the canonical form
   install     Provision the shim bundle and browsers

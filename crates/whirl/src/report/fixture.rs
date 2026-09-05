@@ -4,6 +4,7 @@
 
 use crate::report::model::{
     EntryReport, FileReport, RunReport, SETUP_ENTRY, Status, StepError, StepKind, StepReport,
+    Timing,
 };
 use crate::run::vars::Masker;
 
@@ -35,6 +36,7 @@ pub(crate) fn sample_report() -> RunReport {
     let fill_text = masker.mask(&format!("FILL \"Password\" {SECRET}"));
     let actual_value = masker.mask(SECRET);
     RunReport {
+        timing:      Timing::default(),
         duration_ms: 3_210,
         files:       vec![
             passed_file(),
@@ -47,6 +49,9 @@ pub(crate) fn sample_report() -> RunReport {
 
 fn passed_file() -> FileReport {
     FileReport {
+        timing:        Timing::default(),
+        source_sha256: None,
+        roles:         None,
         runtime:       None,
         path:          "flows/pass.whirl".to_owned(),
         status:        Status::Passed,
@@ -72,6 +77,9 @@ fn passed_file() -> FileReport {
 
 fn failed_file(fill_text: &str, actual_value: &str) -> FileReport {
     FileReport {
+        timing:        Timing::default(),
+        source_sha256: None,
+        roles:         None,
         runtime:       None,
         path:          "flows/fail.whirl".to_owned(),
         status:        Status::Failed,
@@ -126,6 +134,9 @@ fn failed_file(fill_text: &str, actual_value: &str) -> FileReport {
 
 fn setup_failed_file() -> FileReport {
     FileReport {
+        timing:        Timing::default(),
+        source_sha256: None,
+        roles:         None,
         runtime:       None,
         path:          "flows/setup.whirl".to_owned(),
         status:        Status::Failed,
@@ -148,6 +159,9 @@ fn setup_failed_file() -> FileReport {
 
 fn error_file() -> FileReport {
     FileReport {
+        timing:        Timing::default(),
+        source_sha256: None,
+        roles:         None,
         runtime:       None,
         path:          "flows/crash.whirl".to_owned(),
         status:        Status::Error,

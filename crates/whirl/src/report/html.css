@@ -68,3 +68,6 @@ dd { margin: .25rem 0 1rem; color: var(--muted); overflow-wrap: anywhere; white-
 footer { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 1rem; }
 @media (min-width: 40rem) { body { font-size: .9375rem; } main { padding: 3.5rem 2rem 5rem; } h1 { font-size: 2.75rem; } .flow-heading { padding: 1.5rem; } .badge, .step-location, figcaption, .file-path, .file-summary, footer { font-size: .875rem; } }
 @media print { body { background: white; } main { max-width: none; padding: 0; } video, nav, footer a { display: none; } article { break-inside: avoid; } }
+.run-record { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: .25rem 1rem; font-size: .875rem; }
+.run-record dd { margin: 0; }
+.flow-role { color: var(--muted); font-size: .875rem; }
