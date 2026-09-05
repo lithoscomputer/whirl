@@ -8,7 +8,7 @@ use anyhow::Context as _;
 use serde::de::{Error as _, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct FileMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) title:       Option<String>,
@@ -16,12 +16,14 @@ pub(crate) struct FileMetadata {
     pub(crate) description: Option<String>,
 }
 
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct ReportMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) title:       Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) description: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) details:     BTreeMap<String, String>,
     #[serde(default, deserialize_with = "unique_files")]
     pub(crate) files:       BTreeMap<String, FileMetadata>,
 }
@@ -67,7 +69,7 @@ impl ReportMetadata {
             }
             Ok(())
         };
-        check_keys(&value, &["title", "description", "files"])?;
+        check_keys(&value, &["title", "description", "details", "files"])?;
         if let Some(files) = value.get("files").and_then(serde_json::Value::as_object) {
             for file in files.values() {
                 check_keys(file, &["title", "description"])?;

@@ -2251,3 +2251,64 @@ fn assert_run_record(report: &serde_json::Value, dir: &TestDir) {
         );
     }
 }
+
+#[test]
+fn combined_report_keeps_embedded_media_and_missing_scenarios_offline() {
+    let dir = TestDir::new();
+    let server = SiteServer::start();
+    dir.file("first.whirl", "VISIT /stable.html\nSCREENSHOT first\n");
+    dir.file("second.whirl", "VISIT /stable.html\nSCREENSHOT second\n");
+    for name in ["first", "second"] {
+        let output = run_whirl(&dir, &[
+            "--base",
+            &server.base(),
+            "--video",
+            "--report-json",
+            &format!("{name}.json"),
+            &format!("{name}.whirl"),
+        ]);
+        assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    }
+    dir.file(
+        "expected.json",
+        r#"["first.whirl","second.whirl","missing.whirl"]"#,
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_whirl"))
+        .current_dir(&dir.path)
+        .args([
+            "report",
+            "first.json",
+            "second.json",
+            "--expected",
+            "expected.json",
+            "--html",
+            "combined.html",
+        ])
+        .output()
+        .expect("saved report command");
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    fs::remove_dir_all(dir.artifacts()).expect("remove source media");
+    let url = reqwest::Url::from_file_path(dir.path.join("combined.html")).expect("file URL");
+    let source = format!(
+        r#"VISIT "{url}"
+[Asserts]
+css:article count == 3
+css:article[data-status=not-run] count == 1
+css:article[data-status=passed] count == 2
+css:video count == 2
+css:img count == 2
+EVAL "for (const video of document.querySelectorAll('video')) {{ await video.play(); if (!video.videoWidth) throw new Error('No video pixels'); video.pause(); }}"
+EVAL "for (const details of document.querySelectorAll('details')) details.open = true; for (const img of document.images) {{ img.loading = 'eager'; await img.decode(); }}"
+EVAL "for (const link of document.querySelectorAll('a')) if (!document.getElementById(link.hash.slice(1))) throw new Error('Broken report link'); if (document.documentElement.scrollWidth > innerWidth) throw new Error('Report overflows viewport')"
+"#
+    );
+    dir.file("verify.whirl", &source);
+    dir.file(
+        "mobile.whirl",
+        &format!("[Options]\nviewport: 390x844\n{source}"),
+    );
+    for flow in ["verify.whirl", "mobile.whirl"] {
+        let output = run_whirl(&dir, &[flow]);
+        assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    }
+}

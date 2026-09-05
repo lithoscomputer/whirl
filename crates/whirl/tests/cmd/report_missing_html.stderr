@@ -1,6 +1,6 @@
 error: the following required arguments were not provided:
   --html <PATH>
 
-Usage: whirl report --html <PATH> <REPORT>
+Usage: whirl report --html <PATH> <REPORT>...
 
 For more information, try '--help'.

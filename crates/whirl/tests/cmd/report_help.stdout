@@ -1,12 +1,13 @@
 Generate HTML from saved results without running browsers
 
-Usage: whirl report [OPTIONS] --html <PATH> <REPORT>
+Usage: whirl report [OPTIONS] --html <PATH> <REPORT>...
 
 Arguments:
-  <REPORT>  A version 1 Whirl JSON report
+  <REPORT>...  Version 1 Whirl JSON reports. Select the latest attempt for each flow
 
 Options:
       --html <PATH>              Write a standalone HTML report
       --metadata <PATH>          Replace saved author context; flow keys match recorded paths exactly
+      --expected <PATH>          JSON array of expected flow paths, in scenario order. Missing flows show Not run
       --working-directory <DIR>  Resolve relative artifact paths here instead of the recorded directory
   -h, --help                     Print help

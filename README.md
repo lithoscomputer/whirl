@@ -150,6 +150,18 @@ $ whirl report report.json --html evidence.html --metadata revised-context.json
 
 For the saved command, metadata flow keys match the JSON's `files[].path` exactly. Source files and a browser installation are not required. Relative media paths use the original working directory; use `--working-directory DIR` for a copied project tree. Keep the original artifacts to embed them again, and use a distinct artifact location for each run.
 
+Combine saved runs and show missing scenarios:
+
+```sh
+$ whirl report first.json second.json --expected expected.json --html evidence.html
+```
+
+`expected.json` is an ordered array of recorded flow paths, for example `["flows/login.whirl", "flows/checkout.whirl"]`. Whirl selects the latest recorded attempt for each path, including failures. It uses execution timestamps, never file modification times. Missing expected scenarios show **Not run**. Setup attempts and other flows appear separately. Each attempt retains its source report and provenance. Combined evidence does not establish one complete suite pass. See [selection rules](SPEC.md#144-combined-evidence-and-expected-scenarios).
+
+Use metadata `details` to attach application commits or fixture checksums as labeled text. `--report-metadata context.json --report-json report.json` saves that context without rendering HTML.
+
+New reports record UTC start and finish times, the SHA-256 of each parsed flow, and whether each flow was requested, used as setup, or both. These details survive copied JSON files and regenerated HTML. See [run records](SPEC.md#143-run-records) for their scope.
+
 New reports record UTC start and finish times, the SHA-256 of each parsed flow, and whether each flow was requested, used as setup, or both. These details survive copied JSON files and regenerated HTML. See [run records](SPEC.md#143-run-records) for their scope.
 
 ## Secrets

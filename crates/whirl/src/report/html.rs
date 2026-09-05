@@ -10,8 +10,10 @@ use base64::write::EncoderWriter;
 use tempfile::NamedTempFile;
 
 use crate::report::json::Document;
-use crate::report::metadata::ReportMetadata;
+use crate::report::metadata::{FileMetadata, ReportMetadata};
 use crate::report::model::{EntryReport, FileReport, Status, StepReport, Timing};
+
+pub(crate) mod aggregate;
 
 const STYLE: &str = include_str!("html.css");
 
@@ -19,6 +21,11 @@ const STYLE: &str = include_str!("html.css");
 /// report. Missing or invalid media is shown as unavailable; output errors fail
 /// the write.
 pub(crate) fn write(path: &Path, document: &Document, base: &Path) -> anyhow::Result<()> {
+    check_artifact_destination(path, document, base)?;
+    write_atomic(path, |output| render(output, document, base))
+}
+
+fn check_artifact_destination(path: &Path, document: &Document, base: &Path) -> anyhow::Result<()> {
     let report = &document.report;
     if let Ok(target) = path.canonicalize() {
         for artifact in report.files.iter().flat_map(|file| {
@@ -32,6 +39,13 @@ pub(crate) fn write(path: &Path, document: &Document, base: &Path) -> anyhow::Re
             );
         }
     }
+    Ok(())
+}
+
+fn write_atomic(
+    path: &Path,
+    render: impl FnOnce(&mut BufWriter<&mut File>) -> io::Result<()>,
+) -> anyhow::Result<()> {
     let parent = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -39,18 +53,14 @@ pub(crate) fn write(path: &Path, document: &Document, base: &Path) -> anyhow::Re
     let mut temporary = NamedTempFile::new_in(parent).context("creating temporary HTML report")?;
     {
         let mut output = BufWriter::new(temporary.as_file_mut());
-        render(&mut output, document, base).context("writing HTML report")?;
+        render(&mut output).context("writing HTML report")?;
         output.flush().context("flushing HTML report")?;
     }
     temporary.persist(path).context("saving HTML report")?;
     Ok(())
 }
 
-fn render(output: &mut impl io::Write, document: &Document, base: &Path) -> io::Result<()> {
-    let report = &document.report;
-    let empty_metadata = ReportMetadata::default();
-    let metadata = document.metadata.as_ref().unwrap_or(&empty_metadata);
-    let title = metadata.title.as_deref().unwrap_or("Browser test report");
+fn render_head(output: &mut impl io::Write, title: &str) -> io::Result<()> {
     write!(
         output,
         "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">\
@@ -59,7 +69,15 @@ fn render(output: &mut impl io::Write, document: &Document, base: &Path) -> io::
         style-src 'unsafe-inline'; img-src data:; media-src data:; base-uri 'none'; form-action 'none'\">\
         <title>{}</title><style>{STYLE}</style></head><body><main id=\"top\">",
         escape(title)
-    )?;
+    )
+}
+
+fn render(output: &mut impl io::Write, document: &Document, base: &Path) -> io::Result<()> {
+    let report = &document.report;
+    let empty_metadata = ReportMetadata::default();
+    let metadata = document.metadata.as_ref().unwrap_or(&empty_metadata);
+    let title = metadata.title.as_deref().unwrap_or("Browser test report");
+    render_head(output, title)?;
     write!(
         output,
         "<header><p class=\"eyebrow\">Whirl / Browser verification</p><h1>{}</h1>\
@@ -97,6 +115,7 @@ fn render(output: &mut impl io::Write, document: &Document, base: &Path) -> io::
             escape(description)
         )?;
     }
+    render_details(output, metadata)?;
     write!(
         output,
         "<div class=\"summary-container\"><dl class=\"totals\">"
@@ -148,9 +167,10 @@ fn render(output: &mut impl io::Write, document: &Document, base: &Path) -> io::
             output,
             index,
             file,
-            metadata,
+            metadata.files.get(&file.path),
             document.video_requested,
             base,
+            None,
         )?;
     }
     writeln!(
@@ -163,15 +183,34 @@ fn render(output: &mut impl io::Write, document: &Document, base: &Path) -> io::
     )
 }
 
+fn render_details(output: &mut impl io::Write, metadata: &ReportMetadata) -> io::Result<()> {
+    if !metadata.details.is_empty() {
+        write!(
+            output,
+            "<details class=\"runtime\"><summary>Author-provided details</summary><dl>"
+        )?;
+        for (label, value) in &metadata.details {
+            write!(
+                output,
+                "<dt>{}</dt><dd>{}</dd>",
+                escape(label),
+                escape(value)
+            )?;
+        }
+        write!(output, "</dl></details>")?;
+    }
+    Ok(())
+}
+
 fn render_file(
     output: &mut impl io::Write,
     index: usize,
     file: &FileReport,
-    metadata: &ReportMetadata,
+    context: Option<&FileMetadata>,
     video_requested: Option<bool>,
     base: &Path,
+    source: Option<(usize, &Path)>,
 ) -> io::Result<()> {
-    let context = metadata.files.get(&file.path);
     let title = context
         .and_then(|file| file.title.as_deref())
         .unwrap_or(&file.path);
@@ -198,6 +237,14 @@ fn render_file(
         escape(&file.path),
         badge(file.status)
     )?;
+    if let Some((source_index, path)) = source {
+        write!(
+            output,
+            "<p class=\"artifact-path\">Evidence from <a href=\"#source-{source_index}\">Source {} · {}</a></p>",
+            source_index + 1,
+            escape(&path.to_string_lossy())
+        )?;
+    }
     if let Some(step) = file
         .entries
         .iter()

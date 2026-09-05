@@ -12,7 +12,7 @@ use crate::report::model::RunReport;
 const VERSION: u32 = 1;
 
 /// The producer's context stays attached when a saved report is rendered later.
-#[derive(Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Document {
     version: u32,

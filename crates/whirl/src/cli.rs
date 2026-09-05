@@ -10,7 +10,7 @@ use std::collections::HashSet;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::{fs, io, iter};
+use std::{fs, io};
 
 use anyhow::Context as _;
 use clap::error::ErrorKind;
@@ -117,15 +117,19 @@ enum Command {
 
 #[derive(Debug, Args)]
 struct ReportArgs {
-    /// A version 1 Whirl JSON report.
-    #[arg(value_name = "REPORT")]
-    report:            PathBuf,
+    /// Version 1 Whirl JSON reports. Select the latest attempt for each flow.
+    #[arg(required = true, value_name = "REPORT")]
+    reports:           Vec<PathBuf>,
     /// Write a standalone HTML report.
     #[arg(long, value_name = "PATH")]
     html:              PathBuf,
     /// Replace saved author context; flow keys match recorded paths exactly.
     #[arg(long, value_name = "PATH")]
     metadata:          Option<PathBuf>,
+    /// JSON array of expected flow paths, in scenario order. Missing flows show
+    /// Not run.
+    #[arg(long, value_name = "PATH")]
+    expected:          Option<PathBuf>,
     /// Resolve relative artifact paths here instead of the recorded directory.
     #[arg(long, value_name = "DIR")]
     working_directory: Option<PathBuf>,
@@ -134,6 +138,7 @@ struct ReportArgs {
 /// Flags for the default run command (SPEC 13). The runner is a later
 /// phase; the flags are accepted now so the surface is stable.
 #[derive(Clone, Debug, Args)]
+#[command(group(clap::ArgGroup::new("report_context_output").args(["report_json", "report_html"]).multiple(true)))]
 struct RunArgs {
     /// Files to run; directories recurse to *.whirl.
     #[arg(required_unless_present = "rerun_failed", value_name = "PATH")]
@@ -192,7 +197,7 @@ struct RunArgs {
     report_html: Option<PathBuf>,
 
     /// Read author-written report and flow descriptions from a JSON file.
-    #[arg(long, value_name = "PATH", requires = "report_html")]
+    #[arg(long, value_name = "PATH", requires = "report_context_output")]
     report_metadata: Option<PathBuf>,
 
     /// Stop scheduling new files after the first failure.
@@ -1010,56 +1015,98 @@ fn check_report_destination<'a>(
 
 /// Saved results are data, never executable configuration.
 fn report_command(args: &ReportArgs) -> Exit {
+    use crate::report::aggregate;
+
     let prepared = (|| -> anyhow::Result<_> {
         check_report_destination(
             &args.html,
-            iter::once(args.report.as_path()).chain(args.metadata.as_deref()),
+            args.reports
+                .iter()
+                .map(PathBuf::as_path)
+                .chain(args.metadata.as_deref())
+                .chain(args.expected.as_deref()),
         )?;
-        let mut document = json::Document::read(&args.report)?;
-        let sources: Vec<PathBuf> = document
-            .report
-            .files
-            .iter()
-            .map(|file| document.working_directory.join(&file.path))
-            .collect();
-        check_report_destination(&args.html, sources.iter().map(PathBuf::as_path))?;
-        if let Some(path) = &args.metadata {
-            let mut metadata = ReportMetadata::read_author(path)?;
-            metadata
-                .files
-                .retain(|path, _| document.report.files.iter().any(|file| file.path == *path));
-            document.metadata = Some(metadata);
-        }
-        let base = args
+        let metadata = args
+            .metadata
+            .as_deref()
+            .map(ReportMetadata::read_author)
+            .transpose()?;
+        let expected = args
+            .expected
+            .as_deref()
+            .map(aggregate::read_expected)
+            .transpose()?;
+        let override_base = args
             .working_directory
             .as_deref()
             .map(Path::canonicalize)
             .transpose()
-            .context("resolving artifact working directory")?
-            .unwrap_or_else(|| document.working_directory.clone());
-        if args.working_directory.is_some() {
+            .context("resolving artifact working directory")?;
+        if let Some(base) = &override_base {
             anyhow::ensure!(
                 base.is_dir(),
                 "artifact working directory must be a directory"
             );
-            let copied_sources: Vec<PathBuf> = document
+        }
+        let mut inputs = Vec::new();
+        for path in &args.reports {
+            let document = json::Document::read(path)?;
+            let base = override_base
+                .as_ref()
+                .unwrap_or(&document.working_directory)
+                .clone();
+            let sources: Vec<PathBuf> = document
                 .report
                 .files
                 .iter()
-                .map(|file| base.join(&file.path))
+                .flat_map(|file| {
+                    [
+                        document.working_directory.join(&file.path),
+                        base.join(&file.path),
+                    ]
+                })
                 .collect();
-            check_report_destination(&args.html, copied_sources.iter().map(PathBuf::as_path))?;
+            check_report_destination(&args.html, sources.iter().map(PathBuf::as_path))?;
+            inputs.push(aggregate::Input {
+                path: path.clone(),
+                document,
+                base,
+            });
         }
-        Ok((document, base))
+        Ok((inputs, expected, metadata))
     })();
-    let (document, base) = match prepared {
+    let (mut inputs, expected, metadata) = match prepared {
         Ok(prepared) => prepared,
         Err(error) => {
             print_err(&format!("whirl: error: {error:#}"));
             return Exit::Usage;
         }
     };
-    match html::write(&args.html, &document, &base) {
+    let written = if inputs.len() == 1 && expected.is_none() {
+        let input = &mut inputs[0];
+        if let Some(mut metadata) = metadata {
+            metadata.files.retain(|path, _| {
+                input
+                    .document
+                    .report
+                    .files
+                    .iter()
+                    .any(|file| file.path == *path)
+            });
+            input.document.metadata = Some(metadata);
+        }
+        html::write(&args.html, &input.document, &input.base)
+    } else {
+        let report = match aggregate::Report::new(inputs, expected, metadata) {
+            Ok(report) => report,
+            Err(error) => {
+                print_err(&format!("whirl: error: {error:#}"));
+                return Exit::Usage;
+            }
+        };
+        html::aggregate::write(&args.html, &report)
+    };
+    match written {
         Ok(()) => Exit::Success,
         Err(error) => {
             print_err(&format!(
@@ -1100,7 +1147,7 @@ fn install_command(browsers: &[String]) -> Exit {
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
-    use std::{env, process, slice};
+    use std::{env, iter, process, slice};
 
     use super::*;
 
