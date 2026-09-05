@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.9.0 (2026-09-04)
+
+- Add `whirl report report.json --html evidence.html` to regenerate HTML from saved results, with editable author metadata and support for relocated artifacts.
+- Record UTC run and flow timestamps, SHA-256 hashes of parsed flow sources, setup and requested roles, and recording settings. Preserve original execution details when rendering saved reports.
+
 ## 0.8.0 (2026-09-04)
 
 - Add portable HTML reports with embedded recordings and screenshots, execution checkpoints, failure details, and optional author-written report metadata.
