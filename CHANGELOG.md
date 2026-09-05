@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0 (2026-09-04)
+
 - Combine saved reports by recorded attempt timestamps. Add expected-scenario coverage, Not run states, separate setup history, and per-source provenance.
 - Add plain-text author details and support saving report metadata in JSON without generating HTML.
 
