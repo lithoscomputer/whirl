@@ -6,6 +6,7 @@
 //! its own temporary working directory, because tests run in parallel
 //! processes.
 
+use std::collections::HashSet;
 use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -2311,4 +2312,237 @@ EVAL "for (const link of document.querySelectorAll('a')) if (!document.getElemen
         let output = run_whirl(&dir, &[flow]);
         assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
     }
+}
+
+/// Playwright's bundled ffmpeg, found the way the shim finds it: the
+/// `PLAYWRIGHT_BROWSERS_PATH` registry or the platform cache directory.
+fn playwright_ffmpeg() -> PathBuf {
+    let registry = env::var_os("PLAYWRIGHT_BROWSERS_PATH").map_or_else(
+        || {
+            let home = PathBuf::from(env::var_os("HOME").expect("HOME is set"));
+            let cache = if cfg!(target_os = "macos") {
+                home.join("Library/Caches")
+            } else {
+                env::var_os("XDG_CACHE_HOME").map_or_else(|| home.join(".cache"), PathBuf::from)
+            };
+            cache.join("ms-playwright")
+        },
+        PathBuf::from,
+    );
+    let executable = if cfg!(target_os = "macos") {
+        "ffmpeg-mac"
+    } else {
+        "ffmpeg-linux"
+    };
+    let mut candidates: Vec<PathBuf> = fs::read_dir(&registry)
+        .expect("Playwright browsers directory")
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("ffmpeg-"))
+        })
+        .map(|dir| dir.join(executable))
+        .filter(|path| path.is_file())
+        .collect();
+    candidates.sort();
+    candidates
+        .pop()
+        .expect("Playwright's ffmpeg is installed with the browsers")
+}
+
+/// Decodes a recording to small PNG frames and returns (frame count,
+/// distinct frame count, duration in seconds).
+fn inspect_recording(dir: &TestDir, video: &Path, label: &str) -> (usize, usize, f64) {
+    let ffmpeg = playwright_ffmpeg();
+    let frames = dir.path.join(format!("frames-{label}"));
+    fs::create_dir_all(&frames).expect("frames directory");
+    let decode = Command::new(&ffmpeg)
+        .args(["-hide_banner", "-loglevel", "error", "-i"])
+        .arg(video)
+        .args(["-vf", "scale=160:90", "-f", "image2"])
+        .arg(frames.join("f-%05d.png"))
+        .output()
+        .expect("ffmpeg decodes the recording");
+    assert!(
+        decode.status.success(),
+        "ffmpeg decode failed: {}",
+        String::from_utf8_lossy(&decode.stderr)
+    );
+    let images: Vec<Vec<u8>> = fs::read_dir(&frames)
+        .expect("decoded frames")
+        .filter_map(Result::ok)
+        .map(|entry| fs::read(entry.path()).expect("frame bytes"))
+        .collect();
+    let distinct = images.iter().collect::<HashSet<_>>().len();
+    // `ffmpeg -i` without an output prints the stream summary and fails.
+    let probe = Command::new(&ffmpeg)
+        .args(["-hide_banner", "-i"])
+        .arg(video)
+        .output()
+        .expect("ffmpeg probes the recording");
+    let summary = String::from_utf8_lossy(&probe.stderr);
+    let stamp = summary
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("Duration: "))
+        .and_then(|rest| rest.split(',').next())
+        .unwrap_or_else(|| panic!("no duration in ffmpeg output:\n{summary}"));
+    let mut parts = stamp.trim().split(':');
+    let mut next = || -> f64 {
+        parts
+            .next()
+            .and_then(|part| part.parse().ok())
+            .expect("a HH:MM:SS.ss duration")
+    };
+    let duration = next() * 3600.0 + next() * 60.0 + next();
+    (images.len(), distinct, duration)
+}
+
+/// A flow that shows the animated page for about two seconds.
+const ANIMATED_FLOW: &str = "VISIT /animate.html\n\
+    EVAL \"await new Promise((resolve) => setTimeout(resolve, 2000))\"\n\
+    [Asserts]\ntitle == \"Animated Page\"\n";
+
+#[test]
+fn chromium_video_records_at_60_fps_by_default_and_at_the_requested_rate() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file("default.whirl", ANIMATED_FLOW);
+    dir.file("thirty.whirl", ANIMATED_FLOW);
+
+    // The default rate, with tracing on as well: both screencasts share
+    // the page.
+    let output = run_whirl(&dir, &[
+        "--base",
+        &server.base(),
+        "--video",
+        "--trace",
+        "--report-json",
+        "default.json",
+        "--report-html",
+        "default.html",
+        "default.whirl",
+    ]);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{}", stdout_text(&output));
+    let video = dir.artifacts().join("default/video.webm");
+    assert!(video.is_file(), "--video should write video.webm");
+    let (frames, distinct, duration) = inspect_recording(&dir, &video, "default");
+    let rate = frames as f64 / duration;
+    assert!(
+        (54.0..=66.0).contains(&rate),
+        "expected about 60 fps, got {frames} frames over {duration:.2}s = {rate:.1} fps"
+    );
+    assert!(
+        distinct * 2 >= frames,
+        "an animating page should record distinct frames, got {distinct} of {frames}"
+    );
+    let report: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(dir.path.join("default.json")).expect("JSON report"),
+    )
+    .expect("valid JSON");
+    assert_eq!(report["files"][0]["runtime"]["videoFps"], 60);
+    let html = fs::read_to_string(dir.path.join("default.html")).expect("HTML report");
+    assert!(
+        html.contains("Browser recording · video.webm · 60 fps"),
+        "{html}"
+    );
+
+    // An explicit rate.
+    let output = run_whirl(&dir, &[
+        "--base",
+        &server.base(),
+        "--video",
+        "--video-fps",
+        "30",
+        "--report-json",
+        "thirty.json",
+        "thirty.whirl",
+    ]);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{}", stdout_text(&output));
+    let video = dir.artifacts().join("thirty/video.webm");
+    let (frames, distinct, duration) = inspect_recording(&dir, &video, "thirty");
+    let rate = frames as f64 / duration;
+    assert!(
+        (27.0..=33.0).contains(&rate),
+        "expected about 30 fps, got {frames} frames over {duration:.2}s = {rate:.1} fps"
+    );
+    assert!(
+        distinct * 2 >= frames,
+        "got {distinct} distinct of {frames}"
+    );
+    let report: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(dir.path.join("thirty.json")).expect("JSON report"),
+    )
+    .expect("valid JSON");
+    assert_eq!(report["files"][0]["runtime"]["videoFps"], 30);
+    let leftovers =
+        fs::read_dir(dir.artifacts().join("thirty/video-temp")).map_or(0, Iterator::count);
+    assert_eq!(
+        leftovers, 0,
+        "the temp recording should be moved into place"
+    );
+}
+
+#[test]
+fn a_cancelled_flow_with_video_leaves_no_recorder_behind() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file(
+        "hang.whirl",
+        "[Options]\nentry-timeout: 1s\n\nVISIT /animate.html\nEVAL \"new Promise(()=>{})\" @30s\n",
+    );
+    let output = run_whirl(&dir, &["--base", &server.base(), "--video", "hang.whirl"]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 1, "stdout:\n{stdout}");
+    assert!(stdout.contains("entry timeout"), "stdout:\n{stdout}");
+    // The recorder's output path names this test's artifacts directory, so
+    // a surviving ffmpeg would show up in the process list.
+    let survivors = Command::new("pgrep")
+        .arg("-f")
+        .arg(dir.artifacts().join("hang").to_string_lossy().as_ref())
+        .output()
+        .expect("pgrep runs");
+    assert!(
+        String::from_utf8_lossy(&survivors.stdout).trim().is_empty(),
+        "ffmpeg should not survive a cancelled flow"
+    );
+}
+
+#[test]
+fn an_explicit_video_fps_on_firefox_warns_and_records_at_the_engine_rate() {
+    // Needs firefox installed, so it runs only in check:nightly.
+    if env::var_os("WHIRL_TEST_ALL_BROWSERS").is_none() {
+        return;
+    }
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file("firefox.whirl", ANIMATED_FLOW);
+    let output = run_whirl(&dir, &[
+        "--base",
+        &server.base(),
+        "--browser",
+        "firefox",
+        "--video",
+        "--video-fps",
+        "30",
+        "--report-json",
+        "firefox.json",
+        "firefox.whirl",
+    ]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+    assert!(
+        stdout.contains("warning: --video-fps 30 is not supported on firefox; recording at 25 fps"),
+        "stdout:\n{stdout}"
+    );
+    assert!(dir.artifacts().join("firefox/video.webm").is_file());
+    let report: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(dir.path.join("firefox.json")).expect("JSON report"),
+    )
+    .expect("valid JSON");
+    assert_eq!(report["files"][0]["runtime"]["videoFps"], 25);
+    assert_eq!(
+        report["files"][0]["warnings"][0],
+        "--video-fps 30 is not supported on firefox; recording at 25 fps"
+    );
 }

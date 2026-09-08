@@ -531,9 +531,14 @@ fn render_media(
     encoder.finish()?;
     drop(encoder);
     if video {
+        let rate = file
+            .runtime
+            .as_ref()
+            .and_then(|runtime| runtime.video_fps)
+            .map_or_else(String::new, |fps| format!(" · {fps} fps"));
         write!(
             output,
-            "\"></video><figcaption>Browser recording · {}</figcaption></figure>",
+            "\"></video><figcaption>Browser recording · {}{rate}</figcaption></figure>",
             escape(&name)
         )
     } else {

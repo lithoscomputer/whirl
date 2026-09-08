@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Animated Page</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+      }
+      #box {
+        position: absolute;
+        width: 300px;
+        height: 300px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1 id="frame" hidden></h1>
+    <div id="box"></div>
+    <script>
+      // Every animation frame repaints the whole page: the background hue
+      // rotates and the box moves. Video tests count distinct recorded
+      // frames, so no two consecutive frames may look alike, even after
+      // the recording is scaled down for comparison.
+      let frame = 0;
+      const box = document.getElementById("box");
+      const label = document.getElementById("frame");
+      function paint() {
+        frame += 1;
+        const hue = (frame * 11) % 360;
+        document.body.style.background = `hsl(${hue}, 80%, 50%)`;
+        box.style.background = `hsl(${(hue + 180) % 360}, 80%, 40%)`;
+        box.style.left = `${(frame * 13) % 900}px`;
+        box.style.top = `${(frame * 7) % 400}px`;
+        label.textContent = String(frame);
+        requestAnimationFrame(paint);
+      }
+      requestAnimationFrame(paint);
+    </script>
+  </body>
+</html>

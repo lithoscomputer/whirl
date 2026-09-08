@@ -162,6 +162,7 @@ export class Dispatcher {
 				this.#respondOk(id, slot, {
 					protocol: protocolVersion,
 					playwrightVersion: this.#driver.playwrightVersion,
+					ffmpegPath: await this.#driver.ffmpegPath(),
 				});
 				return;
 			}

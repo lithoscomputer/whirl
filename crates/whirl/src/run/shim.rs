@@ -157,6 +157,10 @@ fn resolve_launch_from(
 pub(crate) struct HelloResult {
     pub(crate) protocol:           u64,
     pub(crate) playwright_version: String,
+    /// Playwright's bundled ffmpeg, which video recording needs; `None`
+    /// when it is missing (or the shim predates the field).
+    #[serde(default)]
+    pub(crate) ffmpeg_path:        Option<String>,
 }
 
 /// `startFlow` viewport params.
@@ -167,12 +171,15 @@ pub(crate) struct ViewportParams {
 }
 
 /// `startFlow` video params: record into `temp_dir`, move the recording
-/// to `final_path` at `endFlow`.
+/// to `final_path` at `endFlow`. `fps` selects the shim's screencast
+/// recorder at that rate (Chromium only); `None` selects Playwright's own
+/// recorder at its fixed rate.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct VideoParams {
     pub(crate) temp_dir:   String,
     pub(crate) final_path: String,
+    pub(crate) fps:        Option<u8>,
 }
 
 /// `startFlow` params (protocol section 3).

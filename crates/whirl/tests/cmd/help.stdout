@@ -33,6 +33,7 @@ Options:
       --fail-fast                 Stop scheduling new files after the first failure
       --update-snapshots          Write or refresh SNAPSHOT baselines instead of comparing
       --video                     Record a .webm video of each file's run
+      --video-fps <N>             Frames per second for --video on Chromium (1 to 60; default 60)
       --har                       Record a .har network log per file
       --storage <PATH>            Override the `storage` option
       --save-storage <PATH>       Write the final storage state after a successful run

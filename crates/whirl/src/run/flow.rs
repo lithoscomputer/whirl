@@ -49,11 +49,16 @@ pub(crate) struct Overrides {
     pub(crate) user_agent:       Option<String>,
 }
 
+/// The frame rate of Chromium recordings without `--video-fps` (SPEC 13).
+pub(crate) const DEFAULT_VIDEO_FPS: u8 = 60;
+
 /// Run-wide flags the flow needs (SPEC 13).
 #[derive(Clone, Debug, Default)]
 pub(crate) struct FlowFlags {
     pub(crate) trace:            bool,
     pub(crate) video:            bool,
+    /// The `--video-fps` flag; honored on Chromium only.
+    pub(crate) video_fps:        Option<u8>,
     pub(crate) har:              bool,
     pub(crate) update_snapshots: bool,
     /// Set only when this flow is the run's single file.
@@ -1159,6 +1164,10 @@ fn start_flow_params(run: &FlowRun<'_>, options: &ResolvedOptions) -> StartFlowP
         video:              run.flags.video.then(|| VideoParams {
             temp_dir:   wire_path(&run.abs_dir.join("video-temp")),
             final_path: wire_path(&run.abs_dir.join(artifacts::VIDEO_WEBM)),
+            // Only Chromium has the screencast recorder; the other engines
+            // keep Playwright's recorder at its fixed rate (SPEC 13).
+            fps:        (options.browser == BrowserKind::Chromium)
+                .then(|| run.flags.video_fps.unwrap_or(DEFAULT_VIDEO_FPS)),
         }),
         har_path:           run
             .flags
@@ -1289,6 +1298,7 @@ pub(crate) async fn run_flow(run: &FlowRun<'_>, client: &mut ShimClient) -> Flow
                 .map(|value| vars.mask(value)),
             node_version:       version("nodeVersion"),
             playwright_version: version("playwrightVersion"),
+            video_fps:          runtime_result.get("videoFps").and_then(Json::as_u64),
         });
 
         let mut exec = FlowExec {
@@ -1299,6 +1309,24 @@ pub(crate) async fn run_flow(run: &FlowRun<'_>, client: &mut ShimClient) -> Flow
             flow_open: true,
             captures: Vec::new(),
         };
+        // An explicit rate that the engine cannot honor is a warning, not a
+        // failure: the recording still exists at the engine's rate (SPEC 13).
+        if let (Some(fps), Some(video)) = (run.flags.video_fps, &params.video)
+            && video.fps.is_none()
+        {
+            let actual = report
+                .runtime
+                .as_ref()
+                .and_then(|runtime| runtime.video_fps)
+                .map_or_else(
+                    || "the engine's fixed rate".to_owned(),
+                    |actual| format!("{actual} fps"),
+                );
+            exec.warnings.push(format!(
+                "--video-fps {fps} is not supported on {browser}; recording at {actual}",
+                browser = params.browser
+            ));
+        }
         let mut failed = false;
         for entry in &run.file.entries {
             if failed {

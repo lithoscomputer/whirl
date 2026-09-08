@@ -212,6 +212,10 @@ struct RunArgs {
     #[arg(long)]
     video: bool,
 
+    /// Frames per second for --video on Chromium (1 to 60; default 60).
+    #[arg(long, value_name = "N", requires = "video", value_parser = clap::value_parser!(u8).range(1..=60))]
+    video_fps: Option<u8>,
+
     /// Record a .har network log per file.
     #[arg(long)]
     har: bool,
@@ -894,6 +898,7 @@ fn run_command(args: &RunArgs) -> Exit {
         flags: flow::FlowFlags {
             trace:            args.trace,
             video:            args.video,
+            video_fps:        args.video_fps,
             har:              args.har,
             update_snapshots: args.update_snapshots,
             save_storage:     args.save_storage.clone(),
@@ -1333,6 +1338,17 @@ mod tests {
             run_cli(&["--browser", "netscape", file.to_str().expect("utf-8 path")]),
             4
         );
+    }
+
+    #[test]
+    fn video_fps_requires_video_and_a_rate_from_1_to_60() {
+        let dir = TempDir::new();
+        let file = dir.file("clean.whirl", "VISIT /login\n");
+        let path = file.to_str().expect("utf-8 path");
+        assert_eq!(run_cli(&["--video-fps", "30", path]), 4);
+        assert_eq!(run_cli(&["--video", "--video-fps", "0", path]), 4);
+        assert_eq!(run_cli(&["--video", "--video-fps", "61", path]), 4);
+        assert_eq!(run_cli(&["--video", "--video-fps", "fast", path]), 4);
     }
 
     #[test]

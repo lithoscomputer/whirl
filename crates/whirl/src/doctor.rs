@@ -94,6 +94,12 @@ async fn inspect(browser: &str, progress: Progress<'_>) -> anyhow::Result<()> {
             bail!("{browser} could not launch: {error}\nInstall its browser build: whirl install {browser}{libraries}");
         }
         progress(&format!("{browser}: browser launch OK"));
+        // `--video` needs Playwright's ffmpeg on every engine; browser
+        // installs bring it along, so the repair is the same command.
+        let Some(ffmpeg) = hello.ffmpeg_path else {
+            bail!("Playwright's ffmpeg is missing, so --video cannot record\nInstall it with a browser build: whirl install {browser}");
+        };
+        progress(&format!("ffmpeg for --video: OK ({ffmpeg})"));
         Ok(())
     }.await;
     let shutdown = client.shutdown().await;

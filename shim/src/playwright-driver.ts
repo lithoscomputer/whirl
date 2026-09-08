@@ -58,6 +58,11 @@ import {
 	shortErrorMessage,
 	strictnessError,
 } from "./step-util.js";
+import {
+	PLAYWRIGHT_VIDEO_FPS,
+	resolveFfmpegPath,
+	ScreencastRecorder,
+} from "./video-recorder.js";
 
 const require = createRequire(import.meta.url);
 
@@ -101,6 +106,8 @@ interface FlowState {
 		readonly tempDir: string;
 		readonly finalPath: string;
 	} | null;
+	/** The screencast recorder; null when Playwright's recorder or no video. */
+	readonly recorder: ScreencastRecorder | null;
 }
 
 /** Resolves true when the promise settles in time, false on the deadline. */
@@ -286,6 +293,10 @@ export class PlaywrightDriver implements ShimDriver {
 	#flow: FlowState | null = null;
 	#cancelRequested = false;
 
+	ffmpegPath(): Promise<string | null> {
+		return resolveFfmpegPath();
+	}
+
 	async #ensureBrowser(
 		engine: BrowserEngine,
 		headed: boolean,
@@ -321,6 +332,23 @@ export class PlaywrightDriver implements ShimDriver {
 			throw new ShimError("internal", "a flow is already active");
 		}
 		this.#cancelRequested = false;
+		// An explicit rate needs the Chromium screencast recorder; Rust sends
+		// null for the other engines, which keep Playwright's recorder.
+		const screencastFps = params.video?.fps ?? null;
+		if (screencastFps !== null && params.browser !== "chromium") {
+			throw new ShimError(
+				"internal",
+				`a video frame rate needs chromium; ${params.browser} records at ${PLAYWRIGHT_VIDEO_FPS} fps`,
+			);
+		}
+		const ffmpegPath =
+			screencastFps === null ? null : await resolveFfmpegPath();
+		if (screencastFps !== null && ffmpegPath === null) {
+			throw new ShimError(
+				"internal",
+				"video recording needs Playwright's ffmpeg, which is missing; run `whirl install chromium`",
+			);
+		}
 		const browser = await this.#ensureBrowser(params.browser, params.headed);
 		const userAgent = resolveUserAgent(params.userAgent);
 		const contextOptions: BrowserContextOptions = {
@@ -335,7 +363,7 @@ export class PlaywrightDriver implements ShimDriver {
 			...(params.reducedMotion === null
 				? {}
 				: { reducedMotion: params.reducedMotion }),
-			...(params.video === null
+			...(params.video === null || screencastFps !== null
 				? {}
 				: { recordVideo: { dir: params.video.tempDir } }),
 			...(params.harPath === null
@@ -358,6 +386,25 @@ export class PlaywrightDriver implements ShimDriver {
 		const network = new FlowNetwork(context, params.allowHosts, blockedHosts);
 		const page = await context.newPage();
 		const tabs = new FlowTabs(context, page, params.dialogs);
+		let recorder: ScreencastRecorder | null = null;
+		if (
+			params.video !== null &&
+			screencastFps !== null &&
+			ffmpegPath !== null
+		) {
+			try {
+				recorder = await ScreencastRecorder.start(page, {
+					fps: screencastFps,
+					width: params.viewport.width,
+					height: params.viewport.height,
+					tempDir: params.video.tempDir,
+					ffmpegPath,
+				});
+			} catch (error) {
+				await settlesWithin(context.close(), closeWatchdogMs);
+				throw error;
+			}
+		}
 		this.#flow = {
 			context,
 			page,
@@ -366,12 +413,18 @@ export class PlaywrightDriver implements ShimDriver {
 			blockedHosts,
 			traceActive: params.trace,
 			video: params.video,
+			recorder,
 		};
+		let videoFps: number | null = null;
+		if (params.video !== null) {
+			videoFps = screencastFps ?? PLAYWRIGHT_VIDEO_FPS;
+		}
 		return {
 			browserVersion: browser.version(),
 			nodeVersion: process.versions.node,
 			playwrightVersion: this.playwrightVersion,
 			userAgent: await page.evaluate(() => navigator.userAgent),
+			videoFps,
 		};
 	}
 
@@ -391,11 +444,27 @@ export class PlaywrightDriver implements ShimDriver {
 			await mkdir(dirname(params.saveStoragePath), { recursive: true });
 			await flow.context.storageState({ path: params.saveStoragePath });
 		}
-		const video = flow.video === null ? null : flow.page.video();
+		// The screencast recorder finalizes while the page is still alive; a
+		// failure surfaces after the context is closed so nothing leaks.
+		let recorderFailure: unknown = null;
+		if (flow.recorder !== null && flow.video !== null) {
+			try {
+				await flow.recorder.stop(flow.video.finalPath);
+			} catch (error) {
+				recorderFailure = error;
+			}
+		}
+		const video =
+			flow.video === null || flow.recorder !== null ? null : flow.page.video();
 		// The context close finalizes the video recording and the HAR file.
 		await flow.context.close();
+		if (recorderFailure !== null) {
+			throw recorderFailure;
+		}
 		let videoPath: string | null = null;
-		if (flow.video !== null && video !== null) {
+		if (flow.recorder !== null && flow.video !== null) {
+			videoPath = flow.video.finalPath;
+		} else if (flow.video !== null && video !== null) {
 			await mkdir(dirname(flow.video.finalPath), { recursive: true });
 			await video.saveAs(flow.video.finalPath);
 			await video.delete().catch(() => {
@@ -415,6 +484,9 @@ export class PlaywrightDriver implements ShimDriver {
 		this.#flow = null;
 		if (flow === null) {
 			return;
+		}
+		if (flow.recorder !== null) {
+			await flow.recorder.abort();
 		}
 		const closed = await settlesWithin(flow.context.close(), closeWatchdogMs);
 		if (!closed) {
@@ -900,6 +972,9 @@ export class PlaywrightDriver implements ShimDriver {
 
 	async dispose(): Promise<void> {
 		if (this.#flow !== null) {
+			if (this.#flow.recorder !== null) {
+				await this.#flow.recorder.abort();
+			}
 			await settlesWithin(this.#flow.context.close(), closeWatchdogMs);
 			this.#flow = null;
 		}

@@ -11,6 +11,8 @@ import type {
 
 export interface ShimDriver {
 	readonly playwrightVersion: string;
+	/** Playwright's bundled ffmpeg, or null when it is not installed. */
+	ffmpegPath(): Promise<string | null>;
 	startFlow(params: StartFlowParams): Promise<Params>;
 	endFlow(params: EndFlowParams): Promise<EndFlowResult>;
 	cancelFlow(): Promise<void>;

@@ -496,6 +496,7 @@ whirl report <REPORT>... --html <PATH>  Generate HTML from saved results
 | `--fail-fast` | Stop scheduling new files after the first failure |
 | `--update-snapshots` | Write or refresh SNAPSHOT baselines instead of comparing |
 | `--video` | Record a .webm video of each file's run into the artifacts directory |
+| `--video-fps N` | Frames per second for `--video` on Chromium, 1 to 60; requires `--video` |
 | `--har` | Record a .har network log per file into the artifacts directory |
 | `--storage PATH` | Override the storage option |
 | `--save-storage PATH` | Write the final storage state after a successful run (single file only) |
@@ -511,6 +512,8 @@ Exit codes:
 | 2 | Parse or lint error |
 | 3 | Runtime error (browser or shim failure) |
 | 4 | Usage error |
+
+`--video` records the `main` tab (section 7.1). On Chromium, Whirl records the page's own screencast frames through Playwright's bundled ffmpeg at 60 frames per second, or at the rate `--video-fps` names; a still page holds its last frame, so the recording always plays at a constant rate. Firefox and WebKit use Playwright's recorder at its fixed rate of 25 frames per second. `--video-fps` on those engines is not an error: the file records at 25 frames per second and reports a warning, because the recording is evidence, not a result. A missing ffmpeg fails the file as a runtime error; `whirl install` provisions it with every browser build, and `whirl doctor` checks for it.
 
 `--rerun-failed` reads a version 1 report with an absolute `workingDirectory`. Relative file paths resolve against that directory, even when the report is moved. Each selected file runs from the beginning, including its setup. Existing CLI overrides and secrets must be supplied again; a report is not executable configuration. An unsupported or malformed report is a usage error. A report with no failed or errored files exits 0 with a message and launches no browser.
 
@@ -571,7 +574,7 @@ Each file includes `sourceSha256`: the lowercase SHA-256 of the exact UTF-8 byte
 
 Each file includes `roles` with independent `requested` and `setup` booleans. `requested` means the file was selected by the invocation's input paths or `--rerun-failed`. `setup` means another selected flow names it through the `setup` option. Both can be true; the flow still runs once as setup. A synthetic `[setup]` entry in a requested scenario does not make that scenario a setup flow. HTML labels these roles and shows both counts; a flow with both roles appears in both counts. Status totals count each reported file once.
 
-The run's `videoRequested` boolean distinguishes an absent requested recording from a run made without `--video`. These fields are additive within report version 1. Consumers must parse timestamps to compare execution times and must ignore unknown fields.
+The run's `videoRequested` boolean distinguishes an absent requested recording from a run made without `--video`. A recorded file's `runtime.videoFps` is the frame rate of its recording (section 13), so a consumer can tell a 60 frames per second Chromium recording from a 25 frames per second one; the HTML report shows it in the recording's caption. These fields are additive within report version 1. Consumers must parse timestamps to compare execution times and must ignore unknown fields.
 
 ### 14.4 Combined evidence and expected scenarios
 

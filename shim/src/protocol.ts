@@ -284,6 +284,11 @@ export interface ViewportSize {
 export interface VideoConfig {
 	readonly tempDir: string;
 	readonly finalPath: string;
+	/**
+	 * Frames per second for the screencast recorder (Chromium only); null
+	 * selects Playwright's own recorder at its fixed rate.
+	 */
+	readonly fps: number | null;
 }
 
 export interface StartFlowParams {
