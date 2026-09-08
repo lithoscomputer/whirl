@@ -173,6 +173,10 @@ export function decodeStartFlowParams(params: Params): StartFlowParams {
 				: {
 						tempDir: fieldString(video, "tempDir"),
 						finalPath: fieldString(video, "finalPath"),
+						fps:
+							video["fps"] === null || video["fps"] === undefined
+								? null
+								: fieldNumber(video, "fps"),
 					},
 		harPath: fieldStringOrNull(params, "harPath"),
 		trace: fieldBoolean(params, "trace"),

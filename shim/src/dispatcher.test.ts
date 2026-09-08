@@ -34,6 +34,10 @@ class FakeDriver implements ShimDriver {
 	stepGate: Deferred | null = null;
 	cancelled = 0;
 
+	async ffmpegPath(): Promise<string | null> {
+		return "/fake/ffmpeg";
+	}
+
 	async startFlow(_params: StartFlowParams): Promise<Params> {
 		this.log.push("startFlow");
 		return {};
@@ -144,7 +148,7 @@ const startFlowParams = JSON.stringify({
 	trace: false,
 });
 
-test("hello answers protocol 1 and the Playwright version", async (t) => {
+test("hello answers protocol 1, the Playwright version, and the ffmpeg path", async (t) => {
 	const harness = startHarness();
 	t.after(harness.close);
 	harness.send('{"id": 1, "cmd": "hello", "params": {}}');
@@ -152,7 +156,11 @@ test("hello answers protocol 1 and the Playwright version", async (t) => {
 	assert.deepEqual(response, {
 		id: 1,
 		ok: true,
-		result: { protocol: 1, playwrightVersion: "0.0.0-test" },
+		result: {
+			protocol: 1,
+			playwrightVersion: "0.0.0-test",
+			ffmpegPath: "/fake/ffmpeg",
+		},
 	});
 });
 

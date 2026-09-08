@@ -254,6 +254,10 @@
                   "string",
                   "null"
                 ]
+              },
+              "videoFps": {
+                "type": "integer",
+                "minimum": 1
               }
             }
           },

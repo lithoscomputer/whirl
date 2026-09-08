@@ -113,6 +113,10 @@ pub(crate) struct RuntimeMetadata {
     pub(crate) browser_version:    Option<String>,
     pub(crate) node_version:       Option<String>,
     pub(crate) playwright_version: Option<String>,
+    /// Frames per second of the file's recording; absent without `--video`
+    /// and in reports written before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) video_fps:          Option<u64>,
 }
 
 /// One executed (or skipped) step.

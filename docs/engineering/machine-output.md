@@ -43,8 +43,10 @@ platform, and architecture. Each file with a started browser context has
 `nodeVersion`, and `playwrightVersion`. `userAgent` is the actual string the
 browser reports, after alias resolution, with secret values masked. Versions
 come from the active shim and browser. User agent and version fields can be null
-when an older shim omits them. A failure before context startup has no runtime
-object.
+when an older shim omits them. With `--video`, `runtime` also has `videoFps`,
+the recording's frames per second (60 or the `--video-fps` value on Chromium,
+25 elsewhere); it is absent without a recording and in older reports. A failure
+before context startup has no runtime object.
 
 ## Saved reports and run records
 

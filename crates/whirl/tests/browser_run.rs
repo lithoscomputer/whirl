@@ -695,6 +695,7 @@ fn doctor_launches_the_real_browser_and_checks_the_runtime() {
     let text = stdout_text(&output);
     assert!(text.contains("Playwright 1.62.1: OK"));
     assert!(text.contains("chromium: browser launch OK"));
+    assert!(text.contains("ffmpeg for --video: OK ("), "{text}");
     assert!(text.contains("Whirl is ready."));
 }
 

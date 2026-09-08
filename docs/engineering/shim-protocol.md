@@ -50,7 +50,10 @@ Error object:
 ### `hello`
 
 Sent once after spawn. Params: `{}`. Result:
-`{"protocol": 1, "playwrightVersion": "1.62.1"}`.
+`{"protocol": 1, "playwrightVersion": "1.62.1", "ffmpegPath": "abs path" | null}`.
+`ffmpegPath` is Playwright's bundled ffmpeg, which every video recording
+needs; `null` means it is not installed. `whirl doctor` reports it. Older
+protocol 1 shims omit the field.
 
 ### `startFlow`
 
@@ -67,13 +70,13 @@ Creates the browser context and page for one flow. Params:
   "navTimeoutMs": 30000,
   "userAgent": "chrome" | "firefox" | "safari" | "literal string" | null,
   "reducedMotion": "reduce" | "no-preference" | null,
-  "video": {"tempDir": "abs path", "finalPath": "abs path"} | null,
+  "video": {"tempDir": "abs path", "finalPath": "abs path", "fps": 60 | null} | null,
   "harPath": "abs path" | null,
   "trace": false
 }
 ```
 
-Result: `{"browserVersion": "...", "nodeVersion": "...", "playwrightVersion": "...", "userAgent": "..."}`. These are the active browser, Node process, and Playwright library versions, plus the context's actual `navigator.userAgent`. Older protocol 1 shims may omit these additive fields; reports then use null values. Rust applies secret masking to the user agent before reporting it.
+Result: `{"browserVersion": "...", "nodeVersion": "...", "playwrightVersion": "...", "userAgent": "...", "videoFps": 60 | null}`. These are the active browser, Node process, and Playwright library versions, plus the context's actual `navigator.userAgent`, plus the frame rate of the flow's recording (`null` without `video`). Older protocol 1 shims may omit these additive fields; reports then use null values. Rust applies secret masking to the user agent before reporting it.
 
 - `allowHosts: null` means all hosts are allowed. When it is a list, Rust has
   already appended the `base` host; the shim routes all requests and aborts
@@ -92,7 +95,14 @@ Result: `{"browserVersion": "...", "nodeVersion": "...", "playwrightVersion": ".
   the context; `null` keeps the engine default.
 - `trace: true` starts Playwright tracing (screenshots and snapshots on).
 - `video` records video into `tempDir`; at `endFlow` the shim moves the
-  recording to `finalPath`.
+  recording to `finalPath`. With `fps: null` the shim uses Playwright's
+  `recordVideo` at its fixed 25 frames per second. With a number (Chromium
+  only; Rust sends `null` for other engines) the shim records the main
+  page's CDP screencast through Playwright's bundled ffmpeg at that rate,
+  holding the last frame while the page is still. A number for another
+  engine, or a missing ffmpeg, fails `startFlow` with kind `"internal"`.
+  An ffmpeg failure at `endFlow` fails `endFlow` the same way. `cancelFlow`
+  discards an in-progress screencast recording.
 
 ### `endFlow`
 

@@ -119,6 +119,7 @@ $ whirl fmt flows/          # rewrite files to the canonical form
 $ whirl --headed flow.whirl # watch the browser
 $ whirl --trace flow.whirl  # save a trace when the flow fails
 $ whirl --video --report-html evidence.html flows/
+$ whirl --video --video-fps 30 flows/  # lighter recordings; Chromium records at 60 by default
 $ whirl show-trace whirl-artifacts/flow/trace.zip
 ```
 
