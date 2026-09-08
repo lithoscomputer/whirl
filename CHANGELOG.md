@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.11.0 (2026-09-08)
+
+- Record Chromium video at 60 frames per second by default through a screencast recorder, with `--video-fps` (1 to 60) to choose the rate. Firefox and WebKit keep Playwright's 25 fps recorder and warn when a rate is requested. Reports record the recorded rate as `runtime.videoFps`, and `whirl doctor` checks for ffmpeg.
+
 ## 0.10.0 (2026-09-04)
 
 - Combine saved reports by recorded attempt timestamps. Add expected-scenario coverage, Not run states, separate setup history, and per-source provenance.
