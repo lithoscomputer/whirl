@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.12.0 (2026-09-08)
+
 - Record the installing Whirl version in the shim bundle. An upgraded binary refuses a stale bundle with a runtime error naming `whirl install`, and `whirl doctor` reports the same, instead of running an older shim silently.
 - Replace named inline `HTTP` actions with structured HTTP entries. Requests can run before `VISIT`, use multiline JSON or fenced text bodies, and assert or capture their response without a name. Whirl warns when an HTTP entry has no status assertion.
 
