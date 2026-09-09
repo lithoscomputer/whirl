@@ -81,9 +81,12 @@ pub(crate) enum ShimError {
     )]
     NotInstalled,
     #[error(
-        "the installed shim bundle is from whirl {installed}, but this is whirl {WHIRL_VERSION}; \
+        "the installed shim bundle is from {installed}, but this is whirl {WHIRL_VERSION}; \
          run `whirl install` to refresh it",
-        installed = installed.as_deref().unwrap_or("an older version")
+        installed = installed.as_deref().map_or_else(
+            || "an older version of whirl".to_owned(),
+            |version| format!("whirl {version}")
+        )
     )]
     BundleOutdated { installed: Option<String> },
     #[error("the shim did not complete {command} within {timeout_ms}ms")]
