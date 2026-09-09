@@ -59,9 +59,13 @@ $ whirl --report-junit report.xml flows/
 ## 3. Files
 
 - Extension: `.whirl`. Encoding: UTF-8. Line endings: LF or CRLF.
-- The format is line-oriented. Each action, check, capture, and option is one line.
-- `#` starts a comment. A comment runs to the end of the line. A `#` inside a quoted string or a regex literal is literal text.
-- Blank lines are ignored everywhere.
+- The format is line-oriented. Each check, capture, and option is one line. Most
+  actions are one line. An independent `HTTP` request can also own the header
+  and body lines defined in section 7.3; the complete request is one action.
+- `#` starts a comment. A comment runs to the end of the line. A `#` inside a
+  quoted string, a regex literal, a JSON body, or a fenced HTTP body is literal
+  text.
+- Blank lines are ignored outside HTTP bodies.
 - Keywords (`VISIT`, `PAGE`, `[Asserts]`, checks, prefixes) are case-sensitive.
 
 ### 3.1 Values
@@ -83,14 +87,29 @@ Other literal forms:
 ## 4. File structure
 
 ```
-file    := [Options-section] entry+
-entry   := action+ [PAGE-line] [Asserts-section] [Captures-section]
+file          := [Options-section] entry+
+entry         := browser-entry | http-entry
+browser-entry := action+ [PAGE-line] [Asserts-section] [Captures-section]
+http-entry    := HTTP-request [Asserts-section] [Captures-section]
 ```
 
 - The optional `[Options]` section appears once, before the first entry.
-- An **entry** is one or more action lines, then an optional `PAGE` line, then an optional `[Asserts]` section, then an optional `[Captures]` section, in that order.
-- An action line after a `PAGE` line, an `[Asserts]` section, or a `[Captures]` section starts a new entry. There is deliberately no other delimiter: consecutive action lines always belong to one entry, because an entry is Whirl's unit of verification, timeout scope, and reporting, and actions group with the checks that follow them. Blank lines and comments never split an entry.
-- The first action in a file must be `VISIT`, because no page exists yet.
+- A **browser entry** is one or more browser action lines, then an optional
+  `PAGE` line, then an optional `[Asserts]` section, then an optional
+  `[Captures]` section, in that order.
+- An **HTTP entry** is one independent `HTTP` request, then optional
+  `[Asserts]` and `[Captures]` sections for that response. It has no `PAGE`
+  line and cannot contain browser actions or a second request.
+- In a browser entry, an action line after a `PAGE` line, an `[Asserts]`
+  section, or a `[Captures]` section starts a new entry. Consecutive browser
+  action lines belong to one entry. An `HTTP` action always starts its own
+  entry, and the next action starts another entry. An entry is Whirl's unit of
+  verification, timeout scope, and reporting. Blank lines and comments never
+  split an entry.
+- `HTTP` entries can appear before the first `VISIT`, and a file can contain
+  only HTTP entries. The first browser entry must start with `VISIT`, because
+  no page exists yet. After it, later browser entries can start with any
+  browser action.
 
 ## 5. Options
 
@@ -115,7 +134,7 @@ The `[Options]` section holds `key: value` lines. V1 keys:
 
 `storage` names a Playwright storageState JSON file, resolved relative to the `.whirl` file. Each browser context starts from that saved state (cookies and local storage) instead of empty, so flows can skip UI login. Produce the file with `--save-storage`, which writes the final context state of a successful run — typically of a dedicated login flow.
 
-`setup` names another `.whirl` file, resolved relative to this one, whose final state this file starts from: Whirl runs the setup flow first, in its own context, saves that context's cookies and storage, and starts this file's context from the saved state, the way `storage` would. The two options cannot be combined. The setup flow is an ordinary flow with its own options and its own `VISIT`, so it runs and debugs on its own, and it may not name a `setup` of its own. Every file that names the same setup flow in one invocation shares one run of it: ten flows that need a signed-in session sign in once. The saved state lives only for the invocation. The setup flow's captures are readable in the dependent file as `{{setup.name}}` (section 11). When the setup flow fails, its dependents do not start and each reports the failure as its `[setup]` case (section 12). The path must be literal: it is resolved before any variable exists.
+`setup` names another `.whirl` file, resolved relative to this one, whose final state this file starts from: Whirl runs the setup flow first, in its own context, saves that context's cookies and storage, and starts this file's context from the saved state, the way `storage` would. The two options cannot be combined. The setup flow is an ordinary flow with its own options, so it runs and debugs on its own, and it may not name a `setup` of its own. It can use HTTP entries before its first `VISIT`, or contain only HTTP entries. Every file that names the same setup flow in one invocation shares one run of it: ten flows that need a signed-in session sign in once. The saved state lives only for the invocation. The setup flow's captures are readable in the dependent file as `{{setup.name}}` (section 11). When the setup flow fails, its dependents do not start and each reports the failure as its `[setup]` case (section 12). The path must be literal: it is resolved before any variable exists.
 
 `reduced-motion: reduce` makes the page's `prefers-reduced-motion` media query match, as it does for a user who asked their OS for less motion. Pages that honor it skip transitions, looping animations, and background video, which makes `SNAPSHOT` baselines stable and removes work the flow never asserted. `no-preference` forces the opposite; without the option the engine default applies.
 
@@ -187,7 +206,7 @@ An action is a verb, an optional locator, and an optional value. Element-targeti
 | --- | --- |
 | `VISIT url` | Navigate, and continue once the new document has parsed. A `url` starting with `/` resolves against `base`. |
 | `RESPONSE name METHOD url` | Name the first matching HTTP request started in this entry and wait for its response headers. |
-| `HTTP name METHOD url [header:NAME value]... [body:value]` | Send an independent HTTP request and name its response for checks and captures. |
+| `HTTP METHOD url` | Send an independent HTTP request. Header and body lines can follow as defined in section 7.3. |
 | `POPUP name` | Name an unnamed popup opened by the selected tab in this entry; selection stays unchanged. |
 | `TAB name` | Select an open named tab for subsequent commands. The original tab is `main`. |
 | `CLOSE name` | Close a named tab; selection stays unchanged. Already closed tabs succeed. |
@@ -308,12 +327,54 @@ order_id: response:order json:/id
 
 ### 7.3 Independent HTTP requests
 
-`HTTP` sends a request from Whirl's runtime. It neither sends nor changes browser
-cookies, so an API-key assertion cannot accidentally pass using the page's login
-session. Only explicitly supplied headers carry credentials. Header values, URLs,
-and the optional text body support interpolation; header names are literal and
-case-insensitive duplicates are rejected. Set `header:Content-Type application/json`
-when sending a JSON body.
+`HTTP` starts its own entry and sends a request from Whirl's runtime. Its
+headline is `HTTP METHOD url`, with an optional trailing step timeout. It has no
+public name. Zero or more `NAME: value` header lines can follow. A JSON object,
+a JSON array, or one fenced text body can then follow as the request body. The
+body is last. A section header, another action, or end of file ends the request.
+
+```whirl
+HTTP POST /api/tests @30s
+Authorization: "Bearer {{env.E2E_SETUP_TOKEN}}"
+Content-Type: application/json
+{
+    "id": "4568",
+    "evaluate": true
+}
+[Asserts]
+status == 201
+json:/status == RUNNING
+[Captures]
+test_id: json:/id
+```
+
+A JSON body starts with `{` or `[` on the line after the headers and ends when
+its outer value closes. Whirl validates its template-aware JSON structure while
+parsing and preserves its authored text. If no `Content-Type` header is present,
+Whirl sends `Content-Type: application/json`. An explicit header remains
+authoritative.
+
+A fenced text body starts and ends with three backticks on their own lines. The
+newline after the opening fence and the newline before the closing fence are
+delimiters, not body text. Other interior newlines are part of the body. Whirl
+normalizes LF and CRLF source line endings to LF in both body forms. A line that
+contains only three backticks cannot occur inside this body form.
+
+````whirl
+HTTP POST /api/import
+Content-Type: text/csv
+```
+name,plan
+Ada,pro
+Grace,team
+```
+````
+
+`HTTP` neither sends nor changes browser cookies, so an API-key assertion cannot
+accidentally pass using the page's login session. Only explicitly supplied
+headers carry credentials. URLs, header values, JSON bodies, and fenced bodies
+support interpolation. Header names are literal. Case-insensitive duplicate
+header names are rejected.
 
 `GET` and `HEAD` cannot have a body. `CONNECT`, `TRACE`, and `TRACK` are not
 supported. These requests fail the action without contacting the server.
@@ -327,14 +388,18 @@ do not apply, and these runtime requests do not appear in the browser's HAR.
 The body limit covers decoded response bytes. A response without a body, such as
 `HEAD`, can advertise a larger `Content-Length` without failing the limit.
 
-Names share the `RESPONSE` namespace. The same `response:name` assertions and
-captures work for either command. The file still begins with `VISIT`.
+The optional `[Asserts]` and `[Captures]` sections in the same HTTP entry refer
+to its response without a `response:name` prefix. A status code never fails the
+request by itself, including a 3xx, 4xx, or 5xx status. Use an explicit `status`
+check. Whirl emits the `unasserted-http-status` warning when an HTTP entry has no
+status check. There is no implicit 2xx rule.
 
 ```whirl
-HTTP account GET /api/account header:Authorization "Bearer {{env.API_KEY}}"
+HTTP GET /api/account
+Authorization: "Bearer {{env.API_KEY}}"
 [Asserts]
-response:account status == 200
-response:account json:/name == Ada
+status == 200
+json:/name == Ada
 ```
 
 ## 8. PAGE
@@ -409,6 +474,11 @@ available, a mismatch fails immediately: an immutable response is not retried.
 A successful status alone does not prove streaming output or a background job
 completed; assert the user's result separately.
 
+Inside an HTTP entry, omit `response:name`: `status numop number`,
+`header:NAME str-check`, and `json:POINTER str-check` examine that entry's
+response. These implicit forms are invalid in a browser entry. Named
+`response:name` checks remain for responses observed by `RESPONSE`.
+
 ## 10. Captures
 
 A `[Captures]` section extracts values into variables for later entries.
@@ -422,7 +492,7 @@ extractor := "text" | "value" | "count" | "attr:" NAME
 - `name` matches `[A-Za-z_][A-Za-z0-9_]*`.
 - The optional `regex` filter applies the pattern to the extracted string and stores capture group 1 (the whole match if there is no group). No match fails the entry.
 - Extraction waits like an assert: `text`, `value`, and `attr:` wait for the locator to resolve to exactly one element, up to the step timeout. Once the element resolves, an absent attribute fails the entry — it does not wait further and does not become an empty value. `count` never waits: it records the current number of matches immediately, and zero is a valid result; assert a `count` first when the flow must wait for elements to appear.
-- A `response:name` source extracts `status`, `header:NAME`, or `json:POINTER` using the response-check rules above. The existing `regex` filter and interpolation work on the extracted string.
+- A `response:name` source extracts `status`, `header:NAME`, or `json:POINTER` using the response-check rules above. Inside an HTTP entry, the same sources omit `response:name` and extract from that entry's response. The existing `regex` filter and interpolation work on the extracted string.
 - An `eval` source runs a script under the rules of section 7 and stores the result. Whirl owns the result contract, independent of Playwright's transport: a string is stored as-is; `null`, booleans, finite numbers, arrays, and plain objects that recursively contain only those values are stored as compact JSON; anything else — `undefined`, non-finite numbers, `BigInt`, functions, symbols, cyclic structures, and browser objects — fails the entry.
 - A capture that reuses a name overwrites it.
 
@@ -434,7 +504,8 @@ cart_url: url
 
 ## 11. Variables
 
-`{{name}}` interpolates a variable inside any value.
+`{{name}}` interpolates a variable inside any value and inside an HTTP JSON or
+fenced body.
 
 Sources, later entries overriding earlier ones:
 
@@ -453,7 +524,7 @@ Whirl masks every value sourced from `env.*` in the textual output it generates:
 ## 12. Execution model
 
 - **Isolation.** Each file runs in a fresh browser context with an initial page named `main` and any popups it opens. Without the `storage` option the context starts empty; with it, the context starts from the saved storage state. Files never share live state either way.
-- **Order.** Entries run top to bottom. Within an entry: actions, then `PAGE`, then asserts, then captures.
+- **Order.** Entries run top to bottom. Within a browser entry: actions, then `PAGE`, then asserts, then captures. Within an HTTP entry: the request, then response asserts, then response captures.
 - **Failure.** The first failing step fails the entry, and a failed entry stops its file; remaining entries in that file are skipped and reported as skipped. Other files still run. On failure Whirl saves a full-page screenshot and, with `--trace`, a Playwright trace to the artifacts directory.
 - **Navigation.** `VISIT` completes when the new document reaches `DOMContentLoaded`: the HTML is parsed and its synchronous scripts have run. It does not wait for the `load` event, because images, fonts, iframes, and media hold `load` open for reasons a flow never asserted, and every later line waits for what it needs anyway: actions wait for their element to be actionable, asserts and `PAGE` retry. A page that only becomes usable after `load` needs an assert on that state before an `EVAL` or `SCREENSHOT`, which run once without waiting.
 - **Timeouts.** Each action, PAGE, assert, and capture line gets the step timeout (`step-timeout` option, default 10s); `VISIT` gets the navigation timeout (`nav-timeout` option, default 30s). A trailing `@duration` on any such line overrides its own budget: `CLICK "Generate report" @60s`. The optional `entry-timeout` option caps an entry's total time across all of its lines; when it expires, the in-flight step fails with an entry-timeout error. An entry without one is still bounded by its per-step timeouts. The suffix must be bare: a line’s final bare token of the form `@duration` is always its timeout, and a quoted `"@60s"` is an ordinary value. Timeouts are enforced from outside the page, so they hold even when the page cannot respond — an `EVAL` script blocking the renderer or returning a Promise that never settles. When a timed-out step cannot be cancelled cleanly, Whirl closes that flow's browser context; if closing also stalls, it terminates and restarts only that worker's shim process. Either way the flow fails and reports normally, and other files are unaffected.
@@ -475,7 +546,11 @@ whirl report <REPORT>... --html <PATH>  Generate HTML from saved results
 
 `whirl install chromium` provisions only Chromium; any combination of `chromium`, `firefox`, and `webkit` may be named. Without names, all three engines are provisioned. The bundle records the Whirl version that installed it; a binary of another version refuses to run that bundle and reports a runtime error naming `whirl install`, so an upgraded `whirl` never drives a stale shim. `whirl doctor` checks the selected Node runtime, the bundle's version, shim protocol, Playwright version, and a real headless browser launch (Chromium by default). It installs nothing, finishes within 30 seconds, exits 0 when ready or 3 when diagnosis fails, and prints repair commands. On Linux, a failed launch also prints the private-runtime command for installing system libraries. Unsupported browser names are usage errors.
 
-`whirl fmt` rewrites files to the canonical form: single spaces between tokens, quotes only where a value requires them, and one blank line between entries. `--check` writes nothing and exits with code 1 when any file would change.
+`whirl fmt` rewrites files to the canonical form: single spaces between tokens,
+quotes only where a value requires them, one HTTP header per line, and one blank
+line between entries. It preserves JSON and fenced body text, apart from the LF
+line-ending normalization defined in section 7.3. `--check` writes
+nothing and exits with code 1 when any file would change.
 
 | Flag | Meaning |
 | --- | --- |
@@ -608,7 +683,7 @@ Rust source, configuration, and project setup follow the [Brynary Rust Style Gui
 ## 16. Errors
 
 - **JSON diagnostics.** `whirl check --json` writes one version 1 JSON document to stdout, containing `exitCode` and `diagnostics`, with no diagnostic text on stderr. Each diagnostic includes a stable code, severity, path, line, column, length, message, and expected alternatives. Positions are 1-based Unicode character positions; locations unavailable for input or I/O errors are null. CLI argument syntax errors still use the ordinary usage message.
-- **Parse errors** (exit 2) are reported with file, line, column, a caret under the offending token, and the expected alternatives. `whirl check` surfaces them without launching a browser. Lint warnings do not change the exit code. Whirl warns about a capture that is never used, and about a `count >= 1` assert directly followed by a check on the same locator, only when the following check requires at least one element. A `hidden` check or a count comparison that accepts zero does not make the presence check redundant.
+- **Parse errors** (exit 2) are reported with file, line, column, a caret under the offending token, and the expected alternatives. `whirl check` surfaces them without launching a browser. Lint warnings do not change the exit code. Whirl warns about a capture that is never used, about an HTTP entry without a `status` check, and about a `count >= 1` assert directly followed by a check on the same locator, only when the following check requires at least one element. A `hidden` check or a count comparison that accepts zero does not make the presence check redundant.
 - **Test failures** (exit 1) report the failing step the same way, plus expected versus actual and the artifacts.
 - **Runtime errors** (exit 3) cover shim crashes, missing browsers, and similar environmental failures.
 
@@ -619,11 +694,12 @@ file       = [ options ] , entry , { entry } ;
 options    = "[Options]" , { option-line } ;
 option-line= key , ":" , value , { value } ;
 
-entry      = action , { action } , [ page ] , [ asserts ] , [ captures ] ;
+entry      = browser-entry | http-entry ;
+browser-entry = action , { action } , [ page ] , [ asserts ] , [ captures ] ;
+http-entry = http-request , [ http-asserts ] , [ http-captures ] ;
 
 action     = action-body , [ step-timeout ] ;
 action-body = "VISIT" , value
-           | "HTTP" , artifact-name , http-method , value , { http-option }
            | "RESPONSE" , artifact-name , http-method , value
            | ( "POPUP" | "TAB" | "CLOSE" ) , artifact-name
            | "CLICK" , locator
@@ -641,6 +717,11 @@ action-body = "VISIT" , value
            | "EVAL" , value
            | "STORE" , ( "local" | "session" | "cookie" ) , value , value ;
 
+http-request = http-headline , { http-header } , [ http-body ] ;
+http-headline = "HTTP" , http-method , value , [ step-timeout ] ;
+http-header = attr-name , ":" , value ;
+http-body  = json-object | json-array | fenced-text ;
+
 page       = "PAGE" , ( value | "matches" , regex ) , [ step-timeout ] ;
 
 asserts    = "[Asserts]" , { assert } ;
@@ -648,10 +729,14 @@ assert     = assert-body , [ step-timeout ] ;
 assert-body = "response:" , artifact-name , "status" , numop , number
            | "response:" , artifact-name , ( "header:" , value | "json:" , value ) , str-check
            | "tab:" , artifact-name , "closed"
-            | locator , state-check
+           | locator , state-check
            | locator , value-check
-           | locator , "count" , numop , number
+            | locator , "count" , numop , number
            | ( "url" | "title" ) , str-check ;
+http-asserts = "[Asserts]" , { http-assert } ;
+http-assert = http-assert-body , [ step-timeout ] ;
+http-assert-body = "status" , numop , number
+                 | ( "header:" , value | "json:" , value ) , str-check ;
 state-check= "visible" | "hidden" | "enabled" | "disabled"
            | "checked" | "unchecked" | "focused" ;
 value-check= ( "text" | "value" | "attr:" attr-name ) , str-check ;
@@ -663,9 +748,11 @@ captures   = "[Captures]" , { capture } ;
 capture    = name , ":" , source , [ "regex" , regex ] , [ step-timeout ] ;
 source     = locator , extractor | "url" | "title" | "eval" , value
            | "response:" , artifact-name , response-field ;
+http-captures = "[Captures]" , { http-capture } ;
+http-capture = name , ":" , response-field , [ "regex" , regex ]
+             , [ step-timeout ] ;
 response-field = "status" | "header:" , value | "json:" , value ;
 http-method = uppercase-letter , { uppercase-letter } ;
-http-option = "header:" , attr-name , value | "body:" , value ; (* at most one body *)
 extractor  = "text" | "value" | "count" | "attr:" , attr-name ;
 
 locator    = segment , { ">>" , segment } ;
@@ -684,7 +771,11 @@ attr-name  = letter-or-underscore , { letter-digit-underscore | "-" } ;
 regex      = "/" , pattern , "/" , [ flags ] ;
 ```
 
-Comments and blank lines may appear between any two lines and are not part of the grammar.
+`json-object` and `json-array` are JSON values whose outer delimiter can span
+lines. Interpolation is permitted as defined in section 7.3. `fenced-text` is
+the text between lines that contain only three backticks. Comments and blank
+lines may appear between any two structural lines and are not part of the
+grammar. Inside a body they are body text.
 
 ## 18. Non-goals and deferred features
 

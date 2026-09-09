@@ -1,3 +1,6 @@
-warn.whirl:3:1: warning: capture `unused` is never used
+warn.whirl:1:1: warning: HTTP response status is not asserted; status codes do not fail implicitly
+  HTTP GET /health
+  ^^^^^^^^^^^^^^^^
+warn.whirl:4:1: warning: capture `unused` is never used
   unused: url
   ^^^^^^

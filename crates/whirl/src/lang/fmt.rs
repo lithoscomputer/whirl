@@ -18,9 +18,9 @@ use std::fmt::Write as _;
 
 use crate::lang::ast::{
     Action, ActionKind, Assert, AssertBody, Capture, CaptureSource, Comment, DurationLit,
-    DurationUnit, Entry, Extractor, File, FileOption, Locator, NumOp, OptionValue, Page, PageCheck,
-    Regex, ResponseField, SegmentKind, StateCheck, StrCheck, TextPrefix, Value, ValueSegment,
-    ValueSource, Viewport,
+    DurationUnit, Entry, Extractor, File, FileOption, HttpBodyKind, Locator, NumOp, OptionValue,
+    Page, PageCheck, Regex, ResponseField, SegmentKind, StateCheck, StrCheck, TextPrefix, Value,
+    ValueSegment, ValueSource, Viewport,
 };
 
 /// Where a rendered value sits in its line. The context decides which
@@ -311,41 +311,11 @@ fn push_timeout(out: &mut String, timeout: Option<DurationLit>) {
 fn render_action(action: &Action) -> String {
     let is_final = action.timeout.is_none();
     let mut out = match &action.kind {
-        ActionKind::Http {
-            name,
-            method,
-            url,
-            headers,
-            body,
-        } => {
-            let mut text = format!(
-                "HTTP {} {method} {}",
-                name.text,
-                render_value(
-                    url,
-                    ValueCtx::Plain,
-                    is_final && headers.is_empty() && body.is_none()
-                )
-            );
-            for (index, (header, value)) in headers.iter().enumerate() {
-                let _ = write!(
-                    text,
-                    " header:{header} {}",
-                    render_value(
-                        value,
-                        ValueCtx::Plain,
-                        is_final && index + 1 == headers.len() && body.is_none()
-                    )
-                );
-            }
-            if let Some(body) = body {
-                let _ = write!(
-                    text,
-                    " body:{}",
-                    render_value(body, ValueCtx::Prefixed, is_final)
-                );
-            }
-            text
+        ActionKind::Http { method, url, .. } => {
+            format!(
+                "HTTP {method} {}",
+                render_value(url, ValueCtx::Plain, is_final)
+            )
         }
         ActionKind::Response { name, method, url } => format!(
             "RESPONSE {} {method} {}",
@@ -486,6 +456,14 @@ fn state_check_text(state: StateCheck) -> &'static str {
 fn render_assert(assert: &Assert) -> String {
     let is_final = assert.timeout.is_none();
     let mut out = match &assert.body {
+        AssertBody::HttpStatus { op, status } => {
+            format!("status {} {status}", num_op_text(*op))
+        }
+        AssertBody::HttpValue { field, check } => format!(
+            "{} {}",
+            render_response_field(field),
+            render_str_check(check, is_final)
+        ),
         AssertBody::ResponseStatus { name, op, status } => format!(
             "response:{} status {} {status}",
             name.text,
@@ -547,6 +525,7 @@ fn render_response_field(field: &ResponseField) -> String {
 fn render_capture(capture: &Capture) -> String {
     let is_final = capture.filter.is_none() && capture.timeout.is_none();
     let source = match &capture.source {
+        CaptureSource::Http(field) => render_response_field(field),
         CaptureSource::Response { name, field } => {
             format!("response:{} {}", name.text, render_response_field(field))
         }
@@ -667,6 +646,50 @@ fn entry_region(entry: &Entry) -> Region {
             source_line: action.line,
             text:        render_action(action),
         });
+        if let ActionKind::Http { headers, body, .. } = &action.kind {
+            for header in headers {
+                lines.push(Line {
+                    source_line: header.line,
+                    text:        format!(
+                        "{}: {}",
+                        header.name,
+                        render_value(&header.value, ValueCtx::Plain, false)
+                    ),
+                });
+            }
+            if let Some(body) = body {
+                match body.kind {
+                    HttpBodyKind::Json => {
+                        for (offset, text) in body.text.split('\n').enumerate() {
+                            lines.push(Line {
+                                source_line: body.line + u32::try_from(offset).unwrap_or(u32::MAX),
+                                text:        text.to_owned(),
+                            });
+                        }
+                    }
+                    HttpBodyKind::Text => {
+                        lines.push(Line {
+                            source_line: body.line,
+                            text:        "```".to_owned(),
+                        });
+                        if !body.text.is_empty() {
+                            for (offset, text) in body.text.split('\n').enumerate() {
+                                lines.push(Line {
+                                    source_line: body.line
+                                        + 1
+                                        + u32::try_from(offset).unwrap_or(u32::MAX),
+                                    text:        text.to_owned(),
+                                });
+                            }
+                        }
+                        lines.push(Line {
+                            source_line: body.end_line,
+                            text:        "```".to_owned(),
+                        });
+                    }
+                }
+            }
+        }
     }
     if let Some(page) = &entry.page {
         lines.push(Line {
@@ -866,19 +889,22 @@ mod tests {
         action.text = String::new();
         match &mut action.kind {
             ActionKind::Http {
-                name,
                 url,
                 headers,
                 body,
+                source,
                 ..
             } => {
-                scrub_ident(name);
+                source.clear();
                 scrub_value(url);
-                for (_, value) in headers {
-                    scrub_value(value);
+                for header in headers {
+                    header.line = 0;
+                    scrub_value(&mut header.value);
                 }
                 if let Some(body) = body {
-                    scrub_value(body);
+                    body.line = 0;
+                    body.end_line = 0;
+                    scrub_value(&mut body.value);
                 }
             }
             ActionKind::Response { name, url, .. } => {
@@ -953,6 +979,11 @@ mod tests {
             assert.span = ZERO;
             assert.text = String::new();
             match &mut assert.body {
+                AssertBody::HttpStatus { .. } => {}
+                AssertBody::HttpValue { field, check } => {
+                    scrub_response_field(field);
+                    scrub_str_check(check);
+                }
                 AssertBody::ResponseValue { name, field, check } => {
                     scrub_ident(name);
                     scrub_response_field(field);
@@ -976,6 +1007,7 @@ mod tests {
             capture.text = String::new();
             scrub_ident(&mut capture.name);
             match &mut capture.source {
+                CaptureSource::Http(field) => scrub_response_field(field),
                 CaptureSource::Response { name, field } => {
                     scrub_ident(name);
                     scrub_response_field(field);
@@ -1090,11 +1122,15 @@ mod tests {
     fn http_round_trips_headers_bodies_and_timeout_shaped_values() {
         assert_round_trip(
             r#"VISIT /
-HTTP created POST /api/orders header:Authorization "Bearer {{env.API_KEY}}" header:Content-Type application/json body:"{\"name\":\"Ada\"}" @5s
+HTTP POST /api/orders @5s
+Authorization: "Bearer {{env.API_KEY}}"
+Content-Type: application/json
+{"name":"Ada"}
 [Asserts]
-response:created status == 201
-HTTP timeout_value GET / header:X-Value "@10s"
-HTTP timeout_url GET "@10s"
+status == 201
+HTTP GET /
+X-Value: @10s
+HTTP GET "@10s"
 "#,
         );
     }

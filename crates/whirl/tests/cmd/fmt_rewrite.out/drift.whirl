@@ -1,2 +1,8 @@
+HTTP POST /fixture @5s
+X-Test: one
+{"x":  1}
+[Asserts]
+status == 201
+
 VISIT /login
 CLICK Go

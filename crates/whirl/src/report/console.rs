@@ -75,7 +75,7 @@ fn render_entry_failure(out: &mut String, file: &FileReport, entry: &EntryReport
         name = entry.name
     );
     if let Some(step) = step {
-        let _ = writeln!(out, "  step: {}", step.text);
+        let _ = writeln!(out, "  step: {}", step.text.replace('\n', "\n        "));
         if let Some(error) = &step.error {
             let _ = writeln!(out, "  error: {}", error.message.replace('\n', "\n    "));
             if let Some(expected) = &error.expected {
@@ -203,6 +203,23 @@ mod tests {
         assert!(out.contains("actual: Login"), "out:\n{out}");
         assert!(
             out.contains("artifact: whirl-artifacts/flows/fail/failure.png"),
+            "out:\n{out}"
+        );
+    }
+
+    #[test]
+    fn indents_multiline_step_text() {
+        let mut report = sample_report();
+        report.files[1].entries[0].steps[1].text =
+            "HTTP POST /fixtures\nContent-Type: application/json\n{\n  \"name\": \"Ada\"\n}"
+                .to_owned();
+
+        let out = render(&report);
+
+        assert!(
+            out.contains(
+                "step: HTTP POST /fixtures\n        Content-Type: application/json\n        {\n          \"name\": \"Ada\"\n        }"
+            ),
             "out:\n{out}"
         );
     }

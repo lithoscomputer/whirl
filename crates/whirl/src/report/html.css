@@ -60,6 +60,7 @@ figcaption { padding: .5rem 1.25rem; }
 .steps > li[data-status=failed], .steps > li[data-status=error] { border-color: var(--red); background: #fff6f3; }
 .steps > li[data-status=skipped] { background: #f7f8f5; }
 .step-text, .step-location { margin: 0; }
+.step-text code { white-space: pre-wrap; }
 .step-location { font-variant-numeric: tabular-nums; }
 code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; }
 dt { font-weight: 500; }

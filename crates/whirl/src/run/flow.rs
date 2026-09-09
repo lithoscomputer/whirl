@@ -393,7 +393,10 @@ impl<'a> StepNode<'a> {
     /// The step's source text, as written.
     fn raw_text(self) -> &'a str {
         match self {
-            Self::Action(step) => &step.text,
+            Self::Action(step) => match &step.kind {
+                ast::ActionKind::Http { source, .. } => source,
+                _ => &step.text,
+            },
             Self::Page(step) => &step.text,
             Self::Assert(step) => &step.text,
             Self::Capture(step) => &step.text,
@@ -531,7 +534,11 @@ impl FlowExec<'_> {
     }
 
     /// Builds the wire command of one step (protocol section 4).
-    fn build_command(&mut self, node: StepNode<'_>) -> Result<StepCommand, BuildError> {
+    fn build_command(
+        &mut self,
+        node: StepNode<'_>,
+        implicit_response: Option<&str>,
+    ) -> Result<StepCommand, BuildError> {
         match node {
             StepNode::Action(action) => self.build_action(action),
             StepNode::Page(page) => {
@@ -541,13 +548,17 @@ impl FlowExec<'_> {
             }
             StepNode::Assert(assert) => {
                 let vars = &mut self.vars;
-                let spec = wire::assert_wire(&assert.body, &mut |value| vars.resolve(value))?;
+                let spec = wire::assert_wire(&assert.body, implicit_response, &mut |value| {
+                    vars.resolve(value)
+                })?;
                 Ok(StepCommand::Assert { spec })
             }
             StepNode::Capture(capture) => {
                 let vars = &mut self.vars;
                 let source =
-                    wire::capture_source_wire(&capture.source, &mut |value| vars.resolve(value))?;
+                    wire::capture_source_wire(&capture.source, implicit_response, &mut |value| {
+                        vars.resolve(value)
+                    })?;
                 Ok(StepCommand::Capture {
                     source,
                     filter: wire::filter_wire(capture.filter.as_ref()),
@@ -592,21 +603,36 @@ impl FlowExec<'_> {
                 url:    self.resolve_url(url)?,
             },
             K::Http {
-                name,
                 method,
                 url,
                 headers,
                 body,
-            } => StepCommand::Http {
-                name:    name.text.clone(),
-                method:  method.clone(),
-                url:     self.resolve_url(url)?,
-                headers: headers
-                    .iter()
-                    .map(|(name, value)| Ok((name.clone(), self.resolve(value)?)))
-                    .collect::<Result<_, BuildError>>()?,
-                body:    body.as_ref().map(|value| self.resolve(value)).transpose()?,
-            },
+                ..
+            } => {
+                let mut resolved_headers = Vec::with_capacity(headers.len() + 1);
+                for header in headers {
+                    resolved_headers.push((header.name.clone(), self.resolve(&header.value)?));
+                }
+                if body.as_ref().is_some_and(|body| {
+                    body.kind == ast::HttpBodyKind::Json
+                        && !headers
+                            .iter()
+                            .any(|header| header.name.eq_ignore_ascii_case("content-type"))
+                }) {
+                    resolved_headers
+                        .push(("Content-Type".to_owned(), "application/json".to_owned()));
+                }
+                StepCommand::Http {
+                    name:    wire::independent_http_response(action.line),
+                    method:  method.clone(),
+                    url:     self.resolve_url(url)?,
+                    headers: resolved_headers,
+                    body:    body
+                        .as_ref()
+                        .map(|body| self.resolve(&body.value))
+                        .transpose()?,
+                }
+            }
             K::Click { target } => StepCommand::Click {
                 locator: self.locator(target, engine)?,
             },
@@ -819,11 +845,12 @@ impl FlowExec<'_> {
     async fn run_step(
         &mut self,
         node: StepNode<'_>,
+        implicit_response: Option<&str>,
         client: &mut ShimClient,
         state: &mut EntryState,
     ) -> (StepEnd, u64, String) {
         let entry_budget_ms = self.options.entry_timeout_ms.unwrap_or(0);
-        let command = match self.build_command(node) {
+        let command = match self.build_command(node, implicit_response) {
             Ok(command) => command,
             Err(error) => {
                 let text = render_step_text(node.raw_text(), &mut self.vars);
@@ -1007,6 +1034,10 @@ impl FlowExec<'_> {
             remaining_ms: self.options.entry_timeout_ms,
         };
         let mut entry_status = Status::Passed;
+        let implicit_response = entry.actions.first().and_then(|action| {
+            matches!(action.kind, ast::ActionKind::Http { .. })
+                .then(|| wire::independent_http_response(action.line))
+        });
         for node in entry_steps(entry) {
             if entry_status != Status::Passed {
                 state.steps.push(StepReport {
@@ -1019,7 +1050,9 @@ impl FlowExec<'_> {
                 });
                 continue;
             }
-            let (end, duration_ms, text) = self.run_step(node, client, &mut state).await;
+            let (end, duration_ms, text) = self
+                .run_step(node, implicit_response.as_deref(), client, &mut state)
+                .await;
             let status = end.status();
             state.steps.push(StepReport {
                 line: node.line(),

@@ -275,15 +275,43 @@ pub(crate) struct Action {
     pub(crate) text:    String,
 }
 
+/// One authored header in an independent HTTP request (SPEC 7.3).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct HttpHeader {
+    pub(crate) name:  String,
+    pub(crate) value: Value,
+    pub(crate) line:  u32,
+}
+
+/// The syntax used for an independent HTTP request body (SPEC 7.3).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum HttpBodyKind {
+    Json,
+    Text,
+}
+
+/// A multiline independent HTTP request body.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct HttpBody {
+    pub(crate) kind:     HttpBodyKind,
+    /// Interpolation-aware value sent to the shim.
+    pub(crate) value:    Value,
+    /// Authored body text, without text-body fence delimiters.
+    pub(crate) text:     String,
+    pub(crate) line:     u32,
+    pub(crate) end_line: u32,
+}
+
 /// The verb and operands of an action (SPEC 7, 17).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ActionKind {
     Http {
-        name:    Ident,
         method:  String,
         url:     Value,
-        headers: Vec<(String, Value)>,
-        body:    Option<Value>,
+        headers: Vec<HttpHeader>,
+        body:    Option<HttpBody>,
+        /// The complete request text for reports and trace titles.
+        source:  String,
     },
     Response {
         name:   Ident,
@@ -434,6 +462,16 @@ pub(crate) struct Assert {
 /// checks only, so the shape is encoded per subject (SPEC 9.3, 17).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum AssertBody {
+    /// A status check scoped to the containing independent HTTP entry.
+    HttpStatus {
+        op:     NumOp,
+        status: u64,
+    },
+    /// A header or JSON check scoped to the containing HTTP entry.
+    HttpValue {
+        field: ResponseField,
+        check: StrCheck,
+    },
     ResponseStatus {
         name:   Ident,
         op:     NumOp,
@@ -522,6 +560,8 @@ pub(crate) struct Capture {
 /// Where a capture's value comes from (SPEC 10).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum CaptureSource {
+    /// A field from the containing independent HTTP entry's response.
+    Http(ResponseField),
     Response {
         name:  Ident,
         field: ResponseField,

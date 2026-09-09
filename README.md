@@ -109,6 +109,29 @@ $ whirl example.whirl
 example.whirl passed (0.4s)
 ```
 
+Use an HTTP entry to create fixture data before the browser starts its flow:
+
+```whirl
+[Options]
+base: https://shop.example.com
+
+HTTP POST /api/test-fixtures/users
+Authorization: "Bearer {{env.E2E_SETUP_TOKEN}}"
+{
+    "name": "Ada"
+}
+[Asserts]
+status == 201
+[Captures]
+user_id: json:/id
+
+VISIT /users/{{user_id}}
+[Asserts]
+role:heading Ada visible
+```
+
+The status check is explicit. Whirl does not treat 2xx as implicit success.
+
 More commands:
 
 ```console

@@ -5,11 +5,12 @@
       "column": 1,
       "expected": [
         "[Options]",
+        "HTTP",
         "VISIT"
       ],
       "length": 5,
       "line": 1,
-      "message": "expected `[Options]` or an action; the first action must be VISIT",
+      "message": "expected `[Options]`, HTTP, or VISIT",
       "path": "./broken.whirl",
       "severity": "error"
     },

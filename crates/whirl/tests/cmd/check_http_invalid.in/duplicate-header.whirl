@@ -1,2 +1,3 @@
-VISIT /
-HTTP order GET / header:X-Test one header:x-test two
+HTTP GET /
+X-Test: one
+x-test: two

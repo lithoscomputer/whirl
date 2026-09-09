@@ -12,10 +12,10 @@ use std::vec::IntoIter;
 
 use crate::lang::ast::{
     Action, ActionKind, Assert, AssertBody, BrowserKind, Capture, CaptureSource, Comment,
-    DialogPolicy, DurationLit, Entry, Extractor, File, FileOption, Ident, Locator, LocatorSegment,
-    NumOp, OptionLine, OptionValue, Page, PageCheck, ReducedMotion, Regex, RegexFlags,
-    ResponseField, SegmentKind, Span, StateCheck, StoreScope, StrCheck, TextPrefix, Value,
-    ValueSegment, ValueSource, Viewport,
+    DialogPolicy, DurationLit, Entry, Extractor, File, FileOption, HttpBody, HttpBodyKind,
+    HttpHeader, Ident, Locator, LocatorSegment, NumOp, OptionLine, OptionValue, Page, PageCheck,
+    ReducedMotion, Regex, RegexFlags, ResponseField, SegmentKind, Span, StateCheck, StoreScope,
+    StrCheck, TextPrefix, Value, ValueSegment, ValueSource, Viewport,
 };
 
 /// A parse diagnostic (SPEC 16): file, line, column, the source line, a
@@ -63,8 +63,10 @@ impl ParseError {
 
 /// A diagnostic local to one line; the parser adds file and line context.
 struct LineError {
+    line:     Option<u32>,
     column:   u32,
     len:      u32,
+    source:   Option<String>,
     message:  String,
     expected: Vec<String>,
 }
@@ -72,8 +74,10 @@ struct LineError {
 impl LineError {
     fn new(span: Span, message: impl Into<String>) -> Self {
         Self {
+            line:     None,
             column:   span.column,
             len:      span.len,
+            source:   None,
             message:  message.into(),
             expected: Vec::new(),
         }
@@ -81,6 +85,12 @@ impl LineError {
 
     fn expecting<S: fmt::Display>(mut self, expected: impl IntoIterator<Item = S>) -> Self {
         self.expected = expected.into_iter().map(|item| item.to_string()).collect();
+        self
+    }
+
+    fn at_source(mut self, line: u32, source: impl Into<String>) -> Self {
+        self.line = Some(line);
+        self.source = Some(source.into());
         self
     }
 }
@@ -940,17 +950,23 @@ fn parse_network_action(
     mut tokens: Vec<RawToken>,
     span: Span,
 ) -> Result<ActionKind, LineError> {
-    if tokens.len() < 3 || (keyword == "RESPONSE" && tokens.len() != 3) {
-        return Err(LineError::new(
-            span,
-            format!("expected {keyword} name METHOD url"),
-        ));
+    let expected_len = if keyword == "HTTP" { 2 } else { 3 };
+    if tokens.len() != expected_len {
+        let expected = if keyword == "HTTP" {
+            "expected HTTP METHOD url"
+        } else {
+            "expected RESPONSE name METHOD url"
+        };
+        return Err(LineError::new(span, expected));
     }
-    let options = tokens.split_off(3);
-    let [name, method, url]: [RawToken; 3] = tokens
+    let name = if keyword == "RESPONSE" {
+        Some(parse_name(vec![tokens.remove(0)], span)?)
+    } else {
+        None
+    };
+    let [method, url]: [RawToken; 2] = tokens
         .try_into()
-        .map_err(|_| LineError::new(span, format!("expected {keyword} name METHOD url")))?;
-    let name = parse_name(vec![name], span)?;
+        .map_err(|_| LineError::new(span, format!("expected {keyword} METHOD url")))?;
     let method_text = method
         .bare_single()
         .filter(|text| !text.is_empty() && text.chars().all(|ch| ch.is_ascii_uppercase()))
@@ -963,54 +979,18 @@ fn parse_network_action(
     let method = method_text.to_owned();
     let url = url.into_value()?;
     if keyword == "RESPONSE" {
-        return Ok(ActionKind::Response { name, method, url });
-    }
-    let mut headers = Vec::new();
-    let mut body = None;
-    let mut options = options.into_iter();
-    while let Some(token) = options.next() {
-        let token_span = token.span;
-        if let Some(header) = token
-            .bare_single()
-            .and_then(|text| text.strip_prefix("header:"))
-        {
-            if !is_attr_name(header)
-                || headers
-                    .iter()
-                    .any(|(name, _): &(String, Value)| name.eq_ignore_ascii_case(header))
-            {
-                return Err(LineError::new(
-                    token_span,
-                    "invalid or duplicate HTTP header name",
-                ));
-            }
-            let value = options
-                .next()
-                .ok_or_else(|| LineError::new(token_span, "expected an HTTP header value"))?;
-            headers.push((header.to_owned(), value.into_value()?));
-        } else if matches!(token.parts.first(), Some(RawPart::Bare { text, .. }) if text.starts_with("body:"))
-        {
-            if body.is_some() {
-                return Err(LineError::new(token_span, "duplicate HTTP body"));
-            }
-            body = Some(
-                strip_prefix_token(token, 5)
-                    .ok_or_else(|| LineError::new(token_span, "expected an HTTP body"))?
-                    .into_value()?,
-            );
-        } else {
-            return Err(LineError::new(
-                token_span,
-                "expected header:NAME value or body:value",
-            ));
-        }
+        return Ok(ActionKind::Response {
+            name: name.expect("RESPONSE parsed a name"),
+            method,
+            url,
+        });
     }
     Ok(ActionKind::Http {
-        name,
         method,
         url,
-        headers,
-        body,
+        headers: Vec::new(),
+        body: None,
+        source: String::new(),
     })
 }
 
@@ -1025,6 +1005,10 @@ fn parse_response_field(cursor: &mut Cursor, span: Span) -> Result<ResponseField
     let token = cursor
         .next_token()?
         .ok_or_else(|| LineError::new(span, "expected status, header:NAME, or json:POINTER"))?;
+    parse_response_field_token(token)
+}
+
+fn parse_response_field_token(token: RawToken) -> Result<ResponseField, LineError> {
     if token.bare_single() == Some("status") {
         return Ok(ResponseField::Status);
     }
@@ -1397,9 +1381,35 @@ fn parse_line_timeout(cursor: &mut Cursor) -> Result<Option<DurationLit>, LineEr
 fn parse_assert_body(
     first: RawToken,
     cursor: &mut Cursor,
+    implicit_http: bool,
 ) -> Result<(AssertBody, Option<DurationLit>), LineError> {
     let first_span = first.span;
+    let implicit_field = first.bare_single().is_some_and(|text| {
+        text == "status" || text.starts_with("header:") || text.starts_with("json:")
+    });
+    if implicit_http && !implicit_field {
+        return Err(
+            LineError::new(first_span, "an HTTP entry can only assert its response").expecting([
+                "status",
+                "header:NAME",
+                "json:POINTER",
+            ]),
+        );
+    }
     let body = match first.bare_single() {
+        Some("status") if implicit_http => {
+            let (op, status) = parse_count_check(cursor, first_span)?;
+            AssertBody::HttpStatus { op, status }
+        }
+        Some(text)
+            if implicit_http && (text.starts_with("header:") || text.starts_with("json:")) =>
+        {
+            let field = parse_response_field_token(first)?;
+            AssertBody::HttpValue {
+                field,
+                check: parse_str_check(cursor, first_span)?,
+            }
+        }
         Some(text) if text.starts_with("response:") => {
             let name = response_name(first.clone())?;
             let field = parse_response_field(cursor, first_span)?;
@@ -1537,6 +1547,7 @@ fn parse_capture_body(
     name: Ident,
     rest: Option<RawToken>,
     cursor: &mut Cursor,
+    implicit_http: bool,
 ) -> Result<Capture, LineError> {
     let first = match rest {
         Some(token) => token,
@@ -1549,7 +1560,25 @@ fn parse_capture_body(
             ])
         })?,
     };
+    let implicit_field = first.bare_single().is_some_and(|text| {
+        text == "status" || text.starts_with("header:") || text.starts_with("json:")
+    });
+    if implicit_http && !implicit_field {
+        return Err(
+            LineError::new(first.span, "an HTTP entry can only capture its response").expecting([
+                "status",
+                "header:NAME",
+                "json:POINTER",
+            ]),
+        );
+    }
     let source = match first.bare_single() {
+        Some("status") if implicit_http => CaptureSource::Http(ResponseField::Status),
+        Some(text)
+            if implicit_http && (text.starts_with("header:") || text.starts_with("json:")) =>
+        {
+            CaptureSource::Http(parse_response_field_token(first)?)
+        }
         Some(text) if text.starts_with("response:") => {
             let response = response_name(first.clone())?;
             let field = parse_response_field(cursor, first.span)?;
@@ -1775,6 +1804,170 @@ struct Parser {
     current:        Option<Entry>,
     state:          State,
     options_header: Option<u32>,
+    seen_visit:     bool,
+}
+
+fn structural_line(line: &str) -> bool {
+    let first = line
+        .trim_start()
+        .split(|ch: char| ch.is_whitespace() || ch == '#')
+        .next()
+        .unwrap_or_default();
+    first.starts_with('[') || first == "PAGE" || ACTION_KEYWORDS.contains(&first)
+}
+
+fn multiline_value(lines: &[&str], start: usize, text: &str) -> Result<Value, LineError> {
+    let mut segments = Vec::new();
+    for (offset, line) in text.split('\n').enumerate() {
+        if offset > 0 {
+            segments.push(ValueSegment::Literal("\n".to_owned()));
+        }
+        let line_no = u32::try_from(start + offset + 1).unwrap_or(u32::MAX);
+        match bare_segments(line, 1) {
+            Ok(line_segments) => segments.extend(line_segments),
+            Err(error) => {
+                return Err(error.at_source(
+                    line_no,
+                    lines.get(start + offset).copied().unwrap_or_default(),
+                ));
+            }
+        }
+    }
+    Ok(Value {
+        segments: merge_literals(segments),
+        span:     Span {
+            line:   u32::try_from(start + 1).unwrap_or(u32::MAX),
+            column: 1,
+            len:    u32::try_from(lines.get(start).map_or(0, |line| line.chars().count()))
+                .unwrap_or(u32::MAX)
+                .max(1),
+        },
+        quoted:   false,
+    })
+}
+
+fn json_for_validation(text: &str) -> Result<String, LineError> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut pos = 0;
+    while pos < chars.len() {
+        let ch = chars[pos];
+        if ch == '\\' && chars.get(pos + 1) == Some(&'{') && chars.get(pos + 2) == Some(&'{') {
+            out.push('{');
+            out.push('{');
+            pos += 3;
+            continue;
+        }
+        if ch == '{' && chars.get(pos + 1) == Some(&'{') {
+            let close = chars[pos + 2..]
+                .windows(2)
+                .position(|pair| pair == ['}', '}'])
+                .ok_or_else(|| {
+                    LineError::new(
+                        Span {
+                            line:   0,
+                            column: 1,
+                            len:    2,
+                        },
+                        "unterminated `{{` variable reference",
+                    )
+                })?;
+            if in_string {
+                out.push_str("whirl");
+            } else {
+                out.push_str("null");
+            }
+            pos += close + 4;
+            continue;
+        }
+        out.push(ch);
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+        } else if ch == '"' {
+            in_string = true;
+        }
+        pos += 1;
+    }
+    Ok(out)
+}
+
+fn json_body_end(lines: &[&str], start: usize) -> Result<usize, LineError> {
+    let mut stack = Vec::new();
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut interpolation = false;
+    let mut previous = '\0';
+    for (index, line) in lines.iter().enumerate().skip(start) {
+        for ch in line.chars() {
+            if interpolation {
+                if previous == '}' && ch == '}' {
+                    interpolation = false;
+                }
+                previous = ch;
+                continue;
+            }
+            if !in_string && previous == '{' && ch == '{' {
+                let _ = stack.pop();
+                interpolation = true;
+                previous = ch;
+                continue;
+            }
+            if in_string {
+                if escaped {
+                    escaped = false;
+                } else if ch == '\\' {
+                    escaped = true;
+                } else if ch == '"' {
+                    in_string = false;
+                }
+            } else {
+                match ch {
+                    '"' => in_string = true,
+                    '{' => stack.push('}'),
+                    '[' => stack.push(']'),
+                    '}' | ']' => {
+                        if stack.pop() != Some(ch) {
+                            return Err(LineError::new(
+                                Span {
+                                    line:   0,
+                                    column: 1,
+                                    len:    1,
+                                },
+                                "mismatched delimiter in HTTP JSON body",
+                            )
+                            .at_source(u32::try_from(index + 1).unwrap_or(u32::MAX), *line));
+                        }
+                        if stack.is_empty() {
+                            return Ok(index);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            previous = ch;
+        }
+        previous = '\n';
+    }
+    Err(LineError::new(
+        Span {
+            line:   0,
+            column: 1,
+            len:    1,
+        },
+        "unterminated HTTP JSON body",
+    )
+    .at_source(
+        u32::try_from(start + 1).unwrap_or(u32::MAX),
+        lines.get(start).copied().unwrap_or_default(),
+    ))
 }
 
 /// Parses one `.whirl` source, stopping at the file's first error.
@@ -1786,13 +1979,21 @@ pub(crate) fn parse_file(path: &Path, source: &str) -> Result<File, ParseError> 
         current:        None,
         state:          State::Preamble,
         options_header: None,
+        seen_visit:     false,
     };
     let lines: Vec<&str> = source.lines().collect();
-    for (index, line) in lines.iter().enumerate() {
+    let mut index = 0;
+    while index < lines.len() {
+        let line = lines[index];
         let line_no = u32::try_from(index + 1).unwrap_or(u32::MAX);
         parser
             .parse_line(line, line_no)
             .map_err(|error| into_parse_error(path, error, line_no, line))?;
+        if line.split_whitespace().next() == Some("HTTP") {
+            index = parser.parse_http_tail(path, &lines, index)?;
+        } else {
+            index += 1;
+        }
     }
     if let Some(entry) = parser.current.take() {
         parser.entries.push(entry);
@@ -1806,7 +2007,7 @@ pub(crate) fn parse_file(path: &Path, source: &str) -> Result<File, ParseError> 
             len:         1,
             source_line: lines.last().copied().unwrap_or_default().to_owned(),
             message:     "a file needs at least one entry".to_owned(),
-            expected:    vec!["VISIT".to_owned()],
+            expected:    vec!["HTTP".to_owned(), "VISIT".to_owned()],
         });
     }
     Ok(File {
@@ -1821,16 +2022,224 @@ pub(crate) fn parse_file(path: &Path, source: &str) -> Result<File, ParseError> 
 fn into_parse_error(path: &Path, error: LineError, line_no: u32, line: &str) -> ParseError {
     ParseError {
         path:        path.to_path_buf(),
-        line:        line_no,
+        line:        error.line.unwrap_or(line_no),
         column:      error.column,
         len:         error.len,
-        source_line: line.to_owned(),
+        source_line: error.source.unwrap_or_else(|| line.to_owned()),
         message:     error.message,
         expected:    error.expected,
     }
 }
 
 impl Parser {
+    fn parse_http_tail(
+        &mut self,
+        path: &Path,
+        lines: &[&str],
+        headline: usize,
+    ) -> Result<usize, ParseError> {
+        let mut headers: Vec<HttpHeader> = Vec::new();
+        let mut body = None;
+        let mut index = headline + 1;
+        let mut last_component = headline;
+
+        while index < lines.len() {
+            let line = lines[index];
+            let trimmed = line.trim_start();
+            if trimmed.is_empty() {
+                index += 1;
+                continue;
+            }
+            if trimmed.starts_with('#') {
+                let line_no = u32::try_from(index + 1).unwrap_or(u32::MAX);
+                self.parse_line(line, line_no)
+                    .map_err(|error| into_parse_error(path, error, line_no, line))?;
+                index += 1;
+                continue;
+            }
+            if structural_line(line) {
+                break;
+            }
+
+            if body.is_some() {
+                let duplicate_body =
+                    trimmed == "```" || trimmed.starts_with('{') || trimmed.starts_with('[');
+                let header_after_body = trimmed
+                    .split_whitespace()
+                    .next()
+                    .and_then(|token| token.strip_suffix(':'))
+                    .is_some_and(is_attr_name);
+                if duplicate_body || header_after_body {
+                    let message = if duplicate_body {
+                        "duplicate HTTP body"
+                    } else {
+                        "an HTTP header cannot follow its body"
+                    };
+                    let error = LineError::new(
+                        Span {
+                            line:   0,
+                            column: 1,
+                            len:    u32::try_from(trimmed.chars().next().map_or(1, |_| {
+                                trimmed
+                                    .split_whitespace()
+                                    .next()
+                                    .unwrap_or(trimmed)
+                                    .chars()
+                                    .count()
+                            }))
+                            .unwrap_or(u32::MAX),
+                        },
+                        message,
+                    )
+                    .at_source(u32::try_from(index + 1).unwrap_or(u32::MAX), line);
+                    return Err(into_parse_error(path, error, 0, line));
+                }
+                break;
+            }
+
+            if trimmed == "```" {
+                let Some(close) = lines[index + 1..]
+                    .iter()
+                    .position(|line| line.trim() == "```")
+                    .map(|offset| index + offset + 1)
+                else {
+                    let error = LineError::new(
+                        Span {
+                            line:   0,
+                            column: 1,
+                            len:    3,
+                        },
+                        "unterminated fenced HTTP body",
+                    )
+                    .expecting(["a closing ``` line"])
+                    .at_source(u32::try_from(index + 1).unwrap_or(u32::MAX), line);
+                    return Err(into_parse_error(path, error, 0, line));
+                };
+                let text = lines[index + 1..close].join("\n");
+                let value_start = (index + 1).min(lines.len().saturating_sub(1));
+                let value = multiline_value(lines, value_start, &text)
+                    .map_err(|error| into_parse_error(path, error, 0, line))?;
+                body = Some(HttpBody {
+                    kind: HttpBodyKind::Text,
+                    value,
+                    text,
+                    line: u32::try_from(index + 1).unwrap_or(u32::MAX),
+                    end_line: u32::try_from(close + 1).unwrap_or(u32::MAX),
+                });
+                last_component = close;
+                index = close + 1;
+                continue;
+            }
+
+            if trimmed.starts_with('{') || trimmed.starts_with('[') {
+                let end = json_body_end(lines, index)
+                    .map_err(|error| into_parse_error(path, error, 0, line))?;
+                let text = lines[index..=end].join("\n");
+                let validation = json_for_validation(&text)
+                    .map_err(|error| into_parse_error(path, error, 0, line))?;
+                if let Err(error) = serde_json::from_str::<serde_json::Value>(&validation) {
+                    let error_line = index + error.line();
+                    let source = lines
+                        .get(error_line.saturating_sub(1))
+                        .copied()
+                        .unwrap_or(line);
+                    let local = LineError::new(
+                        Span {
+                            line:   0,
+                            column: u32::try_from(error.column()).unwrap_or(u32::MAX),
+                            len:    1,
+                        },
+                        format!("invalid HTTP JSON body: {error}"),
+                    )
+                    .at_source(u32::try_from(error_line).unwrap_or(u32::MAX), source);
+                    return Err(into_parse_error(path, local, 0, source));
+                }
+                let value = multiline_value(lines, index, &text)
+                    .map_err(|error| into_parse_error(path, error, 0, line))?;
+                body = Some(HttpBody {
+                    kind: HttpBodyKind::Json,
+                    value,
+                    text,
+                    line: u32::try_from(index + 1).unwrap_or(u32::MAX),
+                    end_line: u32::try_from(end + 1).unwrap_or(u32::MAX),
+                });
+                last_component = end;
+                index = end + 1;
+                continue;
+            }
+
+            let line_no = u32::try_from(index + 1).unwrap_or(u32::MAX);
+            let mut cursor = Cursor::new(line, line_no);
+            cursor.skip_ws();
+            let first = cursor
+                .next_token()
+                .map_err(|error| into_parse_error(path, error, line_no, line))?
+                .expect("a non-blank HTTP header line has a token");
+            let Some(name) = first.bare_single().and_then(|text| text.strip_suffix(':')) else {
+                break;
+            };
+            if !is_attr_name(name)
+                || headers
+                    .iter()
+                    .any(|header| header.name.eq_ignore_ascii_case(name))
+            {
+                let error = LineError::new(first.span, "invalid or duplicate HTTP header name");
+                return Err(into_parse_error(path, error, line_no, line));
+            }
+            let value = cursor
+                .next_token()
+                .map_err(|error| into_parse_error(path, error, line_no, line))?
+                .ok_or_else(|| {
+                    into_parse_error(
+                        path,
+                        LineError::new(first.span, "expected an HTTP header value"),
+                        line_no,
+                        line,
+                    )
+                })?
+                .into_value()
+                .map_err(|error| into_parse_error(path, error, line_no, line))?;
+            if let Some(extra) = cursor
+                .next_token()
+                .map_err(|error| into_parse_error(path, error, line_no, line))?
+            {
+                let error = LineError::new(extra.span, "expected end of header line")
+                    .expecting(["a single value"]);
+                return Err(into_parse_error(path, error, line_no, line));
+            }
+            if let Some(comment) = cursor.take_comment() {
+                self.comments.push(comment);
+            }
+            headers.push(HttpHeader {
+                name: name.to_owned(),
+                value,
+                line: line_no,
+            });
+            last_component = index;
+            index += 1;
+        }
+
+        let source = lines[headline..=last_component].join("\n");
+        let action = self
+            .current
+            .as_mut()
+            .and_then(|entry| entry.actions.last_mut())
+            .expect("an HTTP headline creates a current action");
+        let ActionKind::Http {
+            headers: action_headers,
+            body: action_body,
+            source: action_source,
+            ..
+        } = &mut action.kind
+        else {
+            unreachable!("parse_http_tail follows an HTTP action");
+        };
+        *action_headers = headers;
+        *action_body = body;
+        *action_source = source;
+        Ok(index)
+    }
+
     fn parse_line(&mut self, line: &str, line_no: u32) -> Result<(), LineError> {
         let mut cursor = Cursor::new(line, line_no);
         cursor.skip_ws();
@@ -1956,12 +2365,16 @@ impl Parser {
             let keyword = keyword.to_owned();
             let first_span = first.span;
             let (kind, timeout) = parse_action_body(&keyword, first_span, cursor)?;
-            let file_first_action = self.entries.is_empty() && self.current.is_none();
-            if file_first_action && !matches!(kind, ActionKind::Visit { .. }) {
+            let is_http = matches!(kind, ActionKind::Http { .. });
+            let is_visit = matches!(kind, ActionKind::Visit { .. });
+            if !self.seen_visit && !is_http && !is_visit {
                 return Err(
-                    LineError::new(first_span, "the first action in a file must be VISIT")
-                        .expecting(["VISIT"]),
+                    LineError::new(first_span, "a browser action needs an earlier VISIT")
+                        .expecting(["HTTP", "VISIT"]),
                 );
+            }
+            if is_visit {
+                self.seen_visit = true;
             }
             let (text, span) = cursor.content(content_start);
             let action = Action {
@@ -1971,7 +2384,13 @@ impl Parser {
                 span,
                 text,
             };
-            if self.state == State::Actions {
+            let current_is_http = self.current.as_ref().is_some_and(|entry| {
+                matches!(
+                    entry.actions.first().map(|action| &action.kind),
+                    Some(ActionKind::Http { .. })
+                )
+            });
+            if self.state == State::Actions && !is_http && !current_is_http {
                 let entry = self
                     .current
                     .as_mut()
@@ -1997,9 +2416,9 @@ impl Parser {
         match self.state {
             State::Preamble => Err(LineError::new(
                 first.span,
-                "expected `[Options]` or an action; the first action must be VISIT",
+                "expected `[Options]`, HTTP, or VISIT",
             )
-            .expecting(["[Options]", "VISIT"])),
+            .expecting(["[Options]", "HTTP", "VISIT"])),
             State::Options => {
                 let first_span = first.span;
                 let option = parse_option_line(first, cursor)?;
@@ -2013,6 +2432,15 @@ impl Parser {
                 Ok(())
             }
             State::Actions if is_page => {
+                if self.current.as_ref().is_some_and(|entry| {
+                    matches!(
+                        entry.actions.first().map(|action| &action.kind),
+                        Some(ActionKind::Http { .. })
+                    )
+                }) {
+                    return Err(LineError::new(first.span, "an HTTP entry cannot have PAGE")
+                        .expecting(["[Asserts]", "[Captures]", "an action"]));
+                }
                 let (check, timeout) = parse_page_body(first.span, cursor)?;
                 let (text, span) = cursor.content(content_start);
                 let entry = self
@@ -2050,7 +2478,13 @@ impl Parser {
             )
             .expecting(["a check", "an action"])),
             State::Asserts => {
-                let (body, timeout) = parse_assert_body(first, cursor)?;
+                let implicit_http = self.current.as_ref().is_some_and(|entry| {
+                    matches!(
+                        entry.actions.first().map(|action| &action.kind),
+                        Some(ActionKind::Http { .. })
+                    )
+                });
+                let (body, timeout) = parse_assert_body(first, cursor, implicit_http)?;
                 let (text, span) = cursor.content(content_start);
                 let entry = self
                     .current
@@ -2076,7 +2510,13 @@ impl Parser {
                     return Err(LineError::new(first_span, "expected a capture line")
                         .expecting(["name: source"]));
                 };
-                let mut capture = parse_capture_body(name, rest, cursor)?;
+                let implicit_http = self.current.as_ref().is_some_and(|entry| {
+                    matches!(
+                        entry.actions.first().map(|action| &action.kind),
+                        Some(ActionKind::Http { .. })
+                    )
+                });
+                let mut capture = parse_capture_body(name, rest, cursor, implicit_http)?;
                 let (text, span) = cursor.content(content_start);
                 capture.line = line_no;
                 capture.span = span;
@@ -2625,11 +3065,91 @@ role:alert text contains "Added to cart"
     }
 
     #[test]
-    fn first_action_must_be_visit() {
+    fn a_browser_action_needs_an_earlier_visit() {
         let error = parse_err("CLICK \"Go\"\n");
-        assert_eq!(error.message, "the first action in a file must be VISIT");
-        assert_eq!(error.expected, vec!["VISIT".to_owned()]);
+        assert_eq!(error.message, "a browser action needs an earlier VISIT");
+        assert_eq!(error.expected, vec!["HTTP".to_owned(), "VISIT".to_owned()]);
         assert_eq!((error.line, error.column), (1, 1));
+    }
+
+    #[test]
+    fn http_entries_can_run_before_visit_or_without_a_page() {
+        let file = parse(
+            "HTTP POST /fixtures\n{\n  \"name\": \"Ada\"\n}\n[Asserts]\nstatus == 201\n[Captures]\nid: json:/id\nVISIT /users/{{id}}\n",
+        );
+        assert_eq!(file.entries.len(), 2);
+        assert!(matches!(
+            file.entries[0].actions[0].kind,
+            ActionKind::Http { .. }
+        ));
+
+        let http_only = parse("HTTP GET /health\n[Asserts]\nstatus == 200\n");
+        assert_eq!(http_only.entries.len(), 1);
+    }
+
+    #[test]
+    fn http_blocks_parse_headers_json_and_fenced_text() {
+        let file = parse(
+            r#"HTTP POST /fixtures
+Authorization: "Bearer {{env.TOKEN}}"
+{
+  "name": "{{name}}",
+  "enabled": true
+}
+[Asserts]
+status == 201
+json:/name == {{name}}
+[Captures]
+id: json:/id
+HTTP POST /imports
+Content-Type: text/plain
+```
+first # literal
+second\line
+```
+[Asserts]
+status == 202
+"#,
+        );
+        assert_eq!(file.entries.len(), 2);
+        let ActionKind::Http { headers, body, .. } = &file.entries[0].actions[0].kind else {
+            panic!("expected HTTP");
+        };
+        assert_eq!(headers.len(), 1);
+        assert_eq!(headers[0].name, "Authorization");
+        let body = body.as_ref().expect("JSON body");
+        assert_eq!(body.kind, HttpBodyKind::Json);
+        assert!(body.text.contains("\"enabled\": true"));
+        assert!(matches!(
+            file.entries[0].asserts[0].body,
+            AssertBody::HttpStatus { status: 201, .. }
+        ));
+        assert!(matches!(
+            file.entries[0].captures[0].source,
+            CaptureSource::Http(ResponseField::Json(_))
+        ));
+
+        let ActionKind::Http { body, .. } = &file.entries[1].actions[0].kind else {
+            panic!("expected HTTP");
+        };
+        let body = body.as_ref().expect("text body");
+        assert_eq!(body.kind, HttpBodyKind::Text);
+        assert_eq!(body.text, "first # literal\nsecond\\line");
+    }
+
+    #[test]
+    fn malformed_http_blocks_report_the_body_line() {
+        let error = parse_err("HTTP POST /\n{\n  \"missing\":,\n}\n");
+        assert_eq!(error.line, 3);
+        assert!(error.message.contains("invalid HTTP JSON body"));
+
+        let error = parse_err("HTTP POST /\n```\nnever closed\n");
+        assert_eq!(error.line, 2);
+        assert_eq!(error.message, "unterminated fenced HTTP body");
+
+        let error = parse_err("HTTP POST /\n{}\nX-Test: late\n");
+        assert_eq!(error.line, 3);
+        assert_eq!(error.message, "an HTTP header cannot follow its body");
     }
 
     #[test]

@@ -7,6 +7,7 @@
 //! processes.
 
 use std::collections::HashSet;
+use std::io::Read as _;
 use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -123,6 +124,7 @@ fn respond(mut request: tiny_http::Request) {
                 .to_owned()
         };
         let cookie = header("Cookie");
+        let content_type = header("Content-Type");
         let authenticated = header("Authorization") == "Bearer whirl-test-key"
             || cookie.contains("session=browser");
         let mut body = String::new();
@@ -130,8 +132,12 @@ fn respond(mut request: tiny_http::Request) {
             .as_reader()
             .read_to_string(&mut body)
             .expect("request body is readable");
-        let json =
-            serde_json::json!({"authenticated": authenticated, "cookie": cookie, "body": body});
+        let json = serde_json::json!({
+            "authenticated": authenticated,
+            "cookie": cookie,
+            "body": body,
+            "contentType": content_type,
+        });
         let _ = request.respond(
             Response::from_string(json.to_string())
                 .with_status_code(if authenticated { 200 } else { 401 })
@@ -1709,25 +1715,80 @@ RESPONSE stalled GET /stall @200ms
 fn http_authentication_uses_explicit_headers_without_browser_cookies() {
     let site = SiteServer::start();
     let dir = TestDir::new();
-    dir.file("http.whirl", r#"VISIT /network.html
+    dir.file(
+        "http.whirl",
+        r#"VISIT /network.html
 STORE cookie session browser
-HTTP authorized POST /api/http-check header:Authorization "Bearer whirl-test-key" header:Content-Type application/json body:"{\"message\":\"hello\"}"
+HTTP POST /api/http-check
+Authorization: "Bearer whirl-test-key"
+{"message":"hello"}
 [Asserts]
-response:authorized status == 200
-response:authorized json:/authenticated == true
-response:authorized json:/cookie == ""
-response:authorized json:/body == "{\"message\":\"hello\"}"
+status == 200
+json:/authenticated == true
+json:/cookie == ""
+json:/body == "{\"message\":\"hello\"}"
+json:/contentType == application/json
 [Captures]
-authenticated: response:authorized json:/authenticated
-HTTP unauthorized GET /api/http-check
+authenticated: json:/authenticated
+HTTP GET /api/http-check
+Content-Type: text/custom
 [Asserts]
-response:unauthorized status == 401
-response:unauthorized json:/cookie == ""
+status == 401
+json:/cookie == ""
+json:/contentType == text/custom
 EVAL "if (document.cookie !== 'session=browser') throw new Error('HTTP changed browser cookies')"
 VISIT /network.html?authenticated={{authenticated}}
 PAGE /network.html?authenticated=true
-"#);
+"#,
+    );
     let output = run_whirl(&dir, &["--base", &site.base(), "http.whirl"]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+}
+
+#[test]
+fn http_can_create_and_capture_data_before_the_first_visit() {
+    let site = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file(
+        "setup.whirl",
+        r#"HTTP POST /api/http-check
+Authorization: "Bearer whirl-test-key"
+[Asserts]
+status == 200
+[Captures]
+authenticated: json:/authenticated
+
+VISIT /network.html?authenticated={{authenticated}}
+PAGE /network.html?authenticated=true
+"#,
+    );
+
+    let output = run_whirl(&dir, &["--base", &site.base(), "setup.whirl"]);
+
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+}
+
+#[test]
+fn http_fenced_body_preserves_newlines_backslashes_and_hashes() {
+    let site = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file(
+        "text.whirl",
+        r#"HTTP POST /api/http-check
+Authorization: "Bearer whirl-test-key"
+Content-Type: text/plain
+```
+first # literal
+second\line
+```
+[Asserts]
+status == 200
+json:/body == "first # literal\nsecond\\line"
+"#,
+    );
+
+    let output = run_whirl(&dir, &["--base", &site.base(), "text.whirl"]);
+
     assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
 }
 
@@ -1735,7 +1796,10 @@ PAGE /network.html?authenticated=true
 fn http_returns_redirects_without_following_them() {
     let site = SiteServer::start();
     let dir = TestDir::new();
-    dir.file("redirect.whirl", "VISIT /network.html\nHTTP redirect GET /redirect-cross\n[Asserts]\nresponse:redirect status == 302\nresponse:redirect header:location contains localhost\n");
+    dir.file(
+        "redirect.whirl",
+        "HTTP GET /redirect-cross\n[Asserts]\nstatus == 302\nheader:location contains localhost\n",
+    );
     let output = run_whirl(&dir, &["--base", &site.base(), "redirect.whirl"]);
     assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
 }
@@ -1744,7 +1808,10 @@ fn http_returns_redirects_without_following_them() {
 fn http_enforces_host_allowlists_before_sending_a_request() {
     let site = SiteServer::start();
     let dir = TestDir::new();
-    dir.file("blocked.whirl", "[Options]\nallow-hosts: 127.0.0.1\nVISIT /network.html\nHTTP blocked GET https://blocked.invalid/\n");
+    dir.file(
+        "blocked.whirl",
+        "[Options]\nallow-hosts: 127.0.0.1\nHTTP GET https://blocked.invalid/\n",
+    );
     let output = run_whirl(&dir, &["--base", &site.base(), "blocked.whirl"]);
     assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
     assert!(
@@ -1758,10 +1825,7 @@ fn http_enforces_host_allowlists_before_sending_a_request() {
 fn http_enforces_its_step_timeout() {
     let site = SiteServer::start();
     let dir = TestDir::new();
-    dir.file(
-        "timeout.whirl",
-        "VISIT /network.html\nHTTP slow GET /stall @200ms\n",
-    );
+    dir.file("timeout.whirl", "HTTP GET /stall @200ms\n");
     let output = run_whirl(&dir, &["--base", &site.base(), "timeout.whirl"]);
     assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
     assert!(
@@ -1776,10 +1840,7 @@ fn http_limits_declared_and_streamed_response_bodies() {
     let site = SiteServer::start();
     let dir = TestDir::new();
     for path in ["/api/large", "/api/large?chunked"] {
-        dir.file(
-            "large.whirl",
-            &format!("VISIT /network.html\nHTTP large GET {path}\n"),
-        );
+        dir.file("large.whirl", &format!("HTTP GET {path}\n"));
         let output = run_whirl(&dir, &["--base", &site.base(), "large.whirl"]);
         assert_eq!(exit_code(&output), 1, "{path}: {}", stdout_text(&output));
         assert!(
@@ -1796,8 +1857,8 @@ fn http_head_allows_a_large_content_length_without_a_response_body() {
     let dir = TestDir::new();
     dir.file(
         "head.whirl",
-        "VISIT /network.html\nHTTP large HEAD /api/large\n[Asserts]\n\
-         response:large status == 200\nresponse:large header:content-length == 1048577\n",
+        "HTTP HEAD /api/large\n[Asserts]\n\
+         status == 200\nheader:content-length == 1048577\n",
     );
     let output = run_whirl(&dir, &["--base", &site.base(), "head.whirl"]);
     assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
@@ -1808,10 +1869,7 @@ fn http_rejects_non_http_urls_and_embedded_credentials() {
     let site = SiteServer::start();
     let dir = TestDir::new();
     for url in ["data:text/plain,example", "http://user:password@127.0.0.1/"] {
-        dir.file(
-            "url.whirl",
-            &format!("VISIT /network.html\nHTTP invalid GET {url}\n"),
-        );
+        dir.file("url.whirl", &format!("HTTP GET {url}\n"));
         let output = run_whirl(&dir, &["--base", &site.base(), "url.whirl"]);
         assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
         assert!(
@@ -1828,11 +1886,17 @@ fn http_interpolates_headers_and_bodies_without_leaking_secrets() {
     let dir = TestDir::new();
     dir.file(
         "secret.whirl",
-        "VISIT /network.html\n\
-         HTTP account POST {{endpoint}} header:Authorization \"Bearer {{env.HTTP_TOKEN}}\" body:{{env.HTTP_BODY}}\n\
-         [Asserts]\nresponse:account status == 200\n\
-         response:account json:/body == {{env.HTTP_BODY}}\n\
-         [Captures]\nbody: response:account json:/body\n",
+        "[Options]\nallow-hosts: 127.0.0.1\n\
+         HTTP POST {{endpoint}}\n\
+         Authorization: \"Bearer {{env.HTTP_TOKEN}}\"\n\
+         ```\n{{env.HTTP_BODY}}\n```\n\
+         [Asserts]\nstatus == 200\n\
+         json:/body == {{env.HTTP_BODY}}\n\
+         [Captures]\nbody: json:/body\n\
+         HTTP POST https://blocked.invalid/\n\
+         Authorization: \"Bearer {{env.HTTP_TOKEN}}\"\n\
+         ```\n{{env.HTTP_BODY}}\n```\n\
+         [Asserts]\nstatus == 200\n",
     );
     let output = run_whirl_env(
         &dir,
@@ -1843,6 +1907,11 @@ fn http_interpolates_headers_and_bodies_without_leaking_secrets() {
             "endpoint=/api/http-check",
             "--report-json",
             "report.json",
+            "--report-junit",
+            "report.xml",
+            "--report-html",
+            "report.html",
+            "--trace",
             "secret.whirl",
         ],
         &[
@@ -1850,14 +1919,42 @@ fn http_interpolates_headers_and_bodies_without_leaking_secrets() {
             ("HTTP_BODY", "secret-request-body"),
         ],
     );
-    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
-    let report = fs::read_to_string(dir.path.join("report.json")).expect("report exists");
-    for secret in ["whirl-test-key", "secret-request-body"] {
-        assert!(!report.contains(secret), "report must mask HTTP secrets");
-        assert!(!stdout_text(&output).contains(secret));
-        assert!(!String::from_utf8_lossy(&output.stderr).contains(secret));
+    assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
+    let json = fs::read_to_string(dir.path.join("report.json")).expect("JSON report exists");
+    let junit = fs::read_to_string(dir.path.join("report.xml")).expect("JUnit report exists");
+    let html = fs::read_to_string(dir.path.join("report.html")).expect("HTML report exists");
+    let trace_path = dir.artifacts().join("secret/trace.zip");
+    let trace_file = fs::File::open(&trace_path).expect("trace exists");
+    let mut trace = zip::ZipArchive::new(trace_file).expect("trace is a ZIP archive");
+    let mut trace_text = String::new();
+    for index in 0..trace.len() {
+        let mut entry = trace.by_index(index).expect("trace entry is readable");
+        let mut bytes = Vec::new();
+        entry
+            .read_to_end(&mut bytes)
+            .expect("trace entry contents are readable");
+        trace_text.push_str(&String::from_utf8_lossy(&bytes));
+        trace_text.push('\n');
     }
-    let report: serde_json::Value = serde_json::from_str(&report).expect("report is JSON");
+    let stdout = stdout_text(&output);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    for secret in ["whirl-test-key", "secret-request-body"] {
+        for (name, text) in [
+            ("console", stdout.as_str()),
+            ("stderr", stderr.as_ref()),
+            ("JSON", json.as_str()),
+            ("JUnit", junit.as_str()),
+            ("HTML", html.as_str()),
+            ("trace", trace_text.as_str()),
+        ] {
+            assert!(!text.contains(secret), "{name} must mask HTTP secrets");
+        }
+    }
+    for text in [&stdout, &json, &junit, &html, &trace_text] {
+        assert!(text.contains("HTTP POST"), "multiline HTTP step is present");
+        assert!(text.contains("Bearer ***"), "HTTP header secret is masked");
+    }
+    let report: serde_json::Value = serde_json::from_str(&json).expect("report is JSON");
     assert_eq!(report["files"][0]["entries"][0]["captures"]["body"], "***");
 }
 

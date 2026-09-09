@@ -1,4 +1,4 @@
-names.whirl:3:10: error: unknown response `order`; name it with HTTP or RESPONSE first
+names.whirl:3:10: error: unknown response `order`; name it with RESPONSE first
   response:order status == 200
            ^^^^^
 names.whirl:5:10: error: response `order` is already named

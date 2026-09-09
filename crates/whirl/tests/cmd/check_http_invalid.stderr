@@ -1,16 +1,15 @@
-./duplicate-body.whirl:2:28: error: duplicate HTTP body
-  HTTP order POST / body:one body:two
-                             ^^^^^^^^
-./duplicate-header.whirl:2:36: error: invalid or duplicate HTTP header name
-  HTTP order GET / header:X-Test one header:x-test two
-                                     ^^^^^^^^^^^^^
-./first-action.whirl:1:1: error: the first action in a file must be VISIT
+./duplicate-body.whirl:5:1: error: duplicate HTTP body
+  {"two": true}
+  ^^^^^^^
+./duplicate-header.whirl:3:1: error: invalid or duplicate HTTP header name
+  x-test: two
+  ^^^^^^^
+./first-action.whirl:1:1: error: expected HTTP METHOD url
   HTTP order GET /
   ^^^^
-  expected VISIT
-./method.whirl:2:12: error: expected an uppercase HTTP method like GET or POST
-  HTTP order get /
-             ^^^
-./missing-header-value.whirl:2:18: error: expected an HTTP header value
-  HTTP order GET / header:X-Test
-                   ^^^^^^^^^^^^^
+./method.whirl:1:6: error: expected an uppercase HTTP method like GET or POST
+  HTTP get /
+       ^^^
+./missing-header-value.whirl:2:1: error: expected an HTTP header value
+  X-Test:
+  ^^^^^^^

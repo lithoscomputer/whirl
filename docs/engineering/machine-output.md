@@ -22,6 +22,7 @@ Schemas: [check](check.schema.json), [run report](report.schema.json).
 | `duplicate-artifact` | An artifact name is repeated |
 | `unused-capture` | A capture is never read; warning |
 | `redundant-presence` | The following assertion requires presence; warning |
+| `unasserted-http-status` | An independent HTTP entry has no status assertion; warning |
 
 Locations use 1-based Unicode character positions, not bytes or UTF-16 units.
 `length` is the source span length on that line. Input and I/O diagnostics may

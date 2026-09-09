@@ -1,4 +1,4 @@
-notvisit.whirl:1:1: error: the first action in a file must be VISIT
+notvisit.whirl:1:1: error: a browser action needs an earlier VISIT
   CLICK "Go"
   ^^^^^
-  expected VISIT
+  expected one of: HTTP, VISIT

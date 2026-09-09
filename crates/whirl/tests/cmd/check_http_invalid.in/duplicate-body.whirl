@@ -1,2 +1,5 @@
-VISIT /
-HTTP order POST / body:one body:two
+HTTP POST /
+```
+one
+```
+{"two": true}

@@ -44,6 +44,7 @@ pub(crate) fn lint_file_with(file: &File, external_uses: &HashSet<String>) -> Ve
     duplicate_artifact_names(file, &mut lints);
     tab_names(file, &mut lints);
     response_names(file, &mut lints);
+    unasserted_http_status(file, &mut lints);
     unused_captures(file, external_uses, &mut lints);
     setup_option_rules(file, &mut lints);
     redundant_presence_counts(file, &mut lints);
@@ -126,6 +127,8 @@ fn redundant_presence_counts(file: &File, lints: &mut Vec<Lint>) {
                 | AssertBody::Url(_)
                 | AssertBody::Title(_)
                 | AssertBody::TabClosed { .. }
+                | AssertBody::HttpStatus { .. }
+                | AssertBody::HttpValue { .. }
                 | AssertBody::ResponseStatus { .. }
                 | AssertBody::ResponseValue { .. } => continue,
                 AssertBody::ElementState { locator, .. }
@@ -389,7 +392,7 @@ fn collect_entry_refs<'a>(entry: &'a Entry, refs: &mut Vec<VarRef<'a>>) {
     }
     for capture in &entry.captures {
         match &capture.source {
-            CaptureSource::Response { field, .. } => {
+            CaptureSource::Http(field) | CaptureSource::Response { field, .. } => {
                 collect_response_field_refs(field, capture.line, refs);
             }
             CaptureSource::Element { locator, .. } => {
@@ -408,11 +411,11 @@ fn collect_action_refs<'a>(action: &'a Action, refs: &mut Vec<VarRef<'a>>) {
             url, headers, body, ..
         } => {
             collect_value_refs(url, line, refs);
-            for (_, value) in headers {
-                collect_value_refs(value, line, refs);
+            for header in headers {
+                collect_value_refs(&header.value, header.line, refs);
             }
             if let Some(body) = body {
-                collect_value_refs(body, line, refs);
+                collect_value_refs(&body.value, body.line, refs);
             }
         }
         ActionKind::Response { url, .. } | ActionKind::Visit { url } => {
@@ -461,11 +464,13 @@ fn collect_action_refs<'a>(action: &'a Action, refs: &mut Vec<VarRef<'a>>) {
 fn collect_assert_refs<'a>(assert: &'a Assert, refs: &mut Vec<VarRef<'a>>) {
     let line = assert.line;
     match &assert.body {
-        AssertBody::ResponseValue { field, check, .. } => {
+        AssertBody::HttpValue { field, check } | AssertBody::ResponseValue { field, check, .. } => {
             collect_response_field_refs(field, line, refs);
             collect_check_refs(check, line, refs);
         }
-        AssertBody::ResponseStatus { .. } | AssertBody::TabClosed { .. } => {}
+        AssertBody::HttpStatus { .. }
+        | AssertBody::ResponseStatus { .. }
+        | AssertBody::TabClosed { .. } => {}
         AssertBody::ElementState { locator, .. } | AssertBody::ElementCount { locator, .. } => {
             collect_locator_refs(locator, line, refs);
         }
@@ -569,8 +574,7 @@ fn response_names(file: &File, lints: &mut Vec<Lint>) {
     let mut names = HashSet::new();
     for entry in &file.entries {
         for action in &entry.actions {
-            if let ActionKind::Http { name, .. } | ActionKind::Response { name, .. } = &action.kind
-            {
+            if let ActionKind::Response { name, .. } = &action.kind {
                 if !names.insert(name.text.as_str()) {
                     lints.push(lint_at(
                         file,
@@ -605,12 +609,35 @@ fn response_names(file: &File, lints: &mut Vec<Lint>) {
                     "unknown-response",
                     name.span,
                     format!(
-                        "unknown response `{}`; name it with HTTP or RESPONSE first",
+                        "unknown response `{}`; name it with RESPONSE first",
                         name.text
                     ),
                 ));
             }
         }
+    }
+}
+
+fn unasserted_http_status(file: &File, lints: &mut Vec<Lint>) {
+    for entry in &file.entries {
+        let Some(action) = entry.actions.first() else {
+            continue;
+        };
+        if !matches!(action.kind, ActionKind::Http { .. })
+            || entry
+                .asserts
+                .iter()
+                .any(|assert| matches!(assert.body, AssertBody::HttpStatus { .. }))
+        {
+            continue;
+        }
+        lints.push(lint_at(
+            file,
+            Severity::Warning,
+            "unasserted-http-status",
+            action.span,
+            "HTTP response status is not asserted; status codes do not fail implicitly".to_owned(),
+        ));
     }
 }
 
@@ -745,6 +772,26 @@ mod tests {
         ] {
             assert_eq!(lint(source), Vec::new(), "source:\n{source}");
         }
+    }
+
+    #[test]
+    fn warns_when_an_http_entry_does_not_assert_status() {
+        let lints = lint("HTTP GET /health\n[Asserts]\njson:/ok == true\n");
+        assert_eq!(lints.len(), 1);
+        assert_eq!(lints[0].code, "unasserted-http-status");
+        assert_eq!(lints[0].severity, Severity::Warning);
+        assert_eq!(lints[0].line, 1);
+
+        assert_eq!(
+            lint("HTTP GET /health\n[Asserts]\nstatus == 503\n"),
+            Vec::new()
+        );
+        assert_eq!(
+            lint(
+                "VISIT /\nRESPONSE health GET /health\n[Asserts]\nresponse:health json:/ok == true\n"
+            ),
+            Vec::new()
+        );
     }
 
     #[test]

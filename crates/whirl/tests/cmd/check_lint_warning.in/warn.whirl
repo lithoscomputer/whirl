@@ -1,3 +1,4 @@
+HTTP GET /health
 VISIT /login
 [Captures]
 unused: url

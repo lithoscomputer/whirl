@@ -14,6 +14,12 @@ use crate::lang::ast::{
     ResponseField, SegmentKind, StateCheck, StrCheck, TextPrefix, Value, ValueSource,
 };
 
+/// Shim-only response key for an independent HTTP entry. `$` and `:` cannot
+/// occur in a public `RESPONSE` name.
+pub(crate) fn independent_http_response(line: u32) -> String {
+    format!("$whirl:http:{line}")
+}
+
 /// Resolves a value to its final string; `E` is the runner's error.
 pub(crate) type Resolve<'a, E> = dyn FnMut(&Value) -> Result<String, E> + 'a;
 
@@ -200,8 +206,18 @@ fn response_field_wire<E>(field: &ResponseField, resolve: &mut Resolve<'_, E>) -
 }
 
 /// Converts an assert to the wire spec of protocol section 4.3.
-pub(crate) fn assert_wire<E>(body: &AssertBody, resolve: &mut Resolve<'_, E>) -> Result<Json, E> {
+pub(crate) fn assert_wire<E>(
+    body: &AssertBody,
+    implicit_response: Option<&str>,
+    resolve: &mut Resolve<'_, E>,
+) -> Result<Json, E> {
     let json = match body {
+        AssertBody::HttpStatus { op, status } => {
+            json!({"subject": {"type": "response", "name": implicit_response.expect("an HTTP assertion belongs to an HTTP entry")}, "check": {"type": "status", "op": num_op_text(*op), "value": status}})
+        }
+        AssertBody::HttpValue { field, check } => {
+            json!({"subject": {"type": "response", "name": implicit_response.expect("an HTTP assertion belongs to an HTTP entry")}, "check": {"type": "value", "field": response_field_wire(field, resolve)?, "op": str_check_wire(check, resolve)?}})
+        }
         AssertBody::ResponseStatus { name, op, status } => {
             json!({"subject": {"type": "response", "name": name.text}, "check": {"type": "status", "op": num_op_text(*op), "value": status}})
         }
@@ -247,9 +263,13 @@ pub(crate) fn assert_wire<E>(body: &AssertBody, resolve: &mut Resolve<'_, E>) ->
 /// Converts a capture source to the wire shape of protocol section 4.4.
 pub(crate) fn capture_source_wire<E>(
     source: &CaptureSource,
+    implicit_response: Option<&str>,
     resolve: &mut Resolve<'_, E>,
 ) -> Result<Json, E> {
     let json = match source {
+        CaptureSource::Http(field) => {
+            json!({"type": "response", "name": implicit_response.expect("an HTTP capture belongs to an HTTP entry"), "field": response_field_wire(field, resolve)?})
+        }
         CaptureSource::Response { name, field } => {
             json!({"type": "response", "name": name.text, "field": response_field_wire(field, resolve)?})
         }
@@ -333,14 +353,14 @@ mod tests {
     /// The wire JSON of the first assert in `[Asserts]`.
     fn assert_json(line: &str) -> Json {
         let file = parse(&format!("VISIT /\n[Asserts]\n{line}\n"));
-        assert_wire(&file.entries[0].asserts[0].body, &mut resolve).unwrap()
+        assert_wire(&file.entries[0].asserts[0].body, None, &mut resolve).unwrap()
     }
 
     /// The wire JSON of the first capture's source and filter.
     fn capture_json(line: &str) -> (Json, Json) {
         let file = parse(&format!("VISIT /\n[Captures]\n{line}\n"));
         let capture = &file.entries[0].captures[0];
-        let source = capture_source_wire(&capture.source, &mut resolve).unwrap();
+        let source = capture_source_wire(&capture.source, None, &mut resolve).unwrap();
         (source, filter_wire(capture.filter.as_ref()))
     }
 

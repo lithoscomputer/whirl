@@ -1,0 +1,16 @@
+{
+  "diagnostics": [
+    {
+      "code": "unasserted-http-status",
+      "column": 1,
+      "expected": [],
+      "length": 16,
+      "line": 1,
+      "message": "HTTP response status is not asserted; status codes do not fail implicitly",
+      "path": "http.whirl",
+      "severity": "warning"
+    }
+  ],
+  "exitCode": 0,
+  "version": 1
+}
