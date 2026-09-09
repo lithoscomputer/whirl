@@ -177,6 +177,33 @@ fn install_without_engines_preserves_all_browser_installation() {
 }
 
 #[test]
+#[cfg(unix)]
+fn install_records_the_binary_version_and_doctor_rejects_another_versions_bundle() {
+    let data = ScratchDir::new("version-marker");
+    let cwd = ScratchDir::new("version-marker-cwd");
+    installer_fixture(&data);
+    let output = run_whirl_with_bundle(&data, &cwd, &["install", "chromium"]);
+    assert_eq!(exit_code(&output), 0, "{}", output_text(&output));
+    let marker = data.path.join("bundle/shim/whirl-version");
+    let version = fs::read_to_string(&marker).expect("the version marker");
+    assert_eq!(version.trim(), env!("CARGO_PKG_VERSION"));
+
+    // An upgraded binary must not drive the shim an older one installed:
+    // the run and the doctor both stop with the refresh command.
+    fs::write(&marker, "0.1.0\n").expect("rewrite the marker");
+    let doctor = run_whirl_with_bundle(&data, &cwd, &["doctor"]);
+    assert_eq!(exit_code(&doctor), 3, "{}", output_text(&doctor));
+    let text = output_text(&doctor);
+    assert!(text.contains("from whirl 0.1.0"), "{text}");
+    assert!(text.contains("whirl install"), "{text}");
+    let flow = cwd.path.join("flow.whirl");
+    fs::write(&flow, "VISIT \"data:text/html,<h1>Hi</h1>\"\n").expect("flow fixture");
+    let run = run_whirl_with_bundle(&data, &cwd, &["flow.whirl"]);
+    assert_eq!(exit_code(&run), 3, "{}", output_text(&run));
+    assert!(output_text(&run).contains("whirl install"));
+}
+
+#[test]
 fn doctor_reports_a_missing_bundle_without_installing_it() {
     let data = ScratchDir::new("doctor-missing");
     let cwd = ScratchDir::new("doctor-missing-cwd");

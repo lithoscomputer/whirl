@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Record the installing Whirl version in the shim bundle. An upgraded binary refuses a stale bundle with a runtime error naming `whirl install`, and `whirl doctor` reports the same, instead of running an older shim silently.
+
 ## 0.11.0 (2026-09-08)
 
 - Record Chromium video at 60 frames per second by default through a screencast recorder, with `--video-fps` (1 to 60) to choose the rate. Firefox and WebKit keep Playwright's 25 fps recorder and warn when a rate is requested. Reports record the recorded rate as `runtime.videoFps`, and `whirl doctor` checks for ffmpeg.

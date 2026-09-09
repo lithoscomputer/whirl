@@ -280,6 +280,11 @@ fn provision_shim_files(bundle: &BundleLayout, progress: Progress<'_>) -> anyhow
     let package_json = bundle.shim_dir.join("package.json");
     fs::write(&package_json, bundle_package_json())
         .with_context(|| format!("writing {}", package_json.display()))?;
+    // Written last: the marker says this version's shim is complete, and
+    // run/shim.rs refuses a bundle whose marker names another version.
+    let version_file = bundle.root.join(shim::BUNDLE_VERSION_FILE);
+    fs::write(&version_file, format!("{}\n", shim::WHIRL_VERSION))
+        .with_context(|| format!("writing {}", version_file.display()))?;
     Ok(())
 }
 

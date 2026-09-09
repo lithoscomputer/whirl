@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use std::{env, io};
+use std::{env, fs, io};
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -43,6 +43,12 @@ pub(crate) const DATA_DIR_ENV: &str = "WHIRL_DATA_DIR";
 pub(crate) const BUNDLE_NODE: &str = "bundle/node/bin/node";
 /// The bundled shim entry, relative to the data dir.
 pub(crate) const BUNDLE_SHIM_JS: &str = "bundle/shim/index.js";
+/// The Whirl version that installed the bundle, relative to the data dir.
+/// A binary only runs a bundle its own version installed, so an upgraded
+/// binary never drives a stale shim.
+pub(crate) const BUNDLE_VERSION_FILE: &str = "bundle/shim/whirl-version";
+/// This binary's version, as written to [`BUNDLE_VERSION_FILE`].
+pub(crate) const WHIRL_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// How long past a step's `timeoutMs` the external watchdog waits before
 /// it sends `cancelFlow`, and then how long it waits for the
@@ -74,6 +80,12 @@ pub(crate) enum ShimError {
         "no browser shim found: set {SHIM_JS_ENV} or run `whirl install` to provision the bundle"
     )]
     NotInstalled,
+    #[error(
+        "the installed shim bundle is from whirl {installed}, but this is whirl {WHIRL_VERSION}; \
+         run `whirl install` to refresh it",
+        installed = installed.as_deref().unwrap_or("an older version")
+    )]
+    BundleOutdated { installed: Option<String> },
     #[error("the shim did not complete {command} within {timeout_ms}ms")]
     TimedOut {
         command:    &'static str,
@@ -145,6 +157,12 @@ fn resolve_launch_from(
         let node = data_dir.join(BUNDLE_NODE);
         let shim_js = data_dir.join(BUNDLE_SHIM_JS);
         if node.is_file() && shim_js.is_file() {
+            let installed = fs::read_to_string(data_dir.join(BUNDLE_VERSION_FILE))
+                .ok()
+                .map(|version| version.trim().to_owned());
+            if installed.as_deref() != Some(WHIRL_VERSION) {
+                return Err(ShimError::BundleOutdated { installed });
+            }
             return Ok(ShimLaunch { node, shim_js });
         }
     }
@@ -828,19 +846,62 @@ mod tests {
         assert_eq!(launch.node, PathBuf::from("/dev/node"));
     }
 
-    #[test]
-    fn the_installed_bundle_is_the_fallback() {
-        let data_dir = env::temp_dir().join(format!("whirl-shim-resolve-test-{}", process::id()));
-        let node = data_dir.join(BUNDLE_NODE);
-        let shim_js = data_dir.join(BUNDLE_SHIM_JS);
-        for path in [&node, &shim_js] {
+    /// A bundle with node, the shim entry, and the given version marker
+    /// (`None` writes no marker, like a bundle from before the marker).
+    fn fake_bundle(name: &str, installed: Option<&str>) -> PathBuf {
+        let data_dir =
+            env::temp_dir().join(format!("whirl-shim-resolve-test-{}-{name}", process::id()));
+        let _ = fs::remove_dir_all(&data_dir);
+        for relative in [BUNDLE_NODE, BUNDLE_SHIM_JS] {
+            let path = data_dir.join(relative);
             let parent = path.parent().expect("bundle paths have parents");
             fs::create_dir_all(parent).expect("temp dirs should be creatable");
             fs::write(path, "").expect("temp files should be writable");
         }
+        if let Some(installed) = installed {
+            fs::write(data_dir.join(BUNDLE_VERSION_FILE), format!("{installed}\n"))
+                .expect("the version marker should be writable");
+        }
+        data_dir
+    }
+
+    #[test]
+    fn the_installed_bundle_is_the_fallback() {
+        let data_dir = fake_bundle("current", Some(WHIRL_VERSION));
         let launch =
             resolve_launch_from(None, None, Some(data_dir.clone())).expect("the bundle resolves");
-        assert_eq!(launch, ShimLaunch { node, shim_js });
+        assert_eq!(launch, ShimLaunch {
+            node:    data_dir.join(BUNDLE_NODE),
+            shim_js: data_dir.join(BUNDLE_SHIM_JS),
+        });
+        fs::remove_dir_all(&data_dir).expect("temp dirs should be removable");
+    }
+
+    #[test]
+    fn a_bundle_from_another_version_names_whirl_install() {
+        let data_dir = fake_bundle("outdated", Some("0.1.0"));
+        let error = resolve_launch_from(None, None, Some(data_dir.clone()))
+            .expect_err("a stale bundle does not resolve");
+        assert!(matches!(
+            &error,
+            ShimError::BundleOutdated { installed: Some(version) } if version == "0.1.0"
+        ));
+        let message = error.to_string();
+        assert!(message.contains("0.1.0"), "{message}");
+        assert!(message.contains(WHIRL_VERSION), "{message}");
+        assert!(message.contains("whirl install"), "{message}");
+        fs::remove_dir_all(&data_dir).expect("temp dirs should be removable");
+    }
+
+    #[test]
+    fn a_bundle_without_a_version_marker_is_outdated() {
+        let data_dir = fake_bundle("unmarked", None);
+        let error = resolve_launch_from(None, None, Some(data_dir.clone()))
+            .expect_err("an unmarked bundle does not resolve");
+        assert!(matches!(&error, ShimError::BundleOutdated {
+            installed: None,
+        }));
+        assert!(error.to_string().contains("an older version"));
         fs::remove_dir_all(&data_dir).expect("temp dirs should be removable");
     }
 
