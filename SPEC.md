@@ -473,7 +473,7 @@ whirl fmt [--check] <PATH>...    Rewrite files to canonical form
 whirl report <REPORT>... --html <PATH>  Generate HTML from saved results
 ```
 
-`whirl install chromium` provisions only Chromium; any combination of `chromium`, `firefox`, and `webkit` may be named. Without names, all three engines are provisioned. `whirl doctor` checks the selected Node runtime, shim protocol, Playwright version, and a real headless browser launch (Chromium by default). It installs nothing, finishes within 30 seconds, exits 0 when ready or 3 when diagnosis fails, and prints repair commands. On Linux, a failed launch also prints the private-runtime command for installing system libraries. Unsupported browser names are usage errors.
+`whirl install chromium` provisions only Chromium; any combination of `chromium`, `firefox`, and `webkit` may be named. Without names, all three engines are provisioned. The bundle records the Whirl version that installed it; a binary of another version refuses to run that bundle and reports a runtime error naming `whirl install`, so an upgraded `whirl` never drives a stale shim. `whirl doctor` checks the selected Node runtime, the bundle's version, shim protocol, Playwright version, and a real headless browser launch (Chromium by default). It installs nothing, finishes within 30 seconds, exits 0 when ready or 3 when diagnosis fails, and prints repair commands. On Linux, a failed launch also prints the private-runtime command for installing system libraries. Unsupported browser names are usage errors.
 
 `whirl fmt` rewrites files to the canonical form: single spaces between tokens, quotes only where a value requires them, and one blank line between entries. `--check` writes nothing and exits with code 1 when any file would change.
 
