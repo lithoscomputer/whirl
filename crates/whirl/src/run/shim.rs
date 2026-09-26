@@ -387,11 +387,15 @@ pub(crate) enum MissingReason {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ResponseReadResult {
-    pub(crate) status:      u16,
-    pub(crate) url:         String,
-    pub(crate) headers:     Vec<(String, String)>,
-    pub(crate) body_base64: Option<String>,
-    pub(crate) body_error:  Option<String>,
+    pub(crate) status:              u16,
+    pub(crate) url:                 String,
+    pub(crate) headers:             Vec<(String, String)>,
+    pub(crate) body_base64:         Option<String>,
+    pub(crate) body_error:          Option<String>,
+    /// The browser may have handed a text body back decoded and
+    /// re-encoded as UTF-8 (protocol 4.5).
+    #[serde(default)]
+    pub(crate) body_may_be_decoded: bool,
 }
 
 /// `ariaSnapshot` result (protocol section 4).

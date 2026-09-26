@@ -21,11 +21,11 @@ pub(crate) use filter::{Charset, DateFormat, Filter, FilterError, Missing, Step}
 pub(crate) use json::{JsonQuery, parse as parse_json};
 pub(crate) use number::Number;
 pub(crate) use pattern::{Pattern, PatternFlags};
-pub(crate) use predicate::{Expected, Predicate, bytes_literal};
+pub(crate) use predicate::{Expected, Predicate, bytes_literal, is_bytes_literal_shape};
 pub(crate) use types::{
     COMPARE_KEYWORDS, FILTER_KEYWORDS, FilterKind, PredicateKind, StaticType, WORD_PREDICATES,
 };
-pub(crate) use value::{Value, quote as quote_json};
+pub(crate) use value::{Value, ValueType, quote as quote_json};
 pub(crate) use xpath::{Markup, XpathQuery, is_xml_content_type};
 
 use self::predicate::Outcome;
@@ -231,6 +231,10 @@ mod tests {
 
     use super::*;
 
+    fn bare(text: &str) -> Expected {
+        Expected::bare(text.to_owned()).expect("a valid literal")
+    }
+
     fn now() -> ReadContext {
         ReadContext::html(
             Utc.with_ymd_and_hms(2026, 9, 26, 12, 0, 0)
@@ -263,11 +267,7 @@ mod tests {
 
     #[test]
     fn passes_a_typed_json_check() {
-        let check = check(
-            vec![json("$.id")],
-            false,
-            eq(Expected::bare("42".to_owned())),
-        );
+        let check = check(vec![json("$.id")], false, eq(bare("42")));
         assert_eq!(check.evaluate(doc(), now()), Ok(()));
     }
 
@@ -288,8 +288,7 @@ mod tests {
 
     #[test]
     fn negates_predicates() {
-        let contains =
-            Predicate::Compare(PredicateKind::Contains, Expected::bare("owner".to_owned()));
+        let contains = Predicate::Compare(PredicateKind::Contains, bare("owner"));
         assert_eq!(
             check(vec![json("$.roles")], true, contains).evaluate(doc(), now()),
             Ok(())
@@ -308,7 +307,7 @@ mod tests {
             .evaluate(missing(), now())
             .expect_err("fails");
         assert_eq!(failure.code, FailureCode::MissingValue);
-        let ne = Predicate::Compare(PredicateKind::Ne, Expected::bare("x".to_owned()));
+        let ne = Predicate::Compare(PredicateKind::Ne, bare("x"));
         let failure = check(vec![], false, ne)
             .evaluate(missing(), now())
             .expect_err("fails");
@@ -341,7 +340,7 @@ mod tests {
     #[test]
     fn missing_values_skip_filters() {
         let absent = Read::Missing(Missing::AbsentAttribute("n".to_owned()));
-        let ne = Predicate::Compare(PredicateKind::Ne, Expected::bare("3".to_owned()));
+        let ne = Predicate::Compare(PredicateKind::Ne, bare("3"));
         assert_eq!(
             check(vec![Filter::ToInt], false, ne).evaluate(absent, now()),
             Ok(())
@@ -350,20 +349,16 @@ mod tests {
 
     #[test]
     fn reports_filter_errors() {
-        let failure = check(
-            vec![Filter::ToInt],
-            false,
-            eq(Expected::bare("1".to_owned())),
-        )
-        .evaluate(Read::Value(Value::String("abc".to_owned())), now())
-        .expect_err("toInt fails");
+        let failure = check(vec![Filter::ToInt], false, eq(bare("1")))
+            .evaluate(Read::Value(Value::String("abc".to_owned())), now())
+            .expect_err("toInt fails");
         assert_eq!(failure.code, FailureCode::FilterError);
         assert_eq!(failure.message, r#"toInt: "abc" is not an integer"#);
     }
 
     #[test]
     fn type_mismatch_ignores_negation() {
-        let gt = Predicate::Compare(PredicateKind::Gt, Expected::bare("3".to_owned()));
+        let gt = Predicate::Compare(PredicateKind::Gt, bare("3"));
         let failure = check(vec![], true, gt)
             .evaluate(Read::Value(Value::String("5".to_owned())), now())
             .expect_err("strings do not order");

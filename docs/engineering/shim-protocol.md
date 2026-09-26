@@ -173,7 +173,7 @@ Commands and their extra params (result `{}` unless noted):
 | `page` | `expect` (section 4.2) |
 | `assert` | `spec` (section 4.3) — state checks and tab closure only |
 | `read` | `subject` (section 4.4); result `{"type": "value", "value": ...}` or `{"type": "missing", "reason": "no-element" \| "absent-attribute"}` |
-| `readResponse` | `name`, `body` (bool) (section 4.5); result `{"status": 201, "url": "...", "headers": [[name, value], ...], "bodyBase64": "..." \| null, "bodyError": "..." \| null}` |
+| `readResponse` | `name`, `body` (bool) (section 4.5); result `{"status": 201, "url": "...", "headers": [[name, value], ...], "bodyBase64": "..." \| null, "bodyError": "..." \| null, "bodyMayBeDecoded": false}` |
 | `traceGroup` | none; opens one trace group named by `title` for the reads of one check |
 | `traceGroupEnd` | none; closes the group that `traceGroup` opened |
 
@@ -344,6 +344,12 @@ decoding. A body that cannot be read, such as a redirect's or one over the
 SPEC body limit, comes back as `bodyError` text with `bodyBase64: null`, so
 status and header checks still work. Rust reads the body only for a check
 that needs it. An unknown name is error kind `"internal"`.
+
+`bodyMayBeDecoded` is true for a `response` in Chromium or WebKit. Those
+browsers can hand a text body back already decoded, and Playwright then
+encodes it as UTF-8. Rust undoes that decoding when the `Content-Type` names a
+charset other than UTF-8 that can encode the text (SPEC section 9.2). It is
+false for an `http` step and in Firefox, which give the exact bytes.
 
 ## 5. Timeouts
 

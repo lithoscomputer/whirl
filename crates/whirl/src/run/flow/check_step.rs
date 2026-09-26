@@ -47,12 +47,14 @@ const RETRYABLE_KINDS: [&str; 3] = ["read", "eval", "eval-result"];
 /// A response read once and kept for the flow: responses never change.
 #[derive(Clone, Debug)]
 pub(super) struct ResponseData {
-    status:  u16,
-    url:     String,
-    headers: Vec<(String, String)>,
+    status:              u16,
+    url:                 String,
+    headers:             Vec<(String, String)>,
     /// `None` until a check needs the body; then the bytes, or why they
     /// could not be read.
-    body:    Option<Result<Vec<u8>, String>>,
+    body:                Option<Result<Vec<u8>, String>>,
+    /// The browser may have returned a text body decoded (protocol 4.5).
+    body_may_be_decoded: bool,
 }
 
 /// Where a line reads its value.
@@ -308,7 +310,7 @@ impl FlowExec<'_> {
                 if value.quoted {
                     return Ok(Expected::Typed(Value::String(resolved)));
                 }
-                Ok(Expected::bare(resolved))
+                Expected::bare(resolved).map_err(filter_error)
             }
             Operand::Json(literal) => {
                 let resolved = if text_compare {
@@ -477,8 +479,10 @@ impl FlowExec<'_> {
         } else {
             CaptureValue::masked(value_type, MASK)
         };
-        state.captures.push((name.to_owned(), reported));
-        self.captures.push((name.to_owned(), value.clone()));
+        // A later capture of the same name overwrites the earlier one
+        // (SPEC 10).
+        upsert(&mut state.captures, name, reported);
+        upsert(&mut self.captures, name, value.clone());
         self.vars.set(name.to_owned(), value);
     }
 
@@ -649,6 +653,7 @@ impl ResponseData {
             url: read.url,
             headers: read.headers,
             body,
+            body_may_be_decoded: read.body_may_be_decoded,
         }
     }
 
@@ -699,16 +704,45 @@ impl ResponseData {
                 }
                 None => Read::Missing(Missing::AbsentHeader("location".to_owned())),
             },
-            ResponseRead::Bytes => Read::Value(Value::Bytes(self.body()?.to_vec())),
-            ResponseRead::Body => {
-                let charset = self
-                    .header("content-type")
-                    .and_then(|content_type| charset_label(&content_type))
-                    .unwrap_or_else(|| "utf-8".to_owned());
-                let charset = Charset::from_label(&charset)?;
-                Read::Value(Value::String(charset.decode(self.body()?)?))
-            }
+            ResponseRead::Bytes => Read::Value(Value::Bytes(match self.undo_browser_decode()? {
+                Some((_, bytes)) => bytes,
+                None => self.body()?.to_vec(),
+            })),
+            ResponseRead::Body => Read::Value(Value::String(match self.undo_browser_decode()? {
+                Some((text, _)) => text,
+                None => self.charset()?.decode(self.body()?)?,
+            })),
         })
+    }
+
+    /// The `Content-Type` charset, UTF-8 by default.
+    fn charset(&self) -> Result<Charset, String> {
+        let label = self
+            .header("content-type")
+            .and_then(|content_type| charset_label(&content_type))
+            .unwrap_or_else(|| "utf-8".to_owned());
+        Charset::from_label(&label)
+    }
+
+    /// The text and bytes of a body that the browser handed back decoded,
+    /// when Whirl can undo that (SPEC 9.2).
+    fn undo_browser_decode(&self) -> Result<Option<(String, Vec<u8>)>, String> {
+        if !self.body_may_be_decoded {
+            return Ok(None);
+        }
+        let body = self.body()?;
+        Ok(self
+            .charset()
+            .ok()
+            .and_then(|charset| charset.undo_browser_decode(body)))
+    }
+}
+
+/// Replaces the value stored under `name`, or appends it.
+fn upsert<T>(entries: &mut Vec<(String, T)>, name: &str, value: T) {
+    match entries.iter_mut().find(|(existing, _)| existing == name) {
+        Some((_, slot)) => *slot = value,
+        None => entries.push((name.to_owned(), value)),
     }
 }
 

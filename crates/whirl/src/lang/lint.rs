@@ -7,7 +7,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use crate::check::{Number, PredicateKind, StaticType};
+use crate::check::{Number, PredicateKind, StaticType, ValueType, is_bytes_literal_shape};
 use crate::lang::ast::{
     Action, ActionKind, Assert, AssertBody, Capture, CheckLine, Entry, Extractor, File, FileOption,
     FilterArg, FilterSpec, Ident, Locator, Operand, PageCheck, PredicateSpec, ResponseField,
@@ -156,7 +156,7 @@ fn count_check(assert: &Assert) -> Option<(&Locator, PredicateKind, i64)> {
                 extractor: Extractor::Count,
             },
         filters,
-        negated: false,
+        negated,
         predicate:
             PredicateSpec::Compare {
                 kind,
@@ -170,7 +170,21 @@ fn count_check(assert: &Assert) -> Option<(&Locator, PredicateKind, i64)> {
         return None;
     }
     let count = Number::parse(&value.as_literal()?)?.to_i64()?;
-    Some((locator, *kind, count))
+    // `not` flips the comparison: `not < 1` means `>= 1` (SPEC 9.4).
+    let kind = if *negated {
+        match kind {
+            PredicateKind::Eq => PredicateKind::Ne,
+            PredicateKind::Ne => PredicateKind::Eq,
+            PredicateKind::Gt => PredicateKind::Le,
+            PredicateKind::Ge => PredicateKind::Lt,
+            PredicateKind::Lt => PredicateKind::Ge,
+            PredicateKind::Le => PredicateKind::Gt,
+            _ => return None,
+        }
+    } else {
+        *kind
+    };
+    Some((locator, kind, count))
 }
 
 /// Warns about a `count >= 1` (or `count > 0`, `count != 0`) assert
@@ -253,13 +267,18 @@ fn filter_types(file: &File, lints: &mut Vec<Lint>) {
                 Err((filter, input)) => lints.push(filter_type_lint(file, filter, &input)),
                 Ok(value_type) => {
                     let kind = check.predicate.kind();
-                    if !kind.accepts(&value_type) {
+                    let message = if kind.accepts(&value_type) {
+                        expected_type_mismatch(check, &value_type)
+                    } else {
+                        Some(format!("`{}` cannot test a {value_type}", kind.name()))
+                    };
+                    if let Some(message) = message {
                         lints.push(lint_at(
                             file,
                             Severity::Error,
                             "filter-type",
                             assert.span,
-                            format!("`{}` cannot test a {value_type}", kind.name()),
+                            message,
                         ));
                     }
                 }
@@ -269,6 +288,62 @@ fn filter_types(file: &File, lints: &mut Vec<Lint>) {
             if let Err((filter, input)) = chain_type(&capture.subject, &capture.filters) {
                 lints.push(filter_type_lint(file, filter, &input));
             }
+        }
+    }
+}
+
+/// A literal expected value whose type can never work with the value's
+/// type (SPEC 9.4, 9.6): `url toDate "%Y" > 3`, or `status == "200"`.
+/// `!=` and `not ==` across types pass, so they are fine.
+fn expected_type_mismatch(check: &CheckLine, value_type: &StaticType) -> Option<String> {
+    let PredicateSpec::Compare { kind, expected } = &check.predicate else {
+        return None;
+    };
+    let value = match value_type {
+        StaticType::Known(ValueType::String) | StaticType::Any => return None,
+        StaticType::Known(known) => *known,
+        StaticType::ListOf(_) => ValueType::List,
+    };
+    let expected_type = literal_type(expected)?;
+    let fails = match kind {
+        PredicateKind::Eq => !check.negated && value != expected_type,
+        PredicateKind::Gt | PredicateKind::Ge | PredicateKind::Lt | PredicateKind::Le => {
+            value == ValueType::Date || expected_type != ValueType::Number
+        }
+        PredicateKind::StartsWith | PredicateKind::EndsWith | PredicateKind::Contains => {
+            value == ValueType::Bytes && expected_type != ValueType::Bytes
+        }
+        _ => false,
+    };
+    fails.then(|| {
+        format!(
+            "`{}` cannot compare {} values with a {} literal",
+            kind.name(),
+            value.name(),
+            expected_type.name()
+        )
+    })
+}
+
+/// The type of a literal expected value in a typed check (SPEC 9.6), or
+/// `None` when a variable decides it.
+fn literal_type(expected: &Operand) -> Option<ValueType> {
+    match expected {
+        Operand::Json(literal) => Some(if literal.text.starts_with('[') {
+            ValueType::List
+        } else {
+            ValueType::Object
+        }),
+        Operand::Value(value) if value.quoted => Some(ValueType::String),
+        Operand::Value(value) => {
+            let text = value.as_literal()?;
+            Some(match text.as_str() {
+                "true" | "false" => ValueType::Boolean,
+                "null" => ValueType::Null,
+                _ if Number::parse(&text).is_some() => ValueType::Number,
+                _ if is_bytes_literal_shape(&text) => ValueType::Bytes,
+                _ => ValueType::String,
+            })
         }
     }
 }
@@ -893,6 +968,9 @@ mod tests {
         for source in [
             "VISIT /\n[Asserts]\ncss:\"li.item\" count > 0\ncss:\"li.item\" count == 3\n",
             "VISIT /\n[Asserts]\nrole:button \"Save\" count != 0\nrole:button \"Save\" enabled\n",
+            // `not` flips a count comparison.
+            "VISIT /\n[Asserts]\ntestid:card count not < 1\ntestid:card visible\n",
+            "VISIT /\n[Asserts]\ntestid:card count >= 1\ntestid:card count not == 0\n",
             // These counts reject zero, so they wait for the element too.
             "VISIT /\n[Asserts]\ntestid:card count >= 1\ntestid:card count < -1\n",
             "VISIT /\n[Asserts]\ntestid:card count >= 1\ntestid:card count == -1\n",
@@ -915,8 +993,32 @@ mod tests {
             // The same text through a different segment shape.
             "VISIT /\n[Asserts]\ntext:Save count >= 1\ntext~:Save visible\n",
             // Counts that accept zero do not wait for the element.
+            "VISIT /\n[Asserts]\ntestid:card count >= 1\ntestid:card count not > 0\n",
             "VISIT /\n[Asserts]\ntestid:card count >= 1\ntestid:card count > -1\n",
             "VISIT /\n[Asserts]\ntestid:card count >= 1\ntestid:card count < 2\n",
+        ] {
+            assert_eq!(lint(source), Vec::new(), "source:\n{source}");
+        }
+    }
+
+    #[test]
+    fn reports_literal_expected_values_whose_type_cannot_work() {
+        let lints = lint(
+            "HTTP GET /x\n[Asserts]\nstatus == \"200\"\nbytes == \"abc\"\nbytes startsWith 12\nstatus > true\n",
+        );
+        let messages: Vec<&str> = lints.iter().map(|lint| lint.message.as_str()).collect();
+        assert_eq!(messages, [
+            "`==` cannot compare number values with a string literal",
+            "`==` cannot compare bytes values with a string literal",
+            "`startsWith` cannot compare bytes values with a number literal",
+            "`>` cannot compare number values with a boolean literal",
+        ]);
+        let lints = lint("VISIT /\n[Asserts]\nurl toDate \"%Y\" > 3\n");
+        assert_eq!(lints.len(), 1);
+        assert_eq!(lints[0].code, "filter-type");
+        for source in [
+            "HTTP GET /x\n[Asserts]\nstatus != \"200\"\nstatus not == \"200\"\njson:$.a == 1\nstatus == {{code}}\nbytes == hex,00;\n",
+            "VISIT /\n[Asserts]\nurl toDate \"%Y\" dateFormat \"%Y\" == 2026\ncss:li count >= 1\n",
         ] {
             assert_eq!(lint(source), Vec::new(), "source:\n{source}");
         }

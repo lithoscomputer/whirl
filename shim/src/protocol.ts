@@ -235,6 +235,8 @@ export interface ResponseRead {
 	readonly headers: readonly (readonly [string, string])[];
 	readonly bodyBase64: string | null;
 	readonly bodyError: string | null;
+	/** The browser may have returned a text body decoded and re-encoded as UTF-8. */
+	readonly bodyMayBeDecoded: boolean;
 }
 
 // --- Lifecycle params (protocol 3) ---

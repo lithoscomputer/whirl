@@ -12,14 +12,14 @@ use std::vec::IntoIter;
 
 use crate::check::{
     COMPARE_KEYWORDS, Charset, DateFormat, FILTER_KEYWORDS, FilterKind, JsonQuery, Pattern,
-    PatternFlags, WORD_PREDICATES, XpathQuery,
+    PatternFlags, WORD_PREDICATES, XpathQuery, bytes_literal, is_bytes_literal_shape, quote_json,
 };
 use crate::lang::ast::{
     Action, ActionKind, Assert, AssertBody, BrowserKind, Capture, CheckLine, Comment, DialogPolicy,
     DurationLit, Entry, Extractor, File, FileOption, FilterArg, FilterSpec, HttpBody, HttpBodyKind,
     HttpHeader, Ident, JsonLiteral, Locator, LocatorSegment, Operand, OptionLine, OptionValue,
     Page, PageCheck, PredicateSpec, ReducedMotion, Regex, RegexFlags, ResponseField, SegmentKind,
-    Span, StateCheck, StoreScope, Subject, TextPrefix, Value, ValueSegment, Viewport,
+    Span, StateCheck, StoreScope, Subject, TextPrefix, Value, ValueSegment, Viewport, chain_type,
 };
 
 /// A parse diagnostic (SPEC 16): file, line, column, the source line, a
@@ -1728,6 +1728,7 @@ fn parse_assert_body(
                     .expecting(predicate_keywords()));
                 };
                 let (negated, predicate) = parse_predicate(next, cursor)?;
+                check_bytes_literal(&subject, &filters, &predicate)?;
                 AssertBody::Check(CheckLine {
                     subject,
                     filters,
@@ -1739,6 +1740,34 @@ fn parse_assert_body(
     };
     let timeout = parse_line_timeout(cursor)?;
     Ok((body, timeout))
+}
+
+/// In a typed check, a bare value shaped like a bytes literal must decode
+/// (SPEC 9.6). In a text check it is plain text.
+fn check_bytes_literal(
+    subject: &Subject,
+    filters: &[FilterSpec],
+    predicate: &PredicateSpec,
+) -> Result<(), LineError> {
+    let PredicateSpec::Compare {
+        expected: Operand::Value(value),
+        ..
+    } = predicate
+    else {
+        return Ok(());
+    };
+    if value.quoted || chain_type(subject, filters).is_ok_and(|value_type| value_type.is_string()) {
+        return Ok(());
+    }
+    match value.as_literal() {
+        Some(literal) if is_bytes_literal_shape(&literal) && bytes_literal(&literal).is_none() => {
+            Err(LineError::new(
+                value.span,
+                format!("invalid bytes literal {}", quote_json(&literal)),
+            ))
+        }
+        _ => Ok(()),
+    }
 }
 
 /// Parses a `PAGE` line after its keyword (SPEC 8).
@@ -3002,6 +3031,18 @@ mod tests {
             error.message
         );
         only_check("response:r json:\"$[?@.name == 'Ada Lovelace']\" count == 1");
+    }
+
+    #[test]
+    fn malformed_bytes_literals_fail_only_in_typed_checks() {
+        let error = parse_err("HTTP GET /x\n[Asserts]\nstatus == 200\nbytes == hex,zz;\n");
+        assert_eq!(error.message, "invalid bytes literal \"hex,zz;\"");
+        let error = parse_err("HTTP GET /x\n[Asserts]\nstatus == 200\njson:$.t == base64,@@;\n");
+        assert_eq!(error.message, "invalid bytes literal \"base64,@@;\"");
+        // Text checks and quoted values take the text as written.
+        only_check("response:r body == hex,zz;");
+        only_check("response:r json:$.t == \"hex,zz;\"");
+        only_check("response:r bytes startsWith hex,89504e47;");
     }
 
     #[test]

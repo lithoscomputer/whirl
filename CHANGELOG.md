@@ -4,10 +4,10 @@
 
 - Replace the check operators with Hurl's vocabulary. A check is `subject { filter } [not] predicate`, with predicates such as `startsWith`, `isInteger`, and `exists`, and filters such as `count`, `regex`, `toInt`, `split`, `urlQueryParam`, and `base64Decode`. Captures take the same filters, and `regex` is now one of them.
 - Replace JSON Pointer with JSONPath: `json:/items/0/id` becomes `json:$.items[0].id`, and a query such as `json:$.items[*].sku` gives a list.
-- Compare JSON values and filter results by type: `json:$.id == 42` needs the number 42, and `json:$.id == "42"` the string. Page text still compares as text, and a value that starts with `[` or `{` is a JSON literal.
+- Compare JSON values and filter results by type: `json:$.id == 42` needs the number 42, and `json:$.id == "42"` the string. Page text still compares as text, a value that starts with `[` or `{` is a JSON literal, and a bare `hex,…;` or `base64,…;` is bytes. `startsWith`, `endsWith`, and `contains` on a string compare with the expected value's text, so `startsWith 12` works on `"123"`. `whirl check` reports a literal whose type cannot match, such as `status == "200"`.
 - Count `nth:` from 0, and from the end with a negative index: `nth:-1` is the last match.
 - `contains` on a JSON list checks for an item instead of a substring of the list's JSON text.
-- Add the `body`, `bytes`, and `location` response fields, and `eval "script"` as a check subject that retries until it passes.
+- Add the `body`, `bytes`, and `location` response fields. A `RESPONSE` body that Chromium or WebKit hands back already decoded is re-encoded with its charset, so `body` and `bytes` match what the server sent; WebKit can still lose bytes it cannot decode. Add `eval "script"` as a check subject that retries until it passes.
 - Evaluate every filter and predicate in Rust. JSON numbers keep their exact text, so 64-bit IDs keep their precision in checks and captures.
 - Report check failures as `type-mismatch`, `filter-error`, `missing-value`, or `read` as well as `assert`. `whirl check` reports a check whose types cannot work as `filter-type`.
 - Add the `xpath:EXPR` response field and filter. XPath 1.0 runs through a pinned libxml2 that release binaries link statically. A response whose `Content-Type` is XML parses as XML, with its root namespaces available and the default namespace as `_`; anything else parses as HTML.

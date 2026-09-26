@@ -48,6 +48,8 @@ function belongsToPage(request: Request, page: Page): boolean {
 export class FlowNetwork {
 	readonly #context: BrowserContext;
 	readonly #responses = new Map<string, NamedResponse>();
+	/** Names whose response came from an `HTTP` entry, with exact bytes. */
+	readonly #httpNames = new Set<string>();
 	readonly #bodies = new Map<NamedResponse, Promise<Buffer>>();
 	private readonly httpRequests = new Set<AbortController>();
 	private readonly allowedHost: (hostname: string) => boolean;
@@ -71,6 +73,7 @@ export class FlowNetwork {
 			context.off("request", this.#onRequest);
 			this.#requests = [];
 			this.#responses.clear();
+			this.#httpNames.clear();
 			this.#bodies.clear();
 		});
 	}
@@ -162,6 +165,7 @@ export class FlowNetwork {
 				name: header,
 				value,
 			}));
+			this.#httpNames.add(name);
 			this.#responses.set(name, {
 				status: () => response.status,
 				headerValue: async (header) => response.headers.get(header),
@@ -283,6 +287,17 @@ export class FlowNetwork {
 	}
 
 	/**
+	 * True when the browser may have handed the body back as decoded text,
+	 * re-encoded as UTF-8: Chromium and WebKit do this for some text types.
+	 * Firefox and `HTTP` entries give the exact bytes (protocol 4.5).
+	 */
+	#bodyMayBeDecoded(name: string): boolean {
+		if (this.#httpNames.has(name)) return false;
+		const engine = this.#context.browser()?.browserType().name();
+		return engine !== "firefox";
+	}
+
+	/**
 	 * Reads a named response for Rust's check engine (protocol 4.5). With
 	 * `withBody`, the body is read too; a body that cannot be read, such as
 	 * a redirect's or one over the limit, comes back as `bodyError`.
@@ -306,6 +321,7 @@ export class FlowNetwork {
 			headers: headers.map(
 				({ name: header, value }) => [header, value] as const,
 			),
+			bodyMayBeDecoded: this.#bodyMayBeDecoded(name),
 		};
 		if (!withBody) {
 			return { ...base, bodyBase64: null, bodyError: null };

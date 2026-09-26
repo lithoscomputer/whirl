@@ -225,6 +225,12 @@ fn respond(mut request: tiny_http::Request) {
         let _ = request.respond(Response::from_data(&body[..]).with_header(content_type));
         return;
     }
+    if path == "api/latin" {
+        let content_type = Header::from_bytes("Content-Type", "text/plain; charset=iso-8859-1")
+            .expect("valid header");
+        let _ = request.respond(Response::from_data(&b"caf\xe9"[..]).with_header(content_type));
+        return;
+    }
     if path == "api/broken-xml" {
         let content_type =
             Header::from_bytes("Content-Type", "application/xml").expect("valid header");
@@ -2866,6 +2872,29 @@ testid:current attr:href xpath:"count(//a)" == 0
         captures["entries"],
         serde_json::json!({"type": "number", "value": 2})
     );
+}
+
+#[test]
+fn response_bodies_keep_their_bytes_after_the_browser_decodes_them() {
+    let site = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file(
+        "latin.whirl",
+        r#"HTTP GET /api/latin
+[Asserts]
+status == 200
+bytes toHex == 636166e9
+body == café
+VISIT /checks.html
+EVAL "await fetch('/api/latin').then(r => r.arrayBuffer())"
+RESPONSE latin GET /api/latin
+[Asserts]
+response:latin bytes toHex == 636166e9
+response:latin body == café
+"#,
+    );
+    let output = run_whirl(&dir, &["--base", &site.base(), "latin.whirl"]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
 }
 
 #[test]

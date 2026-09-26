@@ -155,6 +155,23 @@ impl Charset {
     }
 }
 
+impl Charset {
+    /// Undoes a browser's decoding (SPEC 9.2). Chromium and WebKit can hand
+    /// a text body back already decoded with this charset and re-encoded as
+    /// UTF-8. When `bytes` are such text, gives the text and this charset's
+    /// bytes for it. `None` when this charset is UTF-8 or cannot encode,
+    /// when the bytes are ASCII or not UTF-8, or when the text holds a
+    /// character this charset cannot encode.
+    pub(crate) fn undo_browser_decode(self, bytes: &[u8]) -> Option<(String, Vec<u8>)> {
+        if self.0 == encoding_rs::UTF_8 || self.0.output_encoding() != self.0 || bytes.is_ascii() {
+            return None;
+        }
+        let text = str::from_utf8(bytes).ok()?;
+        let (encoded, _, unmappable) = self.0.encode(text);
+        (!unmappable).then(|| (text.to_owned(), encoded.into_owned()))
+    }
+}
+
 impl fmt::Debug for Charset {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.0.name())
@@ -372,7 +389,6 @@ fn resolve_index(index: i64, len: usize) -> Option<usize> {
 
 /// `toInt` on a string: an optional minus sign and decimal digits.
 fn parse_integer(text: &str) -> Option<Number> {
-    let text = text.trim();
     let (negative, digits) = match text.strip_prefix('-') {
         Some(digits) => (true, digits),
         None => (false, text),
@@ -579,6 +595,25 @@ mod tests {
             "你好"
         );
         assert!(Charset::from_label("nope").is_err());
+    }
+
+    #[test]
+    fn undoes_a_browsers_decoding_only_when_it_round_trips() {
+        let latin = Charset::from_label("iso-8859-1").expect("known label");
+        // "café\u{80}" decoded as windows-1252 and re-encoded as UTF-8.
+        let decoded = "caf\u{e9}\u{20ac}".as_bytes();
+        assert_eq!(
+            latin.undo_browser_decode(decoded),
+            Some(("caf\u{e9}\u{20ac}".to_owned(), vec![
+                0x63, 0x61, 0x66, 0xe9, 0x80
+            ]))
+        );
+        // Raw bytes that are not UTF-8, ASCII text, and U+FFFD stay as they are.
+        assert_eq!(latin.undo_browser_decode(&[0x63, 0xe9]), None);
+        assert_eq!(latin.undo_browser_decode(b"cafe"), None);
+        assert_eq!(latin.undo_browser_decode("caf\u{fffd}".as_bytes()), None);
+        let utf8 = Charset::from_label("utf-8").expect("known label");
+        assert_eq!(utf8.undo_browser_decode("caf\u{e9}".as_bytes()), None);
     }
 
     #[test]

@@ -1,7 +1,6 @@
 # Whirl Specification
 
-Status: v2, in progress. The check vocabulary of sections 9 and 10 is not
-fully implemented yet.
+Status: v2, implemented and not yet released.
 Date: 2026-09-26
 
 Whirl is a command-line tool that runs web UI tests written in plain text files. It is to browser flows what [Hurl](https://hurl.dev/) is to HTTP: a tight, closed, file-based format that is readable, diffable, and easy to generate. The `whirl` binary is written in Rust and drives real browsers through Playwright.
@@ -74,13 +73,16 @@ $ whirl --report-junit report.xml flows/
 A **value** is written in one of two forms:
 
 - **Quoted**: `"..."` with backslash escapes `\"`, `\\`, `\n`, `\t`, and `\u{XXXX}`.
-- **Bare**: a single token with no whitespace, no `"`, and no `#`. Bare and quoted forms are interchangeable, with two reservations:
+- **Bare**: a single token with no whitespace, no `"`, and no `#`. Bare and quoted forms are interchangeable, with three reservations:
   - A line's final bare token of the form `@duration` always parses as the step timeout (section 12), so that value must stay quoted (`"@60s"`).
   - In a typed comparison (section 9.6), a bare typed literal and its quoted form differ: `42` is a number and `"42"` is a string.
+  - In `[Asserts]` and `[Captures]`, a bare role name cannot be a subject, state, or predicate keyword such as `text` or `visible`, because that word ends the locator. Quote it: `role:button "visible" visible`.
+
+A token can join bare and quoted parts, as in `label:"First name"`; the parts form one value.
 
 `whirl fmt` never removes quotes whose removal would change the parse or the type.
 
-Values support variable interpolation with `{{name}}` (section 11). Write `\{{` for a literal `{{`.
+Values support variable interpolation with `{{name}}` (section 11). Write `\{{` for a literal `{{`; `\{` also writes a literal `{`.
 
 Other literal forms:
 
@@ -88,7 +90,7 @@ Other literal forms:
 - **Number**: the JSON number grammar (RFC 8259 section 6): an optional minus sign, an integer part without leading zeros, an optional fraction, and an optional exponent, such as `-12`, `3.14`, or `1e6`. `007`, `+1`, and `.5` are not numbers; as bare values they are strings.
 - **Index**: an integer, such as `0`, `2`, or `-1`, for `nth:` and the `nth` filter. Indexes start at 0, and a negative index counts from the end.
 - **Typed literal**: in a typed comparison (section 9.6), a bare number, `true`, `false`, or `null`.
-- **Bytes literal**: `hex,DIGITS;` or `base64,TEXT;`, such as `hex,89504e47;`. It is typed only when the value under test is bytes (section 9.6).
+- **Bytes literal**: `hex,DIGITS;` or `base64,TEXT;`, such as `hex,89504e47;`. In a typed comparison, a bare bytes literal is bytes (section 9.6), and one that does not decode, such as `hex,zz;`, is a parse error. Quote it to compare the text.
 - **JSON literal**: in the expected-value position of a check, a value that starts with `[` or `{` is a JSON array or object. It must end on the same line, and it may contain spaces. `{{name}}` works inside it as in HTTP JSON bodies (sections 7.3 and 11).
 - **Duration**: an integer with unit `ms` or `s` (for example `500ms`, `10s`).
 - **Viewport**: `WIDTHxHEIGHT` in CSS pixels (for example `1280x800`).
@@ -566,6 +568,8 @@ The `eval` subject runs its script under the rules of `EVAL` (section 7) each ti
 
 A response subject waits for the body within the step timeout. The 1 MiB body limit of sections 7.2 and 7.3 applies. All checks for one response examine the same response.
 
+An `HTTP` entry reads the exact bytes of its body. A `RESPONSE` reads its body through the browser, and Chromium and WebKit can hand a text body back already decoded. When the `Content-Type` names a charset other than UTF-8, Whirl undoes that decoding, so `body` and `bytes` match what the server sent. WebKit replaces bytes it cannot decode, so in WebKit a `RESPONSE` text body in a charset other than UTF-8 can differ from the bytes the server sent.
+
 A subject can give a **missing value**:
 
 - a locator with no match, for `text`, `value`, and `attr:`;
@@ -591,7 +595,7 @@ Every value has one of these types. Each type has one text form. Whirl uses the 
 | date | `toDate` | RFC 3339 in UTC, such as `2026-09-26T08:00:00Z` |
 | node set | an XPath expression that selects nodes | None; a node set supports only `count` and `exists` |
 
-A JSON number keeps its exact text. Whirl does not convert it to floating point, except inside a JSONPath filter expression (section 9.5). So an integer larger than 2^53 compares and captures exactly. A number is an integer when its text has no fraction and no exponent, and a float otherwise. `toInt` gives an integer. `toFloat` gives a float, written with at least one fractional digit, such as `3.0`.
+A JSON number keeps its exact text. Whirl does not convert it to floating point, except inside a JSONPath filter expression (section 9.5). So an integer larger than 2^53 compares and captures exactly. A number is an integer when its text has no fraction and no exponent, and a float otherwise. `toInt` gives an integer. `toFloat` gives a float, written with a fraction or an exponent, such as `3.0` or `1e20`.
 
 ### 9.4 Predicates
 
@@ -638,7 +642,7 @@ Filters run from left to right. Each filter takes the value before it and gives 
 | `replaceRegex /regex/ NEW` | string | string | Every match replaced with `NEW`; `$1`, `$<name>`, `$&`, and `$$` refer to the match as in ECMAScript |
 | `toString` | any | string | The text form (section 9.3) |
 | `toInt` | string, number | number | An integer. A string must hold an optional minus sign and decimal digits. A float is truncated toward zero. |
-| `toFloat` | string, number | number | A float. A string must hold a number. |
+| `toFloat` | string, number | number | A float. A string must hold a decimal number, such as `1.5`, `-2`, or `3e2`. |
 | `toHex` | bytes | string | Lowercase hexadecimal |
 | `toDate FORMAT` | string | date | The string parsed with `FORMAT` |
 | `dateFormat FORMAT` | date | string | The date written with `FORMAT` |
@@ -651,7 +655,7 @@ Filters run from left to right. Each filter takes the value before it and gives 
 | `utf8Decode` | bytes | string | UTF-8 decoded |
 | `utf8Encode` | string | bytes | UTF-8 encoded |
 | `charsetDecode LABEL` | bytes | string | Decoded with the WHATWG Encoding Standard label `LABEL`, such as `gb2312` |
-| `urlQueryParam NAME` | string | string | Percent-decoded value of the first query parameter `NAME`; missing when there is none |
+| `urlQueryParam NAME` | string | string | Value of the first query parameter `NAME`, decoded as form data (`%XX` and `+` for a space); missing when there is none |
 | `urlEncode` | string | string | Percent-encoded, except unreserved characters and `/` |
 | `urlDecode` | string | string | Percent-decoded |
 | `htmlEscape` | string | string | `&`, `<`, and `>` replaced with character references |
@@ -663,7 +667,7 @@ Filter arguments are values (section 3.1) and support interpolation. Regex argum
 
 `toDate` and `dateFormat` use the `%` codes of the Rust `chrono` crate, as Hurl does; `%+` is RFC 3339. A date without a time zone is UTC.
 
-`json:PATH` takes an RFC 9535 JSONPath query. A string input is parsed as JSON first; a list or an object is queried as it is. A singular query — one with only name and index selectors, such as `$.items[0].id` — gives one value, or a missing value when it selects nothing. Any other query gives a list of every match, which can be empty. Inside a filter expression such as `$.items[?@.price < 10]`, numbers compare as floating point, and the `match()` and `search()` functions use I-Regexp (RFC 9485), not ECMAScript.
+`json:PATH` takes an RFC 9535 JSONPath query. A string input is parsed as JSON first; a list or an object is queried as it is. A singular query — one with only name and index selectors, such as `$.items[0].id` — gives one value, or a missing value when it selects nothing. Any other query gives a list of every match, which can be empty. Inside a filter expression such as `$.items[?@.price < 10]`, numbers compare as floating point, and the `match()` and `search()` functions use I-Regexp (RFC 9485), not ECMAScript. Whirl also accepts the Rust `regex` syntax that extends I-Regexp there, such as `\d`.
 
 `xpath:EXPR` takes an XPath 1.0 expression and evaluates it with libxml2. Whirl parses the input as XML when it is the `body` or `bytes` of a response whose `Content-Type` is `text/xml`, `application/xml`, or ends in `+xml`. Otherwise it parses the input as HTML. `bytes xpath:` decodes the body like `body`; other bytes must be UTF-8. Whirl ignores an encoding that the document declares. XML must be well-formed, and Whirl never loads external entities. As in Hurl, the namespaces declared on the root element keep their prefixes, and the default namespace gets the prefix `_`: `xpath:"string(//_:feed/_:title)"`.
 
@@ -681,7 +685,7 @@ How Whirl reads the expected value depends on the type that `whirl check` can se
 2. **Typed values.** Otherwise the expected value is typed. This covers JSON values, `eval` results, numbers, and the output of filters such as `toInt`:
    - A bare number, `true`, `false`, or `null` is that value.
    - A quoted value is a string, and so is any other bare value.
-   - A bytes literal is bytes.
+   - A bare bytes literal is bytes.
    - A JSON literal is a list or an object.
    - A bare `{{name}}` that is the whole expected value takes the variable's type (section 11).
 
@@ -694,7 +698,7 @@ Equality follows JSON meaning:
 - Objects are equal when they have the same keys with equal values, in any order.
 - Bytes compare byte by byte, and dates compare as points in time.
 
-`contains` on a list uses this equality for each item.
+`contains` on a list uses this equality for each item. `startsWith`, `endsWith`, and `contains` on a string compare with the expected value's text form, as in Hurl: `json:$.code startsWith 12` passes on `"123"`.
 
 ```whirl
 json:$.id == 42                     # the number 42, not the string "42"
@@ -717,7 +721,7 @@ Page checks retry. A page check is a check on a locator subject, `url`, `title`,
 
 Response checks do not retry. A false predicate, a type mismatch, a filter error, or a missing value fails the check at once.
 
-Each failure has a stable report code: `assert` for a false predicate, `type-mismatch`, `filter-error`, `missing-value`, `eval` for an exception in an `eval` script, `strictness`, and `read` for a subject that cannot be read, such as `value` on an element that is not an input or a response body over the limit. See section 16 and [machine-readable output](docs/engineering/machine-output.md).
+Each failure has a stable report code: `assert` for a false predicate, `type-mismatch`, `filter-error`, `missing-value`, `eval` for an exception in an `eval` script, `eval-result` for an `eval` result outside the contract of section 10, `strictness`, and `read` for a subject that cannot be read, such as `value` on an element that is not an input or a `RESPONSE` body over the limit. See section 16 and [machine-readable output](docs/engineering/machine-output.md).
 
 ## 10. Captures
 

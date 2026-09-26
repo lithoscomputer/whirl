@@ -21,12 +21,16 @@ Schemas: [check](check.schema.json), [run report](report.schema.json).
 | `interpolated-setup` | A setup path contains a variable |
 | `conflicting-storage` | Both setup and storage are specified |
 | `duplicate-artifact` | An artifact name is repeated |
+| `duplicate-response` | A response name is used twice in one file |
+| `unknown-response` | A check reads a response name that no earlier line defines |
+| `duplicate-tab` | A tab name is used twice in one file |
+| `unknown-tab` | A line names a tab that no earlier line opens |
 | `unused-capture` | A capture is never read; warning |
 | `redundant-presence` | The following assertion requires presence; warning |
 | `unasserted-http-status` | An independent HTTP entry has no status assertion; warning |
 | `act-without-model` | A file uses `ACT` without a `model` option |
 | `unknown-model` | The `model` option names a model the catalog cannot route |
-| `filter-type` | A check's subject, filters, and predicate cannot work together, such as `text toHex` |
+| `filter-type` | A check's subject, filters, predicate, and literal expected value cannot work together, such as `text toHex` or `status == "200"` |
 
 Locations use 1-based Unicode character positions, not bytes or UTF-16 units.
 `length` is the source span length on that line. Input and I/O diagnostics may
@@ -39,7 +43,8 @@ array. Argument syntax errors, such as an unknown flag, still use CLI usage text
 Step `error.code` uses the [shim error kinds](shim-protocol.md#7-error-kinds), plus
 `entry-timeout`, `variable-resolution`, `shim-crash`, and `setup-failed`.
 Checks and captures add `type-mismatch`, `filter-error`, and `missing-value`,
-and report a false predicate as `assert` (SPEC 9.7).
+and report a false predicate as `assert` (SPEC 9.7). An `eval` subject reports
+the shim kinds `eval` and `eval-result`.
 `ACT` steps add `act-no-match`, `act-invalid-decision`, and `act-model` (SPEC
 7.4). An `ACT` step also has an `act` object: `model`; `actions`, each with a
 `line` in Whirl syntax and the model's `description`; and `usage`, with

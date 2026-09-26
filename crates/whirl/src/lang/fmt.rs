@@ -16,7 +16,7 @@
 
 use std::fmt::Write as _;
 
-use crate::check::{Number, bytes_literal};
+use crate::check::{Number, is_bytes_literal_shape};
 use crate::lang::ast::{
     Action, ActionKind, Assert, AssertBody, Capture, CheckLine, Comment, DurationLit, DurationUnit,
     Entry, Extractor, File, FileOption, FilterArg, FilterSpec, HttpBodyKind, Locator, Operand,
@@ -437,11 +437,12 @@ fn state_check_text(state: StateCheck) -> &'static str {
 }
 
 /// True for a typed literal's spelling (SPEC 3.1): a JSON number,
-/// `true`, `false`, `null`, or a bytes literal.
+/// `true`, `false`, `null`, or the shape of a bytes literal, which is bytes
+/// or an error when bare.
 fn is_typed_literal(text: &str) -> bool {
     Number::parse(text).is_some()
         || matches!(text, "true" | "false" | "null")
-        || bytes_literal(text).is_some()
+        || is_bytes_literal_shape(text)
 }
 
 /// Renders an expected value. Quotes stay on a value whose bare form is
