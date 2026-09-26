@@ -13,9 +13,10 @@
 
 4. The Release workflow builds archives for macOS arm64, Linux x86_64,
    and Linux arm64 (each via `mise run release`, which rebuilds the shim
-   from source with the pinned toolchain per the repository-owned-tasks
+   and the pinned static libxml2 from source per the repository-owned-tasks
    ADR) and creates a **draft** GitHub release with the archives and
-   their `.sha256` files.
+   their `.sha256` files. The release fails when the binary links libxml2
+   dynamically.
 5. Review the draft and publish it.
 6. Update the Homebrew tap (lithoscomputer/homebrew-tap): copy
    `packaging/homebrew/whirl.rb` to the tap's `Formula/whirl.rb`, set the

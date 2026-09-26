@@ -36,6 +36,11 @@ jobs:
         with:
           path: ${{ matrix.playwright-cache }}
           key: playwright-nightly-1.62.1-${{ matrix.runner }}
+      - name: Install libclang for the libxml2 bindings
+        if: runner.os == 'Linux'
+        # bindgen in the `libxml` crate needs libclang at build time
+        # (ADR evaluate-checks-in-rust §1.6).
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends libclang-dev
       - run: mise run setup
       - name: Install Playwright system dependencies for all engines
         if: runner.os == 'Linux'
