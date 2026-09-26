@@ -9,7 +9,6 @@ export type ErrorKind =
 	| "snapshot-missing-baseline"
 	| "eval"
 	| "eval-result"
-	| "capture"
 	| "read"
 	| "action"
 	| "cancelled"
@@ -147,19 +146,6 @@ export type PageExpectation =
 
 // --- Assert specs (protocol 4.3) ---
 
-export interface StringOpValue {
-	readonly op: "==" | "!=" | "contains";
-	readonly value: string;
-}
-
-export interface StringOpMatches {
-	readonly op: "matches";
-	readonly source: string;
-	readonly flags: string;
-}
-
-export type StringOp = StringOpValue | StringOpMatches;
-
 export type ElementState =
 	| "visible"
 	| "hidden"
@@ -174,110 +160,15 @@ export interface StateCheck {
 	readonly state: ElementState;
 }
 
-export interface TextCheck {
-	readonly type: "text";
-	readonly op: StringOp;
-}
-
-export interface ValueCheck {
-	readonly type: "value";
-	readonly op: StringOp;
-}
-
-export interface AttrCheck {
-	readonly type: "attr";
-	readonly name: string;
-	readonly op: StringOp;
-}
-
-export type CountOp = "==" | "!=" | "<" | "<=" | ">" | ">=";
-
-export interface CountCheck {
-	readonly type: "count";
-	readonly op: CountOp;
-	readonly value: number;
-}
-
-export type AssertCheck =
-	| StateCheck
-	| TextCheck
-	| ValueCheck
-	| AttrCheck
-	| CountCheck;
-
 export interface LocatorSubject {
 	readonly type: "locator";
 	readonly locator: readonly LocatorSegment[];
 }
 
-export interface UrlSubject {
-	readonly type: "url";
-}
-
-export interface TitleSubject {
-	readonly type: "title";
-}
-
-export type AssertSubject = LocatorSubject | UrlSubject | TitleSubject;
-
+/** A state check; `tab:NAME closed` is dispatched before this shape. */
 export interface AssertSpec {
-	readonly subject: AssertSubject;
-	readonly check: AssertCheck;
-}
-
-// --- Capture sources (protocol 4.4) ---
-
-export interface TextExtract {
-	readonly type: "text";
-}
-
-export interface ValueExtract {
-	readonly type: "value";
-}
-
-export interface CountExtract {
-	readonly type: "count";
-}
-
-export interface AttrExtract {
-	readonly type: "attr";
-	readonly name: string;
-}
-
-export type ElementExtract =
-	| TextExtract
-	| ValueExtract
-	| CountExtract
-	| AttrExtract;
-
-export interface ElementCaptureSource {
-	readonly type: "element";
-	readonly locator: readonly LocatorSegment[];
-	readonly extract: ElementExtract;
-}
-
-export interface UrlCaptureSource {
-	readonly type: "url";
-}
-
-export interface TitleCaptureSource {
-	readonly type: "title";
-}
-
-export interface EvalCaptureSource {
-	readonly type: "eval";
-	readonly script: string;
-}
-
-export type CaptureSource =
-	| ElementCaptureSource
-	| UrlCaptureSource
-	| TitleCaptureSource
-	| EvalCaptureSource;
-
-export interface CaptureFilter {
-	readonly source: string;
-	readonly flags: string;
+	readonly subject: LocatorSubject;
+	readonly check: StateCheck;
 }
 
 // --- Reads (protocol 4.4, 4.5) ---
@@ -423,7 +314,6 @@ export type StepCommand =
 	| "ariaSnapshot"
 	| "page"
 	| "assert"
-	| "capture"
 	| "read"
 	| "readResponse"
 	| "traceGroup"
@@ -452,7 +342,6 @@ const stepCommandList: readonly StepCommand[] = [
 	"ariaSnapshot",
 	"page",
 	"assert",
-	"capture",
 	"read",
 	"readResponse",
 	"traceGroup",

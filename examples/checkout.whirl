@@ -22,7 +22,7 @@ PRESS Enter
 url contains q=widget
 testid:result-card count >= 1
 [Captures]
-first_product: testid:result-card >> nth:1 >> role:link attr:href
+first_product: testid:result-card >> nth:0 >> role:link attr:href
 
 # Add it to the cart.
 VISIT {{first_product}}

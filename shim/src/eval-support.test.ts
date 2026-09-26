@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-	buildCaptureEvalExpression,
 	buildEvalExpression,
+	buildReadEvalExpression,
 	classifyEvalResult,
 	isExpressionScript,
 } from "./eval-support.js";
@@ -51,10 +51,10 @@ test("statement scripts run as written", () => {
 	assert.doesNotMatch(expression, /return \(foo/);
 });
 
-test("capture eval wrapper embeds the classifier", () => {
-	const expression = buildCaptureEvalExpression("1 + 2");
+test("read eval wrapper embeds the classifier and reports strings", () => {
+	const expression = buildReadEvalExpression("1 + 2");
 	assert.match(expression, /const classify = function classifyEvalResult/);
-	assert.match(expression, /return classify\(value\);/);
+	assert.match(expression, /string: typeof value === "string"/);
 });
 
 test("strings are returned as-is", () => {

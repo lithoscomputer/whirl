@@ -7,6 +7,8 @@
 
 use std::path::PathBuf;
 
+use crate::check::{FilterKind, PredicateKind, StaticType};
+
 mod options;
 
 /// Source position of a token or step: 1-based line, 1-based character
@@ -65,7 +67,8 @@ impl Value {
 }
 
 /// A `/pattern/flags` regex literal (SPEC 3.1). The pattern is stored as
-/// written (JavaScript syntax; the shim evaluates it).
+/// written, with its `\/` delimiter escapes; ECMAScript syntax in Unicode
+/// mode.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Regex {
     pub(crate) pattern: String,
@@ -146,8 +149,9 @@ pub(crate) enum SegmentKind {
     Css(Value),
     /// `frame:"selector"` enters an iframe before the next element segment.
     Frame(Value),
-    /// `nth:N`, 1-based. Never the first segment; N >= 1.
-    Nth(u64),
+    /// `nth:N`, 0-based; a negative N counts from the end. Never the
+    /// first segment.
+    Nth(i64),
     /// Unprefixed value; legal only in actions (SPEC 6.1). The default
     /// engine (`label:` or `text:`) depends on the action; see
     /// [`ActionKind::default_engine`].
@@ -482,30 +486,9 @@ pub(crate) struct Assert {
     pub(crate) text:    String,
 }
 
-/// The subject and check of an assert. `url` and `title` take string
-/// checks only, so the shape is encoded per subject (SPEC 9.3, 17).
+/// The forms of an `[Asserts]` line (SPEC 9.1, 17).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum AssertBody {
-    /// A status check scoped to the containing independent HTTP entry.
-    HttpStatus {
-        op:     NumOp,
-        status: u64,
-    },
-    /// A header or JSON check scoped to the containing HTTP entry.
-    HttpValue {
-        field: ResponseField,
-        check: StrCheck,
-    },
-    ResponseStatus {
-        name:   Ident,
-        op:     NumOp,
-        status: u64,
-    },
-    ResponseValue {
-        name:  Ident,
-        field: ResponseField,
-        check: StrCheck,
-    },
     TabClosed {
         name: Ident,
     },
@@ -513,18 +496,16 @@ pub(crate) enum AssertBody {
         locator: Locator,
         state:   StateCheck,
     },
-    ElementValue {
-        locator: Locator,
-        source:  ValueSource,
-        check:   StrCheck,
-    },
-    ElementCount {
-        locator: Locator,
-        op:      NumOp,
-        count:   u64,
-    },
-    Url(StrCheck),
-    Title(StrCheck),
+    Check(CheckLine),
+}
+
+/// `subject { filter } [not] predicate` (SPEC 9).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CheckLine {
+    pub(crate) subject:   Subject,
+    pub(crate) filters:   Vec<FilterSpec>,
+    pub(crate) negated:   bool,
+    pub(crate) predicate: PredicateSpec,
 }
 
 /// Element state checks (SPEC 9.1).
@@ -539,57 +520,9 @@ pub(crate) enum StateCheck {
     Focused,
 }
 
-/// What an element value check reads (SPEC 9.2).
+/// Where a check or capture reads its value (SPEC 9.2).
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum ValueSource {
-    Text,
-    Value,
-    /// `attr:NAME`; the name follows the `attr-name` production.
-    Attr(String),
-}
-
-/// A string check: operator plus operand (SPEC 9.4).
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum StrCheck {
-    Eq(Value),
-    Ne(Value),
-    Contains(Value),
-    Matches(Regex),
-}
-
-/// Count comparison operators (SPEC 9.4).
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum NumOp {
-    Eq,
-    Ne,
-    Lt,
-    Le,
-    Gt,
-    Ge,
-}
-
-/// One line in a `[Captures]` section (SPEC 10).
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct Capture {
-    pub(crate) name:    Ident,
-    pub(crate) source:  CaptureSource,
-    /// The optional `regex /re/` filter.
-    pub(crate) filter:  Option<Regex>,
-    pub(crate) timeout: Option<DurationLit>,
-    pub(crate) line:    u32,
-    pub(crate) span:    Span,
-    pub(crate) text:    String,
-}
-
-/// Where a capture's value comes from (SPEC 10).
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum CaptureSource {
-    /// A field from the containing independent HTTP entry's response.
-    Http(ResponseField),
-    Response {
-        name:  Ident,
-        field: ResponseField,
-    },
+pub(crate) enum Subject {
     Element {
         locator:   Locator,
         extractor: Extractor,
@@ -597,23 +530,141 @@ pub(crate) enum CaptureSource {
     Url,
     Title,
     Eval(Value),
+    /// A field of a response: a `RESPONSE` name, or `None` for the
+    /// containing HTTP entry's own response.
+    Response {
+        name:  Option<Ident>,
+        field: ResponseField,
+    },
 }
 
-/// A field from one named HTTP response.
+impl Subject {
+    /// The subject's static type (SPEC 9.2), before any filter.
+    pub(crate) fn static_type(&self) -> StaticType {
+        match self {
+            Self::Element {
+                extractor: Extractor::Count,
+                ..
+            }
+            | Self::Response {
+                field: ResponseField::Status,
+                ..
+            } => StaticType::NUMBER,
+            Self::Element { .. }
+            | Self::Url
+            | Self::Title
+            | Self::Response {
+                field: ResponseField::Header(_) | ResponseField::Location | ResponseField::Body,
+                ..
+            } => StaticType::STRING,
+            Self::Response {
+                field: ResponseField::Bytes,
+                ..
+            } => StaticType::BYTES,
+            Self::Eval(_)
+            | Self::Response {
+                field: ResponseField::Json(_),
+                ..
+            } => StaticType::Any,
+        }
+    }
+}
+
+/// A field of one HTTP response (SPEC 9.2).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ResponseField {
     Status,
     Header(Value),
+    Location,
+    Body,
+    Bytes,
+    /// `json:PATH`, short for `body json:PATH`.
     Json(Value),
 }
 
-/// Element extractors for captures (SPEC 10).
+/// Element extractors (SPEC 9.2).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Extractor {
     Text,
     Value,
     Count,
     Attr(String),
+}
+
+/// One filter with its source arguments (SPEC 9.5).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct FilterSpec {
+    pub(crate) kind: FilterKind,
+    pub(crate) args: Vec<FilterArg>,
+    pub(crate) span: Span,
+}
+
+/// A filter argument as written.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum FilterArg {
+    Value(Value),
+    Regex(Regex),
+    Index(i64),
+}
+
+/// A predicate with its source operand (SPEC 9.4).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum PredicateSpec {
+    Compare {
+        kind:     PredicateKind,
+        expected: Operand,
+    },
+    Matches(Regex),
+    Word(PredicateKind),
+}
+
+impl PredicateSpec {
+    pub(crate) fn kind(&self) -> PredicateKind {
+        match self {
+            Self::Compare { kind, .. } | Self::Word(kind) => *kind,
+            Self::Matches(_) => PredicateKind::Matches,
+        }
+    }
+}
+
+/// An expected value: a value, or a single-line JSON literal (SPEC 3.1).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum Operand {
+    Value(Value),
+    Json(JsonLiteral),
+}
+
+/// A JSON array or object written on the check line. `value` holds the
+/// authored text split into interpolation segments.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct JsonLiteral {
+    pub(crate) text:  String,
+    pub(crate) value: Value,
+}
+
+/// The static type after a subject and its filters, or the first filter
+/// that cannot take its input with that input's type.
+pub(crate) fn chain_type<'a>(
+    subject: &Subject,
+    filters: &'a [FilterSpec],
+) -> Result<StaticType, (&'a FilterSpec, StaticType)> {
+    let mut current = subject.static_type();
+    for filter in filters {
+        current = filter.kind.output(&current).ok_or((filter, current))?;
+    }
+    Ok(current)
+}
+
+/// One line in a `[Captures]` section (SPEC 10).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Capture {
+    pub(crate) name:    Ident,
+    pub(crate) subject: Subject,
+    pub(crate) filters: Vec<FilterSpec>,
+    pub(crate) timeout: Option<DurationLit>,
+    pub(crate) line:    u32,
+    pub(crate) span:    Span,
+    pub(crate) text:    String,
 }
 
 /// One entry: actions, then optional `PAGE`, `[Asserts]`, and

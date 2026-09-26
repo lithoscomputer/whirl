@@ -27,7 +27,7 @@ PRESS Enter
 url contains "q=widget"
 testid:result-card count >= 1
 [Captures]
-first_product: testid:result-card >> nth:1 >> role:link attr:href
+first_product: testid:result-card >> nth:0 >> role:link attr:href
 
 # Add it to the cart.
 VISIT {{first_product}}
@@ -123,7 +123,7 @@ Authorization: "Bearer {{env.E2E_SETUP_TOKEN}}"
 [Asserts]
 status == 201
 [Captures]
-user_id: json:/id
+user_id: json:$.id
 
 VISIT /users/{{user_id}}
 [Asserts]
@@ -131,6 +131,22 @@ role:heading Ada visible
 ```
 
 The status check is explicit. Whirl does not treat 2xx as implicit success.
+
+Checks use Hurl's vocabulary. A check reads a value, passes it through
+filters, and tests it with one predicate. JSON values keep their type, and
+JSONPath selects them:
+
+```whirl
+[Asserts]
+url urlQueryParam page == 2
+testid:price text replaceRegex /[^0-9.]/ "" toFloat < 200
+response:order json:$.items[*].sku contains ABC-1
+response:order json:$.id isInteger
+eval "window.dataLayer" json:$[?@.event=='purchase'] count == 1
+```
+
+Page checks retry until they pass or time out. See
+[SPEC section 9](SPEC.md#9-asserts) for every subject, filter, and predicate.
 
 Use `ACT` when a step is easier to describe than to locate. A language model
 reads a snapshot of the page and chooses one action, which Whirl runs like

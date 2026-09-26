@@ -220,7 +220,7 @@ impl FlowExec<'_> {
             entry_start: line.entry_start,
             command,
             timeout_ms,
-            title: line.title.to_owned(),
+            title: Some(line.title.to_owned()),
         };
         line.entry_start = false;
         let started = Instant::now();

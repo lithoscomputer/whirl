@@ -1,6 +1,9 @@
 //! Conversion of AST nodes to the shim wire JSON of
 //! `docs/engineering/shim-protocol.md` sections 4.1-4.4.
 //!
+//! Checks with a subject never reach the shim as checks: Rust evaluates
+//! them (ADR `evaluate-checks-in-rust`) and sends only reads.
+//!
 //! The wire carries resolved strings, while the AST holds interpolation
 //! segments. Every conversion therefore takes a resolver closure that
 //! turns a [`Value`] into its resolved string; the runner supplies its
@@ -10,8 +13,8 @@
 use serde_json::{Value as Json, json};
 
 use crate::lang::ast::{
-    AssertBody, CaptureSource, DefaultEngine, Extractor, Locator, NumOp, PageCheck, Regex,
-    ResponseField, SegmentKind, StateCheck, StrCheck, TextPrefix, Value, ValueSource,
+    DefaultEngine, Extractor, Ident, Locator, PageCheck, Regex, SegmentKind, StateCheck, Subject,
+    TextPrefix, Value,
 };
 
 /// Shim-only response key for an independent HTTP entry. `$` and `:` cannot
@@ -60,10 +63,6 @@ fn regex_source(regex: &Regex) -> String {
         }
     }
     out
-}
-
-fn regex_json(regex: &Regex) -> Json {
-    json!({"source": regex_source(regex), "flags": regex_flags(regex)})
 }
 
 /// Converts a locator to the wire array of protocol section 4.1.
@@ -156,18 +155,6 @@ pub(crate) fn page_wire<E>(check: &PageCheck, resolve: &mut Resolve<'_, E>) -> R
     Ok(json)
 }
 
-fn str_check_wire<E>(check: &StrCheck, resolve: &mut Resolve<'_, E>) -> Result<Json, E> {
-    let json = match check {
-        StrCheck::Eq(value) => json!({"op": "==", "value": resolve(value)?}),
-        StrCheck::Ne(value) => json!({"op": "!=", "value": resolve(value)?}),
-        StrCheck::Contains(value) => json!({"op": "contains", "value": resolve(value)?}),
-        StrCheck::Matches(regex) => {
-            json!({"op": "matches", "source": regex_source(regex), "flags": regex_flags(regex)})
-        }
-    };
-    Ok(json)
-}
-
 fn state_text(state: StateCheck) -> &'static str {
     match state {
         StateCheck::Visible => "visible",
@@ -180,123 +167,52 @@ fn state_text(state: StateCheck) -> &'static str {
     }
 }
 
-fn num_op_text(op: NumOp) -> &'static str {
-    match op {
-        NumOp::Eq => "==",
-        NumOp::Ne => "!=",
-        NumOp::Lt => "<",
-        NumOp::Le => "<=",
-        NumOp::Gt => ">",
-        NumOp::Ge => ">=",
-    }
-}
-
 fn locator_subject<E>(locator: &Locator, resolve: &mut Resolve<'_, E>) -> Result<Json, E> {
     // Asserts and captures never hold default-engine segments (SPEC 6.1).
     let locator = locator_wire(locator, None, resolve)?;
     Ok(json!({"type": "locator", "locator": locator}))
 }
 
-fn response_field_wire<E>(field: &ResponseField, resolve: &mut Resolve<'_, E>) -> Result<Json, E> {
-    Ok(match field {
-        ResponseField::Status => json!({"type": "status"}),
-        ResponseField::Header(value) => json!({"type": "header", "name": resolve(value)?}),
-        ResponseField::Json(value) => json!({"type": "json", "pointer": resolve(value)?}),
-    })
-}
-
-/// Converts an assert to the wire spec of protocol section 4.3.
-pub(crate) fn assert_wire<E>(
-    body: &AssertBody,
-    implicit_response: Option<&str>,
+/// The wire spec of a state check (protocol section 4.3).
+pub(crate) fn state_assert_wire<E>(
+    locator: &Locator,
+    state: StateCheck,
     resolve: &mut Resolve<'_, E>,
 ) -> Result<Json, E> {
-    let json = match body {
-        AssertBody::HttpStatus { op, status } => {
-            json!({"subject": {"type": "response", "name": implicit_response.expect("an HTTP assertion belongs to an HTTP entry")}, "check": {"type": "status", "op": num_op_text(*op), "value": status}})
-        }
-        AssertBody::HttpValue { field, check } => {
-            json!({"subject": {"type": "response", "name": implicit_response.expect("an HTTP assertion belongs to an HTTP entry")}, "check": {"type": "value", "field": response_field_wire(field, resolve)?, "op": str_check_wire(check, resolve)?}})
-        }
-        AssertBody::ResponseStatus { name, op, status } => {
-            json!({"subject": {"type": "response", "name": name.text}, "check": {"type": "status", "op": num_op_text(*op), "value": status}})
-        }
-        AssertBody::ResponseValue { name, field, check } => {
-            json!({"subject": {"type": "response", "name": name.text}, "check": {"type": "value", "field": response_field_wire(field, resolve)?, "op": str_check_wire(check, resolve)?}})
-        }
-        AssertBody::TabClosed { name } => {
-            json!({"subject": {"type": "tab", "name": name.text}, "check": {"type": "closed"}})
-        }
-        AssertBody::ElementState { locator, state } => json!({
-            "subject": locator_subject(locator, resolve)?,
-            "check": {"type": "state", "state": state_text(*state)},
-        }),
-        AssertBody::ElementValue {
-            locator,
-            source,
-            check,
-        } => {
-            let op = str_check_wire(check, resolve)?;
-            let check = match source {
-                ValueSource::Text => json!({"type": "text", "op": op}),
-                ValueSource::Value => json!({"type": "value", "op": op}),
-                ValueSource::Attr(name) => json!({"type": "attr", "name": name, "op": op}),
-            };
-            json!({"subject": locator_subject(locator, resolve)?, "check": check})
-        }
-        AssertBody::ElementCount { locator, op, count } => json!({
-            "subject": locator_subject(locator, resolve)?,
-            "check": {"type": "count", "op": num_op_text(*op), "value": count},
-        }),
-        AssertBody::Url(check) => json!({
-            "subject": {"type": "url"},
-            "check": {"type": "text", "op": str_check_wire(check, resolve)?},
-        }),
-        AssertBody::Title(check) => json!({
-            "subject": {"type": "title"},
-            "check": {"type": "text", "op": str_check_wire(check, resolve)?},
-        }),
-    };
-    Ok(json)
+    Ok(json!({
+        "subject": locator_subject(locator, resolve)?,
+        "check": {"type": "state", "state": state_text(state)},
+    }))
 }
 
-/// Converts a capture source to the wire shape of protocol section 4.4.
-pub(crate) fn capture_source_wire<E>(
-    source: &CaptureSource,
-    implicit_response: Option<&str>,
+/// The wire spec of a `tab:NAME closed` check (protocol section 4.3).
+pub(crate) fn tab_closed_wire(name: &Ident) -> Json {
+    json!({"subject": {"type": "tab", "name": name.text}, "check": {"type": "closed"}})
+}
+
+/// The wire read subject of a page subject (protocol section 4.4), or
+/// `None` for a response subject, which `readResponse` reads.
+pub(crate) fn read_subject_wire<E>(
+    subject: &Subject,
     resolve: &mut Resolve<'_, E>,
-) -> Result<Json, E> {
-    let json = match source {
-        CaptureSource::Http(field) => {
-            json!({"type": "response", "name": implicit_response.expect("an HTTP capture belongs to an HTTP entry"), "field": response_field_wire(field, resolve)?})
-        }
-        CaptureSource::Response { name, field } => {
-            json!({"type": "response", "name": name.text, "field": response_field_wire(field, resolve)?})
-        }
-        CaptureSource::Element { locator, extractor } => {
+) -> Result<Option<Json>, E> {
+    let json = match subject {
+        Subject::Element { locator, extractor } => {
+            let locator = locator_wire(locator, None, resolve)?;
             let extract = match extractor {
+                Extractor::Count => return Ok(Some(json!({"type": "count", "locator": locator}))),
                 Extractor::Text => json!({"type": "text"}),
                 Extractor::Value => json!({"type": "value"}),
-                Extractor::Count => json!({"type": "count"}),
                 Extractor::Attr(name) => json!({"type": "attr", "name": name}),
             };
-            let locator = locator_wire(locator, None, resolve)?;
             json!({"type": "element", "locator": locator, "extract": extract})
         }
-        CaptureSource::Url => json!({"type": "url"}),
-        CaptureSource::Title => json!({"type": "title"}),
-        CaptureSource::Eval(script) => json!({"type": "eval", "script": resolve(script)?}),
+        Subject::Url => json!({"type": "url"}),
+        Subject::Title => json!({"type": "title"}),
+        Subject::Eval(script) => json!({"type": "eval", "script": resolve(script)?}),
+        Subject::Response { .. } => return Ok(None),
     };
-    Ok(json)
-}
-
-/// Converts a capture's optional `regex` filter to the wire `filter`
-/// param of protocol section 4.4: an object, or JSON `null`.
-pub(crate) fn filter_wire(filter: Option<&Regex>) -> Json {
-    match filter {
-        Some(regex) => regex_json(regex),
-        None => Json::Null,
-    }
+    Ok(Some(json))
 }
 
 #[cfg(test)]
@@ -307,7 +223,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::lang::ast::{ActionKind, File, ValueSegment};
+    use crate::lang::ast::{ActionKind, AssertBody, File, ValueSegment};
     use crate::lang::parse::parse_file;
 
     /// A test resolver: literals pass through and variable references
@@ -350,18 +266,23 @@ mod tests {
         locator_wire(target, action.kind.default_engine(), &mut resolve).unwrap()
     }
 
-    /// The wire JSON of the first assert in `[Asserts]`.
+    /// The wire JSON of a state or tab assert.
     fn assert_json(line: &str) -> Json {
         let file = parse(&format!("VISIT /\n[Asserts]\n{line}\n"));
-        assert_wire(&file.entries[0].asserts[0].body, None, &mut resolve).unwrap()
+        match &file.entries[0].asserts[0].body {
+            AssertBody::ElementState { locator, state } => {
+                state_assert_wire(locator, *state, &mut resolve).unwrap()
+            }
+            AssertBody::TabClosed { name } => tab_closed_wire(name),
+            AssertBody::Check(_) => panic!("checks with a subject never reach the shim"),
+        }
     }
 
-    /// The wire JSON of the first capture's source and filter.
-    fn capture_json(line: &str) -> (Json, Json) {
+    /// The read subject of the first capture.
+    fn read_json(line: &str) -> Option<Json> {
         let file = parse(&format!("VISIT /\n[Captures]\n{line}\n"));
         let capture = &file.entries[0].captures[0];
-        let source = capture_source_wire(&capture.source, None, &mut resolve).unwrap();
-        (source, filter_wire(capture.filter.as_ref()))
+        read_subject_wire(&capture.subject, &mut resolve).unwrap()
     }
 
     /// The wire JSON of a PAGE line's expectation.
@@ -476,138 +397,62 @@ mod tests {
     }
 
     #[test]
-    fn value_asserts_convert_to_protocol_json() {
+    fn tab_closed_asserts_convert_to_protocol_json() {
         assert_eq!(
-            assert_json("testid:a text == Alice"),
-            json!({
-                "subject": {"type": "locator", "locator": [{"type": "testid", "id": "a"}]},
-                "check": {"type": "text", "op": {"op": "==", "value": "Alice"}},
-            })
-        );
-        assert_eq!(
-            assert_json("testid:a value != \"0\""),
-            json!({
-                "subject": {"type": "locator", "locator": [{"type": "testid", "id": "a"}]},
-                "check": {"type": "value", "op": {"op": "!=", "value": "0"}},
-            })
-        );
-        assert_eq!(
-            assert_json("testid:a attr:aria-expanded contains tru"),
-            json!({
-                "subject": {"type": "locator", "locator": [{"type": "testid", "id": "a"}]},
-                "check": {
-                    "type": "attr",
-                    "name": "aria-expanded",
-                    "op": {"op": "contains", "value": "tru"},
-                },
-            })
-        );
-        assert_eq!(
-            assert_json("testid:a text matches /Order #\\w+/i"),
-            json!({
-                "subject": {"type": "locator", "locator": [{"type": "testid", "id": "a"}]},
-                "check": {
-                    "type": "text",
-                    "op": {"op": "matches", "source": "Order #\\w+", "flags": "i"},
-                },
-            })
+            assert_json("tab:payment closed"),
+            json!({"subject": {"type": "tab", "name": "payment"}, "check": {"type": "closed"}})
         );
     }
 
     #[test]
-    fn count_asserts_convert_every_operator() {
-        for (source_op, wire_op) in [
-            ("==", "=="),
-            ("!=", "!="),
-            ("<", "<"),
-            ("<=", "<="),
-            (">", ">"),
-            (">=", ">="),
-        ] {
-            assert_eq!(
-                assert_json(&format!("testid:row count {source_op} 3")),
-                json!({
-                    "subject": {"type": "locator", "locator": [{"type": "testid", "id": "row"}]},
-                    "check": {"type": "count", "op": wire_op, "value": 3},
-                })
-            );
-        }
-    }
-
-    #[test]
-    fn url_and_title_asserts_convert_to_protocol_json() {
+    fn page_subjects_convert_to_read_subjects() {
         assert_eq!(
-            assert_json("url contains \"q=widget\""),
-            json!({
-                "subject": {"type": "url"},
-                "check": {"type": "text", "op": {"op": "contains", "value": "q=widget"}},
-            })
-        );
-        assert_eq!(
-            assert_json("title matches /a.b/ism"),
-            json!({
-                "subject": {"type": "title"},
-                "check": {"type": "text", "op": {"op": "matches", "source": "a.b", "flags": "ism"}},
-            })
-        );
-    }
-
-    #[test]
-    fn capture_sources_convert_to_protocol_json() {
-        let (source, filter) = capture_json("a: testid:x text");
-        assert_eq!(
-            source,
-            json!({
+            read_json("a: testid:x text"),
+            Some(json!({
                 "type": "element",
                 "locator": [{"type": "testid", "id": "x"}],
                 "extract": {"type": "text"},
-            })
+            }))
         );
-        assert_eq!(filter, json!(null));
-
-        let (source, _) = capture_json("a: label:Amount value");
         assert_eq!(
-            source,
-            json!({
+            read_json("a: label:Amount value"),
+            Some(json!({
                 "type": "element",
                 "locator": [{"type": "label", "text": "Amount", "exact": true}],
                 "extract": {"type": "value"},
-            })
+            }))
         );
-
-        let (source, _) = capture_json("a: testid:row count");
         assert_eq!(
-            source,
-            json!({
-                "type": "element",
-                "locator": [{"type": "testid", "id": "row"}],
-                "extract": {"type": "count"},
-            })
+            read_json("a: testid:row >> nth:-1 count"),
+            Some(json!({
+                "type": "count",
+                "locator": [{"type": "testid", "id": "row"}, {"type": "nth", "index": -1}],
+            }))
         );
-
-        let (source, _) = capture_json("a: role:link \"Docs\" attr:href");
         assert_eq!(
-            source,
-            json!({
+            read_json("a: role:link \"Docs\" attr:href"),
+            Some(json!({
                 "type": "element",
                 "locator": [{"type": "role", "role": "link", "name": "Docs", "exact": true}],
                 "extract": {"type": "attr", "name": "href"},
-            })
+            }))
         );
-
-        assert_eq!(capture_json("a: url").0, json!({"type": "url"}));
-        assert_eq!(capture_json("a: title").0, json!({"type": "title"}));
+        assert_eq!(read_json("a: url"), Some(json!({"type": "url"})));
+        assert_eq!(read_json("a: title"), Some(json!({"type": "title"})));
         assert_eq!(
-            capture_json("a: eval \"document.title.trim()\"").0,
-            json!({"type": "eval", "script": "document.title.trim()"})
+            read_json("a: eval \"document.title.trim()\""),
+            Some(json!({"type": "eval", "script": "document.title.trim()"}))
         );
     }
 
     #[test]
-    fn capture_filters_convert_to_protocol_json() {
-        let (_, filter) = capture_json("a: testid:x text regex /Order #(\\w+)/");
-        assert_eq!(filter, json!({"source": "Order #(\\w+)", "flags": ""}));
-        let (_, filter) = capture_json("a: testid:x text regex /a\\/b/im");
-        assert_eq!(filter, json!({"source": "a/b", "flags": "im"}));
+    fn response_subjects_have_no_read_subject() {
+        let file =
+            parse("VISIT /\nRESPONSE order GET /x\n[Captures]\nid: response:order json:$.id\n");
+        let capture = &file.entries[0].captures[0];
+        assert_eq!(
+            read_subject_wire(&capture.subject, &mut resolve).unwrap(),
+            None
+        );
     }
 }

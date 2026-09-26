@@ -315,11 +315,6 @@ impl JsonQuery {
         })
     }
 
-    /// The query as written.
-    pub(crate) fn text(&self) -> &str {
-        &self.text
-    }
-
     /// Runs the query. A string input is parsed as JSON first. A singular
     /// query gives one value or a missing value; any other query gives a
     /// list of every match.

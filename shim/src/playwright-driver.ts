@@ -15,10 +15,8 @@ import type {
 } from "@playwright/test";
 import { chromium, devices, expect, firefox, webkit } from "@playwright/test";
 import { runAssert, runPage } from "./assertions.js";
-import { applyCaptureFilter, runCapture } from "./captures.js";
 import type { ShimDriver } from "./driver.js";
 import { buildEvalExpression } from "./eval-support.js";
-import type { ResponseCheck, ResponseField } from "./flow-network.js";
 import { FlowNetwork } from "./flow-network.js";
 import { FlowTabs } from "./flow-tabs.js";
 import { createHostAllowlist } from "./host-glob.js";
@@ -32,15 +30,12 @@ import {
 	fieldEnum,
 	fieldNumber,
 	fieldObject,
-	fieldObjectOrNull,
 	fieldString,
 	fieldStringOrNull,
 } from "./params.js";
 import type {
 	AssertSpec,
 	BrowserEngine,
-	CaptureFilter,
-	CaptureSource,
 	EndFlowParams,
 	EndFlowResult,
 	ErrorKind,
@@ -593,39 +588,9 @@ export class PlaywrightDriver implements ShimDriver {
 		}
 		if (cmd === "assert") {
 			const subject = fieldObject(fieldObject(params, "spec"), "subject");
-			if (subject["type"] === "response") {
-				const check = fieldObject(
-					fieldObject(params, "spec"),
-					"check",
-				) as unknown as ResponseCheck;
-				await flow.network.assert(
-					fieldString(subject, "name"),
-					check,
-					timeoutMs,
-				);
-				return {};
-			}
 			if (subject["type"] === "tab") {
 				await flow.tabs.assertClosed(fieldString(subject, "name"), timeoutMs);
 				return {};
-			}
-		}
-		if (cmd === "capture") {
-			const source = fieldObject(params, "source");
-			if (source["type"] === "response") {
-				const field = fieldObject(source, "field") as unknown as ResponseField;
-				const value = await flow.network.read(
-					fieldString(source, "name"),
-					field,
-					timeoutMs,
-				);
-				const filter = fieldObjectOrNull(
-					params,
-					"filter",
-				) as CaptureFilter | null;
-				return {
-					value: filter === null ? value : applyCaptureFilter(value, filter),
-				};
 			}
 		}
 		const page = flow.tabs.current();
@@ -800,18 +765,6 @@ export class PlaywrightDriver implements ShimDriver {
 			case "traceGroupEnd":
 				// runStep handles these before dispatch.
 				return {};
-			case "capture": {
-				const source = fieldObject(
-					params,
-					"source",
-				) as unknown as CaptureSource;
-				const filter = fieldObjectOrNull(
-					params,
-					"filter",
-				) as CaptureFilter | null;
-				const value = await runCapture(page, source, filter, timeoutMs);
-				return { value };
-			}
 			default:
 				return assertNever(cmd);
 		}
@@ -1072,7 +1025,6 @@ function defaultErrorKind(cmd: StepCommand): ErrorKind {
 		case "snapshot":
 		case "page":
 		case "assert":
-		case "capture":
 		case "traceGroup":
 		case "traceGroupEnd":
 			return "internal";

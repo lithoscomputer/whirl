@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Checks</title>
+  </head>
+  <body>
+    <h1>Checks</h1>
+    <nav>
+      <a data-testid="home" href="/">Home</a>
+      <a data-testid="current" aria-current="page" href="/checks.html?page=2&amp;q=caf%C3%A9">Checks</a>
+    </nav>
+    <p data-testid="price">Total: $1,299.00</p>
+    <p data-testid="late"></p>
+    <ul>
+      <li class="row">One</li>
+      <li class="row">Two</li>
+      <li class="row">Three</li>
+    </ul>
+    <script>
+      window.dataLayer = [];
+      setTimeout(() => {
+        document.querySelector('[data-testid="late"]').textContent = "Order #A42 ready";
+        window.dataLayer.push({ event: "purchase", value: 42 });
+      }, 400);
+    </script>
+  </body>
+</html>

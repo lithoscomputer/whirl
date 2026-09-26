@@ -9,7 +9,7 @@ fn step(script: &str) -> StepRequest {
             script: script.to_owned(),
         },
         timeout_ms:  100,
-        title:       "timeout regression".to_owned(),
+        title:       Some("timeout regression".to_owned()),
     }
 }
 

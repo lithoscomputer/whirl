@@ -80,7 +80,7 @@ rl.on("line", (line) => {
   switch (cmd) {
     case "hello":
       if (ignoreLifecycle) break;
-      reply(id, { protocol: 1, playwrightVersion: "0.0.0-fake" });
+      reply(id, { protocol: 2, playwrightVersion: "0.0.0-fake" });
       break;
     case "startFlow":
       if (ignoreLifecycle) break;
@@ -105,8 +105,8 @@ rl.on("line", (line) => {
     case "evalAction":
       handleStep(id, params);
       break;
-    case "capture":
-      reply(id, { value: "captured" });
+    case "read":
+      reply(id, { type: "value", value: "captured" });
       break;
     default:
       // Echo the params back so framing tests can inspect them.

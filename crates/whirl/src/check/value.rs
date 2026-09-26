@@ -23,6 +23,13 @@ pub(crate) enum Value {
     Bytes(Vec<u8>),
     Date(DateTime<Utc>),
     /// An XPath node set, which supports only `count` and `exists`.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the xpath: filter arrives with libxml2 in milestone M7"
+        )
+    )]
     NodeSet(usize),
 }
 
@@ -64,6 +71,28 @@ impl fmt::Display for ValueType {
 }
 
 impl Value {
+    /// A value from the shim's JSON transport: a page string, a count, or
+    /// an `eval` result (SPEC 10).
+    pub(crate) fn from_json(json: serde_json::Value) -> Self {
+        match json {
+            serde_json::Value::Null => Self::Null,
+            serde_json::Value::Bool(value) => Self::Bool(value),
+            serde_json::Value::Number(number) => {
+                Number::parse(&number.to_string()).map_or(Self::Null, Self::Number)
+            }
+            serde_json::Value::String(text) => Self::String(text),
+            serde_json::Value::Array(items) => {
+                Self::List(items.into_iter().map(Self::from_json).collect())
+            }
+            serde_json::Value::Object(members) => Self::Object(
+                members
+                    .into_iter()
+                    .map(|(key, value)| (key, Self::from_json(value)))
+                    .collect(),
+            ),
+        }
+    }
+
     /// The value's type.
     pub(crate) fn value_type(&self) -> ValueType {
         match self {
@@ -162,17 +191,19 @@ impl Value {
         }
     }
 
-    /// A short description for failure reports: the type and the text
-    /// form, such as `number 42` or `string "42"`.
+    /// The value as a failure report shows it: a string in JSON quotes,
+    /// so `"42"` and `42` read differently, and other values in their
+    /// text form, with the type named where the text form is ambiguous.
     pub(crate) fn describe(&self) -> String {
         match self {
-            Self::String(text) => format!("string {}", quote(text)),
-            Self::NodeSet(count) => format!("node set of {count}"),
-            other => format!(
+            Self::String(text) => quote(text),
+            Self::Bytes(_) | Self::Date(_) => format!(
                 "{} {}",
-                other.value_type(),
-                other.text_form().unwrap_or_default()
+                self.value_type(),
+                self.text_form().unwrap_or_default()
             ),
+            Self::NodeSet(count) => format!("node set of {count}"),
+            other => other.text_form().unwrap_or_default(),
         }
     }
 }
@@ -277,8 +308,9 @@ mod tests {
 
     #[test]
     fn describes_values_with_their_type() {
-        assert_eq!(string("42").describe(), "string \"42\"");
-        assert_eq!(num("42").describe(), "number 42");
-        assert_eq!(Value::List(vec![]).describe(), "list []");
+        assert_eq!(string("42").describe(), "\"42\"");
+        assert_eq!(num("42").describe(), "42");
+        assert_eq!(Value::List(vec![]).describe(), "[]");
+        assert_eq!(Value::Bytes(vec![1]).describe(), "bytes AQ==");
     }
 }

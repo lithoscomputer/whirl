@@ -142,6 +142,17 @@ impl Charset {
     }
 }
 
+impl Charset {
+    /// Decodes bytes without a byte order mark and without replacement
+    /// characters.
+    pub(crate) fn decode(self, bytes: &[u8]) -> Result<String, String> {
+        self.0
+            .decode_without_bom_handling_and_without_replacement(bytes)
+            .map(std::borrow::Cow::into_owned)
+            .ok_or_else(|| format!("the bytes are not valid {}", self.0.name()))
+    }
+}
+
 impl fmt::Debug for Charset {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.0.name())

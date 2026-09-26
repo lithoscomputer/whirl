@@ -7,10 +7,11 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
+use crate::check::{Number, PredicateKind, StaticType};
 use crate::lang::ast::{
-    Action, ActionKind, Assert, AssertBody, Capture, CaptureSource, Entry, File, FileOption,
-    Locator, NumOp, PageCheck, ResponseField, SegmentKind, Span, StateCheck, StrCheck, Value,
-    ValueSegment,
+    Action, ActionKind, Assert, AssertBody, Capture, CheckLine, Entry, Extractor, File, FileOption,
+    FilterArg, FilterSpec, Ident, Locator, Operand, PageCheck, PredicateSpec, ResponseField,
+    SegmentKind, Span, StateCheck, Subject, Value, ValueSegment, chain_type,
 };
 
 /// How serious a lint diagnostic is: an [`Severity::Error`] fails
@@ -48,6 +49,7 @@ pub(crate) fn lint_file_with(file: &File, external_uses: &HashSet<String>) -> Ve
     unused_captures(file, external_uses, &mut lints);
     setup_option_rules(file, &mut lints);
     redundant_presence_counts(file, &mut lints);
+    filter_types(file, &mut lints);
     lints.sort_by_key(|lint| (lint.line, lint.column));
     lints
 }
@@ -144,45 +146,79 @@ pub(crate) fn lint_act(file: &File, known_model: impl Fn(&str) -> bool) -> Vec<L
         .collect()
 }
 
+/// A plain `LOCATOR count OP N` check: no filters, no `not`, and a
+/// literal integer `N`.
+fn count_check(assert: &Assert) -> Option<(&Locator, PredicateKind, i64)> {
+    let AssertBody::Check(CheckLine {
+        subject:
+            Subject::Element {
+                locator,
+                extractor: Extractor::Count,
+            },
+        filters,
+        negated: false,
+        predicate:
+            PredicateSpec::Compare {
+                kind,
+                expected: Operand::Value(value),
+            },
+    }) = &assert.body
+    else {
+        return None;
+    };
+    if !filters.is_empty() {
+        return None;
+    }
+    let count = Number::parse(&value.as_literal()?)?.to_i64()?;
+    Some((locator, *kind, count))
+}
+
 /// Warns about a `count >= 1` (or `count > 0`, `count != 0`) assert
 /// directly followed by a check on the same locator that requires
 /// presence (SPEC 16). Checks accepting zero matches preserve the wait.
 fn redundant_presence_counts(file: &File, lints: &mut Vec<Lint>) {
     for entry in &file.entries {
         for pair in entry.asserts.windows(2) {
-            let AssertBody::ElementCount { locator, op, count } = &pair[0].body else {
+            let Some((locator, kind, count)) = count_check(&pair[0]) else {
                 continue;
             };
-            let asserts_presence =
-                matches!((op, count), (NumOp::Ge, 1) | (NumOp::Gt | NumOp::Ne, 0));
+            let asserts_presence = matches!(
+                (kind, count),
+                (PredicateKind::Ge, 1) | (PredicateKind::Gt | PredicateKind::Ne, 0)
+            );
             if !asserts_presence {
                 continue;
             }
-            let next = match &pair[1].body {
-                AssertBody::ElementState {
-                    state: StateCheck::Hidden,
-                    ..
+            let next = if let Some((locator, kind, count)) = count_check(&pair[1]) {
+                let accepts_zero = match kind {
+                    PredicateKind::Eq | PredicateKind::Ge => count <= 0,
+                    PredicateKind::Ne | PredicateKind::Lt => count != 0,
+                    PredicateKind::Le => count >= 0,
+                    _ => false,
+                };
+                if accepts_zero {
+                    continue;
                 }
-                | AssertBody::Url(_)
-                | AssertBody::Title(_)
-                | AssertBody::TabClosed { .. }
-                | AssertBody::HttpStatus { .. }
-                | AssertBody::HttpValue { .. }
-                | AssertBody::ResponseStatus { .. }
-                | AssertBody::ResponseValue { .. } => continue,
-                AssertBody::ElementState { locator, .. }
-                | AssertBody::ElementValue { locator, .. } => locator,
-                AssertBody::ElementCount { locator, op, count } => {
-                    let accepts_zero = match op {
-                        NumOp::Eq | NumOp::Ge => *count == 0,
-                        NumOp::Ne | NumOp::Lt => *count != 0,
-                        NumOp::Le => true,
-                        NumOp::Gt => false,
-                    };
-                    if accepts_zero {
-                        continue;
+                locator
+            } else {
+                match &pair[1].body {
+                    AssertBody::ElementState {
+                        state: StateCheck::Hidden,
+                        ..
+                    } => continue,
+                    AssertBody::ElementState { locator, .. } => locator,
+                    // `not exists` accepts a missing element (SPEC 9.7).
+                    AssertBody::Check(CheckLine {
+                        subject: Subject::Element { locator, extractor },
+                        negated,
+                        predicate,
+                        ..
+                    }) if *extractor != Extractor::Count
+                        && !(*negated && predicate.kind() == PredicateKind::Exists) =>
+                    {
+                        locator
                     }
-                    locator
+                    _ => continue,
                 }
             };
             if locator_key(locator) == locator_key(next) {
@@ -199,6 +235,52 @@ fn redundant_presence_counts(file: &File, lints: &mut Vec<Lint>) {
             }
         }
     }
+}
+
+/// Reports a check whose subject, filters, and predicate cannot work
+/// together (SPEC 16): a filter that cannot take its input, or a
+/// predicate that cannot test the value.
+fn filter_types(file: &File, lints: &mut Vec<Lint>) {
+    for entry in &file.entries {
+        for assert in &entry.asserts {
+            let AssertBody::Check(check) = &assert.body else {
+                continue;
+            };
+            match chain_type(&check.subject, &check.filters) {
+                Err((filter, input)) => lints.push(filter_type_lint(file, filter, &input)),
+                Ok(value_type) => {
+                    let kind = check.predicate.kind();
+                    if !kind.accepts(&value_type) {
+                        lints.push(lint_at(
+                            file,
+                            Severity::Error,
+                            "filter-type",
+                            assert.span,
+                            format!("`{}` cannot test a {value_type}", kind.name()),
+                        ));
+                    }
+                }
+            }
+        }
+        for capture in &entry.captures {
+            if let Err((filter, input)) = chain_type(&capture.subject, &capture.filters) {
+                lints.push(filter_type_lint(file, filter, &input));
+            }
+        }
+    }
+}
+
+fn filter_type_lint(file: &File, filter: &FilterSpec, input: &StaticType) -> Lint {
+    lint_at(
+        file,
+        Severity::Error,
+        "filter-type",
+        filter.span,
+        format!(
+            "`{}` cannot take a {input}",
+            filter.kind.name().trim_end_matches(':')
+        ),
+    )
 }
 
 /// A span-free rendering of a locator, so two lines that spell the same
@@ -430,16 +512,7 @@ fn collect_entry_refs<'a>(entry: &'a Entry, refs: &mut Vec<VarRef<'a>>) {
         collect_assert_refs(assert, refs);
     }
     for capture in &entry.captures {
-        match &capture.source {
-            CaptureSource::Http(field) | CaptureSource::Response { field, .. } => {
-                collect_response_field_refs(field, capture.line, refs);
-            }
-            CaptureSource::Element { locator, .. } => {
-                collect_locator_refs(locator, capture.line, refs);
-            }
-            CaptureSource::Eval(script) => collect_value_refs(script, capture.line, refs),
-            CaptureSource::Url | CaptureSource::Title => {}
-        }
+        collect_chain_refs(&capture.subject, &capture.filters, capture.line, refs);
     }
 }
 
@@ -504,30 +577,38 @@ fn collect_action_refs<'a>(action: &'a Action, refs: &mut Vec<VarRef<'a>>) {
 fn collect_assert_refs<'a>(assert: &'a Assert, refs: &mut Vec<VarRef<'a>>) {
     let line = assert.line;
     match &assert.body {
-        AssertBody::HttpValue { field, check } | AssertBody::ResponseValue { field, check, .. } => {
-            collect_response_field_refs(field, line, refs);
-            collect_check_refs(check, line, refs);
+        AssertBody::TabClosed { .. } => {}
+        AssertBody::ElementState { locator, .. } => collect_locator_refs(locator, line, refs),
+        AssertBody::Check(check) => {
+            collect_chain_refs(&check.subject, &check.filters, line, refs);
+            if let PredicateSpec::Compare { expected, .. } = &check.predicate {
+                match expected {
+                    Operand::Value(value) => collect_value_refs(value, line, refs),
+                    Operand::Json(literal) => collect_value_refs(&literal.value, line, refs),
+                }
+            }
         }
-        AssertBody::HttpStatus { .. }
-        | AssertBody::ResponseStatus { .. }
-        | AssertBody::TabClosed { .. } => {}
-        AssertBody::ElementState { locator, .. } | AssertBody::ElementCount { locator, .. } => {
-            collect_locator_refs(locator, line, refs);
-        }
-        AssertBody::ElementValue { locator, check, .. } => {
-            collect_locator_refs(locator, line, refs);
-            collect_check_refs(check, line, refs);
-        }
-        AssertBody::Url(check) | AssertBody::Title(check) => collect_check_refs(check, line, refs),
     }
 }
 
-fn collect_check_refs<'a>(check: &'a StrCheck, line: u32, refs: &mut Vec<VarRef<'a>>) {
-    match check {
-        StrCheck::Eq(value) | StrCheck::Ne(value) | StrCheck::Contains(value) => {
-            collect_value_refs(value, line, refs);
+fn collect_chain_refs<'a>(
+    subject: &'a Subject,
+    filters: &'a [FilterSpec],
+    line: u32,
+    refs: &mut Vec<VarRef<'a>>,
+) {
+    match subject {
+        Subject::Element { locator, .. } => collect_locator_refs(locator, line, refs),
+        Subject::Eval(script) => collect_value_refs(script, line, refs),
+        Subject::Response { field, .. } => collect_response_field_refs(field, line, refs),
+        Subject::Url | Subject::Title => {}
+    }
+    for filter in filters {
+        for arg in &filter.args {
+            if let FilterArg::Value(value) = arg {
+                collect_value_refs(value, line, refs);
+            }
         }
-        StrCheck::Matches(_) => {}
     }
 }
 
@@ -604,7 +685,10 @@ fn collect_response_field_refs<'a>(
     refs: &mut Vec<VarRef<'a>>,
 ) {
     match field {
-        ResponseField::Status => {}
+        ResponseField::Status
+        | ResponseField::Location
+        | ResponseField::Body
+        | ResponseField::Bytes => {}
         ResponseField::Header(value) | ResponseField::Json(value) => {
             collect_value_refs(value, line, refs);
         }
@@ -631,17 +715,13 @@ fn response_names(file: &File, lints: &mut Vec<Lint>) {
             .asserts
             .iter()
             .filter_map(|assertion| match &assertion.body {
-                AssertBody::ResponseStatus { name, .. }
-                | AssertBody::ResponseValue { name, .. } => Some(name),
+                AssertBody::Check(check) => response_name_of(&check.subject),
                 _ => None,
             });
         let capture_names = entry
             .captures
             .iter()
-            .filter_map(|capture| match &capture.source {
-                CaptureSource::Response { name, .. } => Some(name),
-                _ => None,
-            });
+            .filter_map(|capture| response_name_of(&capture.subject));
         for name in assertion_names.chain(capture_names) {
             if !names.contains(name.text.as_str()) {
                 lints.push(lint_at(
@@ -659,16 +739,34 @@ fn response_names(file: &File, lints: &mut Vec<Lint>) {
     }
 }
 
+/// The `RESPONSE` name a subject reads, if any.
+fn response_name_of(subject: &Subject) -> Option<&Ident> {
+    match subject {
+        Subject::Response {
+            name: Some(name), ..
+        } => Some(name),
+        _ => None,
+    }
+}
+
 fn unasserted_http_status(file: &File, lints: &mut Vec<Lint>) {
     for entry in &file.entries {
         let Some(action) = entry.actions.first() else {
             continue;
         };
         if !matches!(action.kind, ActionKind::Http { .. })
-            || entry
-                .asserts
-                .iter()
-                .any(|assert| matches!(assert.body, AssertBody::HttpStatus { .. }))
+            || entry.asserts.iter().any(|assert| {
+                matches!(
+                    &assert.body,
+                    AssertBody::Check(CheckLine {
+                        subject: Subject::Response {
+                            name:  None,
+                            field: ResponseField::Status,
+                        },
+                        ..
+                    })
+                )
+            })
         {
             continue;
         }
@@ -817,7 +915,7 @@ mod tests {
 
     #[test]
     fn warns_when_an_http_entry_does_not_assert_status() {
-        let lints = lint("HTTP GET /health\n[Asserts]\njson:/ok == true\n");
+        let lints = lint("HTTP GET /health\n[Asserts]\njson:$.ok == true\n");
         assert_eq!(lints.len(), 1);
         assert_eq!(lints[0].code, "unasserted-http-status");
         assert_eq!(lints[0].severity, Severity::Warning);
@@ -829,7 +927,7 @@ mod tests {
         );
         assert_eq!(
             lint(
-                "VISIT /\nRESPONSE health GET /health\n[Asserts]\nresponse:health json:/ok == true\n"
+                "VISIT /\nRESPONSE health GET /health\n[Asserts]\nresponse:health json:$.ok == true\n"
             ),
             Vec::new()
         );

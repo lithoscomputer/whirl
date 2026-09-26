@@ -146,10 +146,11 @@ export function classifyEvalResult(value: unknown): EvalClassification {
 }
 
 /**
- * The expression handed to page.evaluate for a capture `eval` source. The
- * section 10 result contract runs inside the page; the wrapper returns a
- * plain `{ok, value}` or `{ok, reason}` object that always survives the
- * transport.
+ * The expression handed to page.evaluate for an `eval` read (protocol 4.4).
+ * The section 10 result contract runs inside the page; the wrapper returns
+ * a plain `{ok, value, string}` or `{ok, reason, string}` object that
+ * always survives the transport. `string` tells a string result from the
+ * compact JSON of any other value.
  */
 export function buildReadEvalExpression(script: string): string {
 	return [
@@ -157,16 +158,6 @@ export function buildReadEvalExpression(script: string): string {
 		`const classify = ${classifyEvalResult.toString()};`,
 		`const value = await (async () => {\n${functionBody(script)}\n})();`,
 		'return { ...classify(value), string: typeof value === "string" };',
-		"})()",
-	].join("\n");
-}
-
-export function buildCaptureEvalExpression(script: string): string {
-	return [
-		"(async () => {",
-		`const classify = ${classifyEvalResult.toString()};`,
-		`const value = await (async () => {\n${functionBody(script)}\n})();`,
-		"return classify(value);",
 		"})()",
 	].join("\n");
 }

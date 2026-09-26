@@ -715,7 +715,7 @@ Page checks retry. A page check is a check on a locator subject, `url`, `title`,
 
 Response checks do not retry. A false predicate, a type mismatch, a filter error, or a missing value fails the check at once.
 
-Each failure has a stable report code: `assert` for a false predicate, `type-mismatch`, `filter-error`, `missing-value`, `eval` for an exception in an `eval` script, and `strictness`. See section 16 and [machine-readable output](docs/engineering/machine-output.md).
+Each failure has a stable report code: `assert` for a false predicate, `type-mismatch`, `filter-error`, `missing-value`, `eval` for an exception in an `eval` script, `strictness`, and `read` for a subject that cannot be read, such as `value` on an element that is not an input or a response body over the limit. See section 16 and [machine-readable output](docs/engineering/machine-output.md).
 
 ## 10. Captures
 

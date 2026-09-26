@@ -85,6 +85,10 @@ pub(crate) enum FilterKind {
     HtmlEscape,
     HtmlUnescape,
     Json,
+    #[expect(
+        dead_code,
+        reason = "the xpath: filter arrives with libxml2 in milestone M7"
+    )]
     Xpath,
 }
 

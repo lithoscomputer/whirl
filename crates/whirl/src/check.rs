@@ -5,12 +5,6 @@
 //! a [`Check`] and hands it each [`Read`]; this module never talks to the
 //! browser.
 
-#![expect(
-    dead_code,
-    unused_imports,
-    reason = "the runner starts using the check engine in milestone M4"
-)]
-
 mod filter;
 mod json;
 mod number;
@@ -23,14 +17,14 @@ use std::fmt;
 
 use chrono::{DateTime, Utc};
 pub(crate) use filter::{Charset, DateFormat, Filter, FilterError, Missing, Step};
-pub(crate) use json::{JsonError, JsonQuery};
+pub(crate) use json::{JsonQuery, parse as parse_json};
 pub(crate) use number::Number;
-pub(crate) use pattern::{Pattern, PatternError, PatternFlags};
+pub(crate) use pattern::{Pattern, PatternFlags};
 pub(crate) use predicate::{Expected, Predicate, bytes_literal};
 pub(crate) use types::{
     COMPARE_KEYWORDS, FILTER_KEYWORDS, FilterKind, PredicateKind, StaticType, WORD_PREDICATES,
 };
-pub(crate) use value::{Value, ValueType, quote};
+pub(crate) use value::Value;
 
 use self::predicate::Outcome;
 
@@ -121,7 +115,7 @@ impl Check {
                     self.predicate.kind().name(),
                     value.value_type()
                 ),
-                value.describe(),
+                typed(&value),
             )),
             Outcome::Decided {
                 holds,
@@ -135,11 +129,12 @@ impl Check {
                 } else {
                     FailureCode::Assert
                 };
-                let message = if code == FailureCode::TypeMismatch {
-                    format!("expected {}, got {}", self.describe(), value.describe())
-                } else {
-                    format!("check did not pass: {}", self.describe())
-                };
+                if code == FailureCode::TypeMismatch {
+                    let message =
+                        format!("expected {}, got a {}", self.describe(), value.value_type());
+                    return Err(self.failure(code, message, typed(&value)));
+                }
+                let message = format!("check did not pass: {}", self.describe());
                 Err(self.failure(code, message, value.describe()))
             }
         }
@@ -172,6 +167,14 @@ impl Check {
             expected: self.describe(),
             actual,
         }
+    }
+}
+
+/// A value with its type, for type-mismatch reports: `number 42`.
+fn typed(value: &Value) -> String {
+    match value {
+        Value::Bytes(_) | Value::Date(_) | Value::NodeSet(_) => value.describe(),
+        other => format!("{} {}", other.value_type(), other.describe()),
     }
 }
 

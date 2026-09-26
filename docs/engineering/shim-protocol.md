@@ -172,8 +172,8 @@ Commands and their extra params (result `{}` unless noted):
 | `ariaSnapshot` | none; result `{"snapshot": "..."}`, the selected tab's `page.ariaSnapshot({ mode: "ai" })`, for `ACT` (SPEC 7.4) |
 | `page` | `expect` (section 4.2) |
 | `assert` | `spec` (section 4.3) — state checks and tab closure only |
-| `read` | `subject` (section 4.4); result `{"type": "value", "value": ...}` or `{"type": "missing"}` |
-| `readResponse` | `name` (section 4.5); result `{"status": 201, "url": "...", "headers": [[name, value], ...], "bodyBase64": "..."}` |
+| `read` | `subject` (section 4.4); result `{"type": "value", "value": ...}` or `{"type": "missing", "reason": "no-element" \| "absent-attribute"}` |
+| `readResponse` | `name`, `body` (bool) (section 4.5); result `{"status": 201, "url": "...", "headers": [[name, value], ...], "bodyBase64": "..." \| null, "bodyError": "..." \| null}` |
 | `traceGroup` | none; opens one trace group named by `title` for the reads of one check |
 | `traceGroupEnd` | none; closes the group that `traceGroup` opened |
 
@@ -309,13 +309,15 @@ error kind `"assert"` and `expected`/`actual` strings.
 
 A `read` makes one attempt and never waits; Rust owns the retry loop (SPEC
 section 9.7). It replies with `{"type": "value", "value": ...}` or
-`{"type": "missing"}`:
+`{"type": "missing", "reason": "no-element" | "absent-attribute"}`:
 
 - `element` resolves the locator once. More than one match fails at once
   with error kind `"strictness"` and candidates. No match, or an absent
   attribute on the element, is `missing`. `text` returns the normalized text
   content (SPEC section 9.2), `value` the input value, and `attr` the
-  attribute value, each as a string.
+  attribute value, each as a string. `value` on an element that is not an
+  input is error kind `"read"`. An element that detaches during the read
+  reads as `missing`.
 - `count` returns the current number of matches as a JSON number. It is never
   `missing`.
 - `url` returns `page.url()`, and `title` the normalized document title.
@@ -328,13 +330,15 @@ section 9.7). It replies with `{"type": "value", "value": ...}` or
 
 ### 4.5 Read response
 
-`readResponse` takes `name`: a name from `response`, or the implicit name of
-an `http` step. It waits for the complete body within `timeoutMs` and replies
-with `status` (a number), `url` (the request URL, for `location`), `headers`
-(an array of `[name, value]` pairs in received order), and `bodyBase64`
-(the body after content decoding, as Base64). The SPEC body limit applies;
-exceeding it is error kind `"action"`. An unknown name is error kind
-`"internal"`.
+`readResponse` takes `name`, a name from `response` or the implicit name of an
+`http` step, and `body`. It replies with `status` (a number), `url` (the
+request URL, for `location`), and `headers` (an array of `[name, value]`
+pairs in received order). With `body: true` it also waits for the complete
+body within `timeoutMs` and returns it as `bodyBase64`, after content
+decoding. A body that cannot be read, such as a redirect's or one over the
+SPEC body limit, comes back as `bodyError` text with `bodyBase64: null`, so
+status and header checks still work. Rust reads the body only for a check
+that needs it. An unknown name is error kind `"internal"`.
 
 ## 5. Timeouts
 
@@ -367,13 +371,15 @@ normally succeeds.
 | `snapshot-missing-baseline` | No baseline image and `update` false |
 | `eval` | Script syntax error, exception, or rejection |
 | `eval-result` | `eval` read result outside the SPEC section 10 contract |
+| `read` | A read failed: `value` on an element that is not an input, or page churn mid-read |
 | `action` | Actionability failure other than the above |
 | `cancelled` | Step aborted by `cancelFlow` |
 | `internal` | Shim bug or unexpected Playwright error |
 
 Rust maps kinds to reporting: `timeout`, `strictness`, `assert`,
-`snapshot-mismatch`, `eval`, `eval-result`, and `action` are test
-failures (exit 1); `snapshot-missing-baseline` and `internal` are runtime
+`snapshot-mismatch`, `eval`, `eval-result`, `read`, and `action` are test
+failures (exit 1); inside a page check, `read`, `eval`, and `eval-result`
+mean "not passing yet" and Rust reads again; `snapshot-missing-baseline` and `internal` are runtime
 errors (exit 3). A malformed request is answered with kind `"internal"`.
 
 ## 8. Development environment

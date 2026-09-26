@@ -64,7 +64,8 @@ export function buildLocator(
 	let enteringFrame = first.type === "frame";
 	for (const segment of rest) {
 		if (segment.type === "nth") {
-			chain = chain.nth(segment.index - 1);
+			// 0-based; a negative index counts from the end (SPEC 6).
+			chain = chain.nth(segment.index);
 			continue;
 		}
 		chain = applySegment(enteringFrame ? chain.contentFrame() : chain, segment);
@@ -120,7 +121,7 @@ function describeSegment(segment: LocatorSegment): string {
 		case "frame":
 			return `frameLocator(${quote(segment.selector)})`;
 		case "nth":
-			return `nth(${String(segment.index - 1)})`;
+			return `nth(${String(segment.index)})`;
 		case "ref":
 			return `locator(${quote(`aria-ref=${segment.ref}`)})`;
 		default:
