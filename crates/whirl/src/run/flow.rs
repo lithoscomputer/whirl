@@ -9,13 +9,14 @@ use serde_json::Value as Json;
 use tokio::fs;
 use tracing::{Instrument as _, debug, debug_span, info_span};
 
+use crate::check;
 use crate::lang::ast::{
     self, BrowserKind, DialogPolicy, DurationLit, File, FileOption, OptionValue, ReducedMotion,
     Value, Viewport,
 };
 use crate::report::model::{
-    ActReport, EntryReport, FileReport, ReportViewport, RuntimeMetadata, SETUP_ENTRY, Status,
-    StepError, StepKind, StepReport, Timing,
+    ActReport, CaptureValue, EntryReport, FileReport, ReportViewport, RuntimeMetadata, SETUP_ENTRY,
+    Status, StepError, StepKind, StepReport, Timing,
 };
 use crate::run::act::{Instruction, ModelClient};
 use crate::run::artifacts;
@@ -342,7 +343,7 @@ pub(crate) fn setup_path_for(file: &File) -> Option<PathBuf> {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct SetupHandoff {
     pub(crate) storage_path: PathBuf,
-    pub(crate) captures:     Vec<(String, String)>,
+    pub(crate) captures:     Vec<(String, check::Value)>,
     pub(crate) secrets:      Vec<String>,
 }
 
@@ -352,7 +353,7 @@ pub(crate) struct SetupHandoff {
 pub(crate) struct FlowOutcome {
     pub(crate) report:   FileReport,
     /// Every capture, unmasked, in the order taken.
-    pub(crate) captures: Vec<(String, String)>,
+    pub(crate) captures: Vec<(String, check::Value)>,
     /// The secrets the run masked.
     pub(crate) secrets:  Vec<String>,
 }
@@ -493,7 +494,7 @@ fn render_step_text(raw: &str, vars: &mut VarStore) -> String {
         let name = &from_braces[2..end];
         let resolved = match name.strip_prefix("env.") {
             Some(env_name) => vars.resolve_env(env_name),
-            None => vars.get(name).map(str::to_owned),
+            None => vars.get_text(name),
         };
         match resolved {
             Some(value) => out.push_str(&value),
@@ -549,7 +550,7 @@ struct FlowExec<'a> {
     /// cancel closed it).
     flow_open: bool,
     /// Every capture, unmasked, for a dependent file (SPEC 12).
-    captures:  Vec<(String, String)>,
+    captures:  Vec<(String, check::Value)>,
     /// Responses read so far; a response never changes (SPEC 9.7).
     responses: check_step::ResponseCache,
 }
@@ -674,7 +675,13 @@ impl FlowExec<'_> {
                     headers: resolved_headers,
                     body:    body
                         .as_ref()
-                        .map(|body| self.resolve(&body.value))
+                        .map(|body| match body.kind {
+                            // Typed variables insert as JSON (SPEC 11).
+                            ast::HttpBodyKind::Json => {
+                                self.vars.resolve_json(&body.text, body.value.span)
+                            }
+                            ast::HttpBodyKind::Text => self.resolve(&body.value),
+                        })
                         .transpose()?,
                 }
             }
@@ -916,7 +923,7 @@ fn elapsed_ms(started: Instant) -> u64 {
 /// Everything recorded while one entry runs.
 struct EntryState {
     steps:        Vec<StepReport>,
-    captures:     Vec<(String, String)>,
+    captures:     Vec<(String, CaptureValue)>,
     artifacts:    Vec<String>,
     /// Remaining entry budget, when `entry-timeout` is set (SPEC 12).
     remaining_ms: Option<u64>,
@@ -1353,7 +1360,9 @@ pub(crate) async fn run_flow(run: &FlowRun<'_>, client: &mut ShimClient) -> Flow
             artifacts:     Vec::new(),
             entries:       Vec::new(),
         };
-        let finish = |mut report: FileReport, vars: &VarStore, captures: Vec<(String, String)>| {
+        let finish = |mut report: FileReport,
+                      vars: &VarStore,
+                      captures: Vec<(String, check::Value)>| {
             report.duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
             debug!(status = ?report.status, duration_ms = report.duration_ms, "flow finished");
             FlowOutcome {
@@ -1365,7 +1374,7 @@ pub(crate) async fn run_flow(run: &FlowRun<'_>, client: &mut ShimClient) -> Flow
 
         let mut vars = VarStore::new();
         for (name, value) in run.base_vars {
-            vars.set(name.clone(), value.clone());
+            vars.set_input(name.clone(), value);
         }
         if let Some(setup) = run.setup {
             for secret in &setup.secrets {
@@ -1627,7 +1636,7 @@ mod tests {
     #[test]
     fn step_text_interpolates_variables_and_masks_env_secrets() {
         let mut vars = VarStore::new();
-        vars.set("user", "alice");
+        vars.set_input("user", "alice");
         vars.resolve(&env_value("PATH"))
             .expect("PATH is set for tests");
         let rendered = render_step_text("FILL label:Email {{user}}:{{env.PATH}}", &mut vars);

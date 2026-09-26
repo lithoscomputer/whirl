@@ -328,9 +328,12 @@ fn user_agent_aliases_set_headers_and_navigator_without_changing_browser_or_view
         .expect("report is JSON");
         let file = &report["files"][0];
         let captures = &file["entries"][0]["captures"];
-        assert_eq!(captures["header"], expected, "{value}, {flag:?}");
-        assert_eq!(captures["navigator"], expected, "{value}, {flag:?}");
-        assert_eq!(captures["viewport"], "960x540");
+        assert_eq!(captures["header"]["value"], expected, "{value}, {flag:?}");
+        assert_eq!(
+            captures["navigator"]["value"], expected,
+            "{value}, {flag:?}"
+        );
+        assert_eq!(captures["viewport"]["value"], "960x540");
         assert_eq!(file["runtime"]["userAgent"], expected);
         assert_eq!(file["runtime"]["browser"], "chromium");
         assert_eq!(
@@ -1115,7 +1118,8 @@ fn the_viewport_option_sizes_the_page() {
     let report = fs::read_to_string(dir.path.join("report.json")).expect("report.json exists");
     let report: serde_json::Value = serde_json::from_str(&report).expect("valid JSON report");
     assert_eq!(
-        report["files"][0]["entries"][0]["captures"]["width"], "777",
+        report["files"][0]["entries"][0]["captures"]["width"],
+        serde_json::json!({"type": "number", "value": 777}),
         "report:\n{report}"
     );
 }
@@ -1974,7 +1978,10 @@ fn http_interpolates_headers_and_bodies_without_leaking_secrets() {
         assert!(text.contains("Bearer ***"), "HTTP header secret is masked");
     }
     let report: serde_json::Value = serde_json::from_str(&json).expect("report is JSON");
-    assert_eq!(report["files"][0]["entries"][0]["captures"]["body"], "***");
+    assert_eq!(
+        report["files"][0]["entries"][0]["captures"]["body"],
+        serde_json::json!({"type": "string", "value": "***"})
+    );
 }
 
 #[test]
@@ -2776,4 +2783,73 @@ PAGE /checks.html?id=1234567890123456789
     assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
     let report = fs::read_to_string(dir.path.join("report.json")).expect("report exists");
     assert!(report.contains("1234567890123456789"), "{report}");
+}
+
+#[test]
+fn captures_and_input_variables_keep_their_types() {
+    let site = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file(
+        "typed.whirl",
+        r#"HTTP GET /api/big
+[Asserts]
+status == 200
+[Captures]
+id: json:$.id
+tags: json:$.tags
+price: json:$.price
+HTTP GET /api/big
+[Asserts]
+status == 200
+json:$.id == {{id}}
+json:$.tags == {{tags}}
+json:$.price == {{price}}
+json:$.id != "{{id}}"
+json:$.tags contains {{letter}}
+HTTP POST /api/http-check
+Authorization: "Bearer whirl-test-key"
+{"count": {{count}}, "zip": {{zip}}, "id": {{id}}, "label": "n={{count}}"}
+[Asserts]
+status == 200
+json:$.body == "{\"count\": 2, \"zip\": \"007\", \"id\": 1234567890123456789, \"label\": \"n=2\"}"
+"#,
+    );
+    let output = run_whirl(&dir, &[
+        "--base",
+        &site.base(),
+        "--var",
+        "count=2",
+        "--var",
+        "zip=007",
+        "--var",
+        "letter=a",
+        "--report-json",
+        "report.json",
+        "typed.whirl",
+    ]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    let text = fs::read_to_string(dir.path.join("report.json")).expect("report exists");
+    let report: serde_json::Value = serde_json::from_str(&text).expect("report is JSON");
+    let captures = &report["files"][0]["entries"][0]["captures"];
+    assert_eq!(
+        captures["tags"],
+        serde_json::json!({"type": "list", "value": ["a", "b"]})
+    );
+    assert!(
+        text.contains(r#""value": 1234567890123456789"#),
+        "the report keeps the exact number: {text}"
+    );
+    let html = Command::new(env!("CARGO_BIN_EXE_whirl"))
+        .current_dir(&dir.path)
+        .args(["report", "report.json", "--html", "report.html"])
+        .output()
+        .expect("the whirl binary should run");
+    assert_eq!(
+        exit_code(&html),
+        0,
+        "{}",
+        String::from_utf8_lossy(&html.stderr)
+    );
+    let html = fs::read_to_string(dir.path.join("report.html")).expect("HTML exists");
+    assert!(html.contains("<small>number</small>"), "{html}");
 }

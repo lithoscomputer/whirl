@@ -338,7 +338,8 @@ fn the_reduced_motion_option_is_visible_to_the_page() {
         serde_json::from_str(&fs::read_to_string(dir.path.join("report.json")).expect("report"))
             .expect("valid JSON report");
     assert_eq!(
-        report["files"][0]["entries"][0]["captures"]["reduced"], "true",
+        report["files"][0]["entries"][0]["captures"]["reduced"],
+        serde_json::json!({"type": "boolean", "value": true}),
         "report:\n{report}"
     );
 }
@@ -361,7 +362,7 @@ fn the_user_agent_option_and_flag_set_navigator_user_agent() {
         serde_json::from_str(&fs::read_to_string(dir.path.join("report.json")).expect("report"))
             .expect("valid JSON report");
     assert_eq!(
-        report["files"][0]["entries"][0]["captures"]["ua"], "Whirl/1 (file option)",
+        report["files"][0]["entries"][0]["captures"]["ua"]["value"], "Whirl/1 (file option)",
         "report:\n{report}"
     );
 
@@ -377,7 +378,7 @@ fn the_user_agent_option_and_flag_set_navigator_user_agent() {
         serde_json::from_str(&fs::read_to_string(dir.path.join("report.json")).expect("report"))
             .expect("valid JSON report");
     assert_eq!(
-        report["files"][0]["entries"][0]["captures"]["ua"], "Whirl/1 (flag)",
+        report["files"][0]["entries"][0]["captures"]["ua"]["value"], "Whirl/1 (flag)",
         "report:\n{report}"
     );
 }
@@ -456,7 +457,7 @@ fn a_run_writes_json_and_junit_reports_with_masking() {
 fn assert_json_report(text: &str, secret: &str) {
     let report: serde_json::Value =
         serde_json::from_str(text).expect("report.json should parse as JSON");
-    assert_eq!(report["version"], 1, "report:\n{text}");
+    assert_eq!(report["version"], 2, "report:\n{text}");
     let files = report["files"]
         .as_array()
         .expect("files should be an array");
@@ -472,7 +473,7 @@ fn assert_json_report(text: &str, secret: &str) {
     assert_eq!(passed["entries"][0]["name"], "Fill the box.");
     assert_eq!(
         passed["entries"][0]["captures"]["page_title"],
-        "captured-title"
+        serde_json::json!({"type": "string", "value": "captured-title"})
     );
     let failing_entry = &failed["entries"][0];
     assert_eq!(failing_entry["name"], "Mismatched heading.");

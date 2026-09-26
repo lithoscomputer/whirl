@@ -3,8 +3,8 @@
 //! secret masked the way the runner masks it.
 
 use crate::report::model::{
-    EntryReport, FileReport, RunReport, SETUP_ENTRY, Status, StepError, StepKind, StepReport,
-    Timing,
+    CaptureValue, EntryReport, FileReport, RunReport, SETUP_ENTRY, Status, StepError, StepKind,
+    StepReport, Timing,
 };
 use crate::run::vars::Masker;
 
@@ -70,7 +70,7 @@ fn passed_file() -> FileReport {
                 step(2, StepKind::Action, "VISIT /login", Status::Passed, None),
                 step(3, StepKind::Page, "PAGE /dashboard", Status::Passed, None),
             ],
-            captures:    vec![("next_url".to_owned(), "/dashboard".to_owned())],
+            captures:    vec![("next_url".to_owned(), CaptureValue::string("/dashboard"))],
             artifacts:   Vec::new(),
         }],
     }

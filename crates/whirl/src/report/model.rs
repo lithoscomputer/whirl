@@ -7,9 +7,10 @@ use std::fmt;
 use std::time::SystemTime;
 
 use chrono::{DateTime, Utc};
-use serde::de::{MapAccess, Visitor};
+use serde::de::{Error as DeError, MapAccess, Visitor};
 use serde::ser::SerializeMap as _;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde_json::value::RawValue;
 
 /// UTC wall-clock boundaries. Durations are measured separately with Instant.
 /// Absent fields belong to reports written before timestamps were recorded.
@@ -183,42 +184,129 @@ pub(crate) struct EntryReport {
     pub(crate) duration_ms: u64,
     pub(crate) steps:       Vec<StepReport>,
     /// Captured variables, masked, in capture order. Serialized as a
-    /// JSON object (plan doc "JSON report shape").
+    /// JSON object of `{type, value}` (SPEC 14; report version 2).
     #[serde(
         serialize_with = "serialize_captures",
         deserialize_with = "deserialize_captures"
     )]
-    pub(crate) captures:    Vec<(String, String)>,
+    pub(crate) captures:    Vec<(String, CaptureValue)>,
     /// Artifact paths recorded for this entry.
     pub(crate) artifacts:   Vec<String>,
 }
 
+/// One capture as the JSON report writes it: its type and its value. The
+/// value keeps its exact JSON text, so a large integer survives a report
+/// round trip.
+#[derive(Clone, Debug)]
+pub(crate) struct CaptureValue {
+    /// The SPEC 9.3 type name, such as `string` or `number`.
+    pub(crate) value_type: String,
+    pub(crate) value:      Box<RawValue>,
+}
+
+impl CaptureValue {
+    /// A capture with its type and its value's JSON text.
+    pub(crate) fn new(value_type: &str, json: String) -> Self {
+        Self {
+            value_type: value_type.to_owned(),
+            value:      RawValue::from_string(json)
+                .expect("a capture's JSON text is always valid JSON"),
+        }
+    }
+
+    /// A string capture.
+    pub(crate) fn string(text: &str) -> Self {
+        Self::new(
+            "string",
+            serde_json::to_string(text).expect("a string always serializes"),
+        )
+    }
+
+    /// A masked capture: its type stays, and its value is `***` (SPEC 14).
+    pub(crate) fn masked(value_type: &str, mask: &str) -> Self {
+        Self::new(
+            value_type,
+            serde_json::to_string(mask).expect("a string always serializes"),
+        )
+    }
+
+    /// The value as a reader sees it: a string's text, else its JSON.
+    pub(crate) fn display(&self) -> String {
+        serde_json::from_str::<String>(self.value.get())
+            .unwrap_or_else(|_| self.value.get().to_owned())
+    }
+}
+
+impl PartialEq for CaptureValue {
+    fn eq(&self, other: &Self) -> bool {
+        self.value_type == other.value_type && self.value.get() == other.value.get()
+    }
+}
+
+impl Eq for CaptureValue {}
+
+/// The version 2 capture shape, as written.
+#[derive(Serialize)]
+struct CaptureOut<'a> {
+    #[serde(rename = "type")]
+    value_type: &'a str,
+    value:      &'a RawValue,
+}
+
 /// Serializes ordered `(name, value)` captures as a JSON object.
 fn serialize_captures<S: Serializer>(
-    captures: &[(String, String)],
+    captures: &[(String, CaptureValue)],
     serializer: S,
 ) -> Result<S::Ok, S::Error> {
     let mut map = serializer.serialize_map(Some(captures.len()))?;
     for (name, value) in captures {
-        map.serialize_entry(name, value)?;
+        map.serialize_entry(name, &CaptureOut {
+            value_type: &value.value_type,
+            value:      &value.value,
+        })?;
     }
     map.end()
 }
 
-/// Preserve capture order, including repeated names in reports from older runs.
+/// Reads captures in capture order, including repeated names. A version
+/// 1 report holds plain strings; version 2 holds `{type, value}`.
 fn deserialize_captures<'de, D: Deserializer<'de>>(
     deserializer: D,
-) -> Result<Vec<(String, String)>, D::Error> {
+) -> Result<Vec<(String, CaptureValue)>, D::Error> {
     struct CapturesVisitor;
     impl<'de> Visitor<'de> for CapturesVisitor {
-        type Value = Vec<(String, String)>;
+        type Value = Vec<(String, CaptureValue)>;
         fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-            formatter.write_str("an object of captured string values")
+            formatter.write_str("an object of captured values")
         }
         fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
             let mut captures = Vec::new();
-            while let Some(capture) = map.next_entry()? {
-                captures.push(capture);
+            // The report deserializes through a buffered path, where a
+            // RawValue cannot come back; integers within 64 bits stay exact.
+            while let Some((name, value)) = map.next_entry::<String, serde_json::Value>()? {
+                let capture = match value {
+                    serde_json::Value::String(text) => CaptureValue::string(&text),
+                    serde_json::Value::Object(mut shape) => {
+                        let value_type = shape
+                            .remove("type")
+                            .and_then(|value_type| value_type.as_str().map(str::to_owned));
+                        let value = shape.remove("value");
+                        match (value_type, value) {
+                            (Some(value_type), Some(value)) => {
+                                CaptureValue::new(&value_type, value.to_string())
+                            }
+                            _ => {
+                                return Err(DeError::custom("a capture needs a type and a value"));
+                            }
+                        }
+                    }
+                    _ => {
+                        return Err(DeError::custom(
+                            "a capture is a string or a {type, value} object",
+                        ));
+                    }
+                };
+                captures.push((name, capture));
             }
             Ok(captures)
         }

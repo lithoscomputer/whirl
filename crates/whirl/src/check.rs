@@ -24,7 +24,7 @@ pub(crate) use predicate::{Expected, Predicate, bytes_literal};
 pub(crate) use types::{
     COMPARE_KEYWORDS, FILTER_KEYWORDS, FilterKind, PredicateKind, StaticType, WORD_PREDICATES,
 };
-pub(crate) use value::Value;
+pub(crate) use value::{Value, quote as quote_json};
 
 use self::predicate::Outcome;
 

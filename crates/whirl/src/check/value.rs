@@ -71,6 +71,22 @@ impl fmt::Display for ValueType {
 }
 
 impl Value {
+    /// A value from `--var`, `--variables-file`, or `{{env.NAME}}` text,
+    /// typed the way Hurl types `--variable` (SPEC 11): a JSON number,
+    /// `true`, `false`, or `null` gives that type; any other text is a
+    /// string.
+    pub(crate) fn infer(text: &str) -> Self {
+        if let Some(number) = Number::parse(text) {
+            return Self::Number(number);
+        }
+        match text {
+            "true" => Self::Bool(true),
+            "false" => Self::Bool(false),
+            "null" => Self::Null,
+            _ => Self::String(text.to_owned()),
+        }
+    }
+
     /// A value from the shim's JSON transport: a page string, a count, or
     /// an `eval` result (SPEC 10).
     pub(crate) fn from_json(json: serde_json::Value) -> Self {

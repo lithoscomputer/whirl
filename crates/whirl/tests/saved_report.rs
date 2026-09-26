@@ -97,7 +97,7 @@ fn saved_report_rejects_malformed_data_without_replacing_the_destination() {
     let original = legacy_report(dir.path());
     let mut cases = Vec::new();
     for (pointer, replacement) in [
-        ("/version", json!(2)),
+        ("/version", json!(3)),
         ("/workingDirectory", json!("relative")),
         ("/startedAt", json!("yesterday")),
         ("/files/0/status", json!("maybe")),
@@ -107,6 +107,10 @@ fn saved_report_rejects_malformed_data_without_replacing_the_destination() {
             json!({"requested": false, "setup": false}),
         ),
         ("/files/0/entries/0/captures", json!({"token": 3})),
+        (
+            "/files/0/entries/0/captures",
+            json!({"token": {"value": 3}}),
+        ),
     ] {
         let mut value = original.clone();
         // Insert optional fields as well as replacing required fields.

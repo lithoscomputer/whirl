@@ -185,7 +185,7 @@ mod tests {
     #[test]
     fn plain_variables_reach_the_model_as_values() {
         let mut vars = VarStore::new();
-        vars.set("user", "ada");
+        vars.set_input("user", "ada");
         let instruction = Instruction::try_new(
             &value(vec![
                 ValueSegment::Literal("sign in as ".to_owned()),
@@ -202,7 +202,7 @@ mod tests {
     fn a_recorded_secret_inside_a_variable_becomes_a_placeholder() {
         let mut vars = VarStore::new();
         vars.record_secret("hunter2");
-        vars.set("login", "ada:hunter2");
+        vars.set_input("login", "ada:hunter2");
         let instruction = Instruction::try_new(
             &value(vec![
                 ValueSegment::Literal("log in with ".to_owned()),

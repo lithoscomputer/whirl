@@ -24,12 +24,12 @@ use crate::check::{
 use crate::lang::ast::{
     self, Extractor, FilterArg, FilterSpec, Operand, PredicateSpec, ResponseField, Subject,
 };
-use crate::report::model::StepError;
+use crate::report::model::{CaptureValue, StepError};
 use crate::run::shim::{
     MissingReason, ReadResult, ResponseReadResult, ShimClient, StepCommand, StepOutcome,
     StepRequest, wire,
 };
-use crate::run::vars::VarStore;
+use crate::run::vars::{MASK, VarStore};
 
 /// Playwright's poll schedule for retried checks (ADR
 /// `evaluate-checks-in-rust` §1.3): 100, 250, 500, then 1000 ms.
@@ -282,6 +282,10 @@ impl FlowExec<'_> {
     fn expected(&mut self, operand: &Operand, text_compare: bool) -> Result<Expected, BuildError> {
         match operand {
             Operand::Value(value) => {
+                if !text_compare && let Some(typed) = self.vars.resolve_typed(value)? {
+                    // A bare whole `{{name}}` keeps the variable's type (SPEC 11).
+                    return Ok(Expected::Typed(typed));
+                }
                 let resolved = self.resolve(value)?;
                 if text_compare {
                     return Ok(Expected::Text(resolved));
@@ -292,7 +296,11 @@ impl FlowExec<'_> {
                 Ok(Expected::bare(resolved))
             }
             Operand::Json(literal) => {
-                let resolved = self.resolve(&literal.value)?;
+                let resolved = if text_compare {
+                    self.resolve(&literal.value)?
+                } else {
+                    self.vars.resolve_json(&literal.text, literal.value.span)?
+                };
                 if text_compare {
                     return Ok(Expected::Text(resolved));
                 }
@@ -382,18 +390,16 @@ impl FlowExec<'_> {
                 Attempt::End(end) => break end,
                 Attempt::Retry(error) => last = Some(error),
                 Attempt::Read(read) => match check::apply_filters(&prepared.filters, read, now()) {
-                    Ok(Read::Value(value)) => match value.text_form() {
-                        Some(text) => {
-                            self.store_capture(&prepared.name, text, state);
-                            break StepEnd::Passed;
-                        }
-                        None => {
+                    Ok(Read::Value(value)) => {
+                        if value.text_form().is_none() {
                             break StepEnd::Failed(simple_error(
                                 "filter-error",
                                 "a node set cannot be captured",
                             ));
                         }
-                    },
+                        self.store_capture(&prepared.name, value, state);
+                        break StepEnd::Passed;
+                    }
                     Ok(Read::Missing(missing)) => {
                         last = Some(simple_error("missing-value", &missing.to_string()));
                     }
@@ -420,10 +426,20 @@ impl FlowExec<'_> {
         end
     }
 
-    fn store_capture(&mut self, name: &str, value: String, state: &mut EntryState) {
-        state
-            .captures
-            .push((name.to_owned(), self.vars.mask(&value)));
+    /// Stores a capture with its type (SPEC 10, 11). The report masks a
+    /// value whose text form holds a secret, and keeps its type (SPEC 14).
+    fn store_capture(&mut self, name: &str, value: Value, state: &mut EntryState) {
+        let value_type = value.value_type().name();
+        let text = value.text_form().unwrap_or_default();
+        let reported = if self.vars.mask(&text) == text {
+            CaptureValue::new(
+                value_type,
+                value.to_json().unwrap_or_else(|| "null".to_owned()),
+            )
+        } else {
+            CaptureValue::masked(value_type, MASK)
+        };
+        state.captures.push((name.to_owned(), reported));
         self.captures.push((name.to_owned(), value.clone()));
         self.vars.set(name.to_owned(), value);
     }

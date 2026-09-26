@@ -9,7 +9,12 @@ use serde::{Deserialize, Serialize};
 use crate::report::metadata::ReportMetadata;
 use crate::report::model::RunReport;
 
-const VERSION: u32 = 1;
+/// The version this Whirl writes (SPEC 14).
+const VERSION: u32 = 2;
+
+/// The versions this Whirl reads: version 1 differs only in the shape of
+/// its captures, plain strings.
+const READABLE_VERSIONS: [u32; 2] = [1, 2];
 
 /// The producer's context stays attached when a saved report is rendered later.
 #[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -53,7 +58,7 @@ impl Document {
         let version: Version =
             serde_json::from_str(&source).context("invalid Whirl JSON report")?;
         anyhow::ensure!(
-            version.version == VERSION,
+            READABLE_VERSIONS.contains(&version.version),
             "unsupported report version {}",
             version.version
         );
@@ -108,7 +113,7 @@ mod tests {
     #[test]
     fn the_document_has_the_stable_version_and_run_shape() {
         let document = rendered();
-        assert_eq!(document["version"], json!(1));
+        assert_eq!(document["version"], json!(2));
         assert_eq!(document["durationMs"], json!(3_210));
         assert_eq!(
             document["files"]
@@ -143,7 +148,7 @@ mod tests {
                         {"line": 3, "kind": "page", "text": "PAGE /dashboard",
                          "status": "passed", "durationMs": 5},
                     ],
-                    "captures": {"next_url": "/dashboard"},
+                    "captures": {"next_url": {"type": "string", "value": "/dashboard"}},
                     "artifacts": [],
                 }],
             })
