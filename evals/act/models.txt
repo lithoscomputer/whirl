@@ -1,8 +1,4 @@
-# Default models for `mise run eval:act`: a mid-price and a low-price model
-# from each provider. Add others to one session with -m.
-anthropic/claude-sonnet-5
-anthropic/claude-haiku-4.5
+# Default models for `mise run eval:act`. Add others to one session with -m.
 openai/gpt-5.6-terra
 openai/gpt-5.6-luna
-gemini/gemini-3.5-flash
 gemini/gemini-3.1-flash-lite

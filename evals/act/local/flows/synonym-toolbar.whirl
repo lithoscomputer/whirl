@@ -1,0 +1,9 @@
+[Options]
+base: {{env.EVAL_BASE}}
+model: {{model}}
+
+# Icon buttons; "trash" means Delete, not Archive or Discard changes.
+VISIT /synonym-toolbar/
+ACT "trash this draft" @60s
+[Asserts]
+testid:result text == Delete

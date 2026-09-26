@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Settings</title>
+</head>
+<body>
+<h1>Settings</h1>
+<form>
+  <p><label>Display name <input name="name" value="Ada"></label></p>
+  <button type="button" id="save">Save changes</button>
+  <button type="button" id="cancel">Cancel</button>
+</form>
+<section>
+  <h2>Membership</h2>
+  <p>Premium, renews on 1 March.</p>
+  <button id="end">End membership</button>
+</section>
+<p>Result: <span data-testid="result">none</span></p>
+<script>
+  const setResult = (text) => { document.querySelector("[data-testid=result]").textContent = text; };
+  document.getElementById("save").addEventListener("click", () => setResult("saved"));
+  document.getElementById("cancel").addEventListener("click", () => setResult("changes canceled"));
+  document.getElementById("end").addEventListener("click", () => setResult("membership ended"));
+</script>
+</body>
+</html>

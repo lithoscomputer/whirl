@@ -20,7 +20,7 @@ $ mise run eval:act -- --summarize              # summarize existing runs only
 ```
 
 A session calls real models and costs money. Check it first with
-`--preview`. A local session is about 230 runs per model.
+`--preview`. A local session is about 470 runs per model.
 
 `-n` is a target: the script runs only the runs each model and task still
 need, one pass over the tasks at a time. Repeating a command resumes an
@@ -35,7 +35,10 @@ session.
   `local/site/`, which the script serves on `127.0.0.1`. A page reaches a
   second site through `localhost`. These runs are deterministic apart from
   the model. The `stagehand-*` tasks use saved copies of real sites from
-  Stagehand's evals, in `local/site/stagehand/` (see its README).
+  Stagehand's evals, in `local/site/stagehand/` (see its README). Other
+  tasks make the model reason: compare prices, tell identical buttons apart
+  by their row, or find an element that the instruction names by meaning
+  only.
 - **live** (opt-in): flows in `live/flows/` against real websites. The sites
   can change or block the browser at any time.
 

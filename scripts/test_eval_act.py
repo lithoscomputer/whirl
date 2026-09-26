@@ -104,7 +104,7 @@ class PlanTest(unittest.TestCase):
         self.assertEqual(eval_act.shortfalls(tasks[:1], ["m"], results, 2), {})
 
     def test_model_slugs_are_path_safe(self):
-        self.assertEqual(eval_act.slug("anthropic/claude-haiku-4.5"), "anthropic-claude-haiku-4.5")
+        self.assertEqual(eval_act.slug("gemini/gemini-3.1-flash-lite"), "gemini-gemini-3.1-flash-lite")
 
 
 class SummaryTest(unittest.TestCase):
