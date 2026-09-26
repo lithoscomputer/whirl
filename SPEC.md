@@ -203,7 +203,7 @@ Text matching is exact (after whitespace normalization). For partial or pattern 
 
 Every text-matching prefix has a substring variant marked with `~` — `role~:`, `label~:`, `placeholder~:`, `text~:`, `alt~:`, `title~:` — which matches by case-insensitive substring, Playwright's default matching. So `text~:"Added"` matches "Added to cart". `testid:` and `css:` have no `~` form, and the unprefixed default engine stays exact.
 
-An unprefixed value in locator position selects a default engine: `label:` for form actions (`FILL`, `SELECT`, `CHECK`, `UNCHECK`, `UPLOAD`, and `PRESS` with a target), and `text:` for pointer actions (`CLICK`, `DBLCLICK`, `HOVER`) — buttons and links have no label; their accessible name is their text. So `FILL "Email" alice@example.com` fills the input labeled Email, and `CLICK "Add to cart"` clicks the element with that exact text. Prefixes stay available everywhere for precision. Default engines exist only in actions: in `[Asserts]` and `[Captures]` every segment must carry a prefix (or be `nth:`), and an unprefixed value there is a parse error.
+An unprefixed value in locator position selects a default engine: `label:` for form actions (`FILL`, `SELECT`, `CHECK`, `UNCHECK`, `UPLOAD`, and `PRESS` with a target), and `text:` for pointer actions (`CLICK`, `DBLCLICK`, `HOVER`) — buttons and links have no label; their accessible name is their text. So `FILL "Email" alice@example.com` fills the input labeled Email, and `CLICK "Add to cart"` clicks the element with that exact text. Prefixes stay available everywhere for precision. Default engines exist only in actions: in `[Asserts]` and `[Captures]` every segment must carry a prefix (or be `nth:`), and an unprefixed value there is a parse error. The scope of `ACT` (section 7.4) follows the same rule.
 
 `frame:` works in actions, asserts, and captures. It may follow an element scope or another frame. An immediately following `nth:N` selects the iframe before entering it. A frame must be followed by an element segment; use `css:` to check the iframe element itself. Nested and cross-origin frames use the same syntax. Frames are resolved lazily, so normal actionability and assertion timeouts also cover frames that load or are replaced later. Multiple matching frames fail strictly unless narrowed explicitly.
 
@@ -244,6 +244,7 @@ An action is a verb, an optional locator, and an optional value. Element-targeti
 | `SNAPSHOT name` | Compare a full-page screenshot against the stored baseline; fails the entry on visual difference. |
 | `EVAL "script"` | Run a JavaScript script in the page. The escape hatch; rules below. |
 | `ACT "instruction"` | Ask a language model to choose one element action, then run it (section 7.4). |
+| `ACT locator "instruction"` | The same, looking only inside the element (section 7.4). |
 | `STORE local "key" "value"` | Write one `localStorage` entry on the current page's origin. |
 | `STORE session "key" "value"` | Write one `sessionStorage` entry on the current page's origin. |
 | `STORE cookie "name" "value"` | Set one cookie for the current page's host, with path `/`. |
@@ -443,8 +444,9 @@ testid:cart-badge text == 1
 Whirl takes a Playwright AI snapshot of the selected tab. The snapshot is an
 outline of the page's accessibility tree, and each element in it has a ref such
 as `e12`. Elements inside iframes are included, with refs such as `f1e3`. Whirl
-sends the instruction and the snapshot to the model in one structured-output
-call. The model answers with one element ref, one method, and the method's
+leaves out each link's URL and the cursor hints, which the model does not need
+and which make up about a third of a link-heavy page's snapshot. Whirl sends
+the instruction and the snapshot to the model in one structured-output call. The model answers with one element ref, one method, and the method's
 arguments, or with no element. Whirl checks the answer and runs it as the
 matching Whirl action, with that action's actionability and strictness rules:
 
@@ -457,6 +459,24 @@ matching Whirl action, with that action's actionability and strictness rules:
 | `type` | `TYPE` |
 | `press` | `PRESS` with a target |
 | `selectOptionFromDropdown` | `SELECT` |
+
+A long page can make the snapshot costly or larger than the model's context. A
+locator before the instruction limits the snapshot to one element and what it
+contains: `ACT css:form "click Buy"` shows the model only the form. The scope
+waits for its element and must match exactly one (section 6.2), and every
+segment carries a prefix (section 6.1).
+
+The snapshot shows a wrapper that has one visible child, such as a custom
+dropdown's trigger inside a wider box, as one element. To click, double-click,
+or hover such an element, Whirl points at the deepest element inside it that
+shows the same text, instead of the element's center. The event still reaches
+the element the model chose.
+
+In a file that uses `ACT`, Whirl opens every shadow root that a page script
+attaches, so `ACT` sees and acts inside closed shadow roots, as Stagehand does.
+Other locators in that file can then reach inside them too. A page can notice
+the change: a host's `shadowRoot` is no longer `null`. Closed shadow roots that
+the HTML itself declares stay closed.
 
 A custom dropdown that must open before an option can be chosen is a two-step
 action. The model marks its first answer as two-step. Whirl runs that action,
@@ -990,7 +1010,7 @@ action-body = "VISIT" , value
            | "SCREENSHOT" , artifact-name
            | "SNAPSHOT" , artifact-name
            | "EVAL" , value
-           | "ACT" , value
+           | "ACT" , [ locator ] , value
            | "STORE" , ( "local" | "session" | "cookie" ) , value , value ;
 
 http-request = http-headline , { http-header } , [ http-body ] ;

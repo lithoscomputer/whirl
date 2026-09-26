@@ -180,6 +180,7 @@ export function decodeStartFlowParams(params: Params): StartFlowParams {
 					},
 		harPath: fieldStringOrNull(params, "harPath"),
 		trace: fieldBoolean(params, "trace"),
+		openShadowRoots: fieldBoolean(params, "openShadowRoots"),
 	};
 }
 

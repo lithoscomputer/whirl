@@ -73,7 +73,8 @@ Creates the browser context and page for one flow. Params:
   "reducedMotion": "reduce" | "no-preference" | null,
   "video": {"tempDir": "abs path", "finalPath": "abs path", "fps": 60 | null} | null,
   "harPath": "abs path" | null,
-  "trace": false
+  "trace": false,
+  "openShadowRoots": false
 }
 ```
 
@@ -95,6 +96,10 @@ Result: `{"browserVersion": "...", "nodeVersion": "...", "playwrightVersion": ".
 - `reducedMotion` emulates the `prefers-reduced-motion` media feature for
   the context; `null` keeps the engine default.
 - `trace: true` starts Playwright tracing (screenshots and snapshots on).
+- `openShadowRoots: true` adds an init script to the context that makes every
+  `attachShadow` call create an open root, so the AI snapshot and locators see
+  inside roots a page asks to close. Rust sets it when the file uses `ACT`
+  (SPEC 7.4).
 - `video` records video into `tempDir`; at `endFlow` the shim moves the
   recording to `finalPath`. With `fps: null` the shim uses Playwright's
   `recordVideo` at its fixed 25 frames per second. With a number (Chromium
@@ -169,7 +174,7 @@ Commands and their extra params (result `{}` unless noted):
 | `snapshot` | `baselinePath`, `actualPath`, `diffPath`, `update` (bool) |
 | `evalAction` | `script` |
 | `store` | `scope` (`"local"` \| `"session"` \| `"cookie"`), `key`, `value` — writes one `localStorage` or `sessionStorage` entry on the current origin, or one cookie for the current page's URL (host, path `/`, no attributes); `cookie` on a non-http(s) page is an `action` error |
-| `ariaSnapshot` | none; result `{"snapshot": "..."}`, the selected tab's `page.ariaSnapshot({ mode: "ai" })`, for `ACT` (SPEC 7.4) |
+| `ariaSnapshot` | `locator` (or `null`); result `{"snapshot": "..."}`, the selected tab's `page.ariaSnapshot({ mode: "ai" })`, or that one element's `locator.ariaSnapshot({ mode: "ai" })` with the usual waiting and strictness, for `ACT` (SPEC 7.4) |
 | `page` | `expect` (section 4.2) |
 | `assert` | `spec` (section 4.3) — state checks and tab closure only |
 | `read` | `subject` (section 4.4); result `{"type": "value", "value": ...}` or `{"type": "missing", "reason": "no-element" \| "absent-attribute"}` |
@@ -233,7 +238,9 @@ The mapping to Playwright calls is SPEC section 6.1.
 inside an iframe. The shim resolves it with `page.locator("aria-ref=e12")`.
 Only Rust creates `ref` segments, as the only segment of an `ACT` action's
 locator, and only for refs in the latest snapshot. `.whirl` files have no
-syntax for them.
+syntax for them. For `click`, `dblclick`, and `hover` on a `ref` locator, the
+shim points at the deepest descendant that shows the element's text, when one
+exists, instead of the element's center (SPEC 7.4).
 
 Popup names are local to a flow; `main` names the original page. The shim records
 popup events before actions and attaches dialog handling to every page. It keeps

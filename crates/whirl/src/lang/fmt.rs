@@ -394,12 +394,17 @@ fn render_action(action: &Action) -> String {
         ActionKind::Eval { script } => {
             format!("EVAL {}", render_value(script, ValueCtx::Plain, is_final))
         }
-        ActionKind::Act { instruction } => {
-            format!(
+        ActionKind::Act { scope, instruction } => match scope {
+            Some(scope) => format!(
+                "ACT {} {}",
+                render_locator(scope, LocatorCtx::Action, false),
+                render_value(instruction, ValueCtx::Plain, is_final)
+            ),
+            None => format!(
                 "ACT {}",
                 render_value(instruction, ValueCtx::Plain, is_final)
-            )
-        }
+            ),
+        },
         ActionKind::Store { scope, key, value } => format!(
             "STORE {} {} {}",
             scope.keyword(),
@@ -1032,7 +1037,12 @@ mod tests {
             | ActionKind::Screenshot { name }
             | ActionKind::Snapshot { name } => scrub_ident(name),
             ActionKind::Eval { script } => scrub_value(script),
-            ActionKind::Act { instruction } => scrub_value(instruction),
+            ActionKind::Act { scope, instruction } => {
+                if let Some(scope) = scope {
+                    scrub_locator(scope);
+                }
+                scrub_value(instruction);
+            }
             ActionKind::Store { key, value, .. } => {
                 scrub_value(key);
                 scrub_value(value);
@@ -1132,6 +1142,16 @@ mod tests {
             format_file(&reparsed),
             formatted,
             "formatting is not idempotent"
+        );
+    }
+
+    #[test]
+    fn act_round_trips_with_and_without_a_scope() {
+        assert_round_trip("VISIT /\nACT \"add the first product to the cart\" @60s\n");
+        assert_round_trip("VISIT /\nACT css:form >> role:group \"click Buy\"\n");
+        assert_eq!(
+            fmt("VISIT /\nACT   css:form   \"click Buy\"\n"),
+            "VISIT /\nACT css:form \"click Buy\"\n"
         );
     }
 

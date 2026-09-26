@@ -146,6 +146,7 @@ const startFlowParams = JSON.stringify({
 	video: null,
 	harPath: null,
 	trace: false,
+	openShadowRoots: false,
 });
 
 test("hello answers protocol 1, the Playwright version, and the ffmpeg path", async (t) => {

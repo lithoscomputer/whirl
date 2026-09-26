@@ -83,7 +83,7 @@ async fn inspect(browser: &str, progress: Progress<'_>) -> anyhow::Result<()> {
             viewport: ViewportParams { width: 1280, height: 720 },
             storage_state_path: None, dialogs: "dismiss".to_owned(), allow_hosts: None,
             nav_timeout_ms: 10_000, user_agent: None, reduced_motion: None,
-            video: None, har_path: None, trace: false,
+            video: None, har_path: None, trace: false, open_shadow_roots: false,
         };
         if let Err(error) = client.start_flow(&params).await {
             let libraries = if cfg!(target_os = "linux") {

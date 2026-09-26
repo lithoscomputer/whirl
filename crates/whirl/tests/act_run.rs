@@ -400,6 +400,11 @@ fn rerendering_shop(renders_ms: &[u32]) -> String {
          document.querySelector('#slot button').onclick=()=>{{document.querySelector('h1').textContent='Added';}};}};\
          {timers}</script>"
     );
+    visit_html(&html)
+}
+
+/// A `VISIT` line for an HTML page in a percent-encoded data URL.
+fn visit_html(html: &str) -> String {
     let mut encoded = String::new();
     for byte in html.bytes() {
         if byte.is_ascii_alphanumeric() {
@@ -469,5 +474,90 @@ fn an_element_replaced_twice_fails_fast_with_stale_ref() {
     assert!(
         duration < 10_000,
         "a stale ref must not wait out the 30 s budget; took {duration} ms"
+    );
+}
+
+#[test]
+fn a_click_on_a_folded_wrapper_reaches_the_element_inside_it() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    // The snapshot folds the narrow trigger into its full-width wrapper,
+    // e3. A click at the wrapper's center would miss the trigger.
+    twin.answer(&[click("e3", true), click("e5", false)]);
+    let page = "<h1>Shipping</h1><div><div id=t style=\"width:10rem\" \
+        onclick=\"document.getElementById('o').hidden=false\">Select a country</div>\
+        <div id=o hidden><div onclick=\"document.querySelector('h1').textContent='Canada chosen'\">\
+        Canada</div></div></div>";
+    let flow = dir.file(
+        "folded.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{}ACT \"choose Canada from the country dropdown\" @30s\n\
+             [Asserts]\nrole:heading \"Canada chosen\" visible\n",
+            visit_html(page)
+        ),
+    );
+    let output = twin.run(&dir, &flow, &[]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+    assert_eq!(
+        act_step(&dir)["act"]["actions"].as_array().map(Vec::len),
+        Some(2)
+    );
+}
+
+#[test]
+fn a_scoped_act_shows_the_model_only_that_element() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    // A scoped snapshot on a fresh page numbers the form's button e2.
+    twin.answer(&[click("e2", false)]);
+    let page = "<header><a href=\"https://example.com/menu\">Menu</a>\
+        <button onclick=\"document.querySelector('h1').textContent='Wrong'\">Buy</button></header>\
+        <h1>Shop</h1><form><button type=button \
+        onclick=\"document.querySelector('h1').textContent='Bought'\">Buy</button></form>";
+    let flow = dir.file(
+        "scoped.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{}ACT css:form \"click Buy\" @30s\n\
+             [Asserts]\nrole:heading \"Bought\" visible\n",
+            visit_html(page)
+        ),
+    );
+    let output = twin.run(&dir, &flow, &[]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+    let log = twin.request_log();
+    assert!(log.contains("button \\\"Buy\\\" [ref=e2]"), "log:\n{log}");
+    assert!(
+        !log.contains("Menu"),
+        "the header is outside the scope; log:\n{log}"
+    );
+}
+
+#[test]
+fn act_reaches_a_button_in_a_closed_shadow_root() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.answer(&[click("e4", false)]);
+    let page = "<h1>Closed</h1><div id=host></div><script>\
+        const root=document.getElementById('host').attachShadow({mode:'closed'});\
+        root.innerHTML='<button>Deep button</button>';\
+        root.querySelector('button').onclick=()=>{document.querySelector('h1').textContent='clicked';};\
+        </script>";
+    let flow = dir.file(
+        "closed.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{}ACT \"click the Deep button\" @30s\n\
+             [Asserts]\nrole:heading \"clicked\" visible\n",
+            visit_html(page)
+        ),
+    );
+    let output = twin.run(&dir, &flow, &[]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+    let log = twin.request_log();
+    assert!(
+        log.contains("button \\\"Deep button\\\" [ref=e4]"),
+        "log:\n{log}"
     );
 }

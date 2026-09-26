@@ -227,6 +227,9 @@ pub(crate) struct StartFlowParams {
     pub(crate) video:              Option<VideoParams>,
     pub(crate) har_path:           Option<String>,
     pub(crate) trace:              bool,
+    /// Open every shadow root that page scripts attach, so `ACT` sees
+    /// closed ones (SPEC 7.4).
+    pub(crate) open_shadow_roots:  bool,
 }
 
 /// `endFlow` params (protocol section 3).
@@ -327,9 +330,11 @@ pub(crate) enum StepCommand {
         key:   String,
         value: String,
     },
-    /// ACT's view of the selected tab (SPEC 7.4); result
-    /// [`AriaSnapshotResult`].
-    AriaSnapshot,
+    /// ACT's view of the selected tab, or of one element when `locator`
+    /// is given (SPEC 7.4); result [`AriaSnapshotResult`].
+    AriaSnapshot {
+        locator: Option<Json>,
+    },
     Page {
         expect: Json,
     },
@@ -1111,9 +1116,9 @@ mod tests {
                 serde_json::json!({"script": "1 + 1"}),
             ),
             (
-                StepCommand::AriaSnapshot,
+                StepCommand::AriaSnapshot { locator: None },
                 "ariaSnapshot",
-                serde_json::json!({}),
+                serde_json::json!({"locator": null}),
             ),
             (
                 StepCommand::Page {
