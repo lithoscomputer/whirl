@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use lithos_llm::types::{ErrorKind, Usage};
 use serde_json::Value as Json;
 
-use super::{EntryState, FlowExec, StepBudget, StepEnd, StepNode, elapsed_ms, entry_timeout_error};
+use super::{EntryState, FlowExec, StepBudget, StepEnd, StepNode, entry_timeout_error};
 use crate::report::model::{ActActionReport, ActReport, ActUsage, StepError};
 use crate::run::act::{ActDecision, FollowUp, Instruction, PageSnapshot, prompts};
 use crate::run::shim::{AriaSnapshotResult, ShimClient, StepCommand, StepOutcome, StepRequest};
@@ -231,7 +231,7 @@ impl FlowExec<'_> {
                     entry_capped: line.budget.entry_capped,
                     entry_budget_ms: line.budget.entry_budget_ms,
                     timeout_ms,
-                    elapsed_ms: elapsed_ms(started),
+                    elapsed: started.elapsed(),
                 };
                 Err(self.apply_outcome(line.node, outcome, state, budget))
             }
