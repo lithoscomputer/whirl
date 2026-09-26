@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Results</title>
+</head>
+<body>
+<h1 id="heading">Results</h1>
+<script>
+  const query = new URLSearchParams(location.search).get("q") ?? "";
+  document.getElementById("heading").textContent = "Results for " + query;
+</script>
+</body>
+</html>

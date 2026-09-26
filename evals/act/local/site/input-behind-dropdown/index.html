@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Dropdown over an input</title>
+<style>
+  .bar { position: relative; }
+  .menu { position: absolute; top: 2rem; left: 0; width: 20rem; background: white; border: 1px solid #888; padding: 0.5rem; z-index: 1; }
+  .field { margin-top: 1rem; }
+</style>
+</head>
+<body>
+<h1>Products</h1>
+<div class="bar">
+  <button id="toggle" aria-expanded="false">Sort options</button>
+  <div id="menu" class="menu" hidden>
+    <p>Sort by price</p>
+    <p>Sort by rating</p>
+    <p>Sort by name</p>
+  </div>
+</div>
+<p class="field"><label>Search <input id="search" name="search"></label></p>
+<script>
+  const toggle = document.getElementById("toggle");
+  const menu = document.getElementById("menu");
+  toggle.addEventListener("click", () => {
+    menu.hidden = !menu.hidden;
+    toggle.setAttribute("aria-expanded", String(!menu.hidden));
+  });
+</script>
+</body>
+</html>

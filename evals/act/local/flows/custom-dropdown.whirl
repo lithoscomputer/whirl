@@ -1,0 +1,9 @@
+[Options]
+base: {{env.EVAL_BASE}}
+model: {{model}}
+
+# Choose from a dropdown that is not a select element.
+VISIT /custom-dropdown/
+ACT "choose Canada from the country dropdown" @60s
+[Asserts]
+testid:selected-country text == Canada

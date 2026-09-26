@@ -1,0 +1,14 @@
+[Options]
+model: {{model}}
+user-agent: chrome
+
+# precheck: the home page and its recommendations link are present.
+VISIT https://vantechjournal.com
+[Asserts]
+title contains "Vancouver Tech Journal"
+role~:link recommendations count >= 1
+
+# Open a section from the site navigation.
+ACT "click on page 'recommendations'" @60s
+[Asserts]
+url contains /recommendations

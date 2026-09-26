@@ -12,3 +12,5 @@ tmp
 /shim/dist/
 /dist-release/
 whirl-artifacts/
+# Raw ACT eval runs; the dated summaries in evals/act/results are committed.
+/evals/act/runs/

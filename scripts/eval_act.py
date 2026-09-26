@@ -1,0 +1,395 @@
+"""Compare language models on Whirl's ACT: run each model against each eval
+task, then write a dated summary. See evals/act/README.md.
+
+Each task is a .whirl flow. Runs are kept under evals/act/runs/ and never
+changed; the summary reads them all, so a session can stop and resume.
+"""
+import argparse
+import datetime
+import functools
+import http.server
+import json
+import math
+import os
+import re
+import statistics
+import subprocess
+import sys
+import threading
+from dataclasses import dataclass, field
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+EVALS = ROOT / "evals" / "act"
+SETS = ("local", "live")
+DEFAULT_N = {"local": 10, "live": 1}
+# A task whose file name ends with this passes only when ACT finds no
+# element (evals/act/README.md).
+NO_MATCH_SUFFIX = ".no-match.whirl"
+# The value the login task fills through {{env.EVAL_PASSWORD}}. It is not a
+# secret; it only has to reach the page without reaching the model.
+EVAL_PASSWORD = "eval-password-5d1c"
+
+
+@dataclass(frozen=True)
+class Task:
+    set: str
+    name: str
+    path: Path
+    expects_no_match: bool
+
+
+def load_tasks(set_name, only=()):
+    """The tasks of one set, sorted by name, limited to `only` when given."""
+    tasks = []
+    for path in sorted((EVALS / set_name / "flows").glob("*.whirl")):
+        expects_no_match = path.name.endswith(NO_MATCH_SUFFIX)
+        suffix = NO_MATCH_SUFFIX if expects_no_match else ".whirl"
+        name = path.name[: -len(suffix)]
+        if not only or name in only:
+            tasks.append(Task(set_name, name, path, expects_no_match))
+    return tasks
+
+
+def load_models(requested):
+    if requested:
+        return list(requested)
+    lines = (EVALS / "models.txt").read_text().splitlines()
+    return [line.strip() for line in lines if line.strip() and not line.startswith("#")]
+
+
+def slug(model):
+    return re.sub(r"[^a-z0-9.]+", "-", model.lower()).strip("-")
+
+
+@dataclass
+class Result:
+    """One task's outcome in one run."""
+
+    task: str
+    model: str
+    # "pass", "fail", "drift" (live precheck failed), or "error" (harness).
+    outcome: str
+    code: str | None = None
+    duration_ms: int | None = None
+    model_calls: int | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cost_usd_micros: int | None = None
+    priced: bool = False
+
+    @property
+    def good(self):
+        """True when the run is evidence about the model."""
+        return self.outcome in ("pass", "fail")
+
+
+def task_name(file_path):
+    name = Path(file_path).name
+    for suffix in (NO_MATCH_SUFFIX, ".whirl"):
+        if name.endswith(suffix):
+            return name[: -len(suffix)]
+    return name
+
+
+def classify(file_report, model):
+    """Classifies one flow's result from a Whirl JSON report."""
+    name = task_name(file_report["path"])
+    expects_no_match = Path(file_report["path"]).name.endswith(NO_MATCH_SUFFIX)
+    steps = [step for entry in file_report["entries"] for step in entry["steps"]]
+    act_step = next((step for step in steps if step.get("act") is not None), None)
+    result = Result(name, model, "fail")
+    if act_step is not None:
+        usage = act_step["act"]["usage"]
+        result.duration_ms = act_step["durationMs"]
+        result.model_calls = usage["modelCalls"]
+        result.input_tokens = usage["inputTokens"]
+        result.output_tokens = usage["outputTokens"]
+        result.cost_usd_micros = usage.get("costUsdMicros")
+        result.priced = result.cost_usd_micros is not None
+
+    failed = next((step for step in steps if step["status"] in ("failed", "error")), None)
+    result.code = failed["error"]["code"] if failed and failed.get("error") else None
+
+    entries = file_report["entries"]
+    if file_report["status"] == "error":
+        result.outcome = "error"
+    elif entries and entries[0]["name"].startswith("precheck") and entries[0]["status"] != "passed":
+        result.outcome = "drift"
+    elif expects_no_match:
+        result.outcome = "pass" if result.code == "act-no-match" else "fail"
+    else:
+        result.outcome = "pass" if file_report["status"] == "passed" else "fail"
+    return result
+
+
+def load_results(set_name, models):
+    """Every task result on disk for the set's selected models."""
+    results = []
+    for model in models:
+        model_dir = EVALS / "runs" / set_name / slug(model)
+        for report_path in sorted(model_dir.glob("*/report.json")):
+            report = json.loads(report_path.read_text())
+            for file_report in report["files"]:
+                results.append(classify(file_report, model))
+    return results
+
+
+def good_counts(results):
+    counts = {}
+    for result in results:
+        if result.good:
+            key = (result.model, result.task)
+            counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def shortfalls(tasks, models, results, n):
+    """The tasks each model still needs, and how many runs each."""
+    counts = good_counts(results)
+    plan = {}
+    for model in models:
+        missing = {task.name: n - counts.get((model, task.name), 0) for task in tasks}
+        missing = {name: count for name, count in missing.items() if count > 0}
+        if missing:
+            plan[model] = missing
+    return plan
+
+
+class QuietHandler(http.server.SimpleHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+
+
+class SiteServer:
+    """Serves the local set's pages on 127.0.0.1. Pages reach a second
+    site through localhost, the same server under another host name."""
+
+    def __enter__(self):
+        handler = functools.partial(QuietHandler, directory=str(EVALS / "local" / "site"))
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        return f"http://127.0.0.1:{self.server.server_address[1]}"
+
+    def __exit__(self, *exc):
+        self.server.shutdown()
+        self.server.server_close()
+
+
+def whirl_binary():
+    return os.environ.get("WHIRL_BIN", str(ROOT / "target" / "debug" / "whirl"))
+
+
+def run_pass(set_name, model, tasks, env):
+    """Runs one Whirl invocation for one model over the given tasks."""
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    run_dir = EVALS / "runs" / set_name / slug(model) / stamp
+    run_dir.mkdir(parents=True)
+    (run_dir / "meta.json").write_text(json.dumps({"model": model, "set": set_name}, indent=2) + "\n")
+    command = [
+        whirl_binary(),
+        "--var", f"model={model}",
+        "--report-json", str(run_dir / "report.json"),
+        "--artifacts", str(run_dir / "artifacts"),
+        *[str(task.path) for task in tasks],
+    ]
+    with (run_dir / "stdout.txt").open("w") as stdout:
+        code = subprocess.run(command, cwd=ROOT, env=env, stdout=stdout, stderr=subprocess.STDOUT).returncode
+    # 0, 1, and 3 are run outcomes; 2 and 4 mean the flows or the command
+    # are wrong, and repeating would not help.
+    if code in (2, 4) or not (run_dir / "report.json").exists():
+        sys.exit(f"whirl exited {code}; see {run_dir / 'stdout.txt'}")
+
+
+def run_set(set_name, tasks, models, n, env):
+    """Runs passes until every task has n good runs for every model, or a
+    pass adds no good run."""
+    while True:
+        results = load_results(set_name, models)
+        plan = shortfalls(tasks, models, results, n)
+        if not plan:
+            return
+        before = len([result for result in results if result.good])
+        for model, missing in plan.items():
+            pass_tasks = [task for task in tasks if task.name in missing]
+            print(f"{set_name}: {model}: {len(pass_tasks)} task(s)", flush=True)
+            run_pass(set_name, model, pass_tasks, env)
+        after = len([result for result in load_results(set_name, models) if result.good])
+        if after == before:
+            print(f"{set_name}: a pass added no good run; stopping", flush=True)
+            return
+
+
+def percentile(values, fraction):
+    ordered = sorted(values)
+    index = max(0, math.ceil(fraction * len(ordered)) - 1)
+    return ordered[index]
+
+
+def seconds(ms):
+    return f"{ms / 1000:.1f}s"
+
+
+def tokens(value):
+    return f"{value / 1000:.1f}k" if value >= 1000 else f"{value:.0f}"
+
+
+def dollars(micros):
+    return f"${micros / 1_000_000:.4f}"
+
+
+@dataclass
+class ModelSummary:
+    model: str
+    results: list = field(default_factory=list)
+
+    def of(self, outcome):
+        return [result for result in self.results if result.outcome == outcome]
+
+    def row(self):
+        good = [result for result in self.results if result.good]
+        passes = len(self.of("pass"))
+        cells = [f"`{self.model}`"]
+        if good:
+            rate = passes / len(good)
+            error = math.sqrt(rate * (1 - rate) / len(good))
+            cells.append(f"{rate:.2f} ± {error:.2f}")
+        else:
+            cells.append("n/a")
+        cells += [str(len(good)), str(len(self.of("drift"))), str(len(self.of("error")))]
+        measured = [result for result in good if result.duration_ms is not None]
+        if measured:
+            durations = [result.duration_ms for result in measured]
+            cells += [seconds(statistics.median(durations)), seconds(percentile(durations, 0.9))]
+            cells.append(f"{statistics.mean(result.model_calls for result in measured):.2f}")
+            cells.append(tokens(statistics.mean(result.input_tokens for result in measured)))
+            cells.append(tokens(statistics.mean(result.output_tokens for result in measured)))
+            if all(result.priced for result in measured):
+                costs = [result.cost_usd_micros for result in measured]
+                cells += [dollars(statistics.mean(costs)), dollars(sum(costs))]
+            else:
+                cells += ["n/a", "n/a"]
+        else:
+            cells += ["n/a"] * 7
+        return "| " + " | ".join(cells) + " |"
+
+
+def git_commit():
+    try:
+        return subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"], cwd=ROOT, capture_output=True, text=True, check=True
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
+
+
+def whirl_version():
+    try:
+        return subprocess.run([whirl_binary(), "--version"], capture_output=True, text=True).stdout.strip()
+    except OSError:
+        return "unknown"
+
+
+def render_summary(set_name, tasks, models, results, n, date, version, commit):
+    """The markdown summary of one set."""
+    by_model = {model: ModelSummary(model) for model in models}
+    for result in results:
+        by_model[result.model].results.append(result)
+    lines = [
+        f"# ACT evals: {set_name} set, {date}",
+        "",
+        f"- Whirl: {version}, commit `{commit}`",
+        f"- Target runs per task (`-n`): {n}",
+        f"- Tasks: {len(tasks)}",
+        "",
+        "Pass rate counts only good runs, with its standard error. Drift (a live",
+        "precheck failed) and errors (exit 3: network, credentials, shim) are",
+        "left out. Times are the ACT step: snapshot, model calls, and action.",
+        "Costs use catalog prices and show n/a when any run was unpriced.",
+        "",
+        "## Leaderboard",
+        "",
+        "| model | pass | good runs | drift | errors | p50 ACT | p90 ACT | calls | in tok | out tok | $/task | $ total |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    lines += [by_model[model].row() for model in models]
+    lines += ["", "## Per task", "", "Passes over good runs.", ""]
+    lines.append("| task | " + " | ".join(f"`{model}`" for model in models) + " |")
+    lines.append("| --- |" + " --- |" * len(models))
+    for task in tasks:
+        cells = []
+        for model in models:
+            good = [r for r in by_model[model].results if r.task == task.name and r.good]
+            passes = len([r for r in good if r.outcome == "pass"])
+            cells.append(f"{passes}/{len(good)}" if good else "-")
+        lines.append(f"| {task.name} | " + " | ".join(cells) + " |")
+    lines += ["", "## Failures", "", "Error codes of failed runs, per model.", ""]
+    any_failure = False
+    for model in models:
+        codes = {}
+        for result in by_model[model].of("fail"):
+            codes[result.code or "passed"] = codes.get(result.code or "passed", 0) + 1
+        if codes:
+            any_failure = True
+            listed = ", ".join(f"`{code}` {count}" for code, count in sorted(codes.items()))
+            lines.append(f"- `{model}`: {listed}")
+    if not any_failure:
+        lines.append("None.")
+    if set_name == "live":
+        lines += ["", "## Drift", "", f"Tasks whose precheck failed, as of {date}.", ""]
+        drifted = sorted({(r.task, r.model) for m in models for r in by_model[m].of("drift")})
+        lines += [f"- {task} (`{model}`)" for task, model in drifted] or ["None."]
+    return "\n".join(lines) + "\n"
+
+
+def write_summary(set_name, tasks, models, n):
+    results = [r for r in load_results(set_name, models) if r.task in {t.name for t in tasks}]
+    date = datetime.date.today().isoformat()
+    text = render_summary(set_name, tasks, models, results, n, date, whirl_version(), git_commit())
+    path = EVALS / "results" / f"{date}-{set_name}.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    print(f"wrote {path.relative_to(ROOT)}")
+
+
+def print_preview(set_name, tasks, models, n):
+    plan = shortfalls(tasks, models, load_results(set_name, models), n)
+    total = sum(sum(missing.values()) for missing in plan.values())
+    print(f"{set_name}: {len(tasks)} task(s) × {len(models)} model(s), -n {n}: {total} run(s) to go")
+    for model in models:
+        missing = plan.get(model, {})
+        print(f"  {model}: {sum(missing.values())} run(s) over {len(missing)} task(s)")
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--set", choices=(*SETS, "all"), default="local")
+    parser.add_argument("-m", "--model", action="append", default=[], help="repeatable; overrides models.txt")
+    parser.add_argument("-t", "--task", action="append", default=[], help="repeatable; limits the tasks")
+    parser.add_argument("-n", type=int, help="target good runs per model and task")
+    parser.add_argument("--preview", action="store_true", help="print the planned runs and exit")
+    parser.add_argument("--summarize", action="store_true", help="summarize existing runs without running")
+    args = parser.parse_args(argv)
+
+    models = load_models(args.model)
+    env = {**os.environ, "EVAL_PASSWORD": EVAL_PASSWORD}
+    for set_name in SETS if args.set == "all" else (args.set,):
+        tasks = load_tasks(set_name, args.task)
+        if not tasks:
+            continue
+        n = args.n if args.n is not None else DEFAULT_N[set_name]
+        if args.preview:
+            print_preview(set_name, tasks, models, n)
+            continue
+        if not args.summarize:
+            if set_name == "local":
+                with SiteServer() as base:
+                    run_set(set_name, tasks, models, n, {**env, "EVAL_BASE": base})
+            else:
+                run_set(set_name, tasks, models, n, env)
+        write_summary(set_name, tasks, models, n)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

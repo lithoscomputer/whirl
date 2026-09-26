@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Kitchen shop</title>
+</head>
+<body>
+<h1>Kitchen shop</h1>
+<ul class="products">
+  <li><h2>Red mug</h2><button data-item="Red mug" class="cart">Add to cart</button> <button data-item="Red mug" class="wish">Add to wishlist</button></li>
+  <li><h2>Blue mug</h2><button data-item="Blue mug" class="cart">Add to cart</button> <button data-item="Blue mug" class="wish">Add to wishlist</button></li>
+  <li><h2>Blue plate</h2><button data-item="Blue plate" class="cart">Add to cart</button> <button data-item="Blue plate" class="wish">Add to wishlist</button></li>
+</ul>
+<p>Cart: <span data-testid="cart">empty</span></p>
+<p>Wishlist: <span data-testid="wishlist">empty</span></p>
+<script>
+  for (const button of document.querySelectorAll("button.cart")) {
+    button.addEventListener("click", () => {
+      document.querySelector("[data-testid=cart]").textContent = button.dataset.item;
+    });
+  }
+  for (const button of document.querySelectorAll("button.wish")) {
+    button.addEventListener("click", () => {
+      document.querySelector("[data-testid=wishlist]").textContent = button.dataset.item;
+    });
+  }
+</script>
+</body>
+</html>

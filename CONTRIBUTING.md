@@ -32,6 +32,9 @@ the Mise environment (`mise exec -- cargo …` or an activated shell).
   on a pinned Node runtime; Bun is the package manager and script runner.
 - `docs/engineering/shim-protocol.md` — the JSON-over-stdio contract
   between the two.
+- `evals/act` — model evals for `ACT`, run by `mise run eval:act`. They call
+  real models and cost money, so no check runs them; `mise run test:evals`
+  checks their flows and script. See [evals/act/README.md](evals/act/README.md).
 
 ## Document authority
 
