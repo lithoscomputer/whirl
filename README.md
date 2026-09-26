@@ -132,6 +132,24 @@ role:heading Ada visible
 
 The status check is explicit. Whirl does not treat 2xx as implicit success.
 
+Use `ACT` when a step is easier to describe than to locate. A language model
+reads a snapshot of the page and chooses one action, which Whirl runs like
+any other action:
+
+```whirl
+[Options]
+model: anthropic/claude-sonnet-5
+
+VISIT https://shop.example.com/products
+ACT "add the first product to the cart"
+[Asserts]
+testid:cart-badge text == 1
+```
+
+Set the provider's key, such as `ANTHROPIC_API_KEY`. The model's choice can
+change between runs, so assert the result. `{{env.NAME}}` values in an
+instruction reach the model only as placeholders. See [ACT](SPEC.md#74-act).
+
 More commands:
 
 ```console
@@ -191,7 +209,9 @@ New reports record UTC start and finish times, the SHA-256 of each parsed flow, 
 ## Secrets
 
 Reference secrets with `{{env.NAME}}`; Whirl masks every env-sourced value
-in its console output, reports, and trace step titles. Browser-recorded
+in its console output, reports, and trace step titles. `ACT` sends such values
+to its model only as placeholders, but the page snapshot it sends includes any
+text the page shows. Browser-recorded
 artifacts — screenshots, video, HAR files, and saved storage state — can
 still contain secrets the flow typed or received. Treat the artifacts
 directory and HTML reports containing embedded media as sensitive, and prefer

@@ -396,6 +396,7 @@ fn render_entry(
             step.line,
             duration(step.duration_ms)
         )?;
+        render_act(output, step)?;
         render_error(output, step)?;
         write!(output, "</li>")?;
     }
@@ -424,6 +425,30 @@ fn render_entry(
         }
     }
     write!(output, "</li>")
+}
+
+/// What an `ACT` step asked and ran (SPEC 7.4).
+fn render_act(output: &mut impl io::Write, step: &StepReport) -> io::Result<()> {
+    let Some(act) = &step.act else {
+        return Ok(());
+    };
+    write!(
+        output,
+        "<dl><dt>Model</dt><dd><code>{}</code> · {} call(s) · {} input and {} output tokens</dd>",
+        escape(&act.model),
+        act.usage.model_calls,
+        act.usage.input_tokens,
+        act.usage.output_tokens
+    )?;
+    for action in &act.actions {
+        write!(
+            output,
+            "<dt>Ran</dt><dd><code>{}</code> {}</dd>",
+            escape(&action.line),
+            escape(&action.description)
+        )?;
+    }
+    write!(output, "</dl>")
 }
 
 fn render_error(output: &mut impl io::Write, step: &StepReport) -> io::Result<()> {

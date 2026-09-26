@@ -236,6 +236,9 @@ pub(crate) enum FileOption {
     /// `setup: path`, a flow whose final state this file starts from
     /// (SPEC 5, 12).
     Setup(Value),
+    /// `model: provider/model`, the language model `ACT` asks (SPEC 5,
+    /// 7.4).
+    Model(Value),
 }
 
 impl File {
@@ -251,6 +254,21 @@ impl File {
         self.options
             .iter()
             .find(|line| matches!(line.option, FileOption::Storage(_)))
+    }
+
+    /// True when any entry has an `ACT` line (SPEC 7.4).
+    pub(crate) fn uses_act(&self) -> bool {
+        self.entries
+            .iter()
+            .flat_map(|entry| &entry.actions)
+            .any(|action| matches!(action.kind, ActionKind::Act { .. }))
+    }
+
+    /// The `model:` option line, when the file has one.
+    pub(crate) fn model_option(&self) -> Option<&OptionLine> {
+        self.options
+            .iter()
+            .find(|line| matches!(line.option, FileOption::Model(_)))
     }
 }
 
@@ -377,6 +395,11 @@ pub(crate) enum ActionKind {
     Eval {
         script: Value,
     },
+    /// `ACT "instruction"` asks the file's model to choose one element
+    /// action (SPEC 7.4).
+    Act {
+        instruction: Value,
+    },
     /// `STORE local "key" "value"` writes one browser storage entry.
     Store {
         scope: StoreScope,
@@ -427,6 +450,7 @@ impl ActionKind {
             | Self::Screenshot { .. }
             | Self::Snapshot { .. }
             | Self::Eval { .. }
+            | Self::Act { .. }
             | Self::Store { .. } => None,
         }
     }

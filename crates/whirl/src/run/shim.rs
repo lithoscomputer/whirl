@@ -319,6 +319,9 @@ pub(crate) enum StepCommand {
         key:   String,
         value: String,
     },
+    /// ACT's view of the selected tab (SPEC 7.4); result
+    /// [`AriaSnapshotResult`].
+    AriaSnapshot,
     Page {
         expect: Json,
     },
@@ -347,6 +350,12 @@ pub(crate) struct StepRequest {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 pub(crate) struct CaptureResult {
     pub(crate) value: String,
+}
+
+/// `ariaSnapshot` result (protocol section 4).
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+pub(crate) struct AriaSnapshotResult {
+    pub(crate) snapshot: String,
 }
 
 /// The outcome of one step run under the external watchdog.
@@ -1048,6 +1057,11 @@ mod tests {
                 },
                 "evalAction",
                 serde_json::json!({"script": "1 + 1"}),
+            ),
+            (
+                StepCommand::AriaSnapshot,
+                "ariaSnapshot",
+                serde_json::json!({}),
             ),
             (
                 StepCommand::Page {

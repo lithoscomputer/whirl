@@ -131,6 +131,43 @@ pub(crate) struct StepReport {
     pub(crate) duration_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) error:       Option<StepError>,
+    /// What an `ACT` step asked and did (SPEC 7.4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) act:         Option<ActReport>,
+}
+
+/// An `ACT` step's model, the actions it ran, and what the model calls
+/// used. Arguments keep their `%name%` placeholders, so no secret appears.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ActReport {
+    pub(crate) model:   String,
+    pub(crate) actions: Vec<ActActionReport>,
+    pub(crate) usage:   ActUsage,
+}
+
+/// One action an `ACT` step ran.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ActActionReport {
+    /// The action as a Whirl line, such as `CLICK role:button "Sign in"`.
+    pub(crate) line:        String,
+    /// The model's description of the element.
+    pub(crate) description: String,
+}
+
+/// Token usage summed over an `ACT` step's model calls.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ActUsage {
+    pub(crate) model_calls:     u32,
+    /// Prompt tokens, cached or not.
+    pub(crate) input_tokens:    u64,
+    /// Completion tokens, reasoning included.
+    pub(crate) output_tokens:   u64,
+    /// Present only when every call was priced.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) cost_usd_micros: Option<u64>,
 }
 
 /// One entry's result: its steps, captures, and artifacts.

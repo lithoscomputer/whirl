@@ -178,6 +178,63 @@
                             }
                           }
                         }
+                      },
+                      "act": {
+                        "type": "object",
+                        "required": [
+                          "model",
+                          "actions",
+                          "usage"
+                        ],
+                        "properties": {
+                          "model": {
+                            "type": "string"
+                          },
+                          "actions": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "required": [
+                                "line",
+                                "description"
+                              ],
+                              "properties": {
+                                "line": {
+                                  "type": "string"
+                                },
+                                "description": {
+                                  "type": "string"
+                                }
+                              }
+                            }
+                          },
+                          "usage": {
+                            "type": "object",
+                            "required": [
+                              "modelCalls",
+                              "inputTokens",
+                              "outputTokens"
+                            ],
+                            "properties": {
+                              "modelCalls": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "inputTokens": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "outputTokens": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "costUsdMicros": {
+                                "type": "integer",
+                                "minimum": 0
+                              }
+                            }
+                          }
+                        }
                       }
                     }
                   }

@@ -23,6 +23,8 @@ Schemas: [check](check.schema.json), [run report](report.schema.json).
 | `unused-capture` | A capture is never read; warning |
 | `redundant-presence` | The following assertion requires presence; warning |
 | `unasserted-http-status` | An independent HTTP entry has no status assertion; warning |
+| `act-without-model` | A file uses `ACT` without a `model` option |
+| `unknown-model` | The `model` option names a model the catalog cannot route |
 
 Locations use 1-based Unicode character positions, not bytes or UTF-16 units.
 `length` is the source span length on that line. Input and I/O diagnostics may
@@ -34,6 +36,11 @@ array. Argument syntax errors, such as an unknown flag, still use CLI usage text
 
 Step `error.code` uses the [shim error kinds](shim-protocol.md#7-error-kinds), plus
 `entry-timeout`, `variable-resolution`, `shim-crash`, and `setup-failed`.
+`ACT` steps add `act-no-match`, `act-invalid-decision`, and `act-model` (SPEC
+7.4). An `ACT` step also has an `act` object: `model`; `actions`, each with a
+`line` in Whirl syntax and the model's `description`; and `usage`, with
+`modelCalls`, `inputTokens`, `outputTokens`, and `costUsdMicros` when every
+call was priced. Arguments keep their `%name%` placeholders.
 `internal` covers an invalid shim result. Codes are stable; message text may
 change and must not be parsed. Secret masking covers diagnostic action logs in
 run reports. `check` reports source text without resolving environment variables.

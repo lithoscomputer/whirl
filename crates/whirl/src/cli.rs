@@ -19,12 +19,15 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use tokio::runtime::Runtime;
 
-use crate::lang::lint::{Lint, Severity, lint_file_with, lint_setup_refs, setup_capture_uses};
+use crate::lang::lint::{
+    Lint, Severity, lint_act, lint_file_with, lint_setup_refs, setup_capture_uses,
+};
 use crate::lang::parse::{ParseError, parse_file};
 use crate::lang::{ast, fmt};
 use crate::report::metadata::ReportMetadata;
 use crate::report::model::Status;
 use crate::report::{console, html, json, junit};
+use crate::run::act::ModelCatalog;
 use crate::run::{artifacts, flow, runner, vars};
 use crate::{doctor, install, telemetry};
 
@@ -406,19 +409,33 @@ fn render_lint(lint: &Lint, source: &str) -> String {
     )
 }
 
+/// One `whirl check` diagnostic. Fields are declared in alphabetical
+/// order, which is the JSON key order: serializing the struct directly
+/// keeps that order whether or not a dependency turns on serde_json's
+/// `preserve_order`.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Diagnostic {
     code:     &'static str,
-    severity: &'static str,
-    path:     Option<PathBuf>,
-    line:     Option<u32>,
     column:   Option<u32>,
-    length:   Option<u32>,
-    message:  String,
     expected: Vec<String>,
+    length:   Option<u32>,
+    line:     Option<u32>,
+    message:  String,
+    path:     Option<PathBuf>,
+    severity: &'static str,
     #[serde(skip)]
     rendered: String,
+}
+
+/// The `whirl check --json` document (SPEC 16), keys in alphabetical
+/// order like [`Diagnostic`].
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CheckDocument<'a> {
+    diagnostics: &'a [Diagnostic],
+    exit_code:   u8,
+    version:     u32,
 }
 
 impl Diagnostic {
@@ -472,9 +489,11 @@ impl Diagnostic {
 fn print_diagnostics(diagnostics: &[Diagnostic], json: bool, exit: Exit) {
     if json {
         print_out(
-            &serde_json::to_string_pretty(&serde_json::json!({
-                "version": 1, "exitCode": exit.code(), "diagnostics": diagnostics
-            }))
+            &serde_json::to_string_pretty(&CheckDocument {
+                diagnostics,
+                exit_code: exit.code(),
+                version: 1,
+            })
             .expect("diagnostics serialize"),
         );
     } else {
@@ -568,6 +587,12 @@ fn check_inputs(
             .chain(setups.iter())
             .find(|known| known.file.path.canonicalize().ok().as_ref() == Some(canonical))
     };
+    // The built-in model catalog loads only when a file names a model.
+    let models = inputs
+        .iter()
+        .chain(setups.iter())
+        .any(|input| input.file.model_option().is_some())
+        .then(ModelCatalog::from_env);
     for input in inputs.iter().chain(setups.iter()) {
         let mut external = HashSet::new();
         if let Ok(canonical) = input.file.path.canonicalize() {
@@ -577,7 +602,12 @@ fn check_inputs(
                 }
             }
         }
-        for lint in lint_file_with(&input.file, &external) {
+        let mut lints = lint_file_with(&input.file, &external);
+        lints.extend(lint_act(&input.file, |model| {
+            models.as_ref().is_none_or(|models| models.knows(model))
+        }));
+        lints.sort_by_key(|lint| (lint.line, lint.column));
+        for lint in lints {
             diagnostics.push(Diagnostic::lint(&lint, &input.source));
             if lint.severity == Severity::Error {
                 exit = exit.max(Exit::ParseLint);
@@ -848,15 +878,15 @@ fn run_command(args: &RunArgs) -> Exit {
         print_err(&format!("whirl: error: {error}"));
         return Exit::Usage;
     }
-    if let Some(html_path) = &args.report_html {
-        if let Err(error) = check_html_path(
+    if let Some(html_path) = &args.report_html
+        && let Err(error) = check_html_path(
             args,
             html_path,
             sources.iter().map(|(path, _)| path.as_path()),
-        ) {
-            print_err(&format!("whirl: error: {error:#}"));
-            return Exit::Usage;
-        }
+        )
+    {
+        print_err(&format!("whirl: error: {error:#}"));
+        return Exit::Usage;
     }
     let mut diagnostics = Vec::new();
     let (checked, exit) = check_inputs(sources, &mut diagnostics);
@@ -871,11 +901,11 @@ fn run_command(args: &RunArgs) -> Exit {
             .chain(&checked.setups)
             .map(|input| input.file.path.as_path())
     };
-    if let Some(html_path) = &args.report_html {
-        if let Err(error) = check_html_path(args, html_path, paths()) {
-            print_err(&format!("whirl: error: {error:#}"));
-            return Exit::Usage;
-        }
+    if let Some(html_path) = &args.report_html
+        && let Err(error) = check_html_path(args, html_path, paths())
+    {
+        print_err(&format!("whirl: error: {error:#}"));
+        return Exit::Usage;
     }
     if let Some(metadata) = &mut metadata {
         metadata.select(paths());
@@ -952,14 +982,14 @@ fn write_reports(args: &RunArgs, document: &json::Document) -> Exit {
     if let Some(path) = &args.report_junit {
         exit = exit.max(write_report_file(path, &junit::render(&document.report)));
     }
-    if let Some(path) = &args.report_html {
-        if let Err(error) = html::write(path, document, &document.working_directory) {
-            print_err(&format!(
-                "whirl: error: cannot write HTML report '{}': {error:#}",
-                path.display()
-            ));
-            exit = exit.max(Exit::Runtime);
-        }
+    if let Some(path) = &args.report_html
+        && let Err(error) = html::write(path, document, &document.working_directory)
+    {
+        print_err(&format!(
+            "whirl: error: cannot write HTML report '{}': {error:#}",
+            path.display()
+        ));
+        exit = exit.max(Exit::Runtime);
     }
     exit
 }

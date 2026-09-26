@@ -45,6 +45,8 @@ function applySegment(scope: LocatorScope, segment: LocatorSegment): Locator {
 			return scope.locator(segment.selector);
 		case "nth":
 			throw new ShimError("internal", "nth may not be the first segment");
+		case "ref":
+			return scope.locator(`aria-ref=${segment.ref}`);
 		default:
 			return assertNever(segment);
 	}
@@ -119,6 +121,8 @@ function describeSegment(segment: LocatorSegment): string {
 			return `frameLocator(${quote(segment.selector)})`;
 		case "nth":
 			return `nth(${String(segment.index - 1)})`;
+		case "ref":
+			return `locator(${quote(`aria-ref=${segment.ref}`)})`;
 		default:
 			return assertNever(segment);
 	}

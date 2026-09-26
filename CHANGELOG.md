@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add `ACT "instruction"`, which asks a language model to choose one element action from a Playwright AI snapshot of the page and runs it as the matching Whirl action, following Stagehand's `act()`. The new `model` option selects the model through `lithos-llm`. `WHIRL_LLM_ENDPOINT` and `WHIRL_LLM_API_KEY` send calls to one OpenAI-compatible server instead. `{{env.NAME}}` values reach the model only as placeholders, and JSON reports record the actions ACT ran and the tokens it used.
+- `whirl check` reports `ACT` without a `model` option and a model the catalog cannot route.
+- Raise the minimum supported Rust version to 1.88, which `lithos-llm` requires.
+
 ## 0.12.0 (2026-09-08)
 
 - Record the installing Whirl version in the shim bundle. An upgraded binary refuses a stale bundle with a runtime error naming `whirl install`, and `whirl doctor` reports the same, instead of running an older shim silently.

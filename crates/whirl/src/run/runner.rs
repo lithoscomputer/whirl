@@ -16,6 +16,7 @@ use tracing::{Instrument as _, debug, info, info_span, warn};
 
 use crate::lang::ast::File;
 use crate::report::model::{FileReport, FlowRoles, RunReport, SETUP_ENTRY, Status, Timing};
+use crate::run::act::{ModelClient, ModelSetupError};
 use crate::run::artifacts::{self, ArtifactsError, Flow};
 use crate::run::flow::{
     FlowFlags, FlowOutcome, FlowRun, Overrides, SetupHandoff, run_flow, setup_path_for,
@@ -48,6 +49,10 @@ pub(crate) enum RunnerError {
     /// A runtime error (exit 3).
     #[error(transparent)]
     Shim(#[from] ShimError),
+    /// A runtime error (exit 3): a flow uses `ACT` and the model client
+    /// could not be built.
+    #[error(transparent)]
+    Model(#[from] ModelSetupError),
     /// A usage error (exit 4): `--save-storage` needs a single file.
     #[error("--save-storage requires a single input file, got {count}")]
     SaveStorageManyFiles { count: usize },
@@ -102,6 +107,7 @@ pub(crate) async fn run_files(
             main_jobs,
             state_dir,
             launch,
+            model,
             workers,
             settings,
         } = spawn_blocking(move || PreparedRun::try_new(&files, &setups, settings))
@@ -125,6 +131,7 @@ pub(crate) async fn run_files(
                 Arc::new(HashMap::new()),
                 settings.clone(),
                 &launch,
+                model.clone(),
                 stop.clone(),
             )
             .run(workers)
@@ -156,6 +163,7 @@ pub(crate) async fn run_files(
             Arc::new(handoffs),
             settings,
             &launch,
+            model,
             stop,
         )
         .run(workers)
@@ -184,6 +192,8 @@ struct PreparedRun {
     main_jobs:  Vec<FlowJob>,
     state_dir:  PathBuf,
     launch:     ShimLaunch,
+    /// Built only when a flow uses `ACT` (SPEC 7.4).
+    model:      Option<Arc<ModelClient>>,
     workers:    usize,
     settings:   RunSettings,
 }
@@ -207,10 +217,10 @@ impl PreparedRun {
         // inputs that name the same file.
         let mut setup_paths: Vec<PathBuf> = Vec::new();
         for file in files {
-            if let Some(path) = setup_path_for(file) {
-                if !setup_paths.contains(&path) {
-                    setup_paths.push(path);
-                }
+            if let Some(path) = setup_path_for(file)
+                && !setup_paths.contains(&path)
+            {
+                setup_paths.push(path);
             }
         }
         let planned: Vec<PathBuf> = setup_paths.iter().chain(inputs.iter()).cloned().collect();
@@ -224,6 +234,11 @@ impl PreparedRun {
         let launch = resolve_launch()?;
 
         let all_files: Vec<&File> = files.iter().chain(setups.iter()).collect();
+        let model = if all_files.iter().any(|file| file.uses_act()) {
+            Some(Arc::new(ModelClient::from_env()?))
+        } else {
+            None
+        };
         let requested_canonicals: Vec<PathBuf> =
             requested.into_iter().map(|(_, path)| path).collect();
         let jobs = build_jobs(
@@ -259,6 +274,7 @@ impl PreparedRun {
             main_jobs,
             state_dir,
             launch,
+            model,
             workers,
             settings,
         })
@@ -331,6 +347,7 @@ struct WorkQueue {
     handoffs: Arc<HashMap<PathBuf, SetupResult>>,
     settings: Arc<RunSettings>,
     launch:   ShimLaunch,
+    model:    Option<Arc<ModelClient>>,
     pending:  Mutex<VecDeque<usize>>,
     stop:     Arc<AtomicBool>,
 }
@@ -367,6 +384,7 @@ impl WorkerSet {
         handoffs: Arc<HashMap<PathBuf, SetupResult>>,
         settings: Arc<RunSettings>,
         launch: &ShimLaunch,
+        model: Option<Arc<ModelClient>>,
         stop: Arc<AtomicBool>,
     ) -> Self {
         let pending = Mutex::new((0..jobs.len()).collect());
@@ -376,6 +394,7 @@ impl WorkerSet {
                 handoffs,
                 settings,
                 launch: launch.clone(),
+                model,
                 pending,
                 stop,
             }),
@@ -507,6 +526,7 @@ impl Worker {
             base_vars: &settings.base_vars,
             setup,
             state_out: job.state_out.as_deref(),
+            model: queue.model.as_deref(),
         };
         run_flow(&run, client).await
     }
@@ -558,6 +578,7 @@ fn synthetic_outcome(job: &FlowJob, status: Status, message: &str) -> FlowOutcom
                         message: message.to_owned(),
                         ..StepError::default()
                     }),
+                    act: None,
                 }],
                 captures: Vec::new(),
                 artifacts: Vec::new(),
