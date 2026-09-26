@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Layers</title>
+</head>
+<body>
+<script>
+  // Builds the layers named in ?l=, outermost first, around one button:
+  // shadow-open, shadow-closed, frame-same (same site), and frame-cross
+  // (127.0.0.1 and localhost are different sites). The button tells the
+  // top page it was clicked.
+  const layers = (new URLSearchParams(location.search).get("l") ?? "")
+    .split(",")
+    .filter(Boolean);
+  if (window.top === window) {
+    document.body.insertAdjacentHTML(
+      "afterbegin",
+      '<h1>Layers</h1><p>Status: <span data-testid="status">waiting</span></p>',
+    );
+    addEventListener("message", (event) => {
+      if (event.data === "clicked") {
+        document.querySelector("[data-testid=status]").textContent = "clicked";
+      }
+    });
+  }
+  function build(container, rest) {
+    if (rest.length === 0) {
+      const button = document.createElement("button");
+      button.textContent = "Deep button";
+      button.addEventListener("click", () => window.top.postMessage("clicked", "*"));
+      container.append(button);
+      return;
+    }
+    const [layer, ...inner] = rest;
+    if (layer === "shadow-open" || layer === "shadow-closed") {
+      const host = document.createElement("div");
+      container.append(host);
+      build(host.attachShadow({ mode: layer === "shadow-open" ? "open" : "closed" }), inner);
+    } else if (layer === "frame-same" || layer === "frame-cross") {
+      const url = new URL(location.href);
+      if (layer === "frame-cross") {
+        url.hostname = location.hostname === "127.0.0.1" ? "localhost" : "127.0.0.1";
+      }
+      url.search = "?l=" + inner.join(",");
+      const frame = document.createElement("iframe");
+      frame.src = url.href;
+      frame.title = "Layer frame";
+      frame.style.width = "90%";
+      frame.style.height = "10rem";
+      container.append(frame);
+    }
+  }
+  build(document.body, layers);
+</script>
+</body>
+</html>

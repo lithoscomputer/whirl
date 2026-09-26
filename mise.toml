@@ -45,8 +45,8 @@ depends = ["build:shim", "build:libxml2"]
 run = "cargo build --workspace"
 
 [tasks.test]
-description = "Run all tests (Rust unit, acceptance, and shim)"
-depends = ["test:rust", "test:shim"]
+description = "Run all tests (Rust unit, acceptance, shim, and eval tooling)"
+depends = ["test:rust", "test:shim", "test:evals"]
 
 [tasks."test:rust"]
 description = "Run Rust unit and acceptance tests with nextest"
@@ -58,6 +58,19 @@ description = "Run the shim's own tests"
 depends = ["build:shim"]
 dir = "shim"
 run = "{{config_root}}/scripts/quiet.sh bun run test"
+
+[tasks."test:evals"]
+description = "Test the ACT eval script and check the eval flows; calls no model"
+depends = ["dev"]
+run = [
+  "{{config_root}}/scripts/quiet.sh python3 -m unittest discover -s scripts -p 'test_eval_act.py'",
+  "{{config_root}}/scripts/quiet.sh target/debug/whirl check evals/act/local/flows evals/act/live/flows",
+]
+
+[tasks."eval:act"]
+description = "Compare models on ACT (evals/act/README.md); calls real models and costs money"
+depends = ["dev"]
+run = "python3 scripts/eval_act.py"
 
 [tasks.check]
 description = "Run the routine checks for every pushed revision"

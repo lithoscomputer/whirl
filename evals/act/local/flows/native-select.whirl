@@ -1,0 +1,9 @@
+[Options]
+base: {{env.EVAL_BASE}}
+model: {{model}}
+
+# Choose an option from a native select element.
+VISIT /native-select/
+ACT "choose Large from the size dropdown" @60s
+[Asserts]
+label:Size value == Large

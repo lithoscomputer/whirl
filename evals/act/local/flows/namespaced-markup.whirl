@@ -1,0 +1,11 @@
+[Options]
+base: {{env.EVAL_BASE}}
+model: {{model}}
+
+# Fill an input in XHTML with SVG and MathML namespaces.
+VISIT /namespaced-markup/index.xhtml
+ACT "type ada@example.com into the email field" @60s
+[Asserts]
+# In XHTML, Playwright matches neither label: nor the value subject, because
+# element names keep their lowercase spelling; the check reads the DOM.
+eval "document.querySelector('input[name=email]').value" == ada@example.com

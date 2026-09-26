@@ -1,0 +1,7 @@
+[Options]
+base: {{env.EVAL_BASE}}
+model: {{model}}
+
+# Nothing on the page matches, so ACT must find no element.
+VISIT /similar-buttons/
+ACT "open the account settings page" @60s
