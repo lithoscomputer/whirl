@@ -95,6 +95,7 @@ impl FlowExec<'_> {
         &mut self,
         node: StepNode<'_>,
         instruction: &Instruction,
+        scope: Option<Json>,
         title: &str,
         budget: ActBudget,
         client: &mut ShimClient,
@@ -124,11 +125,18 @@ impl FlowExec<'_> {
 
         let end = loop {
             let snapshot = match self
-                .act_shim_call(&mut line, StepCommand::AriaSnapshot, client, state)
+                .act_shim_call(
+                    &mut line,
+                    StepCommand::AriaSnapshot {
+                        locator: scope.clone(),
+                    },
+                    client,
+                    state,
+                )
                 .await
             {
                 Ok(result) => match serde_json::from_value::<AriaSnapshotResult>(result) {
-                    Ok(result) => PageSnapshot::parse(result.snapshot),
+                    Ok(result) => PageSnapshot::parse(&result.snapshot),
                     Err(_) => {
                         break StepEnd::Error(act_failure(
                             "internal",

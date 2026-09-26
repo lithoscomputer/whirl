@@ -70,6 +70,7 @@ async fn unanswered_start_flow_kills_the_process() {
         video:              None,
         har_path:           None,
         trace:              false,
+        open_shadow_roots:  false,
     };
     let result = timeout(Duration::from_secs(5), client.start_flow(&params))
         .await

@@ -81,12 +81,17 @@ pub(crate) struct PageSnapshot {
 }
 
 impl PageSnapshot {
-    /// Indexes every `[ref=...]` line of a snapshot.
-    pub(crate) fn parse(text: String) -> Self {
-        let nodes = text.lines().filter_map(parse_line).collect();
-        Self { text, nodes }
+    /// Indexes every `[ref=...]` line of a snapshot, and keeps the text the
+    /// model reads.
+    pub(crate) fn parse(snapshot: &str) -> Self {
+        let nodes = snapshot.lines().filter_map(parse_line).collect();
+        Self {
+            text: condense(snapshot),
+            nodes,
+        }
     }
 
+    /// The snapshot as the model reads it (SPEC 7.4).
     pub(crate) fn text(&self) -> &str {
         &self.text
     }
@@ -97,6 +102,22 @@ impl PageSnapshot {
         let node = self.nodes.get(&element)?.clone();
         Some(Target { element, node })
     }
+}
+
+/// The snapshot without the parts the model does not need, as Stagehand's
+/// outline leaves them out: the `/url:` line under every link and the
+/// `[cursor=pointer]` mark on every clickable element. On a link-heavy page
+/// such as a Wikipedia article they are about a third of the snapshot.
+fn condense(snapshot: &str) -> String {
+    let mut text = String::with_capacity(snapshot.len());
+    for line in snapshot.lines() {
+        if line.trim_start().starts_with("- /url:") {
+            continue;
+        }
+        text.push_str(&line.replace(" [cursor=pointer]", ""));
+        text.push('\n');
+    }
+    text
 }
 
 /// Parses one snapshot line such as `  - button "Sign in" [ref=e5]`.
@@ -164,7 +185,7 @@ mod tests {
 
     #[test]
     fn indexes_every_ref_with_its_role_and_name() {
-        let snapshot = PageSnapshot::parse(SNAPSHOT.to_owned());
+        let snapshot = PageSnapshot::parse(SNAPSHOT);
         let target = snapshot.target("e4").expect("e4 is in the snapshot");
         assert_eq!(target.locator_text(), r#"role:textbox "Email""#);
         let target = snapshot.target("e5").expect("e5 is in the snapshot");
@@ -177,7 +198,7 @@ mod tests {
 
     #[test]
     fn a_ref_the_snapshot_never_showed_is_not_a_target() {
-        let snapshot = PageSnapshot::parse(SNAPSHOT.to_owned());
+        let snapshot = PageSnapshot::parse(SNAPSHOT);
         assert_eq!(snapshot.target("e99"), None);
         assert_eq!(snapshot.target("0-18372"), None);
         assert_eq!(snapshot.target("[ref=e4]"), None);
@@ -194,8 +215,23 @@ mod tests {
     }
 
     #[test]
+    fn the_model_reads_the_snapshot_without_urls_and_cursor_marks() {
+        let snapshot = PageSnapshot::parse(
+            "- link \"Docs\" [ref=e3] [cursor=pointer]:\n  - /url: https://example.com/docs\n- button \"Go\" [ref=e4] [cursor=pointer]\n",
+        );
+        assert_eq!(
+            snapshot.text(),
+            "- link \"Docs\" [ref=e3]:\n- button \"Go\" [ref=e4]\n"
+        );
+        assert_eq!(
+            snapshot.target("e3").map(|target| target.locator_text()),
+            Some(r#"role:link "Docs""#.to_owned())
+        );
+    }
+
+    #[test]
     fn locators_render_with_target_ref_segments() {
-        let snapshot = PageSnapshot::parse(SNAPSHOT.to_owned());
+        let snapshot = PageSnapshot::parse(SNAPSHOT);
         let target = snapshot.target("f1e2").expect("present");
         assert_eq!(
             target.locator_wire(),

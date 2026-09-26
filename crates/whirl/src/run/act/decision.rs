@@ -327,7 +327,7 @@ mod tests {
     const SNAPSHOT: &str = "- textbox \"Email\" [ref=e4]\n- button \"Sign in\" [ref=e5]\n";
 
     fn snapshot() -> PageSnapshot {
-        PageSnapshot::parse(SNAPSHOT.to_owned())
+        PageSnapshot::parse(SNAPSHOT)
     }
 
     fn instruction(text: &str) -> Instruction {

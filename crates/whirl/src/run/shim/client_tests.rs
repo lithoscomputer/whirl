@@ -71,6 +71,7 @@ async fn hello_start_flow_and_end_flow_round_trip() {
         video:              None,
         har_path:           None,
         trace:              false,
+        open_shadow_roots:  false,
     };
     client
         .start_flow(&start)

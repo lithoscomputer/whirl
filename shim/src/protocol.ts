@@ -272,6 +272,8 @@ export interface StartFlowParams {
 	readonly video: VideoConfig | null;
 	readonly harPath: string | null;
 	readonly trace: boolean;
+	/** Open every shadow root that page scripts attach (SPEC 7.4). */
+	readonly openShadowRoots: boolean;
 }
 
 export interface EndFlowParams {

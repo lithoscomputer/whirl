@@ -639,7 +639,12 @@ fn collect_action_refs<'a>(action: &'a Action, refs: &mut Vec<VarRef<'a>>) {
             collect_value_refs(path, line, refs);
         }
         ActionKind::Eval { script } => collect_value_refs(script, line, refs),
-        ActionKind::Act { instruction } => collect_value_refs(instruction, line, refs),
+        ActionKind::Act { scope, instruction } => {
+            if let Some(scope) = scope {
+                collect_locator_refs(scope, line, refs);
+            }
+            collect_value_refs(instruction, line, refs);
+        }
         ActionKind::Store { key, value, .. } => {
             collect_value_refs(key, line, refs);
             collect_value_refs(value, line, refs);

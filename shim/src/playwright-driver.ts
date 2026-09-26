@@ -281,6 +281,83 @@ async function installHostFiltering(
 	);
 }
 
+interface Point {
+	readonly x: number;
+	readonly y: number;
+}
+
+/**
+ * Runs in every frame before page scripts (SPEC 7.4). Playwright's AI
+ * snapshot, like page scripts, cannot see inside a closed shadow root, so a
+ * flow that uses ACT opens every root a page script attaches, which gives
+ * ACT the view Stagehand gets from Chrome's extension API. The page can
+ * notice: `host.shadowRoot` is no longer null. Declarative closed roots in
+ * HTML are created by the parser and stay closed.
+ */
+function openShadowRoots(): void {
+	const attachShadow = Element.prototype.attachShadow;
+	Element.prototype.attachShadow = function (
+		this: Element,
+		init: ShadowRootInit,
+	): ShadowRoot {
+		return attachShadow.call(this, { ...init, mode: "open" });
+	};
+}
+
+/**
+ * Where to point at an element that an `ACT` snapshot names (SPEC 7.4).
+ * Playwright's AI snapshot folds a wrapper with one visible child into the
+ * wrapper's line, so the ref can name a wide container whose center misses
+ * the clickable child, as in a custom dropdown. Aim at the deepest
+ * descendant that shows the same text instead; the click still bubbles to
+ * the element the model chose. Undefined keeps Playwright's center.
+ */
+async function textTargetPosition(
+	locator: Locator,
+	timeoutMs: number,
+): Promise<Point | undefined> {
+	const position = await locator.evaluate(
+		(element) => {
+			const normalize = (text: string): string =>
+				text.replace(/\s+/g, " ").trim();
+			const text = normalize((element as HTMLElement).innerText ?? "");
+			if (text === "") {
+				return null;
+			}
+			let target: Element = element;
+			for (;;) {
+				const next = Array.from(target.children).find((child) => {
+					if (!(child instanceof HTMLElement)) {
+						return false;
+					}
+					const box = child.getBoundingClientRect();
+					return (
+						box.width > 0 &&
+						box.height > 0 &&
+						normalize(child.innerText) === text
+					);
+				});
+				if (next === undefined) {
+					break;
+				}
+				target = next;
+			}
+			if (target === element) {
+				return null;
+			}
+			const outer = element.getBoundingClientRect();
+			const inner = target.getBoundingClientRect();
+			return {
+				x: inner.left - outer.left + inner.width / 2,
+				y: inner.top - outer.top + inner.height / 2,
+			};
+		},
+		undefined,
+		{ timeout: timeoutMs },
+	);
+	return position ?? undefined;
+}
+
 export class PlaywrightDriver implements ShimDriver {
 	readonly #clickReceipts = new WeakMap<
 		Page,
@@ -379,6 +456,9 @@ export class PlaywrightDriver implements ShimDriver {
 		};
 		const context = await browser.newContext(contextOptions);
 		context.setDefaultNavigationTimeout(params.navTimeoutMs);
+		if (params.openShadowRoots) {
+			await context.addInitScript(openShadowRoots);
+		}
 		// Bound before any page exists, so the main page and every popup
 		// have it without a round trip inside a step's timeout.
 		const clickBinding = `__whirlClick_${randomUUID().replaceAll("-", "")}`;
@@ -614,13 +694,30 @@ export class PlaywrightDriver implements ShimDriver {
 				});
 				return {};
 			case "click":
-				await this.#locatorAction(page, params, (locator) =>
-					this.#click(page, locator, timeoutMs),
+				await this.#locatorAction(page, params, async (locator, fromSnapshot) =>
+					this.#click(
+						page,
+						locator,
+						timeoutMs,
+						fromSnapshot
+							? await textTargetPosition(locator, timeoutMs)
+							: undefined,
+					),
 				);
 				return {};
 			case "dblclick":
-				await this.#locatorAction(page, params, (locator) =>
-					locator.dblclick({ timeout: timeoutMs }),
+				await this.#locatorAction(
+					page,
+					params,
+					async (locator, fromSnapshot) => {
+						const position = fromSnapshot
+							? await textTargetPosition(locator, timeoutMs)
+							: undefined;
+						await locator.dblclick({
+							timeout: timeoutMs,
+							...(position === undefined ? {} : { position }),
+						});
+					},
 				);
 				return {};
 			case "fill": {
@@ -663,8 +760,18 @@ export class PlaywrightDriver implements ShimDriver {
 				return {};
 			}
 			case "hover":
-				await this.#locatorAction(page, params, (locator) =>
-					locator.hover({ timeout: timeoutMs }),
+				await this.#locatorAction(
+					page,
+					params,
+					async (locator, fromSnapshot) => {
+						const position = fromSnapshot
+							? await textTargetPosition(locator, timeoutMs)
+							: undefined;
+						await locator.hover({
+							timeout: timeoutMs,
+							...(position === undefined ? {} : { position }),
+						});
+					},
 				);
 				return {};
 			case "upload": {
@@ -735,9 +842,21 @@ export class PlaywrightDriver implements ShimDriver {
 			case "ariaSnapshot": {
 				// ACT's view of the page (SPEC 7.4): element refs such as
 				// [ref=e12] that a later `ref` locator segment resolves.
-				const snapshot = await page.ariaSnapshot({
-					mode: "ai",
-					timeout: timeoutMs,
+				if (fieldArrayOrNull(params, "locator") === null) {
+					const snapshot = await page.ariaSnapshot({
+						mode: "ai",
+						timeout: timeoutMs,
+					});
+					return { snapshot };
+				}
+				// ACT limited to one element (SPEC 7.4): the scope waits like
+				// any locator and must match exactly one element.
+				let snapshot = "";
+				await this.#locatorAction(page, params, async (locator) => {
+					snapshot = await locator.ariaSnapshot({
+						mode: "ai",
+						timeout: timeoutMs,
+					});
 				});
 				return { snapshot };
 			}
@@ -884,7 +1003,12 @@ export class PlaywrightDriver implements ShimDriver {
 		}
 	}
 
-	async #click(page: Page, locator: Locator, timeoutMs: number): Promise<void> {
+	async #click(
+		page: Page,
+		locator: Locator,
+		timeoutMs: number,
+		position?: Point,
+	): Promise<void> {
 		const deadline = performance.now() + timeoutMs;
 		const binding = this.#flow?.clickBinding;
 		if (binding === undefined) {
@@ -917,6 +1041,7 @@ export class PlaywrightDriver implements ShimDriver {
 		try {
 			await locator.click({
 				timeout: Math.max(1, deadline - performance.now()),
+				...(position === undefined ? {} : { position }),
 			});
 		} catch (error: unknown) {
 			// Chromium can close a popup before acknowledging the mouse event.
@@ -946,7 +1071,7 @@ export class PlaywrightDriver implements ShimDriver {
 	async #locatorAction(
 		page: Page,
 		params: Params,
-		action: (locator: Locator) => Promise<unknown>,
+		action: (locator: Locator, fromSnapshot: boolean) => Promise<unknown>,
 	): Promise<void> {
 		const { locator, description, fromSnapshot } = this.#readLocator(
 			page,
@@ -962,7 +1087,7 @@ export class PlaywrightDriver implements ShimDriver {
 			);
 		}
 		try {
-			await action(locator);
+			await action(locator, fromSnapshot);
 		} catch (error) {
 			if (isStrictModeViolation(error)) {
 				let count = 0;

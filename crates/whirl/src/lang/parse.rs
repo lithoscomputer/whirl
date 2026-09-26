@@ -1230,9 +1230,7 @@ fn parse_action_body(
         "EVAL" => ActionKind::Eval {
             script: one_value(tokens, keyword_span)?,
         },
-        "ACT" => ActionKind::Act {
-            instruction: one_value(tokens, keyword_span)?,
-        },
+        "ACT" => parse_act(tokens, keyword_span)?,
         other => {
             return Err(
                 LineError::new(keyword_span, format!("unknown action `{other}`"))
@@ -1241,6 +1239,23 @@ fn parse_action_body(
         }
     };
     Ok((kind, timeout))
+}
+
+/// `ACT "instruction"` or `ACT locator "instruction"` (SPEC 7.4). The scope
+/// takes prefixed segments only, as in `[Asserts]`: a region has no
+/// natural default engine.
+fn parse_act(tokens: Vec<RawToken>, keyword_span: Span) -> Result<ActionKind, LineError> {
+    if tokens.len() < 2 {
+        return Ok(ActionKind::Act {
+            scope:       None,
+            instruction: one_value(tokens, keyword_span)?,
+        });
+    }
+    let (scope, instruction) = locator_and_value(tokens, keyword_span, false)?;
+    Ok(ActionKind::Act {
+        scope: Some(scope),
+        instruction,
+    })
 }
 
 /// `PRESS` with one argument treats it as the key; only with two is the
@@ -4144,6 +4159,26 @@ status == 202
         assert_eq!(error.message, "expected a value after the key");
         let error = parse_err("VISIT /\nSTORE local flag on extra\n");
         assert_eq!(error.message, "expected end of line");
+    }
+
+    #[test]
+    fn act_takes_an_optional_prefixed_scope() {
+        let ActionKind::Act { scope, instruction } = action_kind("ACT \"click Buy\"") else {
+            panic!("expected ACT");
+        };
+        assert!(scope.is_none());
+        assert_eq!(lit(&instruction), "click Buy");
+
+        let ActionKind::Act { scope, instruction } =
+            action_kind("ACT css:form >> role:group \"click Buy\"")
+        else {
+            panic!("expected ACT");
+        };
+        assert_eq!(scope.expect("a scope").segments.len(), 2);
+        assert_eq!(lit(&instruction), "click Buy");
+
+        let error = parse_err("VISIT /\nACT main \"click Buy\"\n");
+        assert_eq!(error.line, 2);
     }
 
     #[test]

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add `ACT locator "instruction"`, which shows the model only one element and what it contains, for long pages.
+- Leave each link's URL and the cursor hints out of the snapshot `ACT` sends, about a third of a link-heavy page.
+- When `ACT` clicks, double-clicks, or hovers an element that wraps a narrower one, such as a custom dropdown's trigger, point at the element that shows its text instead of the wrapper's center.
+- In a file that uses `ACT`, open every shadow root that page scripts attach, so `ACT` sees and acts inside closed shadow roots, as Stagehand does.
 - When a page replaces the element `ACT` chose while the model answers, as a re-render after load does, `ACT` takes a new snapshot and asks once more instead of waiting out the step timeout. A second replacement fails the step at once with `stale-ref`.
 - Replace the check operators with Hurl's vocabulary. A check is `subject { filter } [not] predicate`, with predicates such as `startsWith`, `isInteger`, and `exists`, and filters such as `count`, `regex`, `toInt`, `split`, `urlQueryParam`, and `base64Decode`. Captures take the same filters, and `regex` is now one of them.
 - Replace JSON Pointer with JSONPath: `json:/items/0/id` becomes `json:$.items[0].id`, and a query such as `json:$.items[*].sku` gives a list.

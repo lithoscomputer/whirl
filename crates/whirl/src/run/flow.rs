@@ -534,7 +534,11 @@ impl BuildError {
 /// plans its own commands (SPEC 7.4).
 enum PreparedStep {
     Command(StepCommand),
-    Act(Instruction),
+    Act {
+        instruction: Instruction,
+        /// The wire locator of the element the snapshot is limited to.
+        scope:       Option<Json>,
+    },
     /// A check with a subject, evaluated in Rust (SPEC 9).
     Check(check_step::PreparedCheck),
     Capture(check_step::PreparedCapture),
@@ -580,9 +584,14 @@ impl FlowExec<'_> {
     ) -> Result<PreparedStep, BuildError> {
         match node {
             StepNode::Action(action) => match &action.kind {
-                ast::ActionKind::Act { instruction } => Ok(PreparedStep::Act(
-                    Instruction::try_new(instruction, &mut self.vars)?,
-                )),
+                ast::ActionKind::Act { scope, instruction } => Ok(PreparedStep::Act {
+                    instruction: Instruction::try_new(instruction, &mut self.vars)?,
+                    // A scope has only prefixed segments (SPEC 7.4).
+                    scope:       scope
+                        .as_ref()
+                        .map(|scope| self.locator(scope, None))
+                        .transpose()?,
+                }),
                 _ => self.build_action(action).map(PreparedStep::Command),
             },
             StepNode::Page(page) => {
@@ -983,13 +992,13 @@ impl FlowExec<'_> {
                 };
                 (self.apply_outcome(node, outcome, state, budget), None)
             }
-            PreparedStep::Act(instruction) => {
+            PreparedStep::Act { instruction, scope } => {
                 let budget = act_step::ActBudget {
                     timeout_ms,
                     entry_capped,
                     entry_budget_ms,
                 };
-                self.run_act(node, &instruction, &title, budget, client, state)
+                self.run_act(node, &instruction, scope, &title, budget, client, state)
                     .instrument(span)
                     .await
             }
@@ -1326,6 +1335,7 @@ fn start_flow_params(run: &FlowRun<'_>, options: &ResolvedOptions) -> StartFlowP
             .har
             .then(|| wire_path(&run.abs_dir.join(artifacts::NETWORK_HAR))),
         trace:              run.flags.trace,
+        open_shadow_roots:  run.file.uses_act(),
     }
 }
 

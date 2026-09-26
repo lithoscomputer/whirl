@@ -399,9 +399,10 @@ pub(crate) enum ActionKind {
     Eval {
         script: Value,
     },
-    /// `ACT "instruction"` asks the file's model to choose one element
-    /// action (SPEC 7.4).
+    /// `ACT [locator] "instruction"` asks the file's model to choose one
+    /// element action, inside `scope` when it is given (SPEC 7.4).
     Act {
+        scope:       Option<Locator>,
         instruction: Value,
     },
     /// `STORE local "key" "value"` writes one browser storage entry.
