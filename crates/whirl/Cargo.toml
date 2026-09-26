@@ -14,6 +14,7 @@ chrono = { version = "=0.4.45", default-features = false, features = ["std", "se
 clap = { version = "4.6.6", features = ["derive"] }
 dirs = "6"
 flate2 = "1"
+lithos-llm = { git = "https://github.com/lithoscomputer/lithos-llm", rev = "f40391aa8b3c3871bbac3dced2f4e26ddc46a743" }
 quick-junit = "0.7.0"
 reqwest = { version = "0.12", default-features = false, features = [
     "blocking",
@@ -33,7 +34,10 @@ zip = { version = "7.2.0", default-features = false, features = [
 ] }
 
 [dev-dependencies]
+axum = "0.8"
 tiny_http = "0.12.0"
+# The OpenAI-compatible model twin that ACT acceptance tests run against.
+twin-openai = { git = "https://github.com/lithoscomputer/twins", rev = "a72b770c997bcbf9c5b2d813c748d6190a0cb4b5" }
 trycmd = "1.2.1"
 
 [lints]

@@ -726,6 +726,15 @@ export class PlaywrightDriver implements ShimDriver {
 				);
 				return {};
 			}
+			case "ariaSnapshot": {
+				// ACT's view of the page (SPEC 7.4): element refs such as
+				// [ref=e12] that a later `ref` locator segment resolves.
+				const snapshot = await page.ariaSnapshot({
+					mode: "ai",
+					timeout: timeoutMs,
+				});
+				return { snapshot };
+			}
 			case "page": {
 				const expectation = fieldObject(
 					params,
@@ -1010,6 +1019,8 @@ function defaultErrorKind(cmd: StepCommand): ErrorKind {
 			return "eval";
 		case "store":
 			return "action";
+		case "ariaSnapshot":
+			return "internal";
 		case "snapshot":
 		case "page":
 		case "assert":

@@ -1,0 +1,5 @@
+bin.name = "whirl"
+args = ["check", "no-model.whirl", "unknown-model.whirl", "known-model.whirl"]
+fs.sandbox = true
+env.remove = ["WHIRL_LLM_ENDPOINT"]
+status.code = 2

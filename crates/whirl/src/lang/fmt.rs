@@ -390,6 +390,12 @@ fn render_action(action: &Action) -> String {
         ActionKind::Eval { script } => {
             format!("EVAL {}", render_value(script, ValueCtx::Plain, is_final))
         }
+        ActionKind::Act { instruction } => {
+            format!(
+                "ACT {}",
+                render_value(instruction, ValueCtx::Plain, is_final)
+            )
+        }
         ActionKind::Store { scope, key, value } => format!(
             "STORE {} {} {}",
             scope.keyword(),
@@ -606,6 +612,7 @@ fn render_option(option: &FileOption) -> String {
         FileOption::Storage(value) => format!("storage: {}", plain(value)),
         FileOption::UserAgent(value) => format!("user-agent: {}", plain(value)),
         FileOption::Setup(value) => format!("setup: {}", plain(value)),
+        FileOption::Model(value) => format!("model: {}", plain(value)),
     }
 }
 
@@ -865,7 +872,8 @@ mod tests {
             FileOption::Base(value)
             | FileOption::Storage(value)
             | FileOption::UserAgent(value)
-            | FileOption::Setup(value) => {
+            | FileOption::Setup(value)
+            | FileOption::Model(value) => {
                 scrub_value(value);
             }
             FileOption::Browser(value) => scrub_option_value(value),
@@ -945,6 +953,7 @@ mod tests {
             | ActionKind::Screenshot { name }
             | ActionKind::Snapshot { name } => scrub_ident(name),
             ActionKind::Eval { script } => scrub_value(script),
+            ActionKind::Act { instruction } => scrub_value(instruction),
             ActionKind::Store { key, value, .. } => {
                 scrub_value(key);
                 scrub_value(value);

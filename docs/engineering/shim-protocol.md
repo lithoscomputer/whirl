@@ -166,6 +166,7 @@ Commands and their extra params (result `{}` unless noted):
 | `snapshot` | `baselinePath`, `actualPath`, `diffPath`, `update` (bool) |
 | `evalAction` | `script` |
 | `store` | `scope` (`"local"` \| `"session"` \| `"cookie"`), `key`, `value` — writes one `localStorage` or `sessionStorage` entry on the current origin, or one cookie for the current page's URL (host, path `/`, no attributes); `cookie` on a non-http(s) page is an `action` error |
+| `ariaSnapshot` | none; result `{"snapshot": "..."}`, the selected tab's `page.ariaSnapshot({ mode: "ai" })`, for `ACT` (SPEC 7.4) |
 | `page` | `expect` (section 4.2) |
 | `assert` | `spec` (section 4.3) |
 | `capture` | `source`, `filter` (section 4.4); result `{"value": "..."}` |
@@ -208,7 +209,8 @@ A locator is an array of segments, in chain order:
   {"type": "testid", "id": "cart-badge"},
   {"type": "css", "selector": ".foo > .bar"},
   {"type": "frame", "selector": "#payment-element iframe"},
-  {"type": "nth", "index": 1}
+  {"type": "nth", "index": 1},
+  {"type": "ref", "ref": "e12"}
 ]
 ```
 
@@ -219,6 +221,12 @@ inside the frame. Rust requires an element segment after the final frame.
 
 `nth.index` is 1-based; the shim subtracts 1. Rust guarantees `nth` is never
 first and `index >= 1`. The mapping to Playwright calls is SPEC section 6.1.
+
+`ref` names an element from an `ariaSnapshot` result, such as `e12`, or `f1e3`
+inside an iframe. The shim resolves it with `page.locator("aria-ref=e12")`.
+Only Rust creates `ref` segments, as the only segment of an `ACT` action's
+locator, and only for refs in the latest snapshot. `.whirl` files have no
+syntax for them.
 
 Popup names are local to a flow; `main` names the original page. The shim records
 popup events before actions and attaches dialog handling to every page. It keeps

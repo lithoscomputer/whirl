@@ -100,13 +100,20 @@ export interface NthSegment {
 	readonly index: number;
 }
 
+/** An element ref from the latest `ariaSnapshot` (SPEC 7.4); Rust-only. */
+export interface RefSegment {
+	readonly type: "ref";
+	readonly ref: string;
+}
+
 export type LocatorSegment =
 	| RoleSegment
 	| TextEngineSegment
 	| TestidSegment
 	| CssSegment
 	| FrameSegment
-	| NthSegment;
+	| NthSegment
+	| RefSegment;
 
 // --- PAGE expectations (protocol 4.2) ---
 
@@ -346,6 +353,7 @@ export type StepCommand =
 	| "snapshot"
 	| "evalAction"
 	| "store"
+	| "ariaSnapshot"
 	| "page"
 	| "assert"
 	| "capture";
@@ -370,6 +378,7 @@ const stepCommandList: readonly StepCommand[] = [
 	"snapshot",
 	"evalAction",
 	"store",
+	"ariaSnapshot",
 	"page",
 	"assert",
 	"capture",

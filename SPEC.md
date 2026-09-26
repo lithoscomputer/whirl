@@ -7,7 +7,7 @@ Whirl is a command-line tool that runs web UI tests written in plain text files.
 
 ## 1. Design principles
 
-1. **Closed vocabulary.** The language has a fixed set of actions, checks, and extractors. There are no conditionals, loops, functions, or user-defined keywords. A flow that needs branching is two files.
+1. **Closed vocabulary.** The language has a fixed set of actions, checks, and extractors. There are no conditionals, loops, functions, or user-defined keywords. A flow that needs branching is two files. `ACT` (section 7.4) is a fixed keyword too, but the action a language model chooses for it can change from run to run, so a flow asserts the result it expects.
 2. **No waits in the language.** Actions auto-wait for their target. Assertions retry until they pass or time out. The format has no `SLEEP` and no `WAIT`.
 3. **Semantic locators first.** The locator grammar puts `role:` and `label:` in front and makes raw CSS the visually distinct escape hatch.
 4. **One flow per file, top to bottom.** A file is a linear sequence of entries. Execution order is textual order. A failure stops the file.
@@ -129,6 +129,7 @@ The `[Options]` section holds `key: value` lines. V1 keys:
 | `storage` | file path | none | Saved storage state loaded into each file's browser context |
 | `user-agent` | alias or string | engine default | User agent string the browser sends and reports |
 | `setup` | file path | none | A flow that runs first; this file starts from its final state |
+| `model` | `provider/model` | none | The language model that `ACT` asks (section 7.4) |
 
 `allow-hosts` takes one or more host globs (`allow-hosts: example.com *.example.com`). Globs match the request's hostname only — scheme and port are ignored — and `*.example.com` does not match the apex `example.com`; list both to cover both. The `base` host is always allowed. Whirl aborts requests to any other host, including fetch/XHR, WebSockets, and subresources, and the reports list every blocked host. Service workers are disabled when `allow-hosts` is set, because they can bypass request routing. IP-literal hosts match textually; `data:` and `blob:` URLs have no host and are always allowed. Without the option, all hosts are allowed.
 
@@ -150,6 +151,13 @@ All other values are literal strings, including unknown names such as `chorme`.
 Quote a value that contains spaces. Quoted and unquoted forms have the same
 meaning: `chrome` and `"chrome"` both select the alias. Alias resolution happens
 after option interpolation and CLI overrides; `--user-agent chrome` works too.
+
+`model` names a language model in the form `provider/model`, such as
+`anthropic/claude-sonnet-5` or `openai/gpt-5.6-luna`, from the model catalog
+built into Whirl. Credentials come from the provider's usual environment
+variable, such as `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`. A file that uses
+`ACT` without `model` is a lint error. Without `WHIRL_LLM_ENDPOINT` (section
+13), `whirl check` also reports a literal `model` that the catalog cannot route.
 
 Unknown keys are a parse error. When section 13 defines a corresponding command-line flag, that flag overrides the file option.
 
@@ -224,6 +232,7 @@ An action is a verb, an optional locator, and an optional value. Element-targeti
 | `SCREENSHOT name` | Save a full-page screenshot as artifact `name.png`. The name is an identifier that may also contain hyphens. Never fails the entry (see below). |
 | `SNAPSHOT name` | Compare a full-page screenshot against the stored baseline; fails the entry on visual difference. |
 | `EVAL "script"` | Run a JavaScript script in the page. The escape hatch; rules below. |
+| `ACT "instruction"` | Ask a language model to choose one element action, then run it (section 7.4). |
 | `STORE local "key" "value"` | Write one `localStorage` entry on the current page's origin. |
 | `STORE session "key" "value"` | Write one `sessionStorage` entry on the current page's origin. |
 | `STORE cookie "name" "value"` | Set one cookie for the current page's host, with path `/`. |
@@ -402,6 +411,74 @@ status == 200
 json:/name == Ada
 ```
 
+### 7.4 ACT
+
+`ACT "instruction"` asks the language model named by the `model` option
+(section 5) to choose one element action on the selected tab. Whirl then runs
+that action. The design follows Stagehand's `act()`.
+
+```whirl
+[Options]
+model: anthropic/claude-sonnet-5
+
+VISIT /products
+ACT "add the first product to the cart"
+[Asserts]
+testid:cart-badge text == 1
+```
+
+Whirl takes a Playwright AI snapshot of the selected tab. The snapshot is an
+outline of the page's accessibility tree, and each element in it has a ref such
+as `e12`. Elements inside iframes are included, with refs such as `f1e3`. Whirl
+sends the instruction and the snapshot to the model in one structured-output
+call. The model answers with one element ref, one method, and the method's
+arguments, or with no element. Whirl checks the answer and runs it as the
+matching Whirl action, with that action's actionability and strictness rules:
+
+| Method | Runs as |
+| --- | --- |
+| `click` | `CLICK` |
+| `doubleClick` | `DBLCLICK` |
+| `hover` | `HOVER` |
+| `fill` | `FILL` |
+| `type` | `TYPE` |
+| `press` | `PRESS` with a target |
+| `selectOptionFromDropdown` | `SELECT` |
+
+A custom dropdown that must open before an option can be chosen is a two-step
+action. The model marks its first answer as two-step. Whirl runs that action,
+takes a new snapshot, and asks for the second action. When the second answer
+names no element, the line passes with the first action. One `ACT` line makes
+at most two model calls.
+
+An `ACT` line fails the entry when:
+
+- the model names no element (`act-no-match`); Whirl does not ask again,
+- the answer does not match the schema, names an element that is not in the
+  snapshot, gives the wrong number of arguments, or uses an unknown
+  placeholder (`act-invalid-decision`),
+- the chosen action fails, with that action's error, or
+- the step budget expires, like any step.
+
+A model error is `act-model`. Content filtering and an input larger than the
+model's context fail the entry (exit 1). Other model errors, such as rejected
+credentials, a spent quota, a network failure, or a server error that remains
+after retries, are runtime errors (exit 3).
+
+The instruction goes to a third party. A value from `{{env.NAME}}` is sent as
+the placeholder `%env.NAME%`, and a masked value inside another variable as
+`%secretN%`. The model writes the placeholder into its arguments. Whirl puts
+the value back only in the command it sends to the browser, and reports keep
+the placeholder. Other variables and captures are sent as their values. The
+snapshot contains text that the page shows, including values typed by earlier
+steps; Whirl does not mask page content.
+
+The step's report text is the authored line. The JSON report adds an `act`
+object to the step: the model, each action that ran as a Whirl line with the
+model's description of the element, and the token usage and cost of the model
+calls. A rendered line such as `CLICK role:button "Sign in"` describes the
+element; it is not guaranteed to be unique on the page.
+
 ## 8. PAGE
 
 ```
@@ -527,6 +604,7 @@ Whirl masks every value sourced from `env.*` in the textual output it generates:
 - **Order.** Entries run top to bottom. Within a browser entry: actions, then `PAGE`, then asserts, then captures. Within an HTTP entry: the request, then response asserts, then response captures.
 - **Failure.** The first failing step fails the entry, and a failed entry stops its file; remaining entries in that file are skipped and reported as skipped. Other files still run. On failure Whirl saves a full-page screenshot and, with `--trace`, a Playwright trace to the artifacts directory.
 - **Navigation.** `VISIT` completes when the new document reaches `DOMContentLoaded`: the HTML is parsed and its synchronous scripts have run. It does not wait for the `load` event, because images, fonts, iframes, and media hold `load` open for reasons a flow never asserted, and every later line waits for what it needs anyway: actions wait for their element to be actionable, asserts and `PAGE` retry. A page that only becomes usable after `load` needs an assert on that state before an `EVAL` or `SCREENSHOT`, which run once without waiting.
+- **ACT.** An `ACT` line is one step. Its snapshots, model calls, and actions share its step timeout. Model calls take seconds, so an `ACT` line that needs more than the step timeout sets its own, such as `@60s`.
 - **Timeouts.** Each action, PAGE, assert, and capture line gets the step timeout (`step-timeout` option, default 10s); `VISIT` gets the navigation timeout (`nav-timeout` option, default 30s). A trailing `@duration` on any such line overrides its own budget: `CLICK "Generate report" @60s`. The optional `entry-timeout` option caps an entry's total time across all of its lines; when it expires, the in-flight step fails with an entry-timeout error. An entry without one is still bounded by its per-step timeouts. The suffix must be bare: a line’s final bare token of the form `@duration` is always its timeout, and a quoted `"@60s"` is an ordinary value. Timeouts are enforced from outside the page, so they hold even when the page cannot respond — an `EVAL` script blocking the renderer or returning a Promise that never settles. When a timed-out step cannot be cancelled cleanly, Whirl closes that flow's browser context; if closing also stalls, it terminates and restarts only that worker's shim process. Either way the flow fails and reports normally, and other files are unaffected.
 - **Setup.** Files with a `setup` option run after their setup flows. Whirl first runs every distinct setup flow named by the inputs, once each and in parallel like any files, then runs the remaining files, each starting from its setup flow's saved state with the setup flow's captures as `{{setup.name}}`. A setup flow that is also an input runs once, as the setup. A failed setup flow reports normally, and each of its dependents reports a `[setup]` failure naming the setup flow and its first failing step, without opening a browser. Setup flows are one level deep.
 - **Parallelism.** Files run in parallel across worker slots (`--jobs`, default: logical CPU count). A single file is never parallelized.
@@ -587,6 +665,14 @@ Exit codes:
 | 2 | Parse or lint error |
 | 3 | Runtime error (browser or shim failure) |
 | 4 | Usage error |
+
+Two environment variables change where `ACT` sends its model calls (section
+7.4). `WHIRL_LLM_ENDPOINT=http://host:port` sends every call to one
+OpenAI-compatible Chat Completions server at `<url>/v1/chat/completions`. The
+`model` option is then the model name that server receives, and `whirl check`
+does not check it against the catalog. `WHIRL_LLM_API_KEY`, when set, is sent
+to that server as a bearer token. These variables serve local model servers,
+proxies, and tests.
 
 `--video` records the `main` tab (section 7.1). On Chromium, Whirl records the page's own screencast frames through Playwright's bundled ffmpeg at 60 frames per second, or at the rate `--video-fps` names; a still page holds its last frame, so the recording always plays at a constant rate. Firefox and WebKit use Playwright's recorder at its fixed rate of 25 frames per second. `--video-fps` on those engines is not an error: the file records at 25 frames per second and reports a warning, because the recording is evidence, not a result. A missing ffmpeg fails the file as a runtime error; `whirl install` provisions it with every browser build, and `whirl doctor` checks for it.
 
@@ -675,7 +761,7 @@ The artifact override applies to each input's relative paths. Destination protec
 
 Rust source, configuration, and project setup follow the [Brynary Rust Style Guide](https://github.com/brynary/rust-style-guide). TypeScript source and language tooling follow the [Brynary TypeScript Style Guide](https://github.com/brynary/typescript-style-guide) for language-level and authoring conventions. The shim targets the pinned private Node runtime specified here, so the TypeScript guide's Bun-specific runtime, API, package-management, and test-runner policies do not apply. This specification and accepted Whirl ADRs take precedence over both guides.
 
-- `whirl` is a single Rust binary containing the parser, the runner, the reporters, and the shim manager.
+- `whirl` is a single Rust binary containing the parser, the runner, the reporters, and the shim manager. It also makes `ACT`'s language model calls itself, through the `lithos-llm` client; the shim only takes the page snapshot and runs the chosen action.
 - Whirl drives browsers through a thin Node shim that Whirl owns: a small, stable JSON API over stdio pipes, shaped like Whirl's closed vocabulary and implemented on the Playwright library. The Rust binary launches the shim as a child process. Whirl does not reimplement browser automation and does not speak CDP or Playwright's internal driver protocol, so it inherits Playwright's auto-waiting, retrying assertions, locator engine, tracing, and three browser engines — and Playwright upgrades stay internal to the shim.
 - `whirl install` downloads the pinned shim bundle (a private Node runtime, the shim, and the `@playwright/test` package) and the browser builds. Users do not need Node installed. Each Whirl release pins exactly one Playwright version.
 - The shim bundles `@playwright/test` and drives its standalone `expect` for retried checks: they compile to Playwright's web-first assertions (`toHaveText`, `toHaveCount`, `toHaveURL`, ...) where a usable one exists, so retry timing and regex semantics match Playwright's. Checks with no usable web-first assertion — count comparators other than `==`, negated attribute checks, and `SNAPSHOT`, whose `toHaveScreenshot` runs only inside Playwright's test runner — run as shim-owned poll loops with the same step timeout; snapshot comparison uses Playwright's image comparator with the defaults of section 7.
@@ -715,6 +801,7 @@ action-body = "VISIT" , value
            | "SCREENSHOT" , artifact-name
            | "SNAPSHOT" , artifact-name
            | "EVAL" , value
+           | "ACT" , value
            | "STORE" , ( "local" | "session" | "cookie" ) , value , value ;
 
 http-request = http-headline , { http-header } , [ http-body ] ;
@@ -790,3 +877,5 @@ Deferred beyond V1 (candidate V2 features, not promised):
 - Network stubbing and request-body or request-count assertions.
 - Per-entry `[Options]` overrides and mobile device emulation.
 - An LLM-as-judge assertion (a `JUDGE` keyword with an explicit model option and advisory rather than hard-failing verdicts).
+- More `ACT` methods, each waiting for a matching Whirl action: scrolling (Stagehand's `scrollTo`, `nextChunk`, and `prevChunk`), drag and drop, and right-click and middle-click.
+- An `ACT` cache that replays a successful action without a model call, self-healing that plans again when a chosen action fails, and a step-two prompt that sends only the part of the snapshot that changed.

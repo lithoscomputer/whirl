@@ -101,6 +101,19 @@ test("testid and css map to getByTestId and locator", () => {
 	]);
 });
 
+test("a snapshot ref maps to an aria-ref locator", () => {
+	const { page, calls } = recordingStub();
+	buildLocator(page, [{ type: "ref", ref: "f1e2" }]);
+	assert.deepEqual(calls, [{ method: "locator", args: ["aria-ref=f1e2"] }]);
+});
+
+test("describeLocator renders a snapshot ref", () => {
+	assert.equal(
+		describeLocator([{ type: "ref", ref: "e5" }]),
+		'locator("aria-ref=e5")',
+	);
+});
+
 test("nth is 1-based and subtracts 1", () => {
 	const { page, calls } = recordingStub();
 	buildLocator(page, [

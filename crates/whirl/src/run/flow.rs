@@ -14,15 +14,18 @@ use crate::lang::ast::{
     Value, Viewport,
 };
 use crate::report::model::{
-    EntryReport, FileReport, ReportViewport, RuntimeMetadata, SETUP_ENTRY, Status, StepError,
-    StepKind, StepReport, Timing,
+    ActReport, EntryReport, FileReport, ReportViewport, RuntimeMetadata, SETUP_ENTRY, Status,
+    StepError, StepKind, StepReport, Timing,
 };
+use crate::run::act::{Instruction, ModelClient};
 use crate::run::artifacts;
 use crate::run::shim::{
     CaptureResult, EndFlowParams, ErrorObject, ShimClient, ShimError, StartFlowParams, StepCommand,
     StepOutcome, StepRequest, VideoParams, ViewportParams, wire,
 };
 use crate::run::vars::{VarError, VarStore};
+
+mod act_step;
 
 /// Default per-step timeout (SPEC 5).
 pub(crate) const DEFAULT_STEP_TIMEOUT_MS: u64 = 10_000;
@@ -107,6 +110,8 @@ struct ResolvedOptions {
     user_agent:       Option<String>,
     /// The `setup` flow, resolved relative to the `.whirl` file (SPEC 5).
     setup:            Option<PathBuf>,
+    /// The model `ACT` asks (SPEC 5, 7.4).
+    model:            Option<String>,
 }
 
 /// A failure while resolving options at file start. Reported as the
@@ -170,6 +175,7 @@ impl ResolvedOptions {
         let mut storage: Option<String> = None;
         let mut user_agent: Option<String> = None;
         let mut setup: Option<String> = None;
+        let mut model: Option<String> = None;
 
         for option in &file.options {
             let line = option.line;
@@ -218,6 +224,7 @@ impl ResolvedOptions {
                 FileOption::Storage(value) => storage = Some(vars.resolve(value)?),
                 FileOption::UserAgent(value) => user_agent = Some(vars.resolve(value)?),
                 FileOption::Setup(value) => setup = Some(vars.resolve(value)?),
+                FileOption::Model(value) => model = Some(vars.resolve(value)?),
             }
         }
 
@@ -239,10 +246,10 @@ impl ResolvedOptions {
         }
 
         // The base host is always allowed (SPEC 5).
-        if let (Some(hosts), Some(base)) = (allow_hosts.as_mut(), base.as_deref()) {
-            if let Some(host) = url_host(base) {
-                hosts.push(host);
-            }
+        if let (Some(hosts), Some(base)) = (allow_hosts.as_mut(), base.as_deref())
+            && let Some(host) = url_host(base)
+        {
+            hosts.push(host);
         }
 
         // `storage` resolves relative to the `.whirl` file — its canonical
@@ -268,6 +275,7 @@ impl ResolvedOptions {
             headed: overrides.headed,
             user_agent,
             setup: setup.map(|path| resolve_beside_file(canonical, &path)),
+            model,
         })
     }
 
@@ -369,6 +377,8 @@ pub(crate) struct FlowRun<'a> {
     /// Where to save the final storage state when this file is itself a
     /// `setup` flow; only a passed run writes it.
     pub(crate) state_out:  Option<&'a Path>,
+    /// The run's model client; present when any input uses `ACT`.
+    pub(crate) model:      Option<&'a ModelClient>,
 }
 
 /// One step line of an entry, in execution order (SPEC 12).
@@ -504,6 +514,13 @@ enum BuildError {
     NoBase { url: String },
 }
 
+/// A step ready to run: one shim command, or an `ACT` instruction that
+/// plans its own commands (SPEC 7.4).
+enum PreparedStep {
+    Command(StepCommand),
+    Act(Instruction),
+}
+
 /// Mutable state of one flow run.
 struct FlowExec<'a> {
     run:       &'a FlowRun<'a>,
@@ -533,25 +550,31 @@ impl FlowExec<'_> {
         wire::locator_wire(locator, engine, &mut |value| vars.resolve(value))
     }
 
-    /// Builds the wire command of one step (protocol section 4).
-    fn build_command(
+    /// Builds the wire command of one step (protocol section 4), or the
+    /// resolved instruction of an `ACT` line.
+    fn prepare_step(
         &mut self,
         node: StepNode<'_>,
         implicit_response: Option<&str>,
-    ) -> Result<StepCommand, BuildError> {
+    ) -> Result<PreparedStep, BuildError> {
         match node {
-            StepNode::Action(action) => self.build_action(action),
+            StepNode::Action(action) => match &action.kind {
+                ast::ActionKind::Act { instruction } => Ok(PreparedStep::Act(
+                    Instruction::try_new(instruction, &mut self.vars)?,
+                )),
+                _ => self.build_action(action).map(PreparedStep::Command),
+            },
             StepNode::Page(page) => {
                 let vars = &mut self.vars;
                 let expect = wire::page_wire(&page.check, &mut |value| vars.resolve(value))?;
-                Ok(StepCommand::Page { expect })
+                Ok(PreparedStep::Command(StepCommand::Page { expect }))
             }
             StepNode::Assert(assert) => {
                 let vars = &mut self.vars;
                 let spec = wire::assert_wire(&assert.body, implicit_response, &mut |value| {
                     vars.resolve(value)
                 })?;
-                Ok(StepCommand::Assert { spec })
+                Ok(PreparedStep::Command(StepCommand::Assert { spec }))
             }
             StepNode::Capture(capture) => {
                 let vars = &mut self.vars;
@@ -559,10 +582,10 @@ impl FlowExec<'_> {
                     wire::capture_source_wire(&capture.source, implicit_response, &mut |value| {
                         vars.resolve(value)
                     })?;
-                Ok(StepCommand::Capture {
+                Ok(PreparedStep::Command(StepCommand::Capture {
                     source,
                     filter: wire::filter_wire(capture.filter.as_ref()),
-                })
+                }))
             }
         }
     }
@@ -579,7 +602,8 @@ impl FlowExec<'_> {
         }
     }
 
-    /// Builds the wire command of one action line (SPEC 7).
+    /// Builds the wire command of one action line (SPEC 7). `ACT` lines
+    /// plan their commands instead; see [`Self::prepare_step`].
     fn build_action(&mut self, action: &ast::Action) -> Result<StepCommand, BuildError> {
         use ast::ActionKind as K;
 
@@ -712,6 +736,7 @@ impl FlowExec<'_> {
             K::Eval { script } => StepCommand::EvalAction {
                 script: self.resolve(script)?,
             },
+            K::Act { .. } => unreachable!("prepare_step routes ACT to the act runner"),
             K::Store { scope, key, value } => StepCommand::Store {
                 scope: scope.keyword().to_owned(),
                 key:   self.resolve(key)?,
@@ -829,6 +854,30 @@ struct StepBudget {
     elapsed_ms:      u64,
 }
 
+/// One finished step line: how it ended, its wall time, its rendered
+/// text, and, for `ACT`, what it did.
+struct StepRun {
+    end:         StepEnd,
+    duration_ms: u64,
+    text:        String,
+    act:         Option<ActReport>,
+}
+
+impl StepRun {
+    fn before_start(end: StepEnd, text: String) -> Self {
+        Self {
+            end,
+            duration_ms: 0,
+            text,
+            act: None,
+        }
+    }
+}
+
+fn elapsed_ms(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
 /// Everything recorded while one entry runs.
 struct EntryState {
     steps:        Vec<StepReport>,
@@ -841,17 +890,17 @@ struct EntryState {
 impl FlowExec<'_> {
     /// Runs one step line: builds the command, executes it under the
     /// watchdog, applies capture and artifact effects, and classifies
-    /// the outcome.
+    /// the outcome. An `ACT` line plans and runs its own commands.
     async fn run_step(
         &mut self,
         node: StepNode<'_>,
         implicit_response: Option<&str>,
         client: &mut ShimClient,
         state: &mut EntryState,
-    ) -> (StepEnd, u64, String) {
+    ) -> StepRun {
         let entry_budget_ms = self.options.entry_timeout_ms.unwrap_or(0);
-        let command = match self.build_command(node, implicit_response) {
-            Ok(command) => command,
+        let prepared = match self.prepare_step(node, implicit_response) {
+            Ok(prepared) => prepared,
             Err(error) => {
                 let text = render_step_text(node.raw_text(), &mut self.vars);
                 let end = StepEnd::Failed(StepError {
@@ -859,7 +908,7 @@ impl FlowExec<'_> {
                     message: self.vars.mask(&error.to_string()),
                     ..StepError::default()
                 });
-                return (end, 0, text);
+                return StepRun::before_start(end, text);
             }
         };
         // Resolving the command recorded any env secrets, so the
@@ -870,33 +919,49 @@ impl FlowExec<'_> {
         let (timeout_ms, entry_capped) = effective_timeout_ms(line_budget, state.remaining_ms);
         if entry_capped && timeout_ms == 0 {
             let end = StepEnd::Failed(entry_timeout_error(entry_budget_ms));
-            return (end, 0, title);
+            return StepRun::before_start(end, title);
         }
 
-        let request = StepRequest {
-            entry_start: state.steps.is_empty(),
-            command,
-            timeout_ms,
-            title: title.clone(),
-        };
         let started = Instant::now();
-        let outcome = client
-            .run_step(&request)
-            .instrument(debug_span!("step", line = node.line(), step_kind = ?node.kind()))
-            .await;
-        let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-        if let Some(remaining) = state.remaining_ms.as_mut() {
-            *remaining = remaining.saturating_sub(elapsed_ms);
-        }
-
-        let budget = StepBudget {
-            entry_capped,
-            entry_budget_ms,
-            timeout_ms,
-            elapsed_ms,
+        let span = debug_span!("step", line = node.line(), step_kind = ?node.kind());
+        let (end, act) = match prepared {
+            PreparedStep::Command(command) => {
+                let request = StepRequest {
+                    entry_start: state.steps.is_empty(),
+                    command,
+                    timeout_ms,
+                    title: title.clone(),
+                };
+                let outcome = client.run_step(&request).instrument(span).await;
+                let budget = StepBudget {
+                    entry_capped,
+                    entry_budget_ms,
+                    timeout_ms,
+                    elapsed_ms: elapsed_ms(started),
+                };
+                (self.apply_outcome(node, outcome, state, budget), None)
+            }
+            PreparedStep::Act(instruction) => {
+                let budget = act_step::ActBudget {
+                    timeout_ms,
+                    entry_capped,
+                    entry_budget_ms,
+                };
+                self.run_act(node, &instruction, &title, budget, client, state)
+                    .instrument(span)
+                    .await
+            }
         };
-        let end = self.apply_outcome(node, outcome, state, budget);
-        (end, elapsed_ms, title)
+        let duration_ms = elapsed_ms(started);
+        if let Some(remaining) = state.remaining_ms.as_mut() {
+            *remaining = remaining.saturating_sub(duration_ms);
+        }
+        StepRun {
+            end,
+            duration_ms,
+            text: title,
+            act,
+        }
     }
 
     /// Applies a step outcome's effects and classifies it (protocol
@@ -931,15 +996,15 @@ impl FlowExec<'_> {
                             return StepEnd::Passed;
                         }
                     }
-                    if let ast::ActionKind::Snapshot { name } = &action.kind {
-                        if error.kind == "snapshot-mismatch" {
-                            state.artifacts.push(
-                                self.report_artifact(&artifacts::snapshot_actual_file(&name.text)),
-                            );
-                            state.artifacts.push(
-                                self.report_artifact(&artifacts::snapshot_diff_file(&name.text)),
-                            );
-                        }
+                    if let ast::ActionKind::Snapshot { name } = &action.kind
+                        && error.kind == "snapshot-mismatch"
+                    {
+                        state.artifacts.push(
+                            self.report_artifact(&artifacts::snapshot_actual_file(&name.text)),
+                        );
+                        state
+                            .artifacts
+                            .push(self.report_artifact(&artifacts::snapshot_diff_file(&name.text)));
                     }
                 }
                 classify_shim_error(&self.vars, &error, expired, entry_budget_ms)
@@ -1047,20 +1112,22 @@ impl FlowExec<'_> {
                     status:      Status::Skipped,
                     duration_ms: 0,
                     error:       None,
+                    act:         None,
                 });
                 continue;
             }
-            let (end, duration_ms, text) = self
+            let run = self
                 .run_step(node, implicit_response.as_deref(), client, &mut state)
                 .await;
-            let status = end.status();
+            let status = run.end.status();
             state.steps.push(StepReport {
                 line: node.line(),
                 kind: node.kind(),
-                text,
+                text: run.text,
                 status,
-                duration_ms,
-                error: end.into_error(),
+                duration_ms: run.duration_ms,
+                error: run.end.into_error(),
+                act: run.act,
             });
             if status != Status::Passed {
                 entry_status = status;
@@ -1123,6 +1190,7 @@ fn skipped_entry(file: &File, entry: &ast::Entry, vars: &VarStore) -> EntryRepor
             status:      Status::Skipped,
             duration_ms: 0,
             error:       None,
+            act:         None,
         })
         .collect();
     EntryReport {
@@ -1166,6 +1234,7 @@ impl EntryReport {
                 message,
                 ..StepError::default()
             }),
+            act:         None,
         });
         self
     }
@@ -1394,17 +1463,17 @@ pub(crate) async fn run_flow(run: &FlowRun<'_>, client: &mut ShimClient) -> Flow
             match client.end_flow(&end).await {
                 Ok(result) => {
                     report.blocked_hosts = result.blocked_hosts;
-                    if trace_path.is_some() {
-                        if let Some(entry) = report.entries.iter_mut().find(|entry| {
+                    if trace_path.is_some()
+                        && let Some(entry) = report.entries.iter_mut().find(|entry| {
                             entry.status != Status::Passed && entry.status != Status::Skipped
-                        }) {
-                            entry.artifacts.push(
-                                run.report_dir
-                                    .join(artifacts::TRACE_ZIP)
-                                    .to_string_lossy()
-                                    .into_owned(),
-                            );
-                        }
+                        })
+                    {
+                        entry.artifacts.push(
+                            run.report_dir
+                                .join(artifacts::TRACE_ZIP)
+                                .to_string_lossy()
+                                .into_owned(),
+                        );
                     }
                     if result.video_path.is_some() {
                         report.artifacts.push(

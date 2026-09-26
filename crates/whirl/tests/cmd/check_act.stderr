@@ -1,0 +1,6 @@
+no-model.whirl:2:1: error: ACT needs a `model` option naming the language model to ask
+  ACT "add the first product to the cart"
+  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+unknown-model.whirl:2:8: error: unknown model `nobody/claude-sonnet-5`; use a provider/model name such as anthropic/claude-sonnet-5
+  model: nobody/claude-sonnet-5
+         ^^^^^^^^^^^^^^^^^^^^^^

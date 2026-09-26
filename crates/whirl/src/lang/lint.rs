@@ -105,6 +105,45 @@ pub(crate) fn lint_setup_refs(file: &File, setup: &File) -> Vec<Lint> {
     lints
 }
 
+/// `ACT` rules (SPEC 5, 7.4): a file that uses `ACT` needs a `model`
+/// option, and a literal model must be one `known_model` accepts. The
+/// caller decides what is known, because it depends on the environment
+/// (SPEC 13).
+pub(crate) fn lint_act(file: &File, known_model: impl Fn(&str) -> bool) -> Vec<Lint> {
+    if let Some(line) = file.model_option() {
+        let FileOption::Model(value) = &line.option else {
+            return Vec::new();
+        };
+        return match value.as_literal() {
+            Some(model) if !known_model(&model) => vec![lint_at(
+                file,
+                Severity::Error,
+                "unknown-model",
+                value.span,
+                format!(
+                    "unknown model `{model}`; use a provider/model name such as anthropic/claude-sonnet-5"
+                ),
+            )],
+            _ => Vec::new(),
+        };
+    }
+    file.entries
+        .iter()
+        .flat_map(|entry| &entry.actions)
+        .find(|action| matches!(action.kind, ActionKind::Act { .. }))
+        .map(|action| {
+            lint_at(
+                file,
+                Severity::Error,
+                "act-without-model",
+                action.span,
+                "ACT needs a `model` option naming the language model to ask".to_owned(),
+            )
+        })
+        .into_iter()
+        .collect()
+}
+
 /// Warns about a `count >= 1` (or `count > 0`, `count != 0`) assert
 /// directly followed by a check on the same locator that requires
 /// presence (SPEC 16). Checks accepting zero matches preserve the wait.
@@ -216,17 +255,17 @@ fn value_key(value: &Value) -> String {
 fn setup_option_rules(file: &File, lints: &mut Vec<Lint>) {
     let setup = file.setup_option();
     if let Some(line) = setup {
-        if let FileOption::Setup(value) = &line.option {
-            if !value.is_literal() {
-                lints.push(lint_at(
-                    file,
-                    Severity::Error,
-                    "interpolated-setup",
-                    value.span,
-                    "the setup path must be literal; it is resolved before any variable exists"
-                        .to_owned(),
-                ));
-            }
+        if let FileOption::Setup(value) = &line.option
+            && !value.is_literal()
+        {
+            lints.push(lint_at(
+                file,
+                Severity::Error,
+                "interpolated-setup",
+                value.span,
+                "the setup path must be literal; it is resolved before any variable exists"
+                    .to_owned(),
+            ));
         }
         if let Some(storage) = file.storage_option() {
             lints.push(lint_at(
@@ -382,10 +421,10 @@ fn collect_entry_refs<'a>(entry: &'a Entry, refs: &mut Vec<VarRef<'a>>) {
     for action in &entry.actions {
         collect_action_refs(action, refs);
     }
-    if let Some(page) = &entry.page {
-        if let PageCheck::Value(value) = &page.check {
-            collect_value_refs(value, page.line, refs);
-        }
+    if let Some(page) = &entry.page
+        && let PageCheck::Value(value) = &page.check
+    {
+        collect_value_refs(value, page.line, refs);
     }
     for assert in &entry.asserts {
         collect_assert_refs(assert, refs);
@@ -449,6 +488,7 @@ fn collect_action_refs<'a>(action: &'a Action, refs: &mut Vec<VarRef<'a>>) {
             collect_value_refs(path, line, refs);
         }
         ActionKind::Eval { script } => collect_value_refs(script, line, refs),
+        ActionKind::Act { instruction } => collect_value_refs(instruction, line, refs),
         ActionKind::Store { key, value, .. } => {
             collect_value_refs(key, line, refs);
             collect_value_refs(value, line, refs);
@@ -534,7 +574,8 @@ fn collect_setup_refs(file: &File) -> Vec<VarRef<'_>> {
             FileOption::Base(value)
             | FileOption::Storage(value)
             | FileOption::UserAgent(value)
-            | FileOption::Setup(value) => values.push((value, line.line)),
+            | FileOption::Setup(value)
+            | FileOption::Model(value) => values.push((value, line.line)),
             FileOption::AllowHosts(globs) => {
                 values.extend(globs.iter().map(|glob| (glob, line.line)));
             }
@@ -574,16 +615,16 @@ fn response_names(file: &File, lints: &mut Vec<Lint>) {
     let mut names = HashSet::new();
     for entry in &file.entries {
         for action in &entry.actions {
-            if let ActionKind::Response { name, .. } = &action.kind {
-                if !names.insert(name.text.as_str()) {
-                    lints.push(lint_at(
-                        file,
-                        Severity::Error,
-                        "duplicate-response",
-                        name.span,
-                        format!("response `{}` is already named", name.text),
-                    ));
-                }
+            if let ActionKind::Response { name, .. } = &action.kind
+                && !names.insert(name.text.as_str())
+            {
+                lints.push(lint_at(
+                    file,
+                    Severity::Error,
+                    "duplicate-response",
+                    name.span,
+                    format!("response `{}` is already named", name.text),
+                ));
             }
         }
         let assertion_names = entry
@@ -672,16 +713,16 @@ fn tab_names(file: &File, lints: &mut Vec<Lint>) {
             }
         }
         for assertion in &entry.asserts {
-            if let AssertBody::TabClosed { name } = &assertion.body {
-                if !names.contains(name.text.as_str()) {
-                    lints.push(lint_at(
-                        file,
-                        Severity::Error,
-                        "unknown-tab",
-                        name.span,
-                        format!("unknown tab `{}`", name.text),
-                    ));
-                }
+            if let AssertBody::TabClosed { name } = &assertion.body
+                && !names.contains(name.text.as_str())
+            {
+                lints.push(lint_at(
+                    file,
+                    Severity::Error,
+                    "unknown-tab",
+                    name.span,
+                    format!("unknown tab `{}`", name.text),
+                ));
             }
         }
     }
@@ -927,6 +968,51 @@ mod tests {
         let source = "VISIT /\n[Captures]\nid: testid:x text\n\nVISIT {{env.id}}\n";
         let lints = lint(source);
         assert_eq!(lints.len(), 1);
+    }
+
+    fn lint_act_source(source: &str) -> Vec<Lint> {
+        let file = parse_file(Path::new("test.whirl"), source)
+            .unwrap_or_else(|error| panic!("fixture should parse:\n{error}"));
+        lint_act(&file, |model| model == "anthropic/claude-sonnet-5")
+    }
+
+    #[test]
+    fn act_without_a_model_is_an_error() {
+        let lints = lint_act_source("VISIT /\nACT \"add a widget to the cart\"\n");
+        assert_eq!(lints.len(), 1);
+        assert_eq!(lints[0].code, "act-without-model");
+        assert_eq!(lints[0].severity, Severity::Error);
+        assert_eq!(lints[0].line, 2);
+    }
+
+    #[test]
+    fn a_known_model_passes_and_an_unknown_one_is_an_error() {
+        assert_eq!(
+            lint_act_source(
+                "[Options]\nmodel: anthropic/claude-sonnet-5\nVISIT /\nACT \"sign in\"\n"
+            ),
+            Vec::new()
+        );
+        let lints =
+            lint_act_source("[Options]\nmodel: anthropic/claude-nope\nVISIT /\nACT \"sign in\"\n");
+        assert_eq!(lints.len(), 1);
+        assert_eq!(lints[0].code, "unknown-model");
+        assert_eq!(lints[0].line, 2);
+    }
+
+    #[test]
+    fn an_interpolated_model_is_not_checked_and_no_act_needs_no_model() {
+        assert_eq!(
+            lint_act_source("[Options]\nmodel: {{env.MODEL}}\nVISIT /\nACT \"sign in\"\n"),
+            Vec::new()
+        );
+        assert_eq!(lint_act_source("VISIT /\nCLICK Go\n"), Vec::new());
+    }
+
+    #[test]
+    fn act_instructions_use_captures() {
+        let source = "VISIT /\n[Captures]\nitem: testid:x text\n\nACT \"open {{item}}\"\n";
+        assert_eq!(lint(source), Vec::new());
     }
 
     #[test]

@@ -2,6 +2,7 @@
 //! secret masking, and artifact directory mapping. Flow execution itself
 //! builds on these modules.
 
+pub(crate) mod act;
 pub(crate) mod artifacts;
 pub(crate) mod flow;
 pub(crate) mod runner;

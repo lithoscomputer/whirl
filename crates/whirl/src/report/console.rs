@@ -89,6 +89,12 @@ fn render_entry_failure(out: &mut String, file: &FileReport, entry: &EntryReport
             }
         }
     }
+    // What each ACT line chose explains most later failures (SPEC 7.4).
+    for step in &entry.steps {
+        for action in step.act.iter().flat_map(|act| &act.actions) {
+            let _ = writeln!(out, "  act (line {}): {}", step.line, action.line);
+        }
+    }
     for artifact in &entry.artifacts {
         let _ = writeln!(out, "  artifact: {artifact}");
         if artifact.ends_with("/trace.zip") {
@@ -101,7 +107,7 @@ fn render_entry_failure(out: &mut String, file: &FileReport, entry: &EntryReport
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::report::model::{StepError, StepKind, Timing};
+    use crate::report::model::{ActActionReport, ActReport, ActUsage, StepError, StepKind, Timing};
 
     fn step(line: u32, text: &str, status: Status, error: Option<StepError>) -> StepReport {
         StepReport {
@@ -111,6 +117,7 @@ mod tests {
             status,
             duration_ms: 5,
             error,
+            act: None,
         }
     }
 
@@ -189,6 +196,34 @@ mod tests {
             "out:\n{out}"
         );
         assert!(out.contains("blocked host: cdn.example.com"), "out:\n{out}");
+    }
+
+    #[test]
+    fn the_failure_block_lists_what_act_lines_ran() {
+        let mut report = sample_report();
+        let entry = report
+            .files
+            .iter_mut()
+            .flat_map(|file| &mut file.entries)
+            .find(|entry| entry.status == Status::Failed)
+            .expect("the sample has a failed entry");
+        let act_line = entry.steps[0].line;
+        entry.steps[0].act = Some(ActReport {
+            model:   "gpt-test".to_owned(),
+            actions: vec![ActActionReport {
+                line:        "CLICK role:button \"Sign in\"".to_owned(),
+                description: "the sign-in button".to_owned(),
+            }],
+            usage:   ActUsage::default(),
+        });
+        let out = render(&report);
+        assert!(
+            out.contains(&format!(
+                "act (line {act_line}): CLICK role:button \"Sign in\""
+            )),
+            "out:
+{out}"
+        );
     }
 
     #[test]

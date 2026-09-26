@@ -25,6 +25,7 @@ fn step(
         status,
         duration_ms: 5,
         error,
+        act: None,
     }
 }
 

@@ -818,7 +818,7 @@ fn split_timeout(tokens: &mut Vec<RawToken>) -> Option<DurationLit> {
     Some(duration)
 }
 
-const ACTION_KEYWORDS: [&str; 20] = [
+const ACTION_KEYWORDS: [&str; 21] = [
     "HTTP",
     "RESPONSE",
     "POPUP",
@@ -838,6 +838,7 @@ const ACTION_KEYWORDS: [&str; 20] = [
     "SCREENSHOT",
     "SNAPSHOT",
     "EVAL",
+    "ACT",
     "STORE",
 ];
 
@@ -1125,6 +1126,9 @@ fn parse_action_body(
         "STORE" => parse_store(tokens, keyword_span)?,
         "EVAL" => ActionKind::Eval {
             script: one_value(tokens, keyword_span)?,
+        },
+        "ACT" => ActionKind::Act {
+            instruction: one_value(tokens, keyword_span)?,
         },
         other => {
             return Err(
@@ -1658,7 +1662,7 @@ fn parse_capture_body(
     })
 }
 
-const OPTION_KEYS: [&str; 12] = [
+const OPTION_KEYS: [&str; 13] = [
     "base",
     "browser",
     "viewport",
@@ -1671,6 +1675,7 @@ const OPTION_KEYS: [&str; 12] = [
     "storage",
     "user-agent",
     "setup",
+    "model",
 ];
 
 /// Shape-validates a literal option value at parse time; a value with
@@ -1776,6 +1781,7 @@ fn parse_option_line(first: RawToken, cursor: &mut Cursor) -> Result<FileOption,
         "storage" => Ok(FileOption::Storage(value)),
         "user-agent" => Ok(FileOption::UserAgent(value)),
         "setup" => Ok(FileOption::Setup(value)),
+        "model" => Ok(FileOption::Model(value)),
         key => unreachable!("option key `{key}` was validated against OPTION_KEYS"),
     }
 }
