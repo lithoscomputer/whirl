@@ -3,7 +3,7 @@
 //! budgeting (SPEC 12), failure artifacts, and the per-file report.
 
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde_json::Value as Json;
 use tokio::fs;
@@ -788,13 +788,27 @@ fn step_error(vars: &VarStore, error: &ErrorObject) -> StepError {
     }
 }
 
+/// How early a deadline the shim enforces can fire. Node's timers count
+/// whole milliseconds of loop time, so a timer can fire up to 1 ms before
+/// its delay has passed on Rust's clock.
+const SHIM_TIMER_GRANULARITY: Duration = Duration::from_millis(1);
+
 /// True when a step failure means the entry budget expired (SPEC 12):
 /// the entry budget capped this step's timeout, and the step either
 /// failed with a timeout kind or consumed the whole capped budget. An
 /// `EVAL` timeout arrives as kind `eval` (protocol section 4), so the
-/// kind alone is not enough.
-fn entry_budget_expired(kind: &str, entry_capped: bool, elapsed_ms: u64, timeout_ms: u64) -> bool {
-    entry_capped && (is_timeout_kind(kind) || elapsed_ms >= timeout_ms)
+/// kind alone is not enough. The shim's own deadline can fire within
+/// [`SHIM_TIMER_GRANULARITY`] of the budget, so reaching the budget's last
+/// millisecond counts as consuming it.
+fn entry_budget_expired(
+    kind: &str,
+    entry_capped: bool,
+    elapsed: Duration,
+    timeout_ms: u64,
+) -> bool {
+    entry_capped
+        && (is_timeout_kind(kind)
+            || elapsed + SHIM_TIMER_GRANULARITY > Duration::from_millis(timeout_ms))
 }
 
 /// Classifies a shim error reply (protocol section 7). An expired entry
@@ -825,8 +839,8 @@ struct StepBudget {
     entry_budget_ms: u64,
     /// The effective timeout the step ran with.
     timeout_ms:      u64,
-    /// The step's measured wall time.
-    elapsed_ms:      u64,
+    /// The step's measured wall time, at full precision.
+    elapsed:         Duration,
 }
 
 /// Everything recorded while one entry runs.
@@ -884,7 +898,8 @@ impl FlowExec<'_> {
             .run_step(&request)
             .instrument(debug_span!("step", line = node.line(), step_kind = ?node.kind()))
             .await;
-        let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let elapsed = started.elapsed();
+        let elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
         if let Some(remaining) = state.remaining_ms.as_mut() {
             *remaining = remaining.saturating_sub(elapsed_ms);
         }
@@ -893,7 +908,7 @@ impl FlowExec<'_> {
             entry_capped,
             entry_budget_ms,
             timeout_ms,
-            elapsed_ms,
+            elapsed,
         };
         let end = self.apply_outcome(node, outcome, state, budget);
         (end, elapsed_ms, title)
@@ -915,7 +930,7 @@ impl FlowExec<'_> {
                 let expired = entry_budget_expired(
                     &error.kind,
                     budget.entry_capped,
-                    budget.elapsed_ms,
+                    budget.elapsed,
                     budget.timeout_ms,
                 );
                 if let StepNode::Action(action) = node {
@@ -1586,15 +1601,36 @@ mod tests {
 
     #[test]
     fn budget_expiry_needs_the_cap_and_a_timeout_kind_or_a_consumed_budget() {
+        let ms = Duration::from_millis;
         // A timeout kind under the cap expires whatever the timing says.
-        assert!(entry_budget_expired("timeout", true, 0, 1_000));
-        assert!(entry_budget_expired("cancelled", true, 0, 1_000));
+        assert!(entry_budget_expired("timeout", true, ms(0), 1_000));
+        assert!(entry_budget_expired("cancelled", true, ms(0), 1_000));
         // Another kind expires only when the step consumed the whole
         // capped budget (an EVAL timeout arrives as kind `eval`).
-        assert!(entry_budget_expired("eval", true, 1_000, 1_000));
-        assert!(!entry_budget_expired("eval", true, 300, 1_000));
+        assert!(entry_budget_expired("eval", true, ms(1_000), 1_000));
+        assert!(!entry_budget_expired("eval", true, ms(300), 1_000));
         // Without the cap the entry budget cannot expire.
-        assert!(!entry_budget_expired("timeout", false, 5_000, 1_000));
+        assert!(!entry_budget_expired("timeout", false, ms(5_000), 1_000));
+    }
+
+    #[test]
+    fn a_shim_deadline_that_fires_in_the_last_millisecond_expires_the_budget() {
+        // The shim's 995 ms EVAL timer fired early, as Node's timers can,
+        // and Rust measured 994.4 ms for the whole step.
+        assert!(entry_budget_expired(
+            "eval",
+            true,
+            Duration::from_micros(994_400),
+            995
+        ));
+        // A failure more than a millisecond before the budget is the
+        // step's own failure.
+        assert!(!entry_budget_expired(
+            "eval",
+            true,
+            Duration::from_micros(993_900),
+            995
+        ));
     }
 
     #[test]
