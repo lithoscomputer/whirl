@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- When a page replaces the element `ACT` chose while the model answers, as a re-render after load does, `ACT` takes a new snapshot and asks once more instead of waiting out the step timeout. A second replacement fails the step at once with `stale-ref`.
 - Replace the check operators with Hurl's vocabulary. A check is `subject { filter } [not] predicate`, with predicates such as `startsWith`, `isInteger`, and `exists`, and filters such as `count`, `regex`, `toInt`, `split`, `urlQueryParam`, and `base64Decode`. Captures take the same filters, and `regex` is now one of them.
 - Replace JSON Pointer with JSONPath: `json:/items/0/id` becomes `json:$.items[0].id`, and a query such as `json:$.items[*].sku` gives a list.
 - Compare JSON values and filter results by type: `json:$.id == 42` needs the number 42, and `json:$.id == "42"` the string. Page text still compares as text, a value that starts with `[` or `{` is a JSON literal, and a bare `hex,…;` or `base64,…;` is bytes. `startsWith`, `endsWith`, and `contains` on a string compare with the expected value's text, so `startsWith 12` works on `"123"`. `whirl check` reports a literal whose type cannot match, such as `status == "200"`.

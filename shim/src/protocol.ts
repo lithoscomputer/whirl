@@ -11,6 +11,7 @@ export type ErrorKind =
 	| "eval-result"
 	| "read"
 	| "action"
+	| "stale-ref"
 	| "cancelled"
 	| "internal";
 

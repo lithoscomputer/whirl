@@ -461,8 +461,13 @@ matching Whirl action, with that action's actionability and strictness rules:
 A custom dropdown that must open before an option can be chosen is a two-step
 action. The model marks its first answer as two-step. Whirl runs that action,
 takes a new snapshot, and asks for the second action. When the second answer
-names no element, the line passes with the first action. One `ACT` line makes
-at most two model calls.
+names no element, the line passes with the first action.
+
+A page can replace the chosen element while the model answers, as a framework
+does when it renders the page again after load. A snapshot ref never matches
+the replacement, so Whirl does not wait for it. It takes a new snapshot and
+asks the same question once more. One `ACT` line makes at most three model
+calls: two for a two-step action and one after a replaced element.
 
 An `ACT` line fails the entry when:
 
@@ -470,6 +475,8 @@ An `ACT` line fails the entry when:
 - the answer does not match the schema, names an element that is not in the
   snapshot, gives the wrong number of arguments, or uses an unknown
   placeholder (`act-invalid-decision`),
+- the chosen element is replaced again after Whirl asked once more
+  (`stale-ref`),
 - the chosen action fails, with that action's error, or
 - the step budget expires, like any step.
 

@@ -59,6 +59,13 @@ impl ActLine<'_> {
     }
 }
 
+/// A failed shim call inside an `ACT` line: its classified end, and
+/// whether it failed only because the page replaced the snapshot element.
+struct ShimFailure {
+    end:       StepEnd,
+    stale_ref: bool,
+}
+
 fn act_failure(code: &str, message: &str) -> StepError {
     StepError {
         code: code.to_owned(),
@@ -111,6 +118,9 @@ impl FlowExec<'_> {
         let mut model_calls = 0;
         // Step two's prompt describes the action step one ran.
         let mut first_action: Option<String> = None;
+        // A page can replace the chosen element while the model answers.
+        // Whirl then asks once more on a fresh snapshot (SPEC 7.4).
+        let mut stale_retry_left = true;
 
         let end = loop {
             let snapshot = match self
@@ -126,7 +136,7 @@ impl FlowExec<'_> {
                         ));
                     }
                 },
-                Err(end) => break end,
+                Err(failure) => break failure.end,
             };
 
             let prompt = match &first_action {
@@ -178,11 +188,16 @@ impl FlowExec<'_> {
                 }
             };
 
-            if let Err(end) = self
+            match self
                 .act_shim_call(&mut line, action.command(instruction), client, state)
                 .await
             {
-                break end;
+                Ok(_) => {}
+                Err(failure) if failure.stale_ref && stale_retry_left => {
+                    stale_retry_left = false;
+                    continue;
+                }
+                Err(failure) => break failure.end,
             }
             actions.push(ActActionReport {
                 line:        self.vars.mask(&action.line()),
@@ -211,10 +226,13 @@ impl FlowExec<'_> {
         command: StepCommand,
         client: &mut ShimClient,
         state: &mut EntryState,
-    ) -> Result<Json, StepEnd> {
+    ) -> Result<Json, ShimFailure> {
         let timeout_ms = line.remaining_ms();
         if timeout_ms == 0 {
-            return Err(line.timed_out());
+            return Err(ShimFailure {
+                end:       line.timed_out(),
+                stale_ref: false,
+            });
         }
         let request = StepRequest {
             entry_start: line.entry_start,
@@ -233,7 +251,12 @@ impl FlowExec<'_> {
                     timeout_ms,
                     elapsed: started.elapsed(),
                 };
-                Err(self.apply_outcome(line.node, outcome, state, budget))
+                let stale_ref =
+                    matches!(&outcome, StepOutcome::ShimError(error) if error.kind == "stale-ref");
+                Err(ShimFailure {
+                    end: self.apply_outcome(line.node, outcome, state, budget),
+                    stale_ref,
+                })
             }
         }
     }

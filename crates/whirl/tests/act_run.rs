@@ -3,6 +3,7 @@
 //! points `WHIRL_LLM_ENDPOINT` at an in-process OpenAI-compatible model
 //! twin whose answers the test scripts.
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -384,4 +385,89 @@ fn act_works_in_every_engine_when_requested() {
             "{engine} snapshot refs; log:\n{log}"
         );
     }
+}
+
+/// A page whose "Add to cart" button is replaced, as a framework
+/// re-render replaces it, after each delay in `renders_ms`.
+fn rerendering_shop(renders_ms: &[u32]) -> String {
+    let mut timers = String::new();
+    for ms in renders_ms {
+        write!(timers, "setTimeout(render,{ms});").expect("writing to a String cannot fail");
+    }
+    let html = format!(
+        "<h1>Shop</h1><div id=slot><button>Add to cart</button></div><script>\
+         const render=()=>{{document.getElementById('slot').innerHTML='<button>Add to cart</button>';\
+         document.querySelector('#slot button').onclick=()=>{{document.querySelector('h1').textContent='Added';}};}};\
+         {timers}</script>"
+    );
+    let mut encoded = String::new();
+    for byte in html.bytes() {
+        if byte.is_ascii_alphanumeric() {
+            encoded.push(char::from(byte));
+        } else {
+            write!(encoded, "%{byte:02X}").expect("writing to a String cannot fail");
+        }
+    }
+    format!("VISIT \"data:text/html,{encoded}\"\n")
+}
+
+/// A delayed answer, so the page can replace the element meanwhile.
+fn delayed_click(element_id: &str, delay_ms: u32) -> Json {
+    json!({"kind": "success", "structured_output": click(element_id, false), "delay_before_headers_ms": delay_ms})
+}
+
+#[test]
+fn a_replaced_element_is_planned_again_on_a_fresh_snapshot() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    // The button is replaced at 300 ms, while the first answer is on its
+    // way; the retry sees the new button as e5.
+    twin.script(&[
+        delayed_click("e4", 1_000),
+        json!({"kind": "success", "structured_output": click("e5", false)}),
+    ]);
+    let flow = dir.file(
+        "rerender.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{}ACT \"add the item to the cart\" @30s\n\
+             [Asserts]\nrole:heading \"Added\" visible\n",
+            rerendering_shop(&[300])
+        ),
+    );
+    let output = twin.run(&dir, &flow, &[]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+    let step = act_step(&dir);
+    assert_eq!(step["act"]["usage"]["modelCalls"], 2);
+    assert_eq!(
+        step["act"]["actions"][0]["line"],
+        "CLICK role:button \"Add to cart\""
+    );
+}
+
+#[test]
+fn an_element_replaced_twice_fails_fast_with_stale_ref() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    // Replaced at 300 ms and again at 1500 ms: both answers arrive after
+    // the element they name is gone.
+    twin.script(&[delayed_click("e4", 1_000), delayed_click("e5", 1_000)]);
+    let flow = dir.file(
+        "rerender.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{}ACT \"add the item to the cart\" @30s\n",
+            rerendering_shop(&[300, 1_500])
+        ),
+    );
+    let output = twin.run(&dir, &flow, &[]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 1, "stdout:\n{stdout}");
+    let step = act_step(&dir);
+    assert_eq!(step["error"]["code"], "stale-ref", "stdout:\n{stdout}");
+    assert_eq!(step["act"]["usage"]["modelCalls"], 2);
+    let duration = step["durationMs"].as_u64().expect("a duration");
+    assert!(
+        duration < 10_000,
+        "a stale ref must not wait out the 30 s budget; took {duration} ms"
+    );
 }
