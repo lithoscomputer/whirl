@@ -151,6 +151,16 @@ export function classifyEvalResult(value: unknown): EvalClassification {
  * plain `{ok, value}` or `{ok, reason}` object that always survives the
  * transport.
  */
+export function buildReadEvalExpression(script: string): string {
+	return [
+		"(async () => {",
+		`const classify = ${classifyEvalResult.toString()};`,
+		`const value = await (async () => {\n${functionBody(script)}\n})();`,
+		'return { ...classify(value), string: typeof value === "string" };',
+		"})()",
+	].join("\n");
+}
+
 export function buildCaptureEvalExpression(script: string): string {
 	return [
 		"(async () => {",

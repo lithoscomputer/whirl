@@ -34,6 +34,7 @@ import {
 	fieldObject,
 	fieldObjectOrNull,
 	fieldString,
+	fieldStringOrNull,
 } from "./params.js";
 import type {
 	AssertSpec,
@@ -45,10 +46,12 @@ import type {
 	ErrorKind,
 	LocatorSegment,
 	PageExpectation,
+	ReadSubject,
 	StartFlowParams,
 	StepCommand,
 } from "./protocol.js";
 import { assertNever, ShimError } from "./protocol.js";
+import { runRead } from "./reads.js";
 import { runSnapshot } from "./snapshots.js";
 import {
 	actionErrorMessage,
@@ -524,8 +527,22 @@ export class PlaywrightDriver implements ShimDriver {
 		}
 		this.#cancelRequested = false;
 		const timeoutMs = fieldNumber(params, "timeoutMs");
-		const title = fieldString(params, "title");
-		if (flow.traceActive) {
+		const title = fieldStringOrNull(params, "title");
+		if (cmd === "traceGroup" || cmd === "traceGroupEnd") {
+			// Rust groups the reads of one check under one trace step.
+			if (flow.traceActive) {
+				const change =
+					cmd === "traceGroup"
+						? flow.context.tracing.group(title ?? "check")
+						: flow.context.tracing.groupEnd();
+				await change.catch(() => {
+					// Tracing hiccups never fail a step.
+				});
+			}
+			return {};
+		}
+		const grouped = flow.traceActive && title !== null;
+		if (grouped) {
 			await flow.context.tracing.group(title).catch(() => {
 				// Tracing hiccups never fail a step.
 			});
@@ -535,7 +552,7 @@ export class PlaywrightDriver implements ShimDriver {
 		} catch (error) {
 			throw this.#mapStepError(cmd, error);
 		} finally {
-			if (flow.traceActive) {
+			if (grouped) {
 				await flow.context.tracing.groupEnd().catch(() => {
 					// The context may already be closed after a cancel.
 				});
@@ -556,6 +573,15 @@ export class PlaywrightDriver implements ShimDriver {
 		if (cmd === "popup") {
 			await flow.tabs.capture(fieldString(params, "name"), timeoutMs);
 			return {};
+		}
+		if (cmd === "readResponse") {
+			return {
+				...(await flow.network.readResponse(
+					fieldString(params, "name"),
+					fieldBoolean(params, "body"),
+					timeoutMs,
+				)),
+			};
 		}
 		if (cmd === "tab") {
 			flow.tabs.select(fieldString(params, "name"));
@@ -763,6 +789,17 @@ export class PlaywrightDriver implements ShimDriver {
 				await runAssert(page, spec, timeoutMs);
 				return {};
 			}
+			case "read": {
+				const subject = fieldObject(
+					params,
+					"subject",
+				) as unknown as ReadSubject;
+				return { ...(await runRead(page, subject, timeoutMs)) };
+			}
+			case "traceGroup":
+			case "traceGroupEnd":
+				// runStep handles these before dispatch.
+				return {};
 			case "capture": {
 				const source = fieldObject(
 					params,
@@ -1036,7 +1073,14 @@ function defaultErrorKind(cmd: StepCommand): ErrorKind {
 		case "page":
 		case "assert":
 		case "capture":
+		case "traceGroup":
+		case "traceGroupEnd":
 			return "internal";
+		case "read":
+			// Page churn such as a navigation mid-read; Rust reads again.
+			return "read";
+		case "readResponse":
+			return "action";
 		default:
 			return assertNever(cmd);
 	}

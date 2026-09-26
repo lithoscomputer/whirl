@@ -10,6 +10,7 @@ export type ErrorKind =
 	| "eval"
 	| "eval-result"
 	| "capture"
+	| "read"
 	| "action"
 	| "cancelled"
 	| "internal";
@@ -279,6 +280,72 @@ export interface CaptureFilter {
 	readonly flags: string;
 }
 
+// --- Reads (protocol 4.4, 4.5) ---
+
+export type ReadExtract =
+	| { readonly type: "text" }
+	| { readonly type: "value" }
+	| { readonly type: "attr"; readonly name: string };
+
+export interface ElementReadSubject {
+	readonly type: "element";
+	readonly locator: readonly LocatorSegment[];
+	readonly extract: ReadExtract;
+}
+
+export interface CountReadSubject {
+	readonly type: "count";
+	readonly locator: readonly LocatorSegment[];
+}
+
+export interface UrlReadSubject {
+	readonly type: "url";
+}
+
+export interface TitleReadSubject {
+	readonly type: "title";
+}
+
+export interface EvalReadSubject {
+	readonly type: "eval";
+	readonly script: string;
+}
+
+export type ReadSubject =
+	| ElementReadSubject
+	| CountReadSubject
+	| UrlReadSubject
+	| TitleReadSubject
+	| EvalReadSubject;
+
+export type JsonValue =
+	| null
+	| boolean
+	| number
+	| string
+	| readonly JsonValue[]
+	| { readonly [key: string]: JsonValue };
+
+export interface ReadValue {
+	readonly type: "value";
+	readonly value: JsonValue;
+}
+
+export interface ReadMissing {
+	readonly type: "missing";
+	readonly reason: "no-element" | "absent-attribute";
+}
+
+export type ReadResult = ReadValue | ReadMissing;
+
+export interface ResponseRead {
+	readonly status: number;
+	readonly url: string;
+	readonly headers: readonly (readonly [string, string])[];
+	readonly bodyBase64: string | null;
+	readonly bodyError: string | null;
+}
+
 // --- Lifecycle params (protocol 3) ---
 
 export type BrowserEngine = "chromium" | "firefox" | "webkit";
@@ -356,7 +423,11 @@ export type StepCommand =
 	| "ariaSnapshot"
 	| "page"
 	| "assert"
-	| "capture";
+	| "capture"
+	| "read"
+	| "readResponse"
+	| "traceGroup"
+	| "traceGroupEnd";
 
 const stepCommandList: readonly StepCommand[] = [
 	"http",
@@ -382,6 +453,10 @@ const stepCommandList: readonly StepCommand[] = [
 	"page",
 	"assert",
 	"capture",
+	"read",
+	"readResponse",
+	"traceGroup",
+	"traceGroupEnd",
 ];
 
 const stepCommandSet: ReadonlySet<string> = new Set(stepCommandList);

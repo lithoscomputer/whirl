@@ -1,6 +1,11 @@
 import type { BrowserContext, Page, Request, Response } from "@playwright/test";
 import { createHostAllowlist } from "./host-glob.js";
-import type { CountOp, HttpParams, StringOp } from "./protocol.js";
+import type {
+	CountOp,
+	HttpParams,
+	ResponseRead,
+	StringOp,
+} from "./protocol.js";
 import { assertNever, ShimError } from "./protocol.js";
 import { Deadline, pollUntilPass, shortErrorMessage } from "./step-util.js";
 
@@ -19,7 +24,10 @@ export type ResponseCheck =
 
 const maxRequestsPerEntry = 10_000;
 const maxJsonBodyBytes = 1_048_576;
-type NamedResponse = Pick<Response, "status" | "headerValue" | "body">;
+type NamedResponse = Pick<
+	Response,
+	"status" | "headerValue" | "body" | "url" | "headersArray"
+>;
 
 async function withinTimeout<T>(
 	operation: Promise<T>,
@@ -122,6 +130,7 @@ export class FlowNetwork {
 	readonly #context: BrowserContext;
 	readonly #responses = new Map<string, NamedResponse>();
 	readonly #jsonBodies = new Map<NamedResponse, Promise<unknown>>();
+	readonly #bodies = new Map<NamedResponse, Promise<Buffer>>();
 	private readonly httpRequests = new Set<AbortController>();
 	private readonly allowedHost: (hostname: string) => boolean;
 	private readonly blockedHosts: Set<string>;
@@ -145,6 +154,7 @@ export class FlowNetwork {
 			this.#requests = [];
 			this.#responses.clear();
 			this.#jsonBodies.clear();
+			this.#bodies.clear();
 		});
 	}
 
@@ -231,10 +241,16 @@ export class FlowNetwork {
 				}
 			}
 			const bytes = Buffer.concat(chunks, length);
+			const responseHeaders = [...response.headers].map(([header, value]) => ({
+				name: header,
+				value,
+			}));
 			this.#responses.set(name, {
 				status: () => response.status,
 				headerValue: async (header) => response.headers.get(header),
 				body: async () => bytes,
+				url: () => target.href,
+				headersArray: async () => responseHeaders,
 			});
 		} catch (error) {
 			if (error instanceof ShimError) throw error;
@@ -336,6 +352,60 @@ export class FlowNetwork {
 		if (response === undefined)
 			throw new ShimError("action", `unknown response ${name}`);
 		return response;
+	}
+
+	/** The body within the SPEC 1 MiB limit, read once per response. */
+	#body(response: NamedResponse): Promise<Buffer> {
+		let body = this.#bodies.get(response);
+		if (body === undefined) {
+			body = (async (): Promise<Buffer> => {
+				const declaredLength = await response.headerValue("content-length");
+				if (
+					declaredLength !== null &&
+					Number(declaredLength) > maxJsonBodyBytes
+				)
+					throw new Error("the response exceeds the 1 MiB body limit");
+				const buffer = await response.body();
+				if (buffer.length > maxJsonBodyBytes)
+					throw new Error("the response exceeds the 1 MiB body limit");
+				return buffer;
+			})();
+			this.#bodies.set(response, body);
+		}
+		return body;
+	}
+
+	/**
+	 * Reads a named response for Rust's check engine (protocol 4.5). With
+	 * `withBody`, the body is read too; a body that cannot be read, such as
+	 * a redirect's or one over the limit, comes back as `bodyError`.
+	 */
+	async readResponse(
+		name: string,
+		withBody: boolean,
+		timeoutMs: number,
+	): Promise<ResponseRead> {
+		const response = this.#responses.get(name);
+		if (response === undefined)
+			throw new ShimError("internal", `unknown response ${name}`);
+		const headers = await withinTimeout(response.headersArray(), timeoutMs);
+		const base = {
+			status: response.status(),
+			url: response.url(),
+			headers: headers.map(
+				({ name: header, value }) => [header, value] as const,
+			),
+		};
+		if (!withBody) {
+			return { ...base, bodyBase64: null, bodyError: null };
+		}
+		try {
+			const body = await withinTimeout(this.#body(response), timeoutMs);
+			return { ...base, bodyBase64: body.toString("base64"), bodyError: null };
+		} catch (error) {
+			if (error instanceof ShimError) throw error;
+			return { ...base, bodyBase64: null, bodyError: shortErrorMessage(error) };
+		}
 	}
 
 	async #json(response: NamedResponse): Promise<unknown> {
