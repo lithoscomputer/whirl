@@ -1623,7 +1623,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2344,7 +2344,7 @@ dependencies = [
 [[package]]
 name = "twin-core"
 version = "0.1.5"
-source = "git+https://github.com/lithoscomputer/twins?rev=a72b770c997bcbf9c5b2d813c748d6190a0cb4b5#a72b770c997bcbf9c5b2d813c748d6190a0cb4b5"
+source = "git+https://github.com/lithoscomputer/twins?rev=552576b5c50cf178da37dd6a0c97c472ffc6ffcb#552576b5c50cf178da37dd6a0c97c472ffc6ffcb"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -2359,7 +2359,7 @@ dependencies = [
 [[package]]
 name = "twin-openai"
 version = "0.1.5"
-source = "git+https://github.com/lithoscomputer/twins?rev=a72b770c997bcbf9c5b2d813c748d6190a0cb4b5#a72b770c997bcbf9c5b2d813c748d6190a0cb4b5"
+source = "git+https://github.com/lithoscomputer/twins?rev=552576b5c50cf178da37dd6a0c97c472ffc6ffcb#552576b5c50cf178da37dd6a0c97c472ffc6ffcb"
 dependencies = [
  "anyhow",
  "async-stream",

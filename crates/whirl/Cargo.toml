@@ -37,7 +37,7 @@ zip = { version = "7.2.0", default-features = false, features = [
 axum = "0.8"
 tiny_http = "0.12.0"
 # The OpenAI-compatible model twin that ACT acceptance tests run against.
-twin-openai = { git = "https://github.com/lithoscomputer/twins", rev = "a72b770c997bcbf9c5b2d813c748d6190a0cb4b5" }
+twin-openai = { git = "https://github.com/lithoscomputer/twins", rev = "552576b5c50cf178da37dd6a0c97c472ffc6ffcb" }
 trycmd = "1.2.1"
 
 [lints]
