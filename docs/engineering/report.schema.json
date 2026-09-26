@@ -11,7 +11,7 @@
   ],
   "properties": {
     "version": {
-      "const": 1
+      "const": 2
     },
     "workingDirectory": {
       "type": "string"
@@ -242,7 +242,29 @@
                 "captures": {
                   "type": "object",
                   "additionalProperties": {
-                    "type": "string"
+                    "type": "object",
+                    "required": [
+                      "type",
+                      "value"
+                    ],
+                    "properties": {
+                      "type": {
+                        "enum": [
+                          "string",
+                          "number",
+                          "boolean",
+                          "null",
+                          "list",
+                          "object",
+                          "bytes",
+                          "date"
+                        ]
+                      },
+                      "value": {
+                        "description": "The capture's value. Numbers keep their exact JSON text. Bytes are Base64 strings. Dates are RFC 3339 strings. A masked value is the string \"***\"."
+                      }
+                    },
+                    "additionalProperties": false
                   }
                 },
                 "artifacts": {
@@ -408,5 +430,5 @@
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Whirl run report v1"
+  "title": "Whirl run report v2"
 }
