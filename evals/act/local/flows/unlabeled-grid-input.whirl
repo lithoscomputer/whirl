@@ -1,0 +1,10 @@
+[Options]
+base: {{env.EVAL_BASE}}
+model: {{model}}
+
+# The inputs have no labels; the text beside each one names it.
+VISIT /unlabeled-grid-input/
+ACT "type Lovelace into the last name field" @60s
+[Asserts]
+css:"input[name=b]" value == Lovelace
+css:"input[name=a]" value == ""

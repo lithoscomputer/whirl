@@ -1,0 +1,9 @@
+[Options]
+base: {{env.EVAL_BASE}}
+model: {{model}}
+
+# Pick one option from a scrolling list of 150 countries.
+VISIT /long-country-list/
+ACT "choose Portugal from the country list" @60s
+[Asserts]
+testid:country text == Portugal

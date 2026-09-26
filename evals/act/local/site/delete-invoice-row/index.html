@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Invoices</title>
+</head>
+<body>
+<h1>Invoices</h1>
+<table>
+  <thead><tr><th>Invoice</th><th>Customer</th><th>Amount</th><th></th></tr></thead>
+  <tbody>
+  <tr><td>1030</td><td>Acme</td><td>$120.00</td><td><button>Delete</button></td></tr>
+  <tr><td>1031</td><td>Globex</td><td>$75.00</td><td><button>Delete</button></td></tr>
+  <tr><td>1032</td><td>Initech</td><td>$310.00</td><td><button>Delete</button></td></tr>
+  <tr><td>1033</td><td>Umbrella</td><td>$42.00</td><td><button>Delete</button></td></tr>
+  <tr><td>1034</td><td>Hooli</td><td>$980.00</td><td><button>Delete</button></td></tr>
+  <tr><td>1035</td><td>Vehement</td><td>$15.00</td><td><button>Delete</button></td></tr>
+  <tr><td>1036</td><td>Massive Dynamic</td><td>$220.00</td><td><button>Delete</button></td></tr>
+  <tr><td>1037</td><td>Stark</td><td>$505.00</td><td><button>Delete</button></td></tr>
+  <tr><td>1038</td><td>Wayne</td><td>$64.00</td><td><button>Delete</button></td></tr>
+  <tr><td>1039</td><td>Tyrell</td><td>$88.00</td><td><button>Delete</button></td></tr>
+  <tr><td>1040</td><td>Cyberdyne</td><td>$131.00</td><td><button>Delete</button></td></tr>
+  <tr><td>1041</td><td>Soylent</td><td>$57.00</td><td><button>Delete</button></td></tr>
+  </tbody>
+</table>
+<p>Result: <span data-testid="result">none</span></p>
+<script>
+  const setResult = (text) => { document.querySelector("[data-testid=result]").textContent = text; };
+  for (const button of document.querySelectorAll("tbody button")) {
+    button.addEventListener("click", () => {
+      const row = button.closest("tr");
+      setResult("deleted " + row.cells[0].textContent);
+      row.remove();
+    });
+  }
+</script>
+</body>
+</html>

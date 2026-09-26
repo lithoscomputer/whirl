@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Home</title>
+</head>
+<body>
+<header>
+  <a href="#">Sign in</a> <a href="#">Sign up for an account</a>
+</header>
+<h1>Welcome</h1>
+<section>
+  <h2>Get product news by email</h2>
+  <p><label>Email <input type="email" name="email" value="ada@example.com"></label></p>
+  <button id="subscribe">Subscribe</button>
+</section>
+<section>
+  <h2>Webinars</h2>
+  <button id="register">Register</button>
+</section>
+<p>Result: <span data-testid="result">none</span></p>
+<script>
+  const setResult = (text) => { document.querySelector("[data-testid=result]").textContent = text; };
+  document.getElementById("subscribe").addEventListener("click", () => setResult("subscribed"));
+  document.getElementById("register").addEventListener("click", () => setResult("registered"));
+  for (const link of document.querySelectorAll("header a")) {
+    link.addEventListener("click", (event) => { event.preventDefault(); setResult(link.textContent); });
+  }
+</script>
+</body>
+</html>
