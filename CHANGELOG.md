@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- When `ACT` clicks a native checkbox or radio input, focus it and press Space, as `CHECK` does, so a styled control that covers the input does not make the click wait out the step.
 - Add `ACT locator "instruction"`, which shows the model only one element and what it contains, for long pages.
 - Leave each link's URL and the cursor hints out of the snapshot `ACT` sends, about a third of a link-heavy page.
 - When `ACT` clicks, double-clicks, or hovers an element that wraps a narrower one, such as a custom dropdown's trigger, point at the element that shows its text instead of the wrapper's center.

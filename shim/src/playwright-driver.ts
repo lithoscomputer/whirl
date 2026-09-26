@@ -358,6 +358,20 @@ async function textTargetPosition(
 	return position ?? undefined;
 }
 
+/** True for a native checkbox or radio input. */
+async function isNativeToggle(
+	locator: Locator,
+	timeoutMs: number,
+): Promise<boolean> {
+	return locator.evaluate(
+		(element) =>
+			element instanceof HTMLInputElement &&
+			(element.type === "checkbox" || element.type === "radio"),
+		undefined,
+		{ timeout: timeoutMs },
+	);
+}
+
 export class PlaywrightDriver implements ShimDriver {
 	readonly #clickReceipts = new WeakMap<
 		Page,
@@ -694,15 +708,26 @@ export class PlaywrightDriver implements ShimDriver {
 				});
 				return {};
 			case "click":
-				await this.#locatorAction(page, params, async (locator, fromSnapshot) =>
-					this.#click(
-						page,
-						locator,
-						timeoutMs,
-						fromSnapshot
-							? await textTargetPosition(locator, timeoutMs)
-							: undefined,
-					),
+				await this.#locatorAction(
+					page,
+					params,
+					async (locator, fromSnapshot) => {
+						// Styled checkboxes and radios often cover the native input,
+						// which makes a click wait out the step. Focus and Space have
+						// the click's effect, as CHECK relies on (SPEC 7 and 7.4).
+						if (fromSnapshot && (await isNativeToggle(locator, timeoutMs))) {
+							await locator.press("Space", { timeout: timeoutMs });
+							return;
+						}
+						await this.#click(
+							page,
+							locator,
+							timeoutMs,
+							fromSnapshot
+								? await textTargetPosition(locator, timeoutMs)
+								: undefined,
+						);
+					},
 				);
 				return {};
 			case "dblclick":

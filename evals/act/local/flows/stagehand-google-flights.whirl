@@ -1,0 +1,9 @@
+[Options]
+base: {{env.EVAL_BASE}}
+model: {{model}}
+
+# Stagehand's google_flights, asked in words instead of a fixed XPath.
+VISIT /stagehand/google-flights/
+ACT "click the first departing flight" @60s
+[Asserts]
+url contains /stagehand/google-flights/return-flight.html

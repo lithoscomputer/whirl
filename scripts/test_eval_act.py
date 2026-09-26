@@ -43,6 +43,20 @@ class ClassifyTest(unittest.TestCase):
         self.assertEqual(result.cost_usd_micros, 7500)
         self.assertTrue(result.priced)
 
+    def test_a_task_with_several_act_lines_sums_their_measurements(self):
+        report = file_report(
+            "x/stagehand-checkboxes.whirl",
+            "passed",
+            [entry("Two.", "passed", [step(act=act_report(), duration_ms=1000), step(act=act_report(calls=2, cost=500), duration_ms=3000)])],
+        )
+        result = eval_act.classify(report, "m")
+        self.assertEqual(result.duration_ms, 4000)
+        self.assertEqual(result.model_calls, 3)
+        self.assertEqual(result.input_tokens, 6000)
+        self.assertEqual(result.cost_usd_micros, 8000)
+        unpriced = file_report("x/a.whirl", "passed", [entry("Two.", "passed", [step(act=act_report()), step(act=act_report(cost=None))])])
+        self.assertIsNone(eval_act.classify(unpriced, "m").cost_usd_micros)
+
     def test_a_failing_flow_is_a_fail_with_its_error_code(self):
         report = file_report(
             "x/native-select.whirl",

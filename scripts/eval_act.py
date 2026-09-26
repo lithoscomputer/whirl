@@ -97,16 +97,18 @@ def classify(file_report, model):
     name = task_name(file_report["path"])
     expects_no_match = Path(file_report["path"]).name.endswith(NO_MATCH_SUFFIX)
     steps = [step for entry in file_report["entries"] for step in entry["steps"]]
-    act_step = next((step for step in steps if step.get("act") is not None), None)
+    # A task can have several ACT lines; its measurements are their sums.
+    act_steps = [step for step in steps if step.get("act") is not None]
     result = Result(name, model, "fail")
-    if act_step is not None:
-        usage = act_step["act"]["usage"]
-        result.duration_ms = act_step["durationMs"]
-        result.model_calls = usage["modelCalls"]
-        result.input_tokens = usage["inputTokens"]
-        result.output_tokens = usage["outputTokens"]
-        result.cost_usd_micros = usage.get("costUsdMicros")
-        result.priced = result.cost_usd_micros is not None
+    if act_steps:
+        usages = [step["act"]["usage"] for step in act_steps]
+        result.duration_ms = sum(step["durationMs"] for step in act_steps)
+        result.model_calls = sum(usage["modelCalls"] for usage in usages)
+        result.input_tokens = sum(usage["inputTokens"] for usage in usages)
+        result.output_tokens = sum(usage["outputTokens"] for usage in usages)
+        costs = [usage.get("costUsdMicros") for usage in usages]
+        result.priced = all(cost is not None for cost in costs)
+        result.cost_usd_micros = sum(costs) if result.priced else None
 
     failed = next((step for step in steps if step["status"] in ("failed", "error")), None)
     result.code = failed["error"]["code"] if failed and failed.get("error") else None
@@ -304,7 +306,7 @@ def render_summary(set_name, tasks, models, results, n, date, version, commit):
         "",
         "Pass rate counts only good runs, with its standard error. Drift (a live",
         "precheck failed) and errors (exit 3: network, credentials, shim) are",
-        "left out. Times are the ACT step: snapshot, model calls, and action.",
+        "left out. Times are the task's ACT steps: snapshots, model calls, and actions.",
         "Costs use catalog prices and show n/a when any run was unpriced.",
         "",
         "## Leaderboard",
