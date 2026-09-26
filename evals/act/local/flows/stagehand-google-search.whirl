@@ -1,0 +1,10 @@
+[Options]
+base: {{env.EVAL_BASE}}
+model: {{model}}
+
+# Stagehand's simple_google_search: type, then press Enter, on a saved Google page.
+VISIT /stagehand/google/
+ACT "type \"OpenAI\" into the search bar" @60s
+ACT "press enter" @60s
+[Asserts]
+url contains /stagehand/google/openai.html

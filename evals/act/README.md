@@ -34,7 +34,8 @@ session.
 - **local** (default): flows in `local/flows/` against the pages in
   `local/site/`, which the script serves on `127.0.0.1`. A page reaches a
   second site through `localhost`. These runs are deterministic apart from
-  the model.
+  the model. The `stagehand-*` tasks use saved copies of real sites from
+  Stagehand's evals, in `local/site/stagehand/` (see its README).
 - **live** (opt-in): flows in `live/flows/` against real websites. The sites
   can change or block the browser at any time.
 
@@ -67,8 +68,10 @@ that date.
 ## Add a task
 
 Add a flow to `local/flows/` and, when it needs one, a page to
-`local/site/`. Start the flow with the options below, keep one `ACT` line
-with `@60s`, and assert the outcome, not the way the model reached it:
+`local/site/`. Start the flow with the options below, give each `ACT` line
+`@60s`, and assert the outcome, not the way the model reached it. A task can
+have several `ACT` lines, such as typing and then pressing Enter; its
+measurements are their sums.
 
 ```whirl
 [Options]

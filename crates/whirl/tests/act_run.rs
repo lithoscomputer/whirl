@@ -561,3 +561,25 @@ fn act_reaches_a_button_in_a_closed_shadow_root() {
         "log:\n{log}"
     );
 }
+
+#[test]
+fn act_selects_a_radio_that_a_styled_overlay_covers() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    // A plain click on e4 fails: the span intercepts pointer events.
+    twin.answer(&[click("e4", false)]);
+    let page = "<h1>Size</h1><label style=\"position:relative;display:inline-block\">\
+        <input type=radio name=size value=Medium><span aria-hidden=true \
+        style=\"position:absolute;inset:0;background:white;border:1px solid\"></span> Medium</label>";
+    let flow = dir.file(
+        "radio.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{}ACT \"choose the Medium size\" @10s\n\
+             [Asserts]\nrole:radio \"Medium\" checked\n",
+            visit_html(page)
+        ),
+    );
+    let output = twin.run(&dir, &flow, &[]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+}

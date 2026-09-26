@@ -466,6 +466,10 @@ contains: `ACT css:form "click Buy"` shows the model only the form. The scope
 waits for its element and must match exactly one (section 6.2), and every
 segment carries a prefix (section 6.1).
 
+To click a native checkbox or radio input, Whirl focuses it and presses Space,
+as `CHECK` does, because a styled control often covers the input. The effect is
+the same as a click: a checkbox toggles, and a radio is selected.
+
 The snapshot shows a wrapper that has one visible child, such as a custom
 dropdown's trigger inside a wider box, as one element. To click, double-click,
 or hover such an element, Whirl points at the deepest element inside it that
