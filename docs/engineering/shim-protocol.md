@@ -384,12 +384,13 @@ normally succeeds.
 | `eval-result` | `eval` read result outside the SPEC section 10 contract |
 | `read` | A read failed: `value` on an element that is not an input, or page churn mid-read |
 | `action` | Actionability failure other than the above |
+| `stale-ref` | A `ref` locator (section 4.1) no longer matches an element, because the page replaced it after the snapshot. The shim reports it at once instead of waiting. |
 | `cancelled` | Step aborted by `cancelFlow` |
 | `internal` | Shim bug or unexpected Playwright error |
 
 Rust maps kinds to reporting: `timeout`, `strictness`, `assert`,
-`snapshot-mismatch`, `eval`, `eval-result`, `read`, and `action` are test
-failures (exit 1); inside a page check, `read`, `eval`, and `eval-result`
+`snapshot-mismatch`, `eval`, `eval-result`, `read`, `action`, and `stale-ref`
+are test failures (exit 1); inside a page check, `read`, `eval`, and `eval-result`
 mean "not passing yet" and Rust reads again; `snapshot-missing-baseline` and `internal` are runtime
 errors (exit 3). A malformed request is answered with kind `"internal"`.
 

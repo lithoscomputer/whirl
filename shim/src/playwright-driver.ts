@@ -806,11 +806,13 @@ export class PlaywrightDriver implements ShimDriver {
 	): {
 		readonly locator: Locator;
 		readonly description: string;
+		readonly fromSnapshot: boolean;
 	} {
 		const segments = fieldArray(params, "locator") as readonly LocatorSegment[];
 		return {
 			locator: buildLocator(page, segments),
 			description: describeLocator(segments),
+			fromSnapshot: segments.some((segment) => segment.type === "ref"),
 		};
 	}
 
@@ -946,7 +948,19 @@ export class PlaywrightDriver implements ShimDriver {
 		params: Params,
 		action: (locator: Locator) => Promise<unknown>,
 	): Promise<void> {
-		const { locator, description } = this.#readLocator(page, params);
+		const { locator, description, fromSnapshot } = this.#readLocator(
+			page,
+			params,
+		);
+		// A snapshot ref names one element. When the page has replaced that
+		// element since the snapshot, the ref never matches again, so waiting
+		// for it would only spend the step's timeout (SPEC section 7.4).
+		if (fromSnapshot && (await locator.count()) === 0) {
+			throw new ShimError(
+				"stale-ref",
+				`the snapshot element ${description} is no longer on the page`,
+			);
+		}
 		try {
 			await action(locator);
 		} catch (error) {
