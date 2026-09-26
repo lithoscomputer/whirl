@@ -22,14 +22,8 @@ pub(crate) enum Value {
     Object(Vec<(String, Self)>),
     Bytes(Vec<u8>),
     Date(DateTime<Utc>),
-    /// An XPath node set, which supports only `count` and `exists`.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the xpath: filter arrives with libxml2 in milestone M7"
-        )
-    )]
+    /// An XPath node set, which supports only `count` and `exists`. An
+    /// empty node set fails `exists`, as in Hurl.
     NodeSet(usize),
 }
 

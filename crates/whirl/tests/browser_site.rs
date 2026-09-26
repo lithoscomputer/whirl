@@ -210,6 +210,27 @@ fn respond(mut request: tiny_http::Request) {
         let _ = request.respond(Response::empty(302).with_header(location));
         return;
     }
+    if path == "api/feed" {
+        // An Atom feed in ISO-8859-1, so the XML path must decode with the
+        // response charset and ignore the declared encoding.
+        let content_type =
+            Header::from_bytes("Content-Type", "application/atom+xml; charset=iso-8859-1")
+                .expect("valid header");
+        let body = b"<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?>\
+<feed xmlns=\"http://www.w3.org/2005/Atom\" xmlns:media=\"http://search.yahoo.com/mrss/\">\
+<title>Caf\xe9 news</title>\
+<entry><title>One</title><media:thumbnail url=\"/one.png\"/></entry>\
+<entry><title>Two</title></entry>\
+</feed>";
+        let _ = request.respond(Response::from_data(&body[..]).with_header(content_type));
+        return;
+    }
+    if path == "api/broken-xml" {
+        let content_type =
+            Header::from_bytes("Content-Type", "application/xml").expect("valid header");
+        let _ = request.respond(Response::from_string("<a><b></a>").with_header(content_type));
+        return;
+    }
     if path == "api/malformed" {
         let _ = request.respond(Response::from_string("not-json"));
         return;
@@ -2783,6 +2804,105 @@ PAGE /checks.html?id=1234567890123456789
     assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
     let report = fs::read_to_string(dir.path.join("report.json")).expect("report exists");
     assert!(report.contains("1234567890123456789"), "{report}");
+}
+
+#[test]
+fn xpath_checks_read_xml_and_html() {
+    let site = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file(
+        "xpath.whirl",
+        r#"HTTP GET /api/feed
+[Asserts]
+status == 200
+xpath:"string(//_:feed/_:title)" == "Café news"
+xpath://_:entry count == 2
+xpath:"count(//_:entry)" == 2
+xpath:"count(//_:entry)" isInteger
+xpath://_:entry exists
+xpath://_:missing not exists
+xpath:"boolean(//media:thumbnail)" == true
+bytes xpath:"string(//_:entry[2]/_:title)" == Two
+body xpath:"//media:thumbnail/@url" count == 1
+[Captures]
+first: xpath:"string(//_:entry[1]/_:title)"
+entries: xpath:"count(//_:entry)"
+HTTP GET /checks.html
+[Asserts]
+status == 200
+xpath:"string(//h1)" == Checks
+xpath://li count == 3
+xpath:"normalize-space(//p[@data-testid='price'])" == "Total: $1,299.00"
+xpath:"string(//li[last()])" == {{last}}
+VISIT /checks.html
+PAGE /checks.html
+[Asserts]
+eval "document.querySelector('ul').outerHTML" xpath:"count(//li[@class='row'])" == 3
+testid:current attr:href xpath:"count(//a)" == 0
+"#,
+    );
+    let output = run_whirl(&dir, &[
+        "--base",
+        &site.base(),
+        "--var",
+        "last=Three",
+        "--report-json",
+        "report.json",
+        "xpath.whirl",
+    ]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    let text = fs::read_to_string(dir.path.join("report.json")).expect("report exists");
+    let report: serde_json::Value = serde_json::from_str(&text).expect("report is JSON");
+    let captures = &report["files"][0]["entries"][0]["captures"];
+    assert_eq!(
+        captures["first"],
+        serde_json::json!({"type": "string", "value": "One"})
+    );
+    assert_eq!(
+        captures["entries"],
+        serde_json::json!({"type": "number", "value": 2})
+    );
+}
+
+#[test]
+fn xpath_failures_report_their_codes() {
+    let site = SiteServer::start();
+    for (request, check, code) in [
+        ("/api/broken-xml", "xpath:/a count == 1", "filter-error"),
+        ("/api/feed", "xpath://_:entry == 2", "type-mismatch"),
+        (
+            "/api/feed",
+            "xpath:\"number(//_:title)\" > 1",
+            "filter-error",
+        ),
+        ("/checks.html", "xpath://table exists", "assert"),
+    ] {
+        let dir = TestDir::new();
+        dir.file(
+            "fail.whirl",
+            &format!("HTTP GET {request}\n[Asserts]\nstatus == 200\n{check}\n"),
+        );
+        let output = run_whirl(&dir, &[
+            "--base",
+            &site.base(),
+            "--report-json",
+            "report.json",
+            "fail.whirl",
+        ]);
+        assert_eq!(exit_code(&output), 1, "{check}: {}", stdout_text(&output));
+        let report: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(dir.path.join("report.json")).expect("report exists"),
+        )
+        .expect("report is JSON");
+        let failed = report["files"][0]["entries"][0]["steps"]
+            .as_array()
+            .expect("steps are an array")
+            .iter()
+            .find(|step| step["status"] == "failed")
+            .cloned()
+            .expect("a step fails");
+        assert_eq!(failed["error"]["code"], code, "{check}: {failed}");
+    }
 }
 
 #[test]

@@ -18,8 +18,8 @@ use super::{
     step_error,
 };
 use crate::check::{
-    self, Charset, Check, DateFormat, Expected, Filter, FilterKind, JsonQuery, Missing, Pattern,
-    PatternFlags, Predicate, Read, Value,
+    self, Charset, Check, DateFormat, Expected, Filter, FilterKind, JsonQuery, Markup, Missing,
+    Pattern, PatternFlags, Predicate, Read, ReadContext, Value, XpathQuery,
 };
 use crate::lang::ast::{
     self, Extractor, FilterArg, FilterSpec, Operand, PredicateSpec, ResponseField, Subject,
@@ -178,6 +178,21 @@ impl FlowExec<'_> {
                         filters.push(Filter::Json(JsonQuery::parse(&path).map_err(filter_error)?));
                         ResponseRead::Body
                     }
+                    ResponseField::Xpath(expression) => {
+                        let expression = self.resolve(expression)?;
+                        filters.push(Filter::Xpath(
+                            XpathQuery::parse(&expression).map_err(filter_error)?,
+                        ));
+                        ResponseRead::Body
+                    }
+                };
+                // `bytes xpath:` parses the body like `body xpath:`: decoded
+                // with the response charset (SPEC 9.5).
+                let field = match (field, filter_specs.first()) {
+                    (ResponseRead::Bytes, Some(first)) if first.kind == FilterKind::Xpath => {
+                        ResponseRead::Body
+                    }
+                    (field, _) => field,
                 };
                 Source::Response { name, field }
             }
@@ -269,11 +284,7 @@ impl FlowExec<'_> {
             FilterKind::HtmlEscape => Filter::HtmlEscape,
             FilterKind::HtmlUnescape => Filter::HtmlUnescape,
             FilterKind::Json => Filter::Json(JsonQuery::parse(&value()).map_err(filter_error)?),
-            FilterKind::Xpath => {
-                return Err(filter_error(
-                    "xpath: is not available in this build".to_owned(),
-                ));
-            }
+            FilterKind::Xpath => Filter::Xpath(XpathQuery::parse(&value()).map_err(filter_error)?),
         })
     }
 
@@ -340,7 +351,10 @@ impl FlowExec<'_> {
             {
                 Attempt::End(end) => break end,
                 Attempt::Retry(error) => last = Some(error),
-                Attempt::Read(read) => match prepared.check.evaluate(read, now()) {
+                Attempt::Read(read) => match prepared
+                    .check
+                    .evaluate(read, self.read_context(&prepared.source))
+                {
                     Ok(()) => break StepEnd::Passed,
                     Err(failure) => last = Some(failure_error(&self.vars, &failure)),
                 },
@@ -389,7 +403,11 @@ impl FlowExec<'_> {
             {
                 Attempt::End(end) => break end,
                 Attempt::Retry(error) => last = Some(error),
-                Attempt::Read(read) => match check::apply_filters(&prepared.filters, read, now()) {
+                Attempt::Read(read) => match check::apply_filters(
+                    &prepared.filters,
+                    read,
+                    self.read_context(&prepared.source),
+                ) {
                     Ok(Read::Value(value)) => {
                         if value.text_form().is_none() {
                             break StepEnd::Failed(simple_error(
@@ -442,6 +460,22 @@ impl FlowExec<'_> {
         state.captures.push((name.to_owned(), reported));
         self.captures.push((name.to_owned(), value.clone()));
         self.vars.set(name.to_owned(), value);
+    }
+
+    /// The context of a read: the time, and whether a first `xpath:` parses
+    /// the body of an XML response (SPEC 9.5).
+    fn read_context(&self, source: &Source) -> ReadContext {
+        let markup = match source {
+            Source::Response {
+                name,
+                field: ResponseRead::Body,
+            } => self
+                .responses
+                .get(name)
+                .map_or(Markup::Html, ResponseData::markup),
+            _ => Markup::Html,
+        };
+        ReadContext { now: now(), markup }
     }
 
     /// Opens or closes a check's trace group. A tracing hiccup never
@@ -604,6 +638,14 @@ impl ResponseData {
             .map(|(_, value)| value.as_str())
             .collect();
         (!values.is_empty()).then(|| values.join(", "))
+    }
+
+    /// XML when the `Content-Type` names an XML media type, else HTML.
+    fn markup(&self) -> Markup {
+        match self.header("content-type") {
+            Some(content_type) if check::is_xml_content_type(&content_type) => Markup::Xml,
+            _ => Markup::Html,
+        }
     }
 
     fn body(&self) -> Result<&[u8], String> {

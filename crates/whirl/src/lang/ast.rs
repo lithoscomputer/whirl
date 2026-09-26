@@ -563,7 +563,7 @@ impl Subject {
             } => StaticType::BYTES,
             Self::Eval(_)
             | Self::Response {
-                field: ResponseField::Json(_),
+                field: ResponseField::Json(_) | ResponseField::Xpath(_),
                 ..
             } => StaticType::Any,
         }
@@ -580,6 +580,8 @@ pub(crate) enum ResponseField {
     Bytes,
     /// `json:PATH`, short for `body json:PATH`.
     Json(Value),
+    /// `xpath:EXPR`, short for `body xpath:EXPR`.
+    Xpath(Value),
 }
 
 /// Element extractors (SPEC 9.2).

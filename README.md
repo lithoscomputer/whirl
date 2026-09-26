@@ -133,8 +133,8 @@ role:heading Ada visible
 The status check is explicit. Whirl does not treat 2xx as implicit success.
 
 Checks use Hurl's vocabulary. A check reads a value, passes it through
-filters, and tests it with one predicate. JSON values keep their type, and
-JSONPath selects them:
+filters, and tests it with one predicate. JSON values keep their type,
+JSONPath selects them, and XPath reads HTML and XML:
 
 ```whirl
 [Asserts]
@@ -142,6 +142,7 @@ url urlQueryParam page == 2
 testid:price text replaceRegex /[^0-9.]/ "" toFloat < 200
 response:order json:$.items[*].sku contains ABC-1
 response:order json:$.id isInteger
+response:feed xpath:"count(//_:entry)" >= 1
 eval "window.dataLayer" json:$[?@.event=='purchase'] count == 1
 ```
 

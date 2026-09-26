@@ -14,6 +14,7 @@ use super::number::Number;
 use super::pattern::Pattern;
 use super::types::FilterKind;
 use super::value::{Value, quote};
+use super::xpath::{Markup, XpathQuery};
 
 /// Base64 with the standard alphabet; decoding accepts text with or
 /// without padding.
@@ -68,6 +69,7 @@ pub(crate) enum Filter {
     HtmlEscape,
     HtmlUnescape,
     Json(JsonQuery),
+    Xpath(XpathQuery),
 }
 
 /// What a filter gives.
@@ -109,7 +111,7 @@ impl fmt::Display for Missing {
 
 /// A filter that cannot work on its input (SPEC 9.5).
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
-#[error("{filter}: {reason}")]
+#[error("{}: {reason}", filter.trim_end_matches(':'))]
 pub(crate) struct FilterError {
     pub(crate) filter: &'static str,
     pub(crate) reason: String,
@@ -192,12 +194,19 @@ impl Filter {
             Self::HtmlEscape => FilterKind::HtmlEscape,
             Self::HtmlUnescape => FilterKind::HtmlUnescape,
             Self::Json(_) => FilterKind::Json,
+            Self::Xpath(_) => FilterKind::Xpath,
         }
     }
 
     /// Applies the filter. `now` is the time the check reads its value,
-    /// for `daysAfterNow` and `daysBeforeNow`.
-    pub(crate) fn apply(&self, input: Value, now: DateTime<Utc>) -> Result<Step, FilterError> {
+    /// for `daysAfterNow` and `daysBeforeNow`; `markup` says how `xpath:`
+    /// parses its input.
+    pub(crate) fn apply(
+        &self,
+        input: Value,
+        now: DateTime<Utc>,
+        markup: Markup,
+    ) -> Result<Step, FilterError> {
         let fail = |reason: String| FilterError {
             filter: self.kind().name(),
             reason,
@@ -338,6 +347,7 @@ impl Filter {
                 Value::String(html_escape::decode_html_entities(&text).into_owned())
             }
             (Self::Json(query), value) => return query.apply(value).map_err(fail),
+            (Self::Xpath(query), value) => query.apply(value, markup).map_err(fail)?,
             (_, other) => return Err(wrong_type(&other)),
         };
         Ok(Step::Value(value))
@@ -457,7 +467,7 @@ mod tests {
     }
 
     fn apply(filter: &Filter, input: Value) -> Result<Value, FilterError> {
-        match filter.apply(input, now())? {
+        match filter.apply(input, now(), Markup::Html)? {
             Step::Value(value) => Ok(value),
             Step::Missing(missing) => panic!("unexpected missing value: {missing}"),
         }
@@ -585,7 +595,7 @@ mod tests {
             text_of(apply(&Filter::UrlQueryParam("q".to_owned()), url.clone())),
             "café au lait"
         );
-        let missing = Filter::UrlQueryParam("debug".to_owned()).apply(url, now());
+        let missing = Filter::UrlQueryParam("debug".to_owned()).apply(url, now(), Markup::Html);
         assert!(matches!(
             missing,
             Ok(Step::Missing(Missing::NoQueryParam(_)))

@@ -140,6 +140,8 @@ impl Predicate {
             types_differ: false,
         };
         match self {
+            // A node set supports only `count` and `exists` (SPEC 9.3).
+            Self::Compare(..) if matches!(value, Value::NodeSet(_)) => Outcome::TypeMismatch,
             Self::Compare(kind, expected) => compare(*kind, value, expected),
             Self::Matches(pattern) => match value {
                 Value::String(text) => decided(pattern.is_match(text)),
@@ -231,7 +233,7 @@ fn equals(value: &Value, expected: &Expected) -> (bool, bool) {
 
 fn word(kind: PredicateKind, value: &Value) -> Outcome {
     let holds = match kind {
-        PredicateKind::Exists => true,
+        PredicateKind::Exists => !matches!(value, Value::NodeSet(0)),
         PredicateKind::IsBoolean => matches!(value, Value::Bool(_)),
         PredicateKind::IsEmpty => match value {
             Value::List(items) => items.is_empty(),

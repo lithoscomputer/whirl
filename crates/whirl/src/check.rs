@@ -12,6 +12,7 @@ mod pattern;
 mod predicate;
 mod types;
 mod value;
+mod xpath;
 
 use std::fmt;
 
@@ -25,6 +26,7 @@ pub(crate) use types::{
     COMPARE_KEYWORDS, FILTER_KEYWORDS, FilterKind, PredicateKind, StaticType, WORD_PREDICATES,
 };
 pub(crate) use value::{Value, quote as quote_json};
+pub(crate) use xpath::{Markup, XpathQuery, is_xml_content_type};
 
 use self::predicate::Outcome;
 
@@ -33,6 +35,27 @@ use self::predicate::Outcome;
 pub(crate) enum Read {
     Value(Value),
     Missing(Missing),
+}
+
+/// What filters need besides their input.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ReadContext {
+    /// The time of the read, for `daysAfterNow` and `daysBeforeNow`.
+    pub(crate) now:    DateTime<Utc>,
+    /// How a first `xpath:` filter parses the read: XML for the body of an
+    /// XML response, else HTML (SPEC 9.5). Later filters always parse HTML.
+    pub(crate) markup: Markup,
+}
+
+#[cfg(test)]
+impl ReadContext {
+    /// A read that no filter parses as XML.
+    pub(crate) fn html(now: DateTime<Utc>) -> Self {
+        Self {
+            now,
+            markup: Markup::Html,
+        }
+    }
 }
 
 /// One check, resolved and ready to test values.
@@ -93,10 +116,9 @@ impl Check {
         }
     }
 
-    /// Tests one read of the subject (SPEC 9.7). `now` is the time of the
-    /// read, for the day filters.
-    pub(crate) fn evaluate(&self, read: Read, now: DateTime<Utc>) -> Result<(), Failure> {
-        let value = match apply_filters(&self.filters, read, now) {
+    /// Tests one read of the subject (SPEC 9.7).
+    pub(crate) fn evaluate(&self, read: Read, context: ReadContext) -> Result<(), Failure> {
+        let value = match apply_filters(&self.filters, read, context) {
             Ok(Read::Value(value)) => value,
             Ok(Read::Missing(missing)) => return self.on_missing(&missing),
             Err(error) => {
@@ -183,14 +205,19 @@ fn typed(value: &Value) -> String {
 pub(crate) fn apply_filters(
     filters: &[Filter],
     read: Read,
-    now: DateTime<Utc>,
+    context: ReadContext,
 ) -> Result<Read, FilterError> {
     let mut current = read;
-    for filter in filters {
+    for (position, filter) in filters.iter().enumerate() {
         let Read::Value(value) = current else {
             return Ok(current);
         };
-        current = match filter.apply(value, now)? {
+        let markup = if position == 0 {
+            context.markup
+        } else {
+            Markup::Html
+        };
+        current = match filter.apply(value, context.now, markup)? {
             Step::Value(value) => Read::Value(value),
             Step::Missing(missing) => Read::Missing(missing),
         };
@@ -204,10 +231,12 @@ mod tests {
 
     use super::*;
 
-    fn now() -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 9, 26, 12, 0, 0)
-            .single()
-            .expect("valid date")
+    fn now() -> ReadContext {
+        ReadContext::html(
+            Utc.with_ymd_and_hms(2026, 9, 26, 12, 0, 0)
+                .single()
+                .expect("valid date"),
+        )
     }
 
     fn check(filters: Vec<Filter>, negated: bool, predicate: Predicate) -> Check {

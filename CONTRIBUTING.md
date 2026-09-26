@@ -2,7 +2,10 @@
 
 ## Setup
 
-Install [mise](https://mise.jdx.dev) and [rustup](https://rustup.rs), then:
+Install [mise](https://mise.jdx.dev) and [rustup](https://rustup.rs). The
+libxml2 build also needs a C compiler, `make`, and libclang (Xcode Command
+Line Tools on macOS; `build-essential` and `libclang-dev` on Debian and
+Ubuntu). Then:
 
 ```console
 $ mise run setup   # toolchains, shim dependencies, Playwright Chromium
@@ -14,10 +17,17 @@ real-browser acceptance tests), the shim's type check, lint, and tests, and
 a zizmor audit of the CI workflows. Checks print nothing when they pass;
 set `WHIRL_VERBOSE=1` to stream tool output.
 
+Every build links a pinned libxml2 statically. `mise run build:libxml2`
+builds it from source into `target/libxml2`, and the Mise tasks that build
+Rust run it first. Mise also points pkg-config at it, so run Cargo inside
+the Mise environment (`mise exec -- cargo …` or an activated shell).
+
 ## Layout
 
 - `crates/whirl` — the Rust binary: parser, formatter, lints, runner,
   reporters, `whirl install`.
+- `crates/whirl-xpath` — XPath 1.0 through libxml2, the one crate allowed
+  `unsafe` code (ADR `evaluate-checks-in-rust` §1.6).
 - `shim/` — the TypeScript browser shim on the Playwright library. It runs
   on a pinned Node runtime; Bun is the package manager and script runner.
 - `docs/engineering/shim-protocol.md` — the JSON-over-stdio contract

@@ -46,12 +46,23 @@ compares, captures, or reports. The build MUST NOT turn on a dependency
 feature that changes JSON number handling for other crates, such as
 serde_json's `arbitrary_precision`. Rust MUST use an RFC 9535 JSONPath
 implementation, chrono for dates, the WHATWG Encoding Standard for charsets,
-an ECMAScript regex engine in Unicode mode, and libxml2 for XPath. Project
-code MUST NOT add `unsafe`. Foreign calls MUST stay inside dependencies,
-under the workspace `unsafe_code = "deny"` policy.
+an ECMAScript regex engine in Unicode mode, and libxml2 for XPath.
 
 ### 1.5. libxml2
 
 Release builds MUST link a pinned libxml2 statically. A Mise task MUST build
 it from source (ADR `repository-owned-tasks` §1.2). A release binary MUST NOT
 need libxml2 on the user's system.
+
+### 1.6. Unsafe code
+
+The `libxml` crate's safe API cannot read the type of an XPath result or stop
+libxml2 from writing errors to stderr. So Whirl calls libxml2 directly, as
+Hurl does, from one small crate.
+
+Only the `whirl-xpath` crate MAY contain `unsafe` code. It MUST call only
+libxml2, through the `libxml` crate's bindings, and it MUST give the rest of
+Whirl a safe API. It MUST keep the workspace lints and allow `unsafe_code` at
+crate scope. Each `unsafe` block MUST have a `SAFETY:` comment. All other
+project code MUST NOT add `unsafe`, under the workspace
+`unsafe_code = "deny"` policy.

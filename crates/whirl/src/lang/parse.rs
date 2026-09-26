@@ -12,7 +12,7 @@ use std::vec::IntoIter;
 
 use crate::check::{
     COMPARE_KEYWORDS, Charset, DateFormat, FILTER_KEYWORDS, FilterKind, JsonQuery, Pattern,
-    PatternFlags, WORD_PREDICATES,
+    PatternFlags, WORD_PREDICATES, XpathQuery,
 };
 use crate::lang::ast::{
     Action, ActionKind, Assert, AssertBody, BrowserKind, Capture, CheckLine, Comment, DialogPolicy,
@@ -1064,13 +1064,14 @@ fn response_name(token: RawToken) -> Result<Ident, LineError> {
 }
 
 /// Response field keywords, for diagnostics (SPEC 9.2).
-const RESPONSE_FIELDS: [&str; 6] = [
+const RESPONSE_FIELDS: [&str; 7] = [
     "status",
     "header:NAME",
     "location",
     "body",
     "bytes",
     "json:PATH",
+    "xpath:EXPR",
 ];
 
 /// True when a bare token starts a response field.
@@ -1078,6 +1079,7 @@ fn is_response_field(text: &str) -> bool {
     matches!(text, "status" | "location" | "body" | "bytes")
         || text.starts_with("header:")
         || text.starts_with("json:")
+        || text.starts_with("xpath:")
 }
 
 fn parse_response_field(cursor: &mut Cursor, span: Span) -> Result<ResponseField, LineError> {
@@ -1101,6 +1103,9 @@ fn parse_response_field_token(token: RawToken) -> Result<ResponseField, LineErro
     };
     if head.starts_with("json:") {
         return Ok(ResponseField::Json(json_path_value(token)?));
+    }
+    if head.starts_with("xpath:") {
+        return Ok(ResponseField::Xpath(xpath_value(token)?));
     }
     if !head.starts_with("header:") {
         return Err(
@@ -1145,6 +1150,17 @@ fn json_path_value(token: RawToken) -> Result<Value, LineError> {
     let value = prefixed_single(token, "json:")?;
     if let Some(literal) = value.as_literal() {
         JsonQuery::parse(&literal).map_err(|message| LineError::new(span, message))?;
+    }
+    Ok(value)
+}
+
+/// An `xpath:EXPR` argument, with a literal expression checked here (SPEC
+/// 9.5).
+fn xpath_value(token: RawToken) -> Result<Value, LineError> {
+    let span = token.span;
+    let value = prefixed_single(token, "xpath:")?;
+    if let Some(literal) = value.as_literal() {
+        XpathQuery::parse(&literal).map_err(|message| LineError::new(span, message))?;
     }
     Ok(value)
 }
@@ -1453,13 +1469,18 @@ fn parse_filters(cursor: &mut Cursor) -> Result<(Vec<FilterSpec>, Option<RawToke
                 .find(|(name, _)| *name == text)
                 .map(|(_, kind)| *kind)
         });
-        let head_is_json = matches!(
-            token.parts.first(),
-            Some(RawPart::Bare { text, .. }) if text.starts_with("json:")
-        );
+        let head = match token.parts.first() {
+            Some(RawPart::Bare { text, .. }) => text.as_str(),
+            _ => "",
+        };
+        let (head_is_json, head_is_xpath) = (head.starts_with("json:"), head.starts_with("xpath:"));
         let span = token.span;
         let (kind, args) = if head_is_json {
             (FilterKind::Json, vec![FilterArg::Value(json_path_value(
+                token,
+            )?)])
+        } else if head_is_xpath {
+            (FilterKind::Xpath, vec![FilterArg::Value(xpath_value(
                 token,
             )?)])
         } else if let Some(kind) = keyword {
@@ -2975,6 +2996,42 @@ mod tests {
             error.message
         );
         only_check("response:r json:\"$[?@.name == 'Ada Lovelace']\" count == 1");
+    }
+
+    #[test]
+    fn xpath_fields_and_filters_parse() {
+        let check = only_check("response:r xpath://_:entry count == 2");
+        assert!(matches!(check.subject, Subject::Response {
+            field: ResponseField::Xpath(_),
+            ..
+        }));
+        let check = only_check("testid:list attr:data-xml xpath:\"string(//li[@class='x'])\" == A");
+        assert_eq!(check.filters[0].kind, FilterKind::Xpath);
+        let check = only_check("response:r xpath:{{expr}} exists");
+        assert!(matches!(check.subject, Subject::Response {
+            field: ResponseField::Xpath(_),
+            ..
+        }));
+    }
+
+    #[test]
+    fn xpath_expressions_are_checked_when_literal() {
+        for invalid in ["//li[", "count(", "foo()"] {
+            let error = parse_err(&format!(
+                "VISIT /\n[Asserts]\nresponse:x xpath:\"{invalid}\" exists\n"
+            ));
+            assert!(
+                error.message.starts_with("invalid XPath expression"),
+                "{invalid}: {}",
+                error.message
+            );
+        }
+        let error = parse_err("VISIT /\n[Asserts]\nresponse:r xpath://a[@x=\"1\"] exists\n");
+        assert!(
+            error.message.contains("one bare token or one quoted value"),
+            "{}",
+            error.message
+        );
     }
 
     #[test]

@@ -587,6 +587,9 @@ fn render_response_field(field: &ResponseField) -> String {
         ResponseField::Json(value) => {
             format!("json:{}", render_value(value, ValueCtx::Prefixed, false))
         }
+        ResponseField::Xpath(value) => {
+            format!("xpath:{}", render_value(value, ValueCtx::Prefixed, false))
+        }
     }
 }
 
@@ -1039,7 +1042,9 @@ mod tests {
             | ResponseField::Location
             | ResponseField::Body
             | ResponseField::Bytes => {}
-            ResponseField::Header(value) | ResponseField::Json(value) => scrub_value(value),
+            ResponseField::Header(value)
+            | ResponseField::Json(value)
+            | ResponseField::Xpath(value) => scrub_value(value),
         }
     }
 
@@ -1253,6 +1258,10 @@ response:order json:$.id == "42"
 response:order json:$.items[*].sku not contains ABC-1
 response:order bytes startsWith hex,7b;
 response:order location urlQueryParam next == /cart
+response:order xpath:"count(//li[@class='row'])" == 3
+response:order xpath://_:entry count >= 1
+response:order body xpath:"string(//h1)" == Checks
+response:order xpath:{{expr}} exists
 [Captures]
 body: response:order json:$
 id: response:order json:$.id toString regex /order-(\d+)/ @2s

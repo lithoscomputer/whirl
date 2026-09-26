@@ -604,7 +604,7 @@ A JSON number keeps its exact text. Whirl does not convert it to floating point,
 | `endsWith EXPECTED` | The value ends with `EXPECTED` | string, bytes |
 | `contains EXPECTED` | A string has `EXPECTED` as a substring, a list has an item equal to `EXPECTED`, or bytes have `EXPECTED` as a byte sequence | string, list, bytes |
 | `matches /regex/` | The regex finds a match in the value | string |
-| `exists` | The value is not missing | any |
+| `exists` | The value is not missing, and is not an empty node set | any |
 | `isBoolean` | The value is a boolean | any |
 | `isEmpty` | The value is an empty list or object | list, object |
 | `isFloat` | The value is a float | any |
@@ -665,7 +665,9 @@ Filter arguments are values (section 3.1) and support interpolation. Regex argum
 
 `json:PATH` takes an RFC 9535 JSONPath query. A string input is parsed as JSON first; a list or an object is queried as it is. A singular query — one with only name and index selectors, such as `$.items[0].id` — gives one value, or a missing value when it selects nothing. Any other query gives a list of every match, which can be empty. Inside a filter expression such as `$.items[?@.price < 10]`, numbers compare as floating point, and the `match()` and `search()` functions use I-Regexp (RFC 9485), not ECMAScript.
 
-`xpath:EXPR` takes an XPath 1.0 expression and evaluates it with libxml2. Whirl parses the input as XML when it is the `body` or `bytes` of a response whose `Content-Type` is `text/xml`, `application/xml`, or ends in `+xml`. Otherwise it parses the input as HTML. An expression that selects nodes gives a node set. Expressions such as `string(…)`, `count(…)`, and `boolean(…)` give a string, a number, and a boolean.
+`xpath:EXPR` takes an XPath 1.0 expression and evaluates it with libxml2. Whirl parses the input as XML when it is the `body` or `bytes` of a response whose `Content-Type` is `text/xml`, `application/xml`, or ends in `+xml`. Otherwise it parses the input as HTML. `bytes xpath:` decodes the body like `body`; other bytes must be UTF-8. Whirl ignores an encoding that the document declares. XML must be well-formed, and Whirl never loads external entities. As in Hurl, the namespaces declared on the root element keep their prefixes, and the default namespace gets the prefix `_`: `xpath:"string(//_:feed/_:title)"`.
+
+An expression that selects nodes gives a node set. An empty node set fails `exists`. Expressions such as `string(…)`, `count(…)`, and `boolean(…)` give a string, a number, and a boolean. A whole number is an integer, so `count(//li)` gives `3`; any other number is a float. NaN and infinity give a filter error.
 
 A `json:` or `xpath:` argument is one bare token or one quoted value. JSONPath strings use single quotes, as in `json:$[?@.sku=='A-1']`. Quote the whole argument when it contains spaces or double quotes: `json:"$[?@.name == 'Ada Lovelace']"`. A token that joins bare and quoted parts, such as `json:$["a"]`, is a parse error, because the lexer would drop its inner quotes.
 

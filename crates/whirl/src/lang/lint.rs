@@ -689,7 +689,7 @@ fn collect_response_field_refs<'a>(
         | ResponseField::Location
         | ResponseField::Body
         | ResponseField::Bytes => {}
-        ResponseField::Header(value) | ResponseField::Json(value) => {
+        ResponseField::Header(value) | ResponseField::Json(value) | ResponseField::Xpath(value) => {
             collect_value_refs(value, line, refs);
         }
     }

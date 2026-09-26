@@ -10,6 +10,7 @@
 - Add the `body`, `bytes`, and `location` response fields, and `eval "script"` as a check subject that retries until it passes.
 - Evaluate every filter and predicate in Rust. JSON numbers keep their exact text, so 64-bit IDs keep their precision in checks and captures.
 - Report check failures as `type-mismatch`, `filter-error`, `missing-value`, or `read` as well as `assert`. `whirl check` reports a check whose types cannot work as `filter-type`.
+- Add the `xpath:EXPR` response field and filter. XPath 1.0 runs through a pinned libxml2 that release binaries link statically. A response whose `Content-Type` is XML parses as XML, with its root namespaces available and the default namespace as `_`; anything else parses as HTML.
 - Run regexes in Unicode mode everywhere, so a pattern such as `/a\-b/` is a parse error.
 - Page captures retry like page checks. An absent attribute on an element passes `!=` and every `not` predicate.
 - Move the browser shim to protocol 2; `whirl install` provisions the matching bundle.
