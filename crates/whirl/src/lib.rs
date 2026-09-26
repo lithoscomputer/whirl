@@ -4,6 +4,7 @@
 //! formatter and lint rules), the runner, and the reporters. `SPEC.md` at the
 //! repository root is the product authority for everything in here.
 
+mod check;
 mod cli;
 mod doctor;
 mod install;

@@ -9,23 +9,25 @@ use serde_json::Value as Json;
 use tokio::fs;
 use tracing::{Instrument as _, debug, debug_span, info_span};
 
+use crate::check;
 use crate::lang::ast::{
     self, BrowserKind, DialogPolicy, DurationLit, File, FileOption, OptionValue, ReducedMotion,
     Value, Viewport,
 };
 use crate::report::model::{
-    ActReport, EntryReport, FileReport, ReportViewport, RuntimeMetadata, SETUP_ENTRY, Status,
-    StepError, StepKind, StepReport, Timing,
+    ActReport, CaptureValue, EntryReport, FileReport, ReportViewport, RuntimeMetadata, SETUP_ENTRY,
+    Status, StepError, StepKind, StepReport, Timing,
 };
 use crate::run::act::{Instruction, ModelClient};
 use crate::run::artifacts;
 use crate::run::shim::{
-    CaptureResult, EndFlowParams, ErrorObject, ShimClient, ShimError, StartFlowParams, StepCommand,
-    StepOutcome, StepRequest, VideoParams, ViewportParams, wire,
+    EndFlowParams, ErrorObject, ShimClient, ShimError, StartFlowParams, StepCommand, StepOutcome,
+    StepRequest, VideoParams, ViewportParams, wire,
 };
 use crate::run::vars::{VarError, VarStore};
 
 mod act_step;
+mod check_step;
 
 /// Default per-step timeout (SPEC 5).
 pub(crate) const DEFAULT_STEP_TIMEOUT_MS: u64 = 10_000;
@@ -341,7 +343,7 @@ pub(crate) fn setup_path_for(file: &File) -> Option<PathBuf> {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct SetupHandoff {
     pub(crate) storage_path: PathBuf,
-    pub(crate) captures:     Vec<(String, String)>,
+    pub(crate) captures:     Vec<(String, check::Value)>,
     pub(crate) secrets:      Vec<String>,
 }
 
@@ -351,7 +353,7 @@ pub(crate) struct SetupHandoff {
 pub(crate) struct FlowOutcome {
     pub(crate) report:   FileReport,
     /// Every capture, unmasked, in the order taken.
-    pub(crate) captures: Vec<(String, String)>,
+    pub(crate) captures: Vec<(String, check::Value)>,
     /// The secrets the run masked.
     pub(crate) secrets:  Vec<String>,
 }
@@ -492,7 +494,7 @@ fn render_step_text(raw: &str, vars: &mut VarStore) -> String {
         let name = &from_braces[2..end];
         let resolved = match name.strip_prefix("env.") {
             Some(env_name) => vars.resolve_env(env_name),
-            None => vars.get(name).map(str::to_owned),
+            None => vars.get_text(name),
         };
         match resolved {
             Some(value) => out.push_str(&value),
@@ -512,6 +514,20 @@ enum BuildError {
     Var(#[from] VarError),
     #[error("relative URL '{url}' needs the base option")]
     NoBase { url: String },
+    /// A check or capture argument that is invalid after interpolation,
+    /// such as a JSONPath query.
+    #[error("{0}")]
+    Check(String),
+}
+
+impl BuildError {
+    /// The stable report code of the failure.
+    fn code(&self) -> &'static str {
+        match self {
+            Self::Var(_) | Self::NoBase { .. } => "variable-resolution",
+            Self::Check(_) => "filter-error",
+        }
+    }
 }
 
 /// A step ready to run: one shim command, or an `ACT` instruction that
@@ -519,6 +535,9 @@ enum BuildError {
 enum PreparedStep {
     Command(StepCommand),
     Act(Instruction),
+    /// A check with a subject, evaluated in Rust (SPEC 9).
+    Check(check_step::PreparedCheck),
+    Capture(check_step::PreparedCapture),
 }
 
 /// Mutable state of one flow run.
@@ -531,7 +550,9 @@ struct FlowExec<'a> {
     /// cancel closed it).
     flow_open: bool,
     /// Every capture, unmasked, for a dependent file (SPEC 12).
-    captures:  Vec<(String, String)>,
+    captures:  Vec<(String, check::Value)>,
+    /// Responses read so far; a response never changes (SPEC 9.7).
+    responses: check_step::ResponseCache,
 }
 
 impl FlowExec<'_> {
@@ -569,24 +590,25 @@ impl FlowExec<'_> {
                 let expect = wire::page_wire(&page.check, &mut |value| vars.resolve(value))?;
                 Ok(PreparedStep::Command(StepCommand::Page { expect }))
             }
-            StepNode::Assert(assert) => {
-                let vars = &mut self.vars;
-                let spec = wire::assert_wire(&assert.body, implicit_response, &mut |value| {
-                    vars.resolve(value)
-                })?;
-                Ok(PreparedStep::Command(StepCommand::Assert { spec }))
-            }
-            StepNode::Capture(capture) => {
-                let vars = &mut self.vars;
-                let source =
-                    wire::capture_source_wire(&capture.source, implicit_response, &mut |value| {
-                        vars.resolve(value)
-                    })?;
-                Ok(PreparedStep::Command(StepCommand::Capture {
-                    source,
-                    filter: wire::filter_wire(capture.filter.as_ref()),
-                }))
-            }
+            StepNode::Assert(assert) => match &assert.body {
+                ast::AssertBody::TabClosed { name } => {
+                    Ok(PreparedStep::Command(StepCommand::Assert {
+                        spec: wire::tab_closed_wire(name),
+                    }))
+                }
+                ast::AssertBody::ElementState { locator, state } => {
+                    let vars = &mut self.vars;
+                    let spec =
+                        wire::state_assert_wire(locator, *state, &mut |value| vars.resolve(value))?;
+                    Ok(PreparedStep::Command(StepCommand::Assert { spec }))
+                }
+                ast::AssertBody::Check(line) => self
+                    .prepare_check(line, implicit_response)
+                    .map(PreparedStep::Check),
+            },
+            StepNode::Capture(capture) => self
+                .prepare_capture(capture, implicit_response)
+                .map(PreparedStep::Capture),
         }
     }
 
@@ -653,7 +675,13 @@ impl FlowExec<'_> {
                     headers: resolved_headers,
                     body:    body
                         .as_ref()
-                        .map(|body| self.resolve(&body.value))
+                        .map(|body| match body.kind {
+                            // Typed variables insert as JSON (SPEC 11).
+                            ast::HttpBodyKind::Json => {
+                                self.vars.resolve_json(&body.text, body.value.span)
+                            }
+                            ast::HttpBodyKind::Text => self.resolve(&body.value),
+                        })
                         .transpose()?,
                 }
             }
@@ -895,7 +923,7 @@ fn elapsed_ms(started: Instant) -> u64 {
 /// Everything recorded while one entry runs.
 struct EntryState {
     steps:        Vec<StepReport>,
-    captures:     Vec<(String, String)>,
+    captures:     Vec<(String, CaptureValue)>,
     artifacts:    Vec<String>,
     /// Remaining entry budget, when `entry-timeout` is set (SPEC 12).
     remaining_ms: Option<u64>,
@@ -918,7 +946,7 @@ impl FlowExec<'_> {
             Err(error) => {
                 let text = render_step_text(node.raw_text(), &mut self.vars);
                 let end = StepEnd::Failed(StepError {
-                    code: "variable-resolution".to_owned(),
+                    code: error.code().to_owned(),
                     message: self.vars.mask(&error.to_string()),
                     ..StepError::default()
                 });
@@ -944,7 +972,7 @@ impl FlowExec<'_> {
                     entry_start: state.steps.is_empty(),
                     command,
                     timeout_ms,
-                    title: title.clone(),
+                    title: Some(title.clone()),
                 };
                 let outcome = client.run_step(&request).instrument(span).await;
                 let budget = StepBudget {
@@ -964,6 +992,30 @@ impl FlowExec<'_> {
                 self.run_act(node, &instruction, &title, budget, client, state)
                     .instrument(span)
                     .await
+            }
+            PreparedStep::Check(check) => {
+                let budget = check_step::LineBudget {
+                    timeout_ms,
+                    entry_capped,
+                    entry_budget_ms,
+                };
+                let end = self
+                    .run_check(node, check, &title, budget, client, state)
+                    .instrument(span)
+                    .await;
+                (end, None)
+            }
+            PreparedStep::Capture(capture) => {
+                let budget = check_step::LineBudget {
+                    timeout_ms,
+                    entry_capped,
+                    entry_budget_ms,
+                };
+                let end = self
+                    .run_capture(node, capture, &title, budget, client, state)
+                    .instrument(span)
+                    .await;
+                (end, None)
             }
         };
         let duration_ms = elapsed_ms(started);
@@ -1061,24 +1113,8 @@ impl FlowExec<'_> {
         result: &Json,
         state: &mut EntryState,
     ) -> StepEnd {
+        let _ = result;
         match node {
-            StepNode::Capture(capture) => {
-                let Ok(CaptureResult { value }) =
-                    serde_json::from_value::<CaptureResult>(result.clone())
-                else {
-                    return StepEnd::Error(StepError {
-                        message: "internal: malformed capture result from the shim".to_owned(),
-                        ..StepError::default()
-                    });
-                };
-                state
-                    .captures
-                    .push((capture.name.text.clone(), self.vars.mask(&value)));
-                self.captures
-                    .push((capture.name.text.clone(), value.clone()));
-                self.vars.set(capture.name.text.clone(), value);
-                StepEnd::Passed
-            }
             StepNode::Action(action) => {
                 if let ast::ActionKind::Screenshot { name } = &action.kind {
                     state
@@ -1177,7 +1213,7 @@ impl FlowExec<'_> {
                     .into_owned(),
             },
             timeout_ms:  FAILURE_SCREENSHOT_TIMEOUT_MS,
-            title:       "failure screenshot".to_owned(),
+            title:       Some("failure screenshot".to_owned()),
         };
         match client.run_step(&request).await {
             StepOutcome::Ok(_) => {
@@ -1324,7 +1360,9 @@ pub(crate) async fn run_flow(run: &FlowRun<'_>, client: &mut ShimClient) -> Flow
             artifacts:     Vec::new(),
             entries:       Vec::new(),
         };
-        let finish = |mut report: FileReport, vars: &VarStore, captures: Vec<(String, String)>| {
+        let finish = |mut report: FileReport,
+                      vars: &VarStore,
+                      captures: Vec<(String, check::Value)>| {
             report.duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
             debug!(status = ?report.status, duration_ms = report.duration_ms, "flow finished");
             FlowOutcome {
@@ -1336,7 +1374,7 @@ pub(crate) async fn run_flow(run: &FlowRun<'_>, client: &mut ShimClient) -> Flow
 
         let mut vars = VarStore::new();
         for (name, value) in run.base_vars {
-            vars.set(name.clone(), value.clone());
+            vars.set_input(name.clone(), value);
         }
         if let Some(setup) = run.setup {
             for secret in &setup.secrets {
@@ -1424,6 +1462,7 @@ pub(crate) async fn run_flow(run: &FlowRun<'_>, client: &mut ShimClient) -> Flow
             warnings: Vec::new(),
             flow_open: true,
             captures: Vec::new(),
+            responses: check_step::ResponseCache::new(),
         };
         // An explicit rate that the engine cannot honor is a warning, not a
         // failure: the recording still exists at the engine's rate (SPEC 13).
@@ -1597,7 +1636,7 @@ mod tests {
     #[test]
     fn step_text_interpolates_variables_and_masks_env_secrets() {
         let mut vars = VarStore::new();
-        vars.set("user", "alice");
+        vars.set_input("user", "alice");
         vars.resolve(&env_value("PATH"))
             .expect("PATH is set for tests");
         let rendered = render_step_text("FILL label:Email {{user}}:{{env.PATH}}", &mut vars);

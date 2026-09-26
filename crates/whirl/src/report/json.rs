@@ -1,15 +1,22 @@
 //! The versioned JSON report, shared by live and saved report generation.
 
 use std::path::{Path, PathBuf};
-use std::{env, fs};
+use std::{env, fmt, fs};
 
 use anyhow::Context as _;
+use serde::de::{Deserializer, MapAccess, Visitor};
 use serde::{Deserialize, Serialize};
+use serde_json::value::RawValue;
 
 use crate::report::metadata::ReportMetadata;
-use crate::report::model::RunReport;
+use crate::report::model::{CaptureValue, RunReport};
 
-const VERSION: u32 = 1;
+/// The version this Whirl writes (SPEC 14).
+const VERSION: u32 = 2;
+
+/// The versions this Whirl reads: version 1 differs only in the shape of
+/// its captures, plain strings.
+const READABLE_VERSIONS: [u32; 2] = [1, 2];
 
 /// The producer's context stays attached when a saved report is rendered later.
 #[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -53,11 +60,13 @@ impl Document {
         let version: Version =
             serde_json::from_str(&source).context("invalid Whirl JSON report")?;
         anyhow::ensure!(
-            version.version == VERSION,
+            READABLE_VERSIONS.contains(&version.version),
             "unsupported report version {}",
             version.version
         );
-        let document: Self = serde_json::from_str(&source).context("invalid Whirl JSON report")?;
+        let mut document: Self =
+            serde_json::from_str(&source).context("invalid Whirl JSON report")?;
+        document.restore_exact_captures(&source)?;
         anyhow::ensure!(
             document.working_directory.is_absolute(),
             "report workingDirectory must be absolute"
@@ -84,6 +93,31 @@ impl Document {
         Ok(document)
     }
 
+    /// Reads each capture's value again, exactly. `#[serde(flatten)]`
+    /// buffers the report, which turns `1.50` into `1.5` and loses large
+    /// integers; this pass has no flatten, so its values keep their JSON
+    /// text (SPEC 14).
+    fn restore_exact_captures(&mut self, source: &str) -> anyhow::Result<()> {
+        let exact: ExactReport<'_> =
+            serde_json::from_str(source).context("invalid Whirl JSON report")?;
+        for (file, exact) in self.report.files.iter_mut().zip(exact.files) {
+            for (entry, exact) in file.entries.iter_mut().zip(exact.entries) {
+                anyhow::ensure!(
+                    entry.captures.len() == exact.captures.0.len(),
+                    "invalid captures in '{}'",
+                    file.path
+                );
+                for ((_, capture), (_, raw)) in entry.captures.iter_mut().zip(exact.captures.0) {
+                    if let Ok(shape) = serde_json::from_str::<CaptureShape<'_>>(raw.get()) {
+                        *capture =
+                            CaptureValue::new(shape.value_type, shape.value.get().to_owned());
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Pretty-printed JSON with a trailing newline.
     pub(crate) fn render(&self) -> String {
         let mut text = serde_json::to_string_pretty(self)
@@ -91,6 +125,57 @@ impl Document {
         text.push('\n');
         text
     }
+}
+
+/// The captures of a saved report, read without flatten.
+#[derive(Deserialize)]
+struct ExactReport<'a> {
+    #[serde(borrow)]
+    files: Vec<ExactFile<'a>>,
+}
+
+#[derive(Deserialize)]
+struct ExactFile<'a> {
+    #[serde(borrow)]
+    entries: Vec<ExactEntry<'a>>,
+}
+
+#[derive(Deserialize)]
+struct ExactEntry<'a> {
+    #[serde(borrow)]
+    captures: RawCaptures<'a>,
+}
+
+/// Captures in order, repeated names included, each as its JSON text.
+struct RawCaptures<'a>(Vec<(String, &'a RawValue)>);
+
+impl<'de: 'a, 'a> Deserialize<'de> for RawCaptures<'a> {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct RawVisitor;
+        impl<'de> Visitor<'de> for RawVisitor {
+            type Value = RawCaptures<'de>;
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("an object of captured values")
+            }
+            fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+                let mut captures = Vec::new();
+                while let Some(entry) = map.next_entry::<String, &'de RawValue>()? {
+                    captures.push(entry);
+                }
+                Ok(RawCaptures(captures))
+            }
+        }
+        deserializer.deserialize_map(RawVisitor)
+    }
+}
+
+/// A version 2 capture, `{type, value}`.
+#[derive(Deserialize)]
+struct CaptureShape<'a> {
+    #[serde(rename = "type")]
+    value_type: &'a str,
+    #[serde(borrow)]
+    value:      &'a RawValue,
 }
 
 #[cfg(test)]
@@ -108,7 +193,7 @@ mod tests {
     #[test]
     fn the_document_has_the_stable_version_and_run_shape() {
         let document = rendered();
-        assert_eq!(document["version"], json!(1));
+        assert_eq!(document["version"], json!(2));
         assert_eq!(document["durationMs"], json!(3_210));
         assert_eq!(
             document["files"]
@@ -143,7 +228,7 @@ mod tests {
                         {"line": 3, "kind": "page", "text": "PAGE /dashboard",
                          "status": "passed", "durationMs": 5},
                     ],
-                    "captures": {"next_url": "/dashboard"},
+                    "captures": {"next_url": {"type": "string", "value": "/dashboard"}},
                     "artifacts": [],
                 }],
             })
@@ -187,5 +272,40 @@ mod tests {
             text.contains("FILL \\\"Password\\\" ***"),
             "report:\n{text}"
         );
+    }
+
+    #[test]
+    fn a_saved_report_keeps_exact_capture_values() {
+        let mut report = sample_report();
+        report.files[0].entries[0].captures = vec![
+            (
+                "price".to_owned(),
+                CaptureValue::new("number", "1.50".to_owned()),
+            ),
+            (
+                "id".to_owned(),
+                CaptureValue::new("number", "123456789012345678901234".to_owned()),
+            ),
+            (
+                "id".to_owned(),
+                CaptureValue::new("object", r#"{"b":1,"a":2e3}"#.to_owned()),
+            ),
+        ];
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("report.json");
+        let written = Document::new(report, None, false);
+        fs::write(&path, written.render()).expect("write report");
+        let read = Document::read(&path).expect("read report");
+        let captures = &read.report.files[0].entries[0].captures;
+        let texts: Vec<(&str, &str)> = captures
+            .iter()
+            .map(|(name, capture)| (name.as_str(), capture.value.get()))
+            .collect();
+        assert_eq!(texts, vec![
+            ("price", "1.50"),
+            ("id", "123456789012345678901234"),
+            ("id", r#"{"b":1,"a":2e3}"#),
+        ]);
+        assert_eq!(read.render(), written.render());
     }
 }

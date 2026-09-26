@@ -26,6 +26,9 @@ use tracing::{Instrument as _, debug, debug_span, warn};
 
 pub(super) mod wire;
 
+/// The protocol version this Whirl speaks (protocol section 3).
+pub(crate) const PROTOCOL: u64 = 2;
+
 /// Environment variable naming the built shim entry (protocol section 8).
 pub(crate) const SHIM_JS_ENV: &str = "WHIRL_SHIM_JS";
 /// Environment variable naming the node executable (protocol section 8).
@@ -89,6 +92,11 @@ pub(crate) enum ShimError {
         )
     )]
     BundleOutdated { installed: Option<String> },
+    #[error(
+        "the shim speaks protocol {protocol}, but this whirl needs protocol {PROTOCOL}; \
+         run `whirl install` to refresh it"
+    )]
+    ProtocolMismatch { protocol: u64 },
     #[error("the shim did not complete {command} within {timeout_ms}ms")]
     TimedOut {
         command:    &'static str,
@@ -325,31 +333,69 @@ pub(crate) enum StepCommand {
     Page {
         expect: Json,
     },
+    /// State checks and tab closure (protocol 4.3).
     Assert {
         spec: Json,
     },
-    Capture {
-        source: Json,
-        filter: Json,
+    /// One non-waiting read of a page subject (protocol 4.4); result
+    /// [`ReadResult`].
+    Read {
+        subject: Json,
     },
+    /// A named response's status, URL, headers, and optionally its body
+    /// (protocol 4.5); result [`ResponseReadResult`].
+    ReadResponse {
+        name: String,
+        body: bool,
+    },
+    /// Opens the trace group for the reads of one check.
+    TraceGroup,
+    /// Closes the group [`StepCommand::TraceGroup`] opened.
+    TraceGroupEnd,
 }
 
 /// One step request: the command plus the common `timeoutMs` and
 /// `title` params (protocol section 4). `title` is the rendered,
-/// secret-masked step text.
+/// secret-masked step text, or `None` for a read inside a check's own
+/// trace group.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct StepRequest {
     /// Starts a new event observation window before this step executes.
     pub(crate) entry_start: bool,
     pub(crate) command:     StepCommand,
     pub(crate) timeout_ms:  u64,
-    pub(crate) title:       String,
+    pub(crate) title:       Option<String>,
 }
 
-/// `capture` result (protocol section 4).
+/// `read` result (protocol section 4.4).
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub(crate) enum ReadResult {
+    Value { value: Json },
+    Missing { reason: MissingReason },
+}
+
+/// Why a `read` found nothing.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum MissingReason {
+    NoElement,
+    AbsentAttribute,
+}
+
+/// `readResponse` result (protocol section 4.5).
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-pub(crate) struct CaptureResult {
-    pub(crate) value: String,
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ResponseReadResult {
+    pub(crate) status:              u16,
+    pub(crate) url:                 String,
+    pub(crate) headers:             Vec<(String, String)>,
+    pub(crate) body_base64:         Option<String>,
+    pub(crate) body_error:          Option<String>,
+    /// The browser may have handed a text body back decoded and
+    /// re-encoded as UTF-8 (protocol 4.5).
+    #[serde(default)]
+    pub(crate) body_may_be_decoded: bool,
 }
 
 /// `ariaSnapshot` result (protocol section 4).
@@ -361,8 +407,8 @@ pub(crate) struct AriaSnapshotResult {
 /// The outcome of one step run under the external watchdog.
 #[derive(Debug)]
 pub(crate) enum StepOutcome {
-    /// The shim answered `ok: true`; the raw result object. `capture`
-    /// deserializes to [`CaptureResult`]; snapshot updates return
+    /// The shim answered `ok: true`; the raw result object. `read`
+    /// deserializes to [`ReadResult`]; snapshot updates return
     /// `{"updated": true}` and other steps return `{}`.
     Ok(Json),
     /// The shim answered `ok: false` with a protocol error object.
@@ -580,7 +626,13 @@ impl ShimClient {
 
     /// `hello` (protocol section 3): sent once after spawn.
     pub(crate) async fn hello(&mut self) -> Result<HelloResult, ShimError> {
-        self.request("hello", serde_json::json!({})).await
+        let hello: HelloResult = self.request("hello", serde_json::json!({})).await?;
+        if hello.protocol != PROTOCOL {
+            return Err(ShimError::ProtocolMismatch {
+                protocol: hello.protocol,
+            });
+        }
+        Ok(hello)
     }
 
     /// `startFlow` (protocol section 3): creates the browser context
@@ -1078,12 +1130,25 @@ mod tests {
                 serde_json::json!({"spec": {"subject": {"type": "url"}}}),
             ),
             (
-                StepCommand::Capture {
-                    source: serde_json::json!({"type": "title"}),
-                    filter: Json::Null,
+                StepCommand::Read {
+                    subject: serde_json::json!({"type": "title"}),
                 },
-                "capture",
-                serde_json::json!({"source": {"type": "title"}, "filter": null}),
+                "read",
+                serde_json::json!({"subject": {"type": "title"}}),
+            ),
+            (
+                StepCommand::ReadResponse {
+                    name: "order".to_owned(),
+                    body: true,
+                },
+                "readResponse",
+                serde_json::json!({"name": "order", "body": true}),
+            ),
+            (StepCommand::TraceGroup, "traceGroup", serde_json::json!({})),
+            (
+                StepCommand::TraceGroupEnd,
+                "traceGroupEnd",
+                serde_json::json!({}),
             ),
         ];
         for (command, expected_cmd, expected_params) in cases {

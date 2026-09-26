@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-	buildCaptureEvalExpression,
 	buildEvalExpression,
+	buildReadEvalExpression,
 	classifyEvalResult,
 	isExpressionScript,
 } from "./eval-support.js";
@@ -51,10 +51,10 @@ test("statement scripts run as written", () => {
 	assert.doesNotMatch(expression, /return \(foo/);
 });
 
-test("capture eval wrapper embeds the classifier", () => {
-	const expression = buildCaptureEvalExpression("1 + 2");
+test("read eval wrapper embeds the classifier and reports strings", () => {
+	const expression = buildReadEvalExpression("1 + 2");
 	assert.match(expression, /const classify = function classifyEvalResult/);
-	assert.match(expression, /return classify\(value\);/);
+	assert.match(expression, /string: typeof value === "string"/);
 });
 
 test("strings are returned as-is", () => {
@@ -107,6 +107,16 @@ test("nested offenders reject the whole value", () => {
 	assert.equal(classifyEvalResult({ a: [1, { b: undefined }] }).ok, false);
 	assert.equal(classifyEvalResult([Number.NaN]).ok, false);
 	assert.equal(classifyEvalResult({ nested: new Date() }).ok, false);
+});
+
+test("holes in sparse arrays are rejected as undefined", () => {
+	// biome-ignore lint/suspicious/noSparseArray: the hole is the case under test
+	assert.deepEqual(classifyEvalResult([1, , 3]), {
+		ok: false,
+		reason: "undefined",
+	});
+	assert.equal(classifyEvalResult(new Array(2)).ok, false);
+	assert.deepEqual(classifyEvalResult([]), { ok: true, value: "[]" });
 });
 
 test("cyclic structures are rejected with a reason", () => {

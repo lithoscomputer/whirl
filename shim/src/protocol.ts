@@ -9,7 +9,7 @@ export type ErrorKind =
 	| "snapshot-missing-baseline"
 	| "eval"
 	| "eval-result"
-	| "capture"
+	| "read"
 	| "action"
 	| "cancelled"
 	| "internal";
@@ -146,19 +146,6 @@ export type PageExpectation =
 
 // --- Assert specs (protocol 4.3) ---
 
-export interface StringOpValue {
-	readonly op: "==" | "!=" | "contains";
-	readonly value: string;
-}
-
-export interface StringOpMatches {
-	readonly op: "matches";
-	readonly source: string;
-	readonly flags: string;
-}
-
-export type StringOp = StringOpValue | StringOpMatches;
-
 export type ElementState =
 	| "visible"
 	| "hidden"
@@ -173,110 +160,83 @@ export interface StateCheck {
 	readonly state: ElementState;
 }
 
-export interface TextCheck {
-	readonly type: "text";
-	readonly op: StringOp;
-}
-
-export interface ValueCheck {
-	readonly type: "value";
-	readonly op: StringOp;
-}
-
-export interface AttrCheck {
-	readonly type: "attr";
-	readonly name: string;
-	readonly op: StringOp;
-}
-
-export type CountOp = "==" | "!=" | "<" | "<=" | ">" | ">=";
-
-export interface CountCheck {
-	readonly type: "count";
-	readonly op: CountOp;
-	readonly value: number;
-}
-
-export type AssertCheck =
-	| StateCheck
-	| TextCheck
-	| ValueCheck
-	| AttrCheck
-	| CountCheck;
-
 export interface LocatorSubject {
 	readonly type: "locator";
 	readonly locator: readonly LocatorSegment[];
 }
 
-export interface UrlSubject {
-	readonly type: "url";
-}
-
-export interface TitleSubject {
-	readonly type: "title";
-}
-
-export type AssertSubject = LocatorSubject | UrlSubject | TitleSubject;
-
+/** A state check; `tab:NAME closed` is dispatched before this shape. */
 export interface AssertSpec {
-	readonly subject: AssertSubject;
-	readonly check: AssertCheck;
+	readonly subject: LocatorSubject;
+	readonly check: StateCheck;
 }
 
-// --- Capture sources (protocol 4.4) ---
+// --- Reads (protocol 4.4, 4.5) ---
 
-export interface TextExtract {
-	readonly type: "text";
-}
+export type ReadExtract =
+	| { readonly type: "text" }
+	| { readonly type: "value" }
+	| { readonly type: "attr"; readonly name: string };
 
-export interface ValueExtract {
-	readonly type: "value";
-}
-
-export interface CountExtract {
-	readonly type: "count";
-}
-
-export interface AttrExtract {
-	readonly type: "attr";
-	readonly name: string;
-}
-
-export type ElementExtract =
-	| TextExtract
-	| ValueExtract
-	| CountExtract
-	| AttrExtract;
-
-export interface ElementCaptureSource {
+export interface ElementReadSubject {
 	readonly type: "element";
 	readonly locator: readonly LocatorSegment[];
-	readonly extract: ElementExtract;
+	readonly extract: ReadExtract;
 }
 
-export interface UrlCaptureSource {
+export interface CountReadSubject {
+	readonly type: "count";
+	readonly locator: readonly LocatorSegment[];
+}
+
+export interface UrlReadSubject {
 	readonly type: "url";
 }
 
-export interface TitleCaptureSource {
+export interface TitleReadSubject {
 	readonly type: "title";
 }
 
-export interface EvalCaptureSource {
+export interface EvalReadSubject {
 	readonly type: "eval";
 	readonly script: string;
 }
 
-export type CaptureSource =
-	| ElementCaptureSource
-	| UrlCaptureSource
-	| TitleCaptureSource
-	| EvalCaptureSource;
+export type ReadSubject =
+	| ElementReadSubject
+	| CountReadSubject
+	| UrlReadSubject
+	| TitleReadSubject
+	| EvalReadSubject;
 
-export interface CaptureFilter {
-	readonly source: string;
-	readonly flags: string;
+export type JsonValue =
+	| null
+	| boolean
+	| number
+	| string
+	| readonly JsonValue[]
+	| { readonly [key: string]: JsonValue };
+
+export interface ReadValue {
+	readonly type: "value";
+	readonly value: JsonValue;
+}
+
+export interface ReadMissing {
+	readonly type: "missing";
+	readonly reason: "no-element" | "absent-attribute";
+}
+
+export type ReadResult = ReadValue | ReadMissing;
+
+export interface ResponseRead {
+	readonly status: number;
+	readonly url: string;
+	readonly headers: readonly (readonly [string, string])[];
+	readonly bodyBase64: string | null;
+	readonly bodyError: string | null;
+	/** The browser may have returned a text body decoded and re-encoded as UTF-8. */
+	readonly bodyMayBeDecoded: boolean;
 }
 
 // --- Lifecycle params (protocol 3) ---
@@ -356,7 +316,10 @@ export type StepCommand =
 	| "ariaSnapshot"
 	| "page"
 	| "assert"
-	| "capture";
+	| "read"
+	| "readResponse"
+	| "traceGroup"
+	| "traceGroupEnd";
 
 const stepCommandList: readonly StepCommand[] = [
 	"http",
@@ -381,7 +344,10 @@ const stepCommandList: readonly StepCommand[] = [
 	"ariaSnapshot",
 	"page",
 	"assert",
-	"capture",
+	"read",
+	"readResponse",
+	"traceGroup",
+	"traceGroupEnd",
 ];
 
 const stepCommandSet: ReadonlySet<string> = new Set(stepCommandList);

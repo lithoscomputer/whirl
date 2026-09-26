@@ -10,12 +10,16 @@ use std::mem;
 use std::path::{Path, PathBuf};
 use std::vec::IntoIter;
 
+use crate::check::{
+    COMPARE_KEYWORDS, Charset, DateFormat, FILTER_KEYWORDS, FilterKind, JsonQuery, Pattern,
+    PatternFlags, WORD_PREDICATES, XpathQuery, bytes_literal, is_bytes_literal_shape, quote_json,
+};
 use crate::lang::ast::{
-    Action, ActionKind, Assert, AssertBody, BrowserKind, Capture, CaptureSource, Comment,
-    DialogPolicy, DurationLit, Entry, Extractor, File, FileOption, HttpBody, HttpBodyKind,
-    HttpHeader, Ident, Locator, LocatorSegment, NumOp, OptionLine, OptionValue, Page, PageCheck,
-    ReducedMotion, Regex, RegexFlags, ResponseField, SegmentKind, Span, StateCheck, StoreScope,
-    StrCheck, TextPrefix, Value, ValueSegment, ValueSource, Viewport,
+    Action, ActionKind, Assert, AssertBody, BrowserKind, Capture, CheckLine, Comment, DialogPolicy,
+    DurationLit, Entry, Extractor, File, FileOption, FilterArg, FilterSpec, HttpBody, HttpBodyKind,
+    HttpHeader, Ident, JsonLiteral, Locator, LocatorSegment, Operand, OptionLine, OptionValue,
+    Page, PageCheck, PredicateSpec, ReducedMotion, Regex, RegexFlags, ResponseField, SegmentKind,
+    Span, StateCheck, StoreScope, Subject, TextPrefix, Value, ValueSegment, Viewport, chain_type,
 };
 
 /// A parse diagnostic (SPEC 16): file, line, column, the source line, a
@@ -111,14 +115,6 @@ fn is_attr_name(text: &str) -> bool {
     };
     (first.is_ascii_alphabetic() || first == '_')
         && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
-}
-
-/// Parses a number literal: a non-negative decimal integer (SPEC 3.1).
-fn parse_number(text: &str) -> Option<u64> {
-    if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
-        return None;
-    }
-    text.parse().ok()
 }
 
 /// One whitespace-free run of source: adjacent bare runs and quoted
@@ -474,6 +470,76 @@ impl Cursor {
         (text, span)
     }
 
+    /// Scans a single-line JSON literal starting at `[` or `{` (SPEC 3.1):
+    /// it ends where its outer delimiter closes. A `{{name}}` reference
+    /// outside a string stands for a JSON value.
+    fn scan_json_literal(&mut self) -> Result<JsonLiteral, LineError> {
+        let start = self.pos;
+        let column = self.column();
+        let mut stack = Vec::new();
+        let mut in_string = false;
+        let mut escaped = false;
+        while let Some(ch) = self.peek() {
+            self.pos += 1;
+            if in_string {
+                if escaped {
+                    escaped = false;
+                } else if ch == '\\' {
+                    escaped = true;
+                } else if ch == '"' {
+                    in_string = false;
+                }
+                continue;
+            }
+            match ch {
+                '"' => in_string = true,
+                '{' if self.peek() == Some('{') => {
+                    let close = self.chars[self.pos..]
+                        .windows(2)
+                        .position(|pair| pair == ['}', '}']);
+                    let Some(close) = close else {
+                        let span = self.span_from(start);
+                        return Err(LineError::new(span, "unterminated `{{` variable reference"));
+                    };
+                    self.pos += close + 2;
+                }
+                '{' | '[' => stack.push(if ch == '{' { '}' } else { ']' }),
+                '}' | ']' => {
+                    if stack.pop() != Some(ch) {
+                        let span = self.span_from(start);
+                        return Err(LineError::new(span, "mismatched delimiter in JSON literal"));
+                    }
+                    if stack.is_empty() {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let span = self.span_from(start);
+        if !stack.is_empty() {
+            return Err(LineError::new(span, "unterminated JSON literal")
+                .expecting(["a JSON array or object that ends on this line"]));
+        }
+        let text: String = self.chars[start..self.pos].iter().collect();
+        let validation = json_for_validation(&text)?;
+        if let Err(error) = serde_json::from_str::<serde_json::Value>(&validation) {
+            return Err(LineError::new(
+                span,
+                format!("invalid JSON literal: {error}"),
+            ));
+        }
+        let segments = bare_segments(&text, column)?;
+        Ok(JsonLiteral {
+            value: Value {
+                segments: merge_literals(segments),
+                span,
+                quoted: false,
+            },
+            text,
+        })
+    }
+
     /// Scans a `/pattern/flags` regex literal (SPEC 3.1). Only called
     /// where the grammar expects a regex: after `matches` and after
     /// `regex` in captures.
@@ -676,20 +742,15 @@ fn parse_segment(
         });
     }
     if let Some(rest) = head.strip_prefix("nth:") {
-        if token.parts.len() > 1 {
-            return Err(LineError::new(span, "expected a number after `nth:`")
-                .expecting(["a 1-based index"]));
-        }
-        let Some(index) = parse_number(rest) else {
-            return Err(LineError::new(span, "expected a number after `nth:`")
-                .expecting(["a 1-based index"]));
+        let index = if token.parts.len() > 1 {
+            None
+        } else {
+            parse_index(rest)
         };
-        if index == 0 {
-            return Err(
-                LineError::new(span, "`nth:` is 1-based; `nth:0` is not allowed")
-                    .expecting(["an index of 1 or more"]),
-            );
-        }
+        let Some(index) = index else {
+            return Err(LineError::new(span, "expected an index after `nth:`")
+                .expecting(["a 0-based index like 0 or -1"]));
+        };
         if is_first {
             return Err(
                 LineError::new(span, "`nth:` may not be the first segment of a locator")
@@ -1002,64 +1063,106 @@ fn response_name(token: RawToken) -> Result<Ident, LineError> {
     parse_name(vec![name], span)
 }
 
+/// Response field keywords, for diagnostics (SPEC 9.2).
+const RESPONSE_FIELDS: [&str; 7] = [
+    "status",
+    "header:NAME",
+    "location",
+    "body",
+    "bytes",
+    "json:PATH",
+    "xpath:EXPR",
+];
+
+/// True when a bare token starts a response field.
+fn is_response_field(text: &str) -> bool {
+    matches!(text, "status" | "location" | "body" | "bytes")
+        || text.starts_with("header:")
+        || text.starts_with("json:")
+        || text.starts_with("xpath:")
+}
+
 fn parse_response_field(cursor: &mut Cursor, span: Span) -> Result<ResponseField, LineError> {
-    let token = cursor
-        .next_token()?
-        .ok_or_else(|| LineError::new(span, "expected status, header:NAME, or json:POINTER"))?;
+    let token = cursor.next_token()?.ok_or_else(|| {
+        LineError::new(after_span(span), "expected a response field").expecting(RESPONSE_FIELDS)
+    })?;
     parse_response_field_token(token)
 }
 
 fn parse_response_field_token(token: RawToken) -> Result<ResponseField, LineError> {
-    if token.bare_single() == Some("status") {
-        return Ok(ResponseField::Status);
+    match token.bare_single() {
+        Some("status") => return Ok(ResponseField::Status),
+        Some("location") => return Ok(ResponseField::Location),
+        Some("body") => return Ok(ResponseField::Body),
+        Some("bytes") => return Ok(ResponseField::Bytes),
+        _ => {}
     }
     let head = match token.parts.first() {
         Some(RawPart::Bare { text, .. }) => text.as_str(),
         _ => "",
     };
-    let prefix = if head.starts_with("header:") {
-        "header:"
-    } else if head.starts_with("json:") {
-        "json:"
-    } else {
-        return Err(LineError::new(
-            token.span,
-            "expected status, header:NAME, or json:POINTER",
-        ));
-    };
-    let field_span = token.span;
-    let value = strip_prefix_token(token, prefix.len())
-        .ok_or_else(|| LineError::new(field_span, "expected a response field after the prefix"))?
-        .into_value()?;
-    if let Some(literal) = value.as_literal() {
-        if prefix == "header:" && !is_attr_name(&literal) {
-            return Err(LineError::new(field_span, "invalid response header name"));
-        }
-        if prefix == "json:" && !valid_json_pointer(&literal) {
-            return Err(LineError::new(
-                field_span,
-                "invalid JSON Pointer; use /field and escape ~ as ~0 and / as ~1",
-            ));
-        }
+    if head.starts_with("json:") {
+        return Ok(ResponseField::Json(json_path_value(token)?));
     }
-    Ok(if prefix == "header:" {
-        ResponseField::Header(value)
-    } else {
-        ResponseField::Json(value)
-    })
+    if head.starts_with("xpath:") {
+        return Ok(ResponseField::Xpath(xpath_value(token)?));
+    }
+    if !head.starts_with("header:") {
+        return Err(
+            LineError::new(token.span, "expected a response field").expecting(RESPONSE_FIELDS)
+        );
+    }
+    let field_span = token.span;
+    let value = strip_prefix_token(token, "header:".len())
+        .ok_or_else(|| LineError::new(field_span, "expected a header name after `header:`"))?
+        .into_value()?;
+    if let Some(literal) = value.as_literal()
+        && !is_attr_name(&literal)
+    {
+        return Err(LineError::new(field_span, "invalid response header name"));
+    }
+    Ok(ResponseField::Header(value))
 }
 
-fn valid_json_pointer(pointer: &str) -> bool {
-    if !pointer.is_empty() && !pointer.starts_with('/') {
-        return false;
+/// The argument of a `json:` or `xpath:` token: one bare token or one
+/// quoted value (SPEC 9.5). The lexer drops quote characters inside a
+/// joined token, so `json:$["a"]` would silently become `$[a]`.
+fn prefixed_single(token: RawToken, prefix: &str) -> Result<Value, LineError> {
+    let span = token.span;
+    let rest = strip_prefix_token(token, prefix.len()).ok_or_else(|| {
+        LineError::new(span, format!("`{prefix}` needs an argument")).expecting(["a query"])
+    })?;
+    if rest.parts.len() > 1 {
+        return Err(LineError::new(
+            span,
+            format!(
+                "a `{prefix}` argument must be one bare token or one quoted value; \
+                 use single quotes inside it, or quote the whole argument"
+            ),
+        ));
     }
-    let mut chars = pointer.chars();
-    while let Some(ch) = chars.next() {
-        if ch == '~' && !matches!(chars.next(), Some('0' | '1')) {
-            return false;
-        }
+    rest.into_value()
+}
+
+/// A `json:PATH` argument, with a literal path checked here (SPEC 9.5).
+fn json_path_value(token: RawToken) -> Result<Value, LineError> {
+    let span = token.span;
+    let value = prefixed_single(token, "json:")?;
+    if let Some(literal) = value.as_literal() {
+        JsonQuery::parse(&literal).map_err(|message| LineError::new(span, message))?;
     }
-    true
+    Ok(value)
+}
+
+/// An `xpath:EXPR` argument, with a literal expression checked here (SPEC
+/// 9.5).
+fn xpath_value(token: RawToken) -> Result<Value, LineError> {
+    let span = token.span;
+    let value = prefixed_single(token, "xpath:")?;
+    if let Some(literal) = value.as_literal() {
+        XpathQuery::parse(&literal).map_err(|message| LineError::new(span, message))?;
+    }
+    Ok(value)
 }
 
 /// Parses an action line after its keyword (SPEC 7, 17).
@@ -1281,16 +1384,18 @@ const ASSERT_CHECKS: [&str; 11] = [
     "count",
 ];
 
-fn is_assert_stop(text: &str) -> bool {
-    STATE_CHECKS.iter().any(|(name, _)| *name == text)
-        || matches!(text, "text" | "value" | "count")
-        || text.starts_with("attr:")
+const EXTRACTORS: [&str; 4] = ["text", "value", "count", "attr:NAME"];
+
+fn is_extractor(text: &str) -> bool {
+    matches!(text, "text" | "value" | "count") || text.starts_with("attr:")
 }
 
-const STR_OPS: [&str; 4] = ["==", "!=", "contains", "matches"];
+fn is_assert_stop(text: &str) -> bool {
+    STATE_CHECKS.iter().any(|(name, _)| *name == text) || is_extractor(text)
+}
 
-/// Parses a string check's operand: the next token as a value. A final
-/// bare `@duration` is the step timeout, never the operand (SPEC 3.1).
+/// Parses an operand: the next token as a value. A final bare `@duration`
+/// is the step timeout, never the operand (SPEC 3.1).
 fn parse_operand(cursor: &mut Cursor, op_span: Span) -> Result<Value, LineError> {
     let Some(token) = cursor.next_token()? else {
         return Err(LineError::new(after_span(op_span), "expected a value").expecting(["a value"]));
@@ -1310,58 +1415,174 @@ fn parse_operand(cursor: &mut Cursor, op_span: Span) -> Result<Value, LineError>
     token.into_value()
 }
 
-/// Parses `== value | != value | contains value | matches /re/` (SPEC 9.4).
-fn parse_str_check(cursor: &mut Cursor, at: Span) -> Result<StrCheck, LineError> {
-    let Some(op) = cursor.next_token()? else {
-        return Err(LineError::new(after_span(at), "expected an operator").expecting(STR_OPS));
+/// Parses an expected value: a single-line JSON literal when the next
+/// character starts one, else a value (SPEC 3.1). `{{` starts a variable
+/// reference, not a JSON object.
+fn parse_expected(cursor: &mut Cursor, op_span: Span) -> Result<Operand, LineError> {
+    cursor.skip_ws();
+    let starts_json = match cursor.peek() {
+        Some('[') => true,
+        Some('{') => cursor.chars.get(cursor.pos + 1) != Some(&'{'),
+        _ => false,
     };
-    match op.bare_single() {
-        Some("==") => Ok(StrCheck::Eq(parse_operand(cursor, op.span)?)),
-        Some("!=") => Ok(StrCheck::Ne(parse_operand(cursor, op.span)?)),
-        Some("contains") => Ok(StrCheck::Contains(parse_operand(cursor, op.span)?)),
-        Some("matches") => Ok(StrCheck::Matches(cursor.expect_regex()?)),
-        _ => Err(LineError::new(op.span, "expected an operator").expecting(STR_OPS)),
+    if starts_json {
+        return cursor.scan_json_literal().map(Operand::Json);
+    }
+    parse_operand(cursor, op_span).map(Operand::Value)
+}
+
+/// Checks a regex literal in Unicode mode (SPEC 3.1).
+fn validate_regex(regex: &Regex) -> Result<(), LineError> {
+    let flags = PatternFlags {
+        ignore_case: regex.flags.ignore_case,
+        dot_all:     regex.flags.dot_all,
+        multiline:   regex.flags.multiline,
+    };
+    Pattern::validate(&regex.pattern, flags).map_err(|error| {
+        LineError::new(
+            regex.span,
+            format!("invalid regex in Unicode mode: {}", error.reason),
+        )
+    })
+}
+
+/// Parses an index: an integer with an optional minus sign (SPEC 3.1).
+fn parse_index(text: &str) -> Option<i64> {
+    let digits = text.strip_prefix('-').unwrap_or(text);
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    text.parse().ok()
+}
+
+/// Parses filters until a token that is not a filter; returns the
+/// filters and that token (SPEC 9.5).
+fn parse_filters(cursor: &mut Cursor) -> Result<(Vec<FilterSpec>, Option<RawToken>), LineError> {
+    let mut filters = Vec::new();
+    loop {
+        let Some(token) = cursor.next_token()? else {
+            return Ok((filters, None));
+        };
+        let keyword = token.bare_single().and_then(|text| {
+            FILTER_KEYWORDS
+                .iter()
+                .find(|(name, _)| *name == text)
+                .map(|(_, kind)| *kind)
+        });
+        let head = match token.parts.first() {
+            Some(RawPart::Bare { text, .. }) => text.as_str(),
+            _ => "",
+        };
+        let (head_is_json, head_is_xpath) = (head.starts_with("json:"), head.starts_with("xpath:"));
+        let span = token.span;
+        let (kind, args) = if head_is_json {
+            (FilterKind::Json, vec![FilterArg::Value(json_path_value(
+                token,
+            )?)])
+        } else if head_is_xpath {
+            (FilterKind::Xpath, vec![FilterArg::Value(xpath_value(
+                token,
+            )?)])
+        } else if let Some(kind) = keyword {
+            (kind, parse_filter_args(kind, cursor, span)?)
+        } else {
+            return Ok((filters, Some(token)));
+        };
+        filters.push(FilterSpec { kind, args, span });
     }
 }
 
-const NUM_OPS: [(&str, NumOp); 6] = [
-    ("==", NumOp::Eq),
-    ("!=", NumOp::Ne),
-    ("<", NumOp::Lt),
-    ("<=", NumOp::Le),
-    (">", NumOp::Gt),
-    (">=", NumOp::Ge),
-];
+/// Parses the arguments of one filter keyword (SPEC 9.5), checking
+/// literal regexes, date formats, and charset labels.
+fn parse_filter_args(
+    kind: FilterKind,
+    cursor: &mut Cursor,
+    span: Span,
+) -> Result<Vec<FilterArg>, LineError> {
+    let value = |cursor: &mut Cursor| parse_operand(cursor, span).map(FilterArg::Value);
+    let regex = |cursor: &mut Cursor| -> Result<FilterArg, LineError> {
+        let regex = cursor.expect_regex()?;
+        validate_regex(&regex)?;
+        Ok(FilterArg::Regex(regex))
+    };
+    Ok(match kind {
+        FilterKind::Nth => {
+            let token = cursor.next_token()?.ok_or_else(|| {
+                LineError::new(after_span(span), "expected an index after `nth`")
+                    .expecting(["an index like 0 or -1"])
+            })?;
+            let index = token.bare_single().and_then(parse_index).ok_or_else(|| {
+                LineError::new(token.span, "expected an index after `nth`")
+                    .expecting(["an index like 0 or -1"])
+            })?;
+            vec![FilterArg::Index(index)]
+        }
+        FilterKind::Split | FilterKind::UrlQueryParam => vec![value(cursor)?],
+        FilterKind::ToDate | FilterKind::DateFormat => {
+            let format = parse_operand(cursor, span)?;
+            if let Some(literal) = format.as_literal() {
+                DateFormat::new(&literal)
+                    .map_err(|message| LineError::new(format.span, message))?;
+            }
+            vec![FilterArg::Value(format)]
+        }
+        FilterKind::CharsetDecode => {
+            let label = parse_operand(cursor, span)?;
+            if let Some(literal) = label.as_literal() {
+                Charset::from_label(&literal)
+                    .map_err(|message| LineError::new(label.span, message))?;
+            }
+            vec![FilterArg::Value(label)]
+        }
+        FilterKind::Replace => vec![value(cursor)?, value(cursor)?],
+        FilterKind::Regex => vec![regex(cursor)?],
+        FilterKind::ReplaceRegex => vec![regex(cursor)?, value(cursor)?],
+        _ => Vec::new(),
+    })
+}
 
-/// Parses `numop number` after `count` (SPEC 9.4).
-fn parse_count_check(cursor: &mut Cursor, at: Span) -> Result<(NumOp, u64), LineError> {
-    let ops = NUM_OPS.map(|(name, _)| name);
-    let Some(op_token) = cursor.next_token()? else {
-        return Err(LineError::new(after_span(at), "expected a count operator").expecting(ops));
-    };
-    let op = op_token
-        .bare_single()
-        .and_then(|text| {
-            NUM_OPS
-                .iter()
-                .find(|(name, _)| *name == text)
-                .map(|(_, op)| *op)
-        })
-        .ok_or_else(|| LineError::new(op_token.span, "expected a count operator").expecting(ops))?;
-    let Some(number_token) = cursor.next_token()? else {
-        return Err(
-            LineError::new(after_span(op_token.span), "expected a number")
-                .expecting(["a non-negative integer"]),
-        );
-    };
-    let number = number_token
-        .bare_single()
-        .and_then(parse_number)
-        .ok_or_else(|| {
-            LineError::new(number_token.span, "expected a number")
-                .expecting(["a non-negative integer"])
+/// Every predicate spelling, for diagnostics.
+fn predicate_keywords() -> Vec<&'static str> {
+    let mut names: Vec<&str> = COMPARE_KEYWORDS.iter().map(|(name, _)| *name).collect();
+    names.push("matches");
+    names.extend(WORD_PREDICATES.iter().map(|(name, _)| *name));
+    names
+}
+
+/// Parses `[not] predicate` starting at `first` (SPEC 9.4).
+fn parse_predicate(
+    first: RawToken,
+    cursor: &mut Cursor,
+) -> Result<(bool, PredicateSpec), LineError> {
+    let (negated, token) = if first.bare_single() == Some("not") {
+        let next = cursor.next_token()?.ok_or_else(|| {
+            LineError::new(after_span(first.span), "expected a predicate after `not`")
+                .expecting(predicate_keywords())
         })?;
-    Ok((op, number))
+        (true, next)
+    } else {
+        (false, first)
+    };
+    let text = token.bare_single().unwrap_or_default();
+    if text == "matches" {
+        let regex = cursor.expect_regex()?;
+        validate_regex(&regex)?;
+        return Ok((negated, PredicateSpec::Matches(regex)));
+    }
+    if let Some((_, kind)) = COMPARE_KEYWORDS.iter().find(|(name, _)| *name == text) {
+        let expected = parse_expected(cursor, token.span)?;
+        return Ok((negated, PredicateSpec::Compare {
+            kind: *kind,
+            expected,
+        }));
+    }
+    if let Some((_, kind)) = WORD_PREDICATES.iter().find(|(name, _)| *name == text) {
+        return Ok((negated, PredicateSpec::Word(*kind)));
+    }
+    Err(
+        LineError::new(token.span, "expected a filter or a predicate")
+            .expecting(predicate_keywords()),
+    )
 }
 
 /// Consumes an optional final `@duration` and requires the line to end.
@@ -1381,6 +1602,99 @@ fn parse_line_timeout(cursor: &mut Cursor) -> Result<Option<DurationLit>, LineEr
     Ok(timeout)
 }
 
+/// What an `[Asserts]` or `[Captures]` line starts with.
+enum Head {
+    Subject(Subject),
+    State {
+        locator: Locator,
+        state:   StateCheck,
+    },
+}
+
+/// Parses a subject (SPEC 9.2). In an HTTP entry only the entry's own
+/// response fields are allowed. State checks end the line only in
+/// `[Asserts]`.
+fn parse_subject(
+    first: RawToken,
+    cursor: &mut Cursor,
+    implicit_http: bool,
+    in_asserts: bool,
+) -> Result<Head, LineError> {
+    let first_span = first.span;
+    let text = first.bare_single().map(str::to_owned);
+    let head_text = match first.parts.first() {
+        Some(RawPart::Bare { text, .. }) => text.clone(),
+        _ => String::new(),
+    };
+    if implicit_http {
+        if !is_response_field(&head_text) {
+            let what = if in_asserts { "check" } else { "capture" };
+            return Err(LineError::new(
+                first_span,
+                format!("an HTTP entry can only {what} its response"),
+            )
+            .expecting(RESPONSE_FIELDS));
+        }
+        let field = parse_response_field_token(first)?;
+        return Ok(Head::Subject(Subject::Response { name: None, field }));
+    }
+    if head_text.starts_with("response:") {
+        let name = response_name(first)?;
+        let field = parse_response_field(cursor, first_span)?;
+        return Ok(Head::Subject(Subject::Response {
+            name: Some(name),
+            field,
+        }));
+    }
+    match text.as_deref() {
+        Some("url") => return Ok(Head::Subject(Subject::Url)),
+        Some("title") => return Ok(Head::Subject(Subject::Title)),
+        Some("eval") => {
+            let script = parse_operand(cursor, first_span)?;
+            return Ok(Head::Subject(Subject::Eval(script)));
+        }
+        _ => {}
+    }
+    let (is_stop, expected): (fn(&str) -> bool, &[&str]) = if in_asserts {
+        (is_assert_stop, &ASSERT_CHECKS)
+    } else {
+        (is_extractor, &EXTRACTORS)
+    };
+    let (locator, stop) = scan_locator(first, cursor, &is_stop, expected)?;
+    let Some(stop) = stop else {
+        let what = if in_asserts {
+            "a check"
+        } else {
+            "an extractor"
+        };
+        return Err(
+            LineError::new(after_span(locator.span), format!("expected {what}"))
+                .expecting(expected.iter().copied()),
+        );
+    };
+    let stop_text = stop.bare_single().unwrap_or_default();
+    if let Some((_, state)) = STATE_CHECKS.iter().find(|(name, _)| *name == stop_text) {
+        return Ok(Head::State {
+            locator,
+            state: *state,
+        });
+    }
+    let extractor = match stop_text {
+        "text" => Extractor::Text,
+        "value" => Extractor::Value,
+        "count" => Extractor::Count,
+        other => {
+            let attr = other.strip_prefix("attr:").unwrap_or_default();
+            if !is_attr_name(attr) {
+                return Err(LineError::new(stop.span, "invalid attribute name")
+                    .expecting(["a name like aria-expanded or data-state"]));
+            }
+            Extractor::Attr(attr.to_owned())
+        }
+    };
+    Ok(Head::Subject(Subject::Element { locator, extractor }))
+}
+
 /// Parses one `[Asserts]` line (SPEC 9, 17).
 fn parse_assert_body(
     first: RawToken,
@@ -1388,106 +1702,72 @@ fn parse_assert_body(
     implicit_http: bool,
 ) -> Result<(AssertBody, Option<DurationLit>), LineError> {
     let first_span = first.span;
-    let implicit_field = first.bare_single().is_some_and(|text| {
-        text == "status" || text.starts_with("header:") || text.starts_with("json:")
-    });
-    if implicit_http && !implicit_field {
-        return Err(
-            LineError::new(first_span, "an HTTP entry can only assert its response").expecting([
-                "status",
-                "header:NAME",
-                "json:POINTER",
-            ]),
-        );
-    }
-    let body = match first.bare_single() {
-        Some("status") if implicit_http => {
-            let (op, status) = parse_count_check(cursor, first_span)?;
-            AssertBody::HttpStatus { op, status }
+    let is_tab = !implicit_http
+        && matches!(first.parts.first(), Some(RawPart::Bare { text, .. }) if text.starts_with("tab:"));
+    let body = if is_tab {
+        let name_token = strip_prefix_token(first, 4)
+            .ok_or_else(|| LineError::new(first_span, "expected a tab name"))?;
+        let name = parse_name(vec![name_token], first_span)?;
+        let check = cursor
+            .next_token()?
+            .ok_or_else(|| LineError::new(first_span, "expected `closed`"))?;
+        if check.bare_single() != Some("closed") {
+            return Err(LineError::new(check.span, "expected `closed`"));
         }
-        Some(text)
-            if implicit_http && (text.starts_with("header:") || text.starts_with("json:")) =>
-        {
-            let field = parse_response_field_token(first)?;
-            AssertBody::HttpValue {
-                field,
-                check: parse_str_check(cursor, first_span)?,
-            }
-        }
-        Some(text) if text.starts_with("response:") => {
-            let name = response_name(first.clone())?;
-            let field = parse_response_field(cursor, first_span)?;
-            if field == ResponseField::Status {
-                let (op, status) = parse_count_check(cursor, first_span)?;
-                AssertBody::ResponseStatus { name, op, status }
-            } else {
-                AssertBody::ResponseValue {
-                    name,
-                    field,
-                    check: parse_str_check(cursor, first_span)?,
-                }
-            }
-        }
-        Some(text) if text.starts_with("tab:") => {
-            let name_token = strip_prefix_token(first.clone(), 4)
-                .ok_or_else(|| LineError::new(first_span, "expected a tab name"))?;
-            let name = parse_name(vec![name_token], first_span)?;
-            let check = cursor
-                .next_token()?
-                .ok_or_else(|| LineError::new(first_span, "expected `closed`"))?;
-            if check.bare_single() != Some("closed") {
-                return Err(LineError::new(check.span, "expected `closed`"));
-            }
-            AssertBody::TabClosed { name }
-        }
-        Some("url") => AssertBody::Url(parse_str_check(cursor, first_span)?),
-        Some("title") => AssertBody::Title(parse_str_check(cursor, first_span)?),
-        _ => {
-            let (locator, stop) = scan_locator(first, cursor, &is_assert_stop, &ASSERT_CHECKS)?;
-            let Some(stop) = stop else {
-                return Err(LineError::new(after_span(locator.span), "expected a check")
-                    .expecting(ASSERT_CHECKS));
-            };
-            let text = stop.bare_single().unwrap_or_default().to_owned();
-            if let Some((_, state)) = STATE_CHECKS.iter().find(|(name, _)| *name == text) {
-                AssertBody::ElementState {
-                    locator,
-                    state: *state,
-                }
-            } else if text == "text" {
-                let check = parse_str_check(cursor, stop.span)?;
-                AssertBody::ElementValue {
-                    locator,
-                    source: ValueSource::Text,
-                    check,
-                }
-            } else if text == "value" {
-                let check = parse_str_check(cursor, stop.span)?;
-                AssertBody::ElementValue {
-                    locator,
-                    source: ValueSource::Value,
-                    check,
-                }
-            } else if let Some(name) = text.strip_prefix("attr:") {
-                if !is_attr_name(name) {
-                    return Err(LineError::new(stop.span, "invalid attribute name")
-                        .expecting(["a name like aria-expanded or data-state"]));
-                }
-                let check = parse_str_check(cursor, stop.span)?;
-                let source = ValueSource::Attr(name.to_owned());
-                AssertBody::ElementValue {
-                    locator,
-                    source,
-                    check,
-                }
-            } else {
-                let (op, count) = parse_count_check(cursor, stop.span)?;
-                AssertBody::ElementCount { locator, op, count }
+        AssertBody::TabClosed { name }
+    } else {
+        match parse_subject(first, cursor, implicit_http, true)? {
+            Head::State { locator, state } => AssertBody::ElementState { locator, state },
+            Head::Subject(subject) => {
+                let (filters, next) = parse_filters(cursor)?;
+                let Some(next) = next else {
+                    return Err(LineError::new(
+                        after_span(filters.last().map_or(first_span, |filter| filter.span)),
+                        "expected a predicate",
+                    )
+                    .expecting(predicate_keywords()));
+                };
+                let (negated, predicate) = parse_predicate(next, cursor)?;
+                check_bytes_literal(&subject, &filters, &predicate)?;
+                AssertBody::Check(CheckLine {
+                    subject,
+                    filters,
+                    negated,
+                    predicate,
+                })
             }
         }
     };
     let timeout = parse_line_timeout(cursor)?;
     Ok((body, timeout))
+}
+
+/// In a typed check, a bare value shaped like a bytes literal must decode
+/// (SPEC 9.6). In a text check it is plain text.
+fn check_bytes_literal(
+    subject: &Subject,
+    filters: &[FilterSpec],
+    predicate: &PredicateSpec,
+) -> Result<(), LineError> {
+    let PredicateSpec::Compare {
+        expected: Operand::Value(value),
+        ..
+    } = predicate
+    else {
+        return Ok(());
+    };
+    if value.quoted || chain_type(subject, filters).is_ok_and(|value_type| value_type.is_string()) {
+        return Ok(());
+    }
+    match value.as_literal() {
+        Some(literal) if is_bytes_literal_shape(&literal) && bytes_literal(&literal).is_none() => {
+            Err(LineError::new(
+                value.span,
+                format!("invalid bytes literal {}", quote_json(&literal)),
+            ))
+        }
+        _ => Ok(()),
+    }
 }
 
 /// Parses a `PAGE` line after its keyword (SPEC 8).
@@ -1500,7 +1780,9 @@ fn parse_page_body(
             .expecting(["a value", "matches /re/"]));
     };
     let check = if token.bare_single() == Some("matches") {
-        PageCheck::Matches(cursor.expect_regex()?)
+        let regex = cursor.expect_regex()?;
+        validate_regex(&regex)?;
+        PageCheck::Matches(regex)
     } else {
         let is_trailing_timeout = token
             .bare_single()
@@ -1540,12 +1822,6 @@ fn split_name_colon(token: RawToken) -> Option<(Ident, Option<RawToken>)> {
     Some((ident, rest))
 }
 
-const EXTRACTORS: [&str; 4] = ["text", "value", "count", "attr:NAME"];
-
-fn is_extractor(text: &str) -> bool {
-    matches!(text, "text" | "value" | "count") || text.starts_with("attr:")
-}
-
 /// Parses one `[Captures]` line after its `name:` head (SPEC 10, 17).
 fn parse_capture_body(
     name: Ident,
@@ -1561,96 +1837,37 @@ fn parse_capture_body(
                 "url",
                 "title",
                 "eval",
+                "response:NAME",
             ])
         })?,
     };
-    let implicit_field = first.bare_single().is_some_and(|text| {
-        text == "status" || text.starts_with("header:") || text.starts_with("json:")
-    });
-    if implicit_http && !implicit_field {
-        return Err(
-            LineError::new(first.span, "an HTTP entry can only capture its response").expecting([
-                "status",
-                "header:NAME",
-                "json:POINTER",
-            ]),
-        );
-    }
-    let source = match first.bare_single() {
-        Some("status") if implicit_http => CaptureSource::Http(ResponseField::Status),
-        Some(text)
-            if implicit_http && (text.starts_with("header:") || text.starts_with("json:")) =>
-        {
-            CaptureSource::Http(parse_response_field_token(first)?)
-        }
-        Some(text) if text.starts_with("response:") => {
-            let response = response_name(first.clone())?;
-            let field = parse_response_field(cursor, first.span)?;
-            CaptureSource::Response {
-                name: response,
-                field,
-            }
-        }
-        Some("url") => CaptureSource::Url,
-        Some("title") => CaptureSource::Title,
-        Some("eval") => {
-            let script = parse_operand(cursor, first.span)?;
-            CaptureSource::Eval(script)
-        }
-        _ => {
-            let (locator, stop) = scan_locator(first, cursor, &is_extractor, &EXTRACTORS)?;
-            let Some(stop) = stop else {
-                return Err(
-                    LineError::new(after_span(locator.span), "expected an extractor")
-                        .expecting(EXTRACTORS),
-                );
-            };
-            let text = stop.bare_single().unwrap_or_default();
-            let extractor = match text {
-                "text" => Extractor::Text,
-                "value" => Extractor::Value,
-                "count" => Extractor::Count,
-                other => {
-                    let attr = other.strip_prefix("attr:").unwrap_or_default();
-                    if !is_attr_name(attr) {
-                        return Err(LineError::new(stop.span, "invalid attribute name")
-                            .expecting(["a name like aria-expanded or data-state"]));
-                    }
-                    Extractor::Attr(attr.to_owned())
-                }
-            };
-            CaptureSource::Element { locator, extractor }
-        }
+    let Head::Subject(subject) = parse_subject(first, cursor, implicit_http, false)? else {
+        unreachable!("state checks only end `[Asserts]` lines");
     };
-    let mut filter = None;
+    let (filters, next) = parse_filters(cursor)?;
     let mut timeout = None;
-    if let Some(token) = cursor.next_token()? {
-        if token.bare_single() == Some("regex") {
-            filter = Some(cursor.expect_regex()?);
-            timeout = parse_line_timeout(cursor)?;
-        } else {
-            let mut tokens = vec![token];
-            timeout = split_timeout(&mut tokens);
-            if let Some(extra) = tokens.first() {
-                return Err(
-                    LineError::new(extra.span, "expected end of line").expecting([
-                        "regex /re/",
-                        "@duration",
-                        "end of line",
-                    ]),
-                );
-            }
-            if let Some(extra) = cursor.next_token()? {
-                return Err(
-                    LineError::new(extra.span, "expected end of line").expecting(["end of line"])
-                );
-            }
+    if let Some(token) = next {
+        let mut tokens = vec![token];
+        timeout = split_timeout(&mut tokens);
+        if let Some(extra) = tokens.first() {
+            return Err(
+                LineError::new(extra.span, "expected a filter or end of line").expecting([
+                    "a filter",
+                    "@duration",
+                    "end of line",
+                ]),
+            );
+        }
+        if let Some(extra) = cursor.next_token()? {
+            return Err(
+                LineError::new(extra.span, "expected end of line").expecting(["end of line"])
+            );
         }
     }
     Ok(Capture {
         name,
-        source,
-        filter,
+        subject,
+        filters,
         timeout,
         line: 0,
         span: Span {
@@ -1860,7 +2077,13 @@ fn json_for_validation(text: &str) -> Result<String, LineError> {
     let mut pos = 0;
     while pos < chars.len() {
         let ch = chars[pos];
-        if ch == '\\' && chars.get(pos + 1) == Some(&'{') && chars.get(pos + 2) == Some(&'{') {
+        // `\\{{` inside a string is an escaped backslash before a
+        // reference, not the `\{{` escape.
+        if ch == '\\'
+            && !escaped
+            && chars.get(pos + 1) == Some(&'{')
+            && chars.get(pos + 2) == Some(&'{')
+        {
             out.push('{');
             out.push('{');
             pos += 3;
@@ -2540,6 +2763,7 @@ impl Parser {
 
 #[cfg(test)]
 mod tests {
+    use crate::check::PredicateKind;
     use crate::lang::ast::DurationUnit;
     /// Parses many `.whirl` sources and reports every broken file's first
     /// error, so one `whirl check` run surfaces them all (SPEC 13, 16).
@@ -2625,40 +2849,51 @@ mod tests {
         }
     }
 
+    /// The check line of a single-assert file.
+    fn only_check(line: &str) -> CheckLine {
+        let AssertBody::Check(check) = only_assert(line) else {
+            panic!("expected a check line: {line}");
+        };
+        check
+    }
+
+    fn expected_literal(check: &CheckLine) -> String {
+        let PredicateSpec::Compare {
+            expected: Operand::Value(value),
+            ..
+        } = &check.predicate
+        else {
+            panic!("expected a compared value");
+        };
+        lit(value)
+    }
+
     #[test]
     fn element_value_checks_parse() {
-        let AssertBody::ElementValue { source, check, .. } = only_assert("testid:x text == Alice")
-        else {
-            panic!("expected a value check");
-        };
-        assert_eq!(source, ValueSource::Text);
-        let StrCheck::Eq(value) = check else {
-            panic!("expected ==");
-        };
-        assert_eq!(lit(&value), "Alice");
+        let check = only_check("testid:x text == Alice");
+        assert!(matches!(check.subject, Subject::Element {
+            extractor: Extractor::Text,
+            ..
+        }));
+        assert_eq!(check.predicate.kind(), PredicateKind::Eq);
+        assert_eq!(expected_literal(&check), "Alice");
 
-        let AssertBody::ElementValue { source, check, .. } =
-            only_assert("label:Amount value != \"0\"")
-        else {
-            panic!("expected a value check");
-        };
-        assert_eq!(source, ValueSource::Value);
-        assert!(matches!(check, StrCheck::Ne(_)));
+        let check = only_check("label:Amount value != \"0\"");
+        assert!(matches!(check.subject, Subject::Element {
+            extractor: Extractor::Value,
+            ..
+        }));
+        assert_eq!(check.predicate.kind(), PredicateKind::Ne);
 
-        let AssertBody::ElementValue { source, check, .. } =
-            only_assert("testid:x attr:aria-expanded contains tru")
-        else {
-            panic!("expected an attr check");
-        };
-        assert_eq!(source, ValueSource::Attr("aria-expanded".to_owned()));
-        assert!(matches!(check, StrCheck::Contains(_)));
+        let check = only_check("testid:x attr:aria-expanded contains tru");
+        assert!(matches!(&check.subject, Subject::Element {
+            extractor: Extractor::Attr(name),
+            ..
+        } if name == "aria-expanded"));
+        assert_eq!(check.predicate.kind(), PredicateKind::Contains);
 
-        let AssertBody::ElementValue { check, .. } =
-            only_assert("testid:order text matches /Order #\\w+/i")
-        else {
-            panic!("expected a matches check");
-        };
-        let StrCheck::Matches(regex) = check else {
+        let check = only_check("testid:order text matches /Order #\\w+/i");
+        let PredicateSpec::Matches(regex) = check.predicate else {
             panic!("expected matches");
         };
         assert_eq!(regex.pattern, "Order #\\w+");
@@ -2667,36 +2902,201 @@ mod tests {
     }
 
     #[test]
-    fn every_count_operator_parses() {
-        let ops = [
-            ("==", NumOp::Eq),
-            ("!=", NumOp::Ne),
-            ("<", NumOp::Lt),
-            ("<=", NumOp::Le),
-            (">", NumOp::Gt),
-            (">=", NumOp::Ge),
-        ];
-        for (op_text, expected) in ops {
-            let body = only_assert(&format!("testid:row count {op_text} 3"));
-            let AssertBody::ElementCount { op, count, .. } = body else {
-                panic!("expected a count check for {op_text}");
-            };
-            assert_eq!(op, expected);
-            assert_eq!(count, 3);
+    fn every_comparison_parses() {
+        for (op_text, expected) in COMPARE_KEYWORDS {
+            let check = only_check(&format!("testid:row count {op_text} 3"));
+            assert!(matches!(check.subject, Subject::Element {
+                extractor: Extractor::Count,
+                ..
+            }));
+            assert_eq!(check.predicate.kind(), *expected, "{op_text}");
+            assert_eq!(expected_literal(&check), "3");
+        }
+    }
+
+    #[test]
+    fn every_word_predicate_parses_with_and_without_not() {
+        for (name, kind) in WORD_PREDICATES {
+            let check = only_check(&format!("response:r json:$.a {name}"));
+            assert_eq!(check.predicate.kind(), *kind);
+            assert!(!check.negated);
+            let check = only_check(&format!("response:r json:$.a not {name}"));
+            assert!(check.negated, "not {name}");
         }
     }
 
     #[test]
     fn url_and_title_checks_parse() {
-        let AssertBody::Url(StrCheck::Contains(value)) = only_assert("url contains \"q=widget\"")
+        let check = only_check("url contains \"q=widget\"");
+        assert_eq!(check.subject, Subject::Url);
+        assert_eq!(expected_literal(&check), "q=widget");
+        let check = only_check("title == \"Checkout\"");
+        assert_eq!(check.subject, Subject::Title);
+        assert_eq!(expected_literal(&check), "Checkout");
+    }
+
+    #[test]
+    fn filters_parse_with_their_arguments() {
+        let check = only_check(
+            "testid:total text replace , \"\" replaceRegex /[^0-9]/ x split / nth -1 toInt >= 10",
+        );
+        let kinds: Vec<FilterKind> = check.filters.iter().map(|filter| filter.kind).collect();
+        assert_eq!(kinds, vec![
+            FilterKind::Replace,
+            FilterKind::ReplaceRegex,
+            FilterKind::Split,
+            FilterKind::Nth,
+            FilterKind::ToInt
+        ]);
+        assert_eq!(check.filters[3].args, vec![FilterArg::Index(-1)]);
+        assert_eq!(check.predicate.kind(), PredicateKind::Ge);
+        let check = only_check("url urlQueryParam page == 2");
+        assert_eq!(check.filters[0].kind, FilterKind::UrlQueryParam);
+    }
+
+    #[test]
+    fn eval_subjects_and_json_paths_parse() {
+        let check = only_check("eval \"window.dataLayer\" json:$[?@.event=='buy'] count == 1");
+        let Subject::Eval(script) = &check.subject else {
+            panic!("expected an eval subject");
+        };
+        assert_eq!(lit(script), "window.dataLayer");
+        assert_eq!(check.filters[0].kind, FilterKind::Json);
+        assert_eq!(check.filters[1].kind, FilterKind::Count);
+    }
+
+    #[test]
+    fn json_literals_parse_on_one_line() {
+        let check = only_check("response:r json:$.size == {\"h\": 20, \"w\": [1, 2]} @3s");
+        let PredicateSpec::Compare {
+            expected: Operand::Json(literal),
+            ..
+        } = &check.predicate
         else {
-            panic!("expected a url check");
+            panic!("expected a JSON literal");
         };
-        assert_eq!(lit(&value), "q=widget");
-        let AssertBody::Title(StrCheck::Eq(value)) = only_assert("title == \"Checkout\"") else {
-            panic!("expected a title check");
+        assert_eq!(literal.text, r#"{"h": 20, "w": [1, 2]}"#);
+        let check = only_check("response:r json:$.tags == [\"{{tag}}\", {{n}}]");
+        let PredicateSpec::Compare {
+            expected: Operand::Json(literal),
+            ..
+        } = &check.predicate
+        else {
+            panic!("expected a JSON literal");
         };
-        assert_eq!(lit(&value), "Checkout");
+        assert!(
+            literal
+                .value
+                .segments
+                .iter()
+                .any(|segment| matches!(segment, ValueSegment::Var(name) if name == "n"))
+        );
+        let error = parse_err("VISIT /\n[Asserts]\nresponse:r json:$.a == [1, 2\n");
+        assert_eq!(error.message, "unterminated JSON literal");
+        let error = parse_err("VISIT /\n[Asserts]\nresponse:r json:$.a == {\"a\" 1}\n");
+        assert!(
+            error.message.starts_with("invalid JSON literal"),
+            "{}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn a_variable_reference_is_not_a_json_literal() {
+        let check = only_check("response:r json:$.id == {{order_id}}");
+        let PredicateSpec::Compare {
+            expected: Operand::Value(value),
+            ..
+        } = &check.predicate
+        else {
+            panic!("expected a value");
+        };
+        assert_eq!(value.segments, vec![ValueSegment::Var(
+            "order_id".to_owned()
+        )]);
+    }
+
+    #[test]
+    fn json_paths_are_checked_when_literal() {
+        let error = parse_err("VISIT /\n[Asserts]\nresponse:x json:$.[ == 1\n");
+        assert!(
+            error.message.starts_with("invalid JSONPath"),
+            "{}",
+            error.message
+        );
+        let error = parse_err("VISIT /\n[Asserts]\nresponse:r json:$[\"a\"] == 1\n");
+        assert!(
+            error.message.contains("one bare token or one quoted value"),
+            "{}",
+            error.message
+        );
+        only_check("response:r json:\"$[?@.name == 'Ada Lovelace']\" count == 1");
+    }
+
+    #[test]
+    fn malformed_bytes_literals_fail_only_in_typed_checks() {
+        let error = parse_err("HTTP GET /x\n[Asserts]\nstatus == 200\nbytes == hex,zz;\n");
+        assert_eq!(error.message, "invalid bytes literal \"hex,zz;\"");
+        let error = parse_err("HTTP GET /x\n[Asserts]\nstatus == 200\njson:$.t == base64,@@;\n");
+        assert_eq!(error.message, "invalid bytes literal \"base64,@@;\"");
+        // Text checks and quoted values take the text as written.
+        only_check("response:r body == hex,zz;");
+        only_check("response:r json:$.t == \"hex,zz;\"");
+        only_check("response:r bytes startsWith hex,89504e47;");
+    }
+
+    #[test]
+    fn xpath_fields_and_filters_parse() {
+        let check = only_check("response:r xpath://_:entry count == 2");
+        assert!(matches!(check.subject, Subject::Response {
+            field: ResponseField::Xpath(_),
+            ..
+        }));
+        let check = only_check("testid:list attr:data-xml xpath:\"string(//li[@class='x'])\" == A");
+        assert_eq!(check.filters[0].kind, FilterKind::Xpath);
+        let check = only_check("response:r xpath:{{expr}} exists");
+        assert!(matches!(check.subject, Subject::Response {
+            field: ResponseField::Xpath(_),
+            ..
+        }));
+    }
+
+    #[test]
+    fn xpath_expressions_are_checked_when_literal() {
+        for invalid in ["//li[", "count(", "foo()"] {
+            let error = parse_err(&format!(
+                "VISIT /\n[Asserts]\nresponse:x xpath:\"{invalid}\" exists\n"
+            ));
+            assert!(
+                error.message.starts_with("invalid XPath expression"),
+                "{invalid}: {}",
+                error.message
+            );
+        }
+        let error = parse_err("VISIT /\n[Asserts]\nresponse:r xpath://a[@x=\"1\"] exists\n");
+        assert!(
+            error.message.contains("one bare token or one quoted value"),
+            "{}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn regexes_must_be_valid_in_unicode_mode() {
+        let error = parse_err("VISIT /\n[Asserts]\nurl matches /a\\-b/\n");
+        assert!(
+            error.message.starts_with("invalid regex in Unicode mode"),
+            "{}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn a_missing_predicate_is_an_error() {
+        let error = parse_err("VISIT /\n[Asserts]\nurl toString\n");
+        assert_eq!(error.message, "expected a predicate");
+        let error = parse_err("VISIT /\n[Asserts]\nurl bogus\n");
+        assert_eq!(error.message, "expected a filter or a predicate");
     }
 
     #[test]
@@ -2729,7 +3129,7 @@ mod tests {
 
     #[test]
     fn regex_flags_allow_only_i_s_m() {
-        let AssertBody::Url(StrCheck::Matches(regex)) = only_assert("url matches /a.b/ism") else {
+        let PredicateSpec::Matches(regex) = only_check("url matches /a.b/ism").predicate else {
             panic!("expected matches");
         };
         assert!(regex.flags.ignore_case && regex.flags.dot_all && regex.flags.multiline);
@@ -2745,7 +3145,7 @@ mod tests {
 
     #[test]
     fn a_hash_inside_a_regex_is_literal() {
-        let AssertBody::Url(StrCheck::Matches(regex)) = only_assert("url matches /a#b/") else {
+        let PredicateSpec::Matches(regex) = only_check("url matches /a#b/").predicate else {
             panic!("expected matches");
         };
         assert_eq!(regex.pattern, "a#b");
@@ -2757,29 +3157,29 @@ mod tests {
         let file = parse(source);
         let captures = &only_entry(&file).captures;
         assert_eq!(captures.len(), 7);
-        assert!(matches!(&captures[0].source, CaptureSource::Element {
+        assert!(matches!(&captures[0].subject, Subject::Element {
             extractor: Extractor::Text,
             ..
         }));
-        assert!(matches!(&captures[1].source, CaptureSource::Element {
+        assert!(matches!(&captures[1].subject, Subject::Element {
             extractor: Extractor::Value,
             ..
         }));
-        assert!(matches!(&captures[2].source, CaptureSource::Element {
+        assert!(matches!(&captures[2].subject, Subject::Element {
             extractor: Extractor::Count,
             ..
         }));
-        let CaptureSource::Element {
+        let Subject::Element {
             extractor: Extractor::Attr(attr),
             ..
-        } = &captures[3].source
+        } = &captures[3].subject
         else {
             panic!("expected an attr extractor");
         };
         assert_eq!(attr, "href");
-        assert!(matches!(&captures[4].source, CaptureSource::Url));
-        assert!(matches!(&captures[5].source, CaptureSource::Title));
-        let CaptureSource::Eval(script) = &captures[6].source else {
+        assert!(matches!(&captures[4].subject, Subject::Url));
+        assert!(matches!(&captures[5].subject, Subject::Title));
+        let Subject::Eval(script) = &captures[6].subject else {
             panic!("expected an eval source");
         };
         assert_eq!(lit(script), "1 + 1");
@@ -2787,13 +3187,15 @@ mod tests {
     }
 
     #[test]
-    fn capture_regex_filter_and_timeout_parse() {
-        let source =
-            "VISIT /\n[Captures]\norder_id: testid:confirmation text regex /Order #(\\w+)/ @5s\n";
+    fn capture_filters_and_timeout_parse() {
+        let source = "VISIT /\n[Captures]\norder_id: testid:confirmation text regex /Order #(\\w+)/ toInt @5s\n";
         let file = parse(source);
         let capture = &only_entry(&file).captures[0];
-        let filter = capture.filter.as_ref().expect("regex filter should parse");
-        assert_eq!(filter.pattern, "Order #(\\w+)");
+        let FilterArg::Regex(regex) = &capture.filters[0].args[0] else {
+            panic!("expected a regex argument");
+        };
+        assert_eq!(regex.pattern, "Order #(\\w+)");
+        assert_eq!(capture.filters[1].kind, FilterKind::ToInt);
         assert_eq!(
             capture.timeout,
             Some(DurationLit {
@@ -2912,21 +3314,37 @@ role:alert text contains "Added to cart"
         }));
         assert_eq!(search.asserts.len(), 2);
         assert!(matches!(
-            search.asserts[0].body,
-            AssertBody::Url(StrCheck::Contains(_))
+            &search.asserts[0].body,
+            AssertBody::Check(CheckLine {
+                subject: Subject::Url,
+                predicate: PredicateSpec::Compare {
+                    kind: PredicateKind::Contains,
+                    ..
+                },
+                ..
+            })
         ));
-        assert!(matches!(search.asserts[1].body, AssertBody::ElementCount {
-            op: NumOp::Ge,
-            count: 1,
-            ..
-        }));
+        assert!(matches!(
+            &search.asserts[1].body,
+            AssertBody::Check(CheckLine {
+                subject: Subject::Element {
+                    extractor: Extractor::Count,
+                    ..
+                },
+                predicate: PredicateSpec::Compare {
+                    kind: PredicateKind::Ge,
+                    ..
+                },
+                ..
+            })
+        ));
         assert_eq!(search.captures.len(), 1);
         let capture = &search.captures[0];
         assert_eq!(capture.name.text, "first_product");
-        let CaptureSource::Element {
+        let Subject::Element {
             locator,
             extractor: Extractor::Attr(attr),
-        } = &capture.source
+        } = &capture.subject
         else {
             panic!("expected an attr capture");
         };
@@ -2999,10 +3417,10 @@ role:alert text contains "Added to cart"
 
     #[test]
     fn the_caret_sits_under_the_offending_token() {
-        let error = parse_err("VISIT /\nCLICK testid:card >> nth:0\n");
+        let error = parse_err("VISIT /\nCLICK testid:card >> nth:x\n");
         let rendered = error.render();
         let lines: Vec<&str> = rendered.lines().collect();
-        assert_eq!(lines[1], "  CLICK testid:card >> nth:0");
+        assert_eq!(lines[1], "  CLICK testid:card >> nth:x");
         assert_eq!(lines[2], "                       ^^^^^");
     }
 
@@ -3081,7 +3499,7 @@ role:alert text contains "Added to cart"
     #[test]
     fn http_entries_can_run_before_visit_or_without_a_page() {
         let file = parse(
-            "HTTP POST /fixtures\n{\n  \"name\": \"Ada\"\n}\n[Asserts]\nstatus == 201\n[Captures]\nid: json:/id\nVISIT /users/{{id}}\n",
+            "HTTP POST /fixtures\n{\n  \"name\": \"Ada\"\n}\n[Asserts]\nstatus == 201\n[Captures]\nid: json:$.id\nVISIT /users/{{id}}\n",
         );
         assert_eq!(file.entries.len(), 2);
         assert!(matches!(
@@ -3104,9 +3522,9 @@ Authorization: "Bearer {{env.TOKEN}}"
 }
 [Asserts]
 status == 201
-json:/name == {{name}}
+json:$.name == {{name}}
 [Captures]
-id: json:/id
+id: json:$.id
 HTTP POST /imports
 Content-Type: text/plain
 ```
@@ -3127,12 +3545,21 @@ status == 202
         assert_eq!(body.kind, HttpBodyKind::Json);
         assert!(body.text.contains("\"enabled\": true"));
         assert!(matches!(
-            file.entries[0].asserts[0].body,
-            AssertBody::HttpStatus { status: 201, .. }
+            &file.entries[0].asserts[0].body,
+            AssertBody::Check(CheckLine {
+                subject: Subject::Response {
+                    name:  None,
+                    field: ResponseField::Status,
+                },
+                ..
+            })
         ));
         assert!(matches!(
-            file.entries[0].captures[0].source,
-            CaptureSource::Http(ResponseField::Json(_))
+            &file.entries[0].captures[0].subject,
+            Subject::Response {
+                name:  None,
+                field: ResponseField::Json(_),
+            }
         ));
 
         let ActionKind::Http { body, .. } = &file.entries[1].actions[0].kind else {
@@ -3435,14 +3862,14 @@ status == 202
     #[test]
     fn locator_chains_join_segments_with_arrows() {
         let source =
-            "VISIT /\n[Captures]\nlink: testid:result-card >> nth:1 >> role:link attr:href\n";
+            "VISIT /\n[Captures]\nlink: testid:result-card >> nth:-1 >> role:link attr:href\n";
         let file = parse(source);
         let capture = &only_entry(&file).captures[0];
-        let CaptureSource::Element { locator, extractor } = &capture.source else {
+        let Subject::Element { locator, extractor } = &capture.subject else {
             panic!("expected an element source");
         };
         assert_eq!(locator.segments.len(), 3);
-        assert!(matches!(locator.segments[1].kind, SegmentKind::Nth(1)));
+        assert!(matches!(locator.segments[1].kind, SegmentKind::Nth(-1)));
         assert_eq!(*extractor, Extractor::Attr("href".to_owned()));
     }
 
@@ -3513,14 +3940,15 @@ status == 202
     }
 
     #[test]
-    fn nth_zero_is_a_parse_error() {
-        let error = parse_err("VISIT /\nCLICK testid:card >> nth:0\n");
-        assert!(
-            error.message.contains("1-based"),
-            "message: {}",
-            error.message
-        );
+    fn nth_takes_a_signed_zero_based_index() {
+        let error = parse_err("VISIT /\nCLICK testid:card >> nth:+1\n");
+        assert_eq!(error.message, "expected an index after `nth:`");
         assert_eq!(error.line, 2);
+        let file = parse("VISIT /\nCLICK testid:card >> nth:0\n");
+        let ActionKind::Click { target } = &only_entry(&file).actions[1].kind else {
+            panic!("expected CLICK");
+        };
+        assert!(matches!(target.segments[1].kind, SegmentKind::Nth(0)));
     }
 
     #[test]

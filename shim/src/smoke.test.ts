@@ -44,13 +44,12 @@ test("the driver runs a flow against a data: URL in chromium", {
 				check: { type: "state", state: "visible" },
 			},
 		});
-		const captured = await driver.runStep("capture", {
+		const read = await driver.runStep("read", {
 			timeoutMs: 5000,
-			title: "capture eval",
-			source: { type: "eval", script: "1 + 2" },
-			filter: null,
+			title: null,
+			subject: { type: "eval", script: "1 + 2" },
 		});
-		assert.deepEqual(captured, { value: "3" });
+		assert.deepEqual(read, { type: "value", value: 3 });
 		const result = await driver.endFlow({
 			saveStoragePath: null,
 			tracePath: null,

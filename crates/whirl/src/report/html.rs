@@ -406,9 +406,10 @@ fn render_entry(
         for (name, value) in &entry.captures {
             write!(
                 output,
-                "<dt>{}</dt><dd><code>{}</code></dd>",
+                "<dt>{} <small>{}</small></dt><dd><code>{}</code></dd>",
                 escape(name),
-                escape(value)
+                escape(&value.value_type),
+                escape(&value.display())
             )?;
         }
         write!(output, "</dl></details>")?;

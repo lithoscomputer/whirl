@@ -1,8 +1,9 @@
 # Machine-readable output
 
 `whirl check --json flows/` writes diagnostics to stdout. `whirl --report-json
-report.json flows/` writes the run report. Both use `version: 1`; consumers must
-ignore unknown fields. Breaking shape changes require a new version.
+report.json flows/` writes the run report. The check document uses `version: 1`,
+and the run report uses `version: 2`. Consumers must ignore unknown fields.
+Breaking shape changes require a new version.
 
 Schemas: [check](check.schema.json), [run report](report.schema.json).
 
@@ -20,11 +21,16 @@ Schemas: [check](check.schema.json), [run report](report.schema.json).
 | `interpolated-setup` | A setup path contains a variable |
 | `conflicting-storage` | Both setup and storage are specified |
 | `duplicate-artifact` | An artifact name is repeated |
+| `duplicate-response` | A response name is used twice in one file |
+| `unknown-response` | A check reads a response name that no earlier line defines |
+| `duplicate-tab` | A tab name is used twice in one file |
+| `unknown-tab` | A line names a tab that no earlier line opens |
 | `unused-capture` | A capture is never read; warning |
 | `redundant-presence` | The following assertion requires presence; warning |
 | `unasserted-http-status` | An independent HTTP entry has no status assertion; warning |
 | `act-without-model` | A file uses `ACT` without a `model` option |
 | `unknown-model` | The `model` option names a model the catalog cannot route |
+| `filter-type` | A check's subject, filters, predicate, and literal expected value cannot work together, such as `text toHex` or `status == "200"` |
 
 Locations use 1-based Unicode character positions, not bytes or UTF-16 units.
 `length` is the source span length on that line. Input and I/O diagnostics may
@@ -36,6 +42,9 @@ array. Argument syntax errors, such as an unknown flag, still use CLI usage text
 
 Step `error.code` uses the [shim error kinds](shim-protocol.md#7-error-kinds), plus
 `entry-timeout`, `variable-resolution`, `shim-crash`, and `setup-failed`.
+Checks and captures add `type-mismatch`, `filter-error`, and `missing-value`,
+and report a false predicate as `assert` (SPEC 9.7). An `eval` subject reports
+the shim kinds `eval` and `eval-result`.
 `ACT` steps add `act-no-match`, `act-invalid-decision`, and `act-model` (SPEC
 7.4). An `ACT` step also has an `act` object: `model`; `actions`, each with a
 `line` in Whirl syntax and the model's `description`; and `usage`, with
@@ -63,9 +72,9 @@ whirl report report.json --html evidence.html
 whirl report report.json --html evidence.html --metadata context.json
 ```
 
-The saved command reads version 1 reports and available media without execution. It retains the original producer context and results. Successful HTML generation exits 0 even if the saved tests failed. Metadata keys match recorded flow paths exactly and do not require source files. `--working-directory DIR` changes the base for relative artifact paths; absolute paths stay absolute. Keep distinct artifact directories for runs whose evidence you need to retain.
+The saved command reads version 1 and version 2 reports and available media without execution. It retains the original producer context and results. Successful HTML generation exits 0 even if the saved tests failed. Metadata keys match recorded flow paths exactly and do not require source files. `--working-directory DIR` changes the base for relative artifact paths; absolute paths stay absolute. Keep distinct artifact directories for runs whose evidence you need to retain.
 
-New reports add the following optional fields to version 1:
+Version 1 added the following optional fields, and version 2 keeps them:
 
 | Location | Field | Meaning |
 | --- | --- | --- |
@@ -78,6 +87,29 @@ New reports add the following optional fields to version 1:
 Both roles can be true; that flow runs once. `[setup]` is an entry name for a pre-entry failure, not a file role. Fail-fast files that were never scheduled are absent. Hashes cover flow files only. They do not cover fixtures, variables, artifacts, or application code. Durations still use the monotonic clock.
 
 Compare parsed timestamps to choose the latest result. File modification times do not identify when a run happened. Older reports lack these fields; consumers must handle missing information without inventing an execution time. See [SPEC 14.2 and 14.3](../../SPEC.md#142-html-from-saved-results).
+
+## Report version 2
+
+Version 2 changes only the shape of `captures`. Version 1 wrote each capture
+as a string. Version 2 writes its type and its value (SPEC 9.3 and 14):
+
+```json
+"captures": {
+  "order_id": {"type": "number", "value": 1234567890123456789},
+  "tags": {"type": "list", "value": ["a", "b"]},
+  "token": {"type": "bytes", "value": "PDw/Pz8+Pg=="},
+  "password": {"type": "string", "value": "***"}
+}
+```
+
+The types are `string`, `number`, `boolean`, `null`, `list`, `object`,
+`bytes`, and `date`. Numbers keep their exact JSON text, so a consumer that
+needs exact integers must not parse them as floating point. Bytes are Base64
+strings, and dates are RFC 3339 strings. A masked capture keeps its type, and
+its value is the string `***`.
+
+`whirl report` and `--rerun-failed` read versions 1 and 2. They read a
+version 1 capture as a string.
 
 ## Rerunning failures
 

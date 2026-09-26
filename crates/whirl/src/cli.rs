@@ -811,7 +811,7 @@ fn failed_paths(path: &Path) -> anyhow::Result<Vec<PathBuf>> {
     )
     .context("invalid rerun report; use a Whirl JSON report with workingDirectory metadata")?;
     anyhow::ensure!(
-        report.version == 1,
+        matches!(report.version, 1 | 2),
         "unsupported report version {}",
         report.version
     );

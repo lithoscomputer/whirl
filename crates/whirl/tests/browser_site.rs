@@ -197,6 +197,46 @@ fn respond(mut request: tiny_http::Request) {
         );
         return;
     }
+    if path == "api/big" {
+        let content_type = Header::from_bytes("Content-Type", "application/json; charset=utf-8")
+            .expect("valid header");
+        let body = r#"{"id":1234567890123456789,"price":1.0,"when":"2026-09-26T08:00:00Z","tags":["a","b"]}"#;
+        let _ = request.respond(Response::from_string(body).with_header(content_type));
+        return;
+    }
+    if path == "api/redirect" {
+        let location = Header::from_bytes(&b"Location"[..], &b"/checks.html?from=redirect"[..])
+            .expect("the redirect location is a valid header");
+        let _ = request.respond(Response::empty(302).with_header(location));
+        return;
+    }
+    if path == "api/feed" {
+        // An Atom feed in ISO-8859-1, so the XML path must decode with the
+        // response charset and ignore the declared encoding.
+        let content_type =
+            Header::from_bytes("Content-Type", "application/atom+xml; charset=iso-8859-1")
+                .expect("valid header");
+        let body = b"<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?>\
+<feed xmlns=\"http://www.w3.org/2005/Atom\" xmlns:media=\"http://search.yahoo.com/mrss/\">\
+<title>Caf\xe9 news</title>\
+<entry><title>One</title><media:thumbnail url=\"/one.png\"/></entry>\
+<entry><title>Two</title></entry>\
+</feed>";
+        let _ = request.respond(Response::from_data(&body[..]).with_header(content_type));
+        return;
+    }
+    if path == "api/latin" {
+        let content_type = Header::from_bytes("Content-Type", "text/plain; charset=iso-8859-1")
+            .expect("valid header");
+        let _ = request.respond(Response::from_data(&b"caf\xe9"[..]).with_header(content_type));
+        return;
+    }
+    if path == "api/broken-xml" {
+        let content_type =
+            Header::from_bytes("Content-Type", "application/xml").expect("valid header");
+        let _ = request.respond(Response::from_string("<a><b></a>").with_header(content_type));
+        return;
+    }
     if path == "api/malformed" {
         let _ = request.respond(Response::from_string("not-json"));
         return;
@@ -315,9 +355,12 @@ fn user_agent_aliases_set_headers_and_navigator_without_changing_browser_or_view
         .expect("report is JSON");
         let file = &report["files"][0];
         let captures = &file["entries"][0]["captures"];
-        assert_eq!(captures["header"], expected, "{value}, {flag:?}");
-        assert_eq!(captures["navigator"], expected, "{value}, {flag:?}");
-        assert_eq!(captures["viewport"], "960x540");
+        assert_eq!(captures["header"]["value"], expected, "{value}, {flag:?}");
+        assert_eq!(
+            captures["navigator"]["value"], expected,
+            "{value}, {flag:?}"
+        );
+        assert_eq!(captures["viewport"]["value"], "960x540");
         assert_eq!(file["runtime"]["userAgent"], expected);
         assert_eq!(file["runtime"]["browser"], "chromium");
         assert_eq!(
@@ -389,7 +432,7 @@ placeholder:"Search things" focused
 css:"#press-result" text == enter-pressed
 css:"#saved" text == saved
 css:"li.item" count >= 3
-css:"li.item" >> nth:2 text == Two
+css:"li.item" >> nth:1 text == Two
 text~:"rder #ABC" visible
 testid:order text matches /Order #\w+/
 css:"#spaced" text matches /^spaced text$/
@@ -580,7 +623,7 @@ fn a_wrong_assert_times_out_with_expected_and_actual() {
     assert!(stdout.contains("expected:"), "stdout:\n{stdout}");
     // 300ms in, the delayed rewrite has landed, so the reported actual
     // is the settled text.
-    assert!(stdout.contains("actual: ready"), "stdout:\n{stdout}");
+    assert!(stdout.contains("actual: \"ready\""), "stdout:\n{stdout}");
 }
 
 #[test]
@@ -1102,7 +1145,8 @@ fn the_viewport_option_sizes_the_page() {
     let report = fs::read_to_string(dir.path.join("report.json")).expect("report.json exists");
     let report: serde_json::Value = serde_json::from_str(&report).expect("valid JSON report");
     assert_eq!(
-        report["files"][0]["entries"][0]["captures"]["width"], "777",
+        report["files"][0]["entries"][0]["captures"]["width"],
+        serde_json::json!({"type": "number", "value": 777}),
         "report:\n{report}"
     );
 }
@@ -1190,9 +1234,9 @@ frame:"#payment" >> css:"#typed-keys" text == 4242
 frame:"#nested" >> frame:iframe >> label:Email value == nested@example.com
 [Captures]
 email: frame:"#payment" >> label:Email value
-FILL frame:iframe >> nth:1 >> label:Email {{{{email}}}}
+FILL frame:iframe >> nth:0 >> label:Email {{{{email}}}}
 [Asserts]
-frame:iframe >> nth:1 >> label:Email value == alice@example.com
+frame:iframe >> nth:0 >> label:Email value == alice@example.com
 "##,
             site.base()
         ),
@@ -1446,19 +1490,28 @@ response:order status == 201
 response:order status >= 200
 response:order status < 300
 response:order header:Content-Type contains application/json
-response:order json:/status == paid
-response:order json:/active == true
-response:order json:/none == null
-response:order json:/a~1b/~0key == escaped
-response:order json:/items/0/id matches /^item-/
+response:order json:$.status == paid
+response:order json:$.active == true
+response:order json:$.none == null
+response:order json:$['a/b']['~key'] == escaped
+response:order json:$.items[0].id matches /^item-/
+response:order json:$.items count == 1
+response:order json:$.items[*].id contains item-1
+response:order json:$.items == [{{"id": "item-1"}}]
+response:order json:$ isObject
+response:order json:$.none not isString
+response:order json:$.missing not exists
+response:order body contains order-42
+response:order bytes startsWith hex,7b;
+response:order json:$.id == "order-42"
 text:"Order confirmed" visible
 [Captures]
-order_id: response:order json:/id
-item_number: response:order json:/items/0/id regex /item-(\d+)/
+order_id: response:order json:$.id
+item_number: response:order json:$.items[0].id regex /item-(\d+)/
 VISIT /network.html?id={{{{order_id}}}}&item={{{{item_number}}}}
 PAGE /network.html?id=order-42&item=1
 [Asserts]
-response:order json:/status == paid
+response:order json:$.status == paid
 "#,
             site.base()
         ),
@@ -1548,11 +1601,11 @@ response:navigation status == 200
 CLICK role:button "Place order"
 RESPONSE order POST /api/orders
 [Asserts]
-response:order json:/id == order-42
+response:order json:$.id == order-42
 CLOSE checkout
 [Asserts]
 tab:checkout closed
-response:order json:/status == paid
+response:order json:$.status == paid
 TAB main
 "##,
             site.base()
@@ -1611,7 +1664,7 @@ VISIT /network.html
 CLICK role:button "Place order"
 RESPONSE order POST /api/orders
 [Asserts]
-response:order json:/missing != paid
+response:order json:$.missing != paid
 "#,
             site.base()
         ),
@@ -1619,7 +1672,7 @@ response:order json:/missing != paid
     let output = run_whirl(&dir, &["missing.whirl"]);
     assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
     assert!(
-        stdout_text(&output).contains("does not exist"),
+        stdout_text(&output).contains("missing-value"),
         "{}",
         stdout_text(&output)
     );
@@ -1629,11 +1682,8 @@ response:order json:/missing != paid
 fn absent_headers_and_malformed_json_fail_response_assertions() {
     let site = SiteServer::start();
     for (check, diagnostic) in [
-        (
-            "header:x-missing != present",
-            "response header x-missing is absent",
-        ),
-        ("json:/status != paid", "JSON"),
+        ("header:x-missing != present", "header x-missing is absent"),
+        ("json:$.status != paid", "JSON"),
     ] {
         let dir = TestDir::new();
         dir.file(
@@ -1724,18 +1774,18 @@ Authorization: "Bearer whirl-test-key"
 {"message":"hello"}
 [Asserts]
 status == 200
-json:/authenticated == true
-json:/cookie == ""
-json:/body == "{\"message\":\"hello\"}"
-json:/contentType == application/json
+json:$.authenticated == true
+json:$.cookie == ""
+json:$.body == "{\"message\":\"hello\"}"
+json:$.contentType == application/json
 [Captures]
-authenticated: json:/authenticated
+authenticated: json:$.authenticated
 HTTP GET /api/http-check
 Content-Type: text/custom
 [Asserts]
 status == 401
-json:/cookie == ""
-json:/contentType == text/custom
+json:$.cookie == ""
+json:$.contentType == text/custom
 EVAL "if (document.cookie !== 'session=browser') throw new Error('HTTP changed browser cookies')"
 VISIT /network.html?authenticated={{authenticated}}
 PAGE /network.html?authenticated=true
@@ -1756,7 +1806,7 @@ Authorization: "Bearer whirl-test-key"
 [Asserts]
 status == 200
 [Captures]
-authenticated: json:/authenticated
+authenticated: json:$.authenticated
 
 VISIT /network.html?authenticated={{authenticated}}
 PAGE /network.html?authenticated=true
@@ -1783,7 +1833,7 @@ second\line
 ```
 [Asserts]
 status == 200
-json:/body == "first # literal\nsecond\\line"
+json:$.body == "first # literal\nsecond\\line"
 "#,
     );
 
@@ -1891,8 +1941,8 @@ fn http_interpolates_headers_and_bodies_without_leaking_secrets() {
          Authorization: \"Bearer {{env.HTTP_TOKEN}}\"\n\
          ```\n{{env.HTTP_BODY}}\n```\n\
          [Asserts]\nstatus == 200\n\
-         json:/body == {{env.HTTP_BODY}}\n\
-         [Captures]\nbody: json:/body\n\
+         json:$.body == {{env.HTTP_BODY}}\n\
+         [Captures]\nbody: json:$.body\n\
          HTTP POST https://blocked.invalid/\n\
          Authorization: \"Bearer {{env.HTTP_TOKEN}}\"\n\
          ```\n{{env.HTTP_BODY}}\n```\n\
@@ -1955,7 +2005,10 @@ fn http_interpolates_headers_and_bodies_without_leaking_secrets() {
         assert!(text.contains("Bearer ***"), "HTTP header secret is masked");
     }
     let report: serde_json::Value = serde_json::from_str(&json).expect("report is JSON");
-    assert_eq!(report["files"][0]["entries"][0]["captures"]["body"], "***");
+    assert_eq!(
+        report["files"][0]["entries"][0]["captures"]["body"],
+        serde_json::json!({"type": "string", "value": "***"})
+    );
 }
 
 #[test]
@@ -2642,4 +2695,314 @@ fn an_explicit_video_fps_on_firefox_warns_and_records_at_the_engine_rate() {
         report["files"][0]["warnings"][0],
         "--video-fps 30 is not supported on firefox; recording at 25 fps"
     );
+}
+
+#[test]
+fn page_checks_filter_retry_and_read_typed_values() {
+    let site = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file(
+        "checks.whirl",
+        r#"VISIT /checks.html?page=2
+[Asserts]
+url urlQueryParam page == 2
+title == Checks
+css:.row count == 3
+css:.row >> nth:0 text == One
+css:.row >> nth:-1 text == Three
+testid:price text replaceRegex /[^0-9.]/ "" toFloat > 1000
+testid:late text regex /Order #(\w+)/ == A42
+eval "window.dataLayer" json:$[?@.event=='purchase'] count == 1
+eval "window.dataLayer.length" >= 1
+testid:home attr:aria-current != page
+testid:current attr:aria-current == page
+testid:current attr:href urlQueryParam q == café
+testid:missing text not exists
+testid:styled text == "Total 5"
+testid:shadow text == "Inside shadow"
+[Captures]
+order: testid:late text regex /Order #(\w+)/
+rows: css:.row count
+VISIT /checks.html?order={{order}}&rows={{rows}}
+PAGE /checks.html?order=A42&rows=3
+"#,
+    );
+    let output = run_whirl(&dir, &["--base", &site.base(), "checks.whirl"]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+}
+
+#[test]
+fn check_failures_report_their_codes() {
+    let site = SiteServer::start();
+    for (check, code) in [
+        ("eval \"42\" == \"42\"", "type-mismatch"),
+        ("testid:price text toInt == 1", "filter-error"),
+        ("testid:home attr:aria-current == page", "missing-value"),
+        ("css:.row count == 4", "assert"),
+        ("css:.row text == One", "strictness"),
+        ("frame:iframe.twin >> css:p text == one", "strictness"),
+        ("frame:iframe.twin >> css:p count == 1", "strictness"),
+    ] {
+        let dir = TestDir::new();
+        dir.file(
+            "fail.whirl",
+            &format!("VISIT /checks.html\n[Asserts]\n{check}\n"),
+        );
+        let output = run_whirl(&dir, &[
+            "--base",
+            &site.base(),
+            "--step-timeout",
+            "600ms",
+            "--report-json",
+            "report.json",
+            "fail.whirl",
+        ]);
+        assert_eq!(exit_code(&output), 1, "{check}: {}", stdout_text(&output));
+        let report: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(dir.path.join("report.json")).expect("report exists"),
+        )
+        .expect("report is JSON");
+        let steps = report["files"][0]["entries"][0]["steps"]
+            .as_array()
+            .expect("steps are an array");
+        let failed = steps
+            .iter()
+            .find(|step| step["status"] == "failed")
+            .expect("a step fails");
+        assert_eq!(failed["error"]["code"], code, "{check}: {failed}");
+    }
+}
+
+#[test]
+fn http_checks_read_exact_numbers_locations_and_bodies() {
+    let site = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file(
+        "http.whirl",
+        r#"HTTP GET /api/big
+[Asserts]
+status == 200
+json:$.id == 1234567890123456789
+json:$.id != 1234567890123456788
+json:$.id isInteger
+json:$.price isFloat
+json:$.price == 1
+json:$.tags == ["a", "b"]
+json:$.tags contains b
+json:$.when toDate "%+" dateFormat %Y == 2026
+body contains 1234567890123456789
+header:content-type startsWith application/json
+[Captures]
+id: json:$.id
+HTTP GET /api/redirect
+[Asserts]
+status == 302
+location endsWith /checks.html?from=redirect
+location startsWith http
+location urlQueryParam from == redirect
+VISIT /checks.html?id={{id}}
+PAGE /checks.html?id=1234567890123456789
+"#,
+    );
+    let output = run_whirl(&dir, &[
+        "--base",
+        &site.base(),
+        "--report-json",
+        "report.json",
+        "http.whirl",
+    ]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    let report = fs::read_to_string(dir.path.join("report.json")).expect("report exists");
+    assert!(report.contains("1234567890123456789"), "{report}");
+}
+
+#[test]
+fn xpath_checks_read_xml_and_html() {
+    let site = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file(
+        "xpath.whirl",
+        r#"HTTP GET /api/feed
+[Asserts]
+status == 200
+xpath:"string(//_:feed/_:title)" == "Café news"
+xpath://_:entry count == 2
+xpath:"count(//_:entry)" == 2
+xpath:"count(//_:entry)" isInteger
+xpath://_:entry exists
+xpath://_:missing not exists
+xpath:"boolean(//media:thumbnail)" == true
+bytes xpath:"string(//_:entry[2]/_:title)" == Two
+body xpath:"//media:thumbnail/@url" count == 1
+[Captures]
+first: xpath:"string(//_:entry[1]/_:title)"
+entries: xpath:"count(//_:entry)"
+HTTP GET /checks.html
+[Asserts]
+status == 200
+xpath:"string(//h1)" == Checks
+xpath://li count == 3
+xpath:"normalize-space(//p[@data-testid='price'])" == "Total: $1,299.00"
+xpath:"string(//li[last()])" == {{last}}
+VISIT /checks.html
+PAGE /checks.html
+[Asserts]
+eval "document.querySelector('ul').outerHTML" xpath:"count(//li[@class='row'])" == 3
+testid:current attr:href xpath:"count(//a)" == 0
+"#,
+    );
+    let output = run_whirl(&dir, &[
+        "--base",
+        &site.base(),
+        "--var",
+        "last=Three",
+        "--report-json",
+        "report.json",
+        "xpath.whirl",
+    ]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    let text = fs::read_to_string(dir.path.join("report.json")).expect("report exists");
+    let report: serde_json::Value = serde_json::from_str(&text).expect("report is JSON");
+    let captures = &report["files"][0]["entries"][0]["captures"];
+    assert_eq!(
+        captures["first"],
+        serde_json::json!({"type": "string", "value": "One"})
+    );
+    assert_eq!(
+        captures["entries"],
+        serde_json::json!({"type": "number", "value": 2})
+    );
+}
+
+#[test]
+fn response_bodies_keep_their_bytes_after_the_browser_decodes_them() {
+    let site = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file(
+        "latin.whirl",
+        r#"HTTP GET /api/latin
+[Asserts]
+status == 200
+bytes toHex == 636166e9
+body == café
+VISIT /checks.html
+EVAL "await fetch('/api/latin').then(r => r.arrayBuffer())"
+RESPONSE latin GET /api/latin
+[Asserts]
+response:latin bytes toHex == 636166e9
+response:latin body == café
+"#,
+    );
+    let output = run_whirl(&dir, &["--base", &site.base(), "latin.whirl"]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+}
+
+#[test]
+fn xpath_failures_report_their_codes() {
+    let site = SiteServer::start();
+    for (request, check, code) in [
+        ("/api/broken-xml", "xpath:/a count == 1", "filter-error"),
+        ("/api/feed", "xpath://_:entry == 2", "type-mismatch"),
+        (
+            "/api/feed",
+            "xpath:\"number(//_:title)\" > 1",
+            "filter-error",
+        ),
+        ("/checks.html", "xpath://table exists", "assert"),
+    ] {
+        let dir = TestDir::new();
+        dir.file(
+            "fail.whirl",
+            &format!("HTTP GET {request}\n[Asserts]\nstatus == 200\n{check}\n"),
+        );
+        let output = run_whirl(&dir, &[
+            "--base",
+            &site.base(),
+            "--report-json",
+            "report.json",
+            "fail.whirl",
+        ]);
+        assert_eq!(exit_code(&output), 1, "{check}: {}", stdout_text(&output));
+        let report: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(dir.path.join("report.json")).expect("report exists"),
+        )
+        .expect("report is JSON");
+        let failed = report["files"][0]["entries"][0]["steps"]
+            .as_array()
+            .expect("steps are an array")
+            .iter()
+            .find(|step| step["status"] == "failed")
+            .cloned()
+            .expect("a step fails");
+        assert_eq!(failed["error"]["code"], code, "{check}: {failed}");
+    }
+}
+
+#[test]
+fn captures_and_input_variables_keep_their_types() {
+    let site = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file(
+        "typed.whirl",
+        r#"HTTP GET /api/big
+[Asserts]
+status == 200
+[Captures]
+id: json:$.id
+tags: json:$.tags
+price: json:$.price
+HTTP GET /api/big
+[Asserts]
+status == 200
+json:$.id == {{id}}
+json:$.tags == {{tags}}
+json:$.price == {{price}}
+json:$.id != "{{id}}"
+json:$.tags contains {{letter}}
+HTTP POST /api/http-check
+Authorization: "Bearer whirl-test-key"
+{"count": {{count}}, "zip": {{zip}}, "id": {{id}}, "label": "n={{count}}"}
+[Asserts]
+status == 200
+json:$.body == "{\"count\": 2, \"zip\": \"007\", \"id\": 1234567890123456789, \"label\": \"n=2\"}"
+"#,
+    );
+    let output = run_whirl(&dir, &[
+        "--base",
+        &site.base(),
+        "--var",
+        "count=2",
+        "--var",
+        "zip=007",
+        "--var",
+        "letter=a",
+        "--report-json",
+        "report.json",
+        "typed.whirl",
+    ]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    let text = fs::read_to_string(dir.path.join("report.json")).expect("report exists");
+    let report: serde_json::Value = serde_json::from_str(&text).expect("report is JSON");
+    let captures = &report["files"][0]["entries"][0]["captures"];
+    assert_eq!(
+        captures["tags"],
+        serde_json::json!({"type": "list", "value": ["a", "b"]})
+    );
+    assert!(
+        text.contains(r#""value": 1234567890123456789"#),
+        "the report keeps the exact number: {text}"
+    );
+    let html = Command::new(env!("CARGO_BIN_EXE_whirl"))
+        .current_dir(&dir.path)
+        .args(["report", "report.json", "--html", "report.html"])
+        .output()
+        .expect("the whirl binary should run");
+    assert_eq!(
+        exit_code(&html),
+        0,
+        "{}",
+        String::from_utf8_lossy(&html.stderr)
+    );
+    let html = fs::read_to_string(dir.path.join("report.html")).expect("HTML exists");
+    assert!(html.contains("<small>number</small>"), "{html}");
 }

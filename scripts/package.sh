@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Build and package a release archive for the current platform.
-# Run through `mise run release` so the shim is built from source first
-# (the repository-owned-tasks ADR requires it); the release binary embeds
-# the built shim via build.rs.
+# Run through `mise run release` so the shim and libxml2 are built from
+# source first (the repository-owned-tasks ADR requires it); the release
+# binary embeds the built shim via build.rs and links libxml2 statically.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -28,6 +28,29 @@ grep -aq 'getByPlaceholder' "$bin" || {
 
 "$bin" --version >/dev/null
 "$bin" check examples/checkout.whirl
+
+# libxml2 must be linked statically, so the binary runs on systems without
+# it (ADR evaluate-checks-in-rust §1.5).
+case "$(uname -s)" in
+  Darwin) dynamic=$(otool -L "$bin") ;;
+  *) dynamic=$(ldd "$bin" 2>&1 || true) ;;
+esac
+if printf '%s\n' "$dynamic" | grep -q libxml2; then
+  echo "release binary links libxml2 dynamically:" >&2
+  printf '%s\n' "$dynamic" >&2
+  exit 1
+fi
+# `whirl check` validates a literal XPath expression through libxml2.
+mkdir -p dist-release
+xpath_probe=dist-release/xpath-probe.whirl
+printf 'HTTP GET /feed\n[Asserts]\nstatus == 200\nxpath:"count(//_:entry)" >= 1\n' >"$xpath_probe"
+"$bin" check "$xpath_probe"
+printf 'HTTP GET /feed\n[Asserts]\nstatus == 200\nxpath:"//entry[" exists\n' >"$xpath_probe"
+if "$bin" check "$xpath_probe" >/dev/null 2>&1; then
+  echo "release binary accepted an invalid XPath expression" >&2
+  exit 1
+fi
+rm -f "$xpath_probe"
 
 rm -rf "dist-release/$name"
 mkdir -p "dist-release/$name"
