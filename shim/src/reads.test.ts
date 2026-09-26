@@ -15,7 +15,7 @@ interface ElementStub {
 function stubPage(element: ElementStub, url = "", title = ""): Page {
 	const locator: Record<string, unknown> = {
 		count: async () => element.count,
-		textContent: async () => element.text ?? null,
+		evaluate: async () => element.text ?? "",
 		inputValue: async () => {
 			if (element.value === undefined) {
 				throw new Error("Not an input element");

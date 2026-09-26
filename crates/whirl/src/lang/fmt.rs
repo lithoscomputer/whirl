@@ -450,10 +450,13 @@ fn render_operand(operand: &Operand, is_final: bool) -> String {
     match operand {
         Operand::Json(literal) => literal.text.clone(),
         Operand::Value(value) => {
+            // Quotes make a typed expected value a string (SPEC 9.6), so
+            // they stay on a typed-literal lookalike such as `"42"` and on
+            // any value with a variable, which could resolve to one.
             let keeps_quotes = value.quoted
                 && value
                     .as_literal()
-                    .is_some_and(|literal| is_typed_literal(&literal));
+                    .is_none_or(|literal| is_typed_literal(&literal));
             if keeps_quotes {
                 render_quoted(value)
             } else {
@@ -1224,6 +1227,12 @@ HTTP GET "@10s"
             ),
             "VISIT /\n[Asserts]\ntestid:x text == \"1\"\nurl == \"true\"\nurl != paid\neval 1 == 1\neval 1 == \"[a]\"\n"
         );
+    }
+
+    #[test]
+    fn keeps_quotes_on_interpolated_expected_values() {
+        let source = "HTTP GET /x\n[Asserts]\nstatus == 200\njson:$.id == \"{{order_id}}\"\njson:$.n == \"{{a}}1\"\njson:$.id == {{order_id}}\n";
+        assert_eq!(fmt(source), source);
     }
 
     #[test]

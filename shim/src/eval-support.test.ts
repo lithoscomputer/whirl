@@ -109,6 +109,16 @@ test("nested offenders reject the whole value", () => {
 	assert.equal(classifyEvalResult({ nested: new Date() }).ok, false);
 });
 
+test("holes in sparse arrays are rejected as undefined", () => {
+	// biome-ignore lint/suspicious/noSparseArray: the hole is the case under test
+	assert.deepEqual(classifyEvalResult([1, , 3]), {
+		ok: false,
+		reason: "undefined",
+	});
+	assert.equal(classifyEvalResult(new Array(2)).ok, false);
+	assert.deepEqual(classifyEvalResult([]), { ok: true, value: "[]" });
+});
+
 test("cyclic structures are rejected with a reason", () => {
 	interface Cyclic {
 		self?: unknown;

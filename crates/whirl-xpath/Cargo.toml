@@ -11,5 +11,8 @@ description = "XPath 1.0 over HTML and XML for Whirl checks, through libxml2"
 libxml = "=0.3.21"
 thiserror = "2"
 
+[build-dependencies]
+pkg-config = "=0.3.34"
+
 [lints]
 workspace = true

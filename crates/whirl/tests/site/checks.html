@@ -12,12 +12,19 @@
     </nav>
     <p data-testid="price">Total: $1,299.00</p>
     <p data-testid="late"></p>
+    <p data-testid="styled">Total 5<style>.x { color: red; }</style></p>
+    <div data-testid="shadow"></div>
+    <iframe class="twin" srcdoc="<p>one</p>"></iframe>
+    <iframe class="twin" srcdoc="<p>two</p>"></iframe>
     <ul>
       <li class="row">One</li>
       <li class="row">Two</li>
       <li class="row">Three</li>
     </ul>
     <script>
+      document
+        .querySelector('[data-testid="shadow"]')
+        .attachShadow({ mode: "open" }).innerHTML = "<span>Inside shadow</span>";
       window.dataLayer = [];
       setTimeout(() => {
         document.querySelector('[data-testid="late"]').textContent = "Order #A42 ready";

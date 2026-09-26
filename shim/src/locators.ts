@@ -52,23 +52,38 @@ function applySegment(scope: LocatorScope, segment: LocatorSegment): Locator {
 	}
 }
 
-export function buildLocator(
-	page: Page,
-	segments: readonly LocatorSegment[],
-): Locator {
+/** The iframe element that a `frame:` segment enters. */
+export interface FrameOwner {
+	readonly locator: Locator;
+	/** The segments up to and including the frame and its `nth`. */
+	readonly segments: readonly LocatorSegment[];
+}
+
+interface Chain {
+	readonly locator: Locator;
+	readonly frames: readonly FrameOwner[];
+}
+
+function buildChain(page: Page, segments: readonly LocatorSegment[]): Chain {
 	const [first, ...rest] = segments;
 	if (first === undefined) {
 		throw new ShimError("internal", "locator has no segments");
 	}
+	const frames: FrameOwner[] = [];
 	let chain = applySegment(page, first);
 	let enteringFrame = first.type === "frame";
-	for (const segment of rest) {
+	for (const [offset, segment] of rest.entries()) {
 		if (segment.type === "nth") {
 			// 0-based; a negative index counts from the end (SPEC 6).
 			chain = chain.nth(segment.index);
 			continue;
 		}
-		chain = applySegment(enteringFrame ? chain.contentFrame() : chain, segment);
+		if (enteringFrame) {
+			frames.push({ locator: chain, segments: segments.slice(0, offset + 1) });
+			chain = applySegment(chain.contentFrame(), segment);
+		} else {
+			chain = applySegment(chain, segment);
+		}
 		enteringFrame = segment.type === "frame";
 	}
 	if (enteringFrame) {
@@ -77,7 +92,22 @@ export function buildLocator(
 			"a frame locator needs an element segment inside the frame",
 		);
 	}
-	return chain;
+	return { locator: chain, frames };
+}
+
+export function buildLocator(
+	page: Page,
+	segments: readonly LocatorSegment[],
+): Locator {
+	return buildChain(page, segments).locator;
+}
+
+/** The iframe elements that the locator's `frame:` segments enter, in order. */
+export function frameOwners(
+	page: Page,
+	segments: readonly LocatorSegment[],
+): readonly FrameOwner[] {
+	return buildChain(page, segments).frames;
 }
 
 function quote(text: string): string {

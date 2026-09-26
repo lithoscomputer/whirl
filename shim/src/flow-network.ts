@@ -295,7 +295,11 @@ export class FlowNetwork {
 		const response = this.#responses.get(name);
 		if (response === undefined)
 			throw new ShimError("internal", `unknown response ${name}`);
-		const headers = await withinTimeout(response.headersArray(), timeoutMs);
+		const deadline = new Deadline(timeoutMs);
+		const headers = await withinTimeout(
+			response.headersArray(),
+			deadline.remainingMs(),
+		);
 		const base = {
 			status: response.status(),
 			url: response.url(),
@@ -307,7 +311,10 @@ export class FlowNetwork {
 			return { ...base, bodyBase64: null, bodyError: null };
 		}
 		try {
-			const body = await withinTimeout(this.#body(response), timeoutMs);
+			const body = await withinTimeout(
+				this.#body(response),
+				deadline.remainingMs(),
+			);
 			return { ...base, bodyBase64: body.toString("base64"), bodyError: null };
 		} catch (error) {
 			if (error instanceof ShimError) throw error;

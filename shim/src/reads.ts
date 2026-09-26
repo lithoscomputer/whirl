@@ -5,15 +5,17 @@
 import type { Locator, Page } from "@playwright/test";
 import type { EvalClassification } from "./eval-support.js";
 import { buildReadEvalExpression } from "./eval-support.js";
-import { buildLocator, describeLocator } from "./locators.js";
+import { buildLocator, describeLocator, frameOwners } from "./locators.js";
 import type {
 	ElementReadSubject,
 	JsonValue,
+	LocatorSegment,
 	ReadResult,
 	ReadSubject,
 } from "./protocol.js";
 import { assertNever, ShimError } from "./protocol.js";
 import {
+	isStrictModeViolation,
 	isTimeoutError,
 	normalizeWhitespace,
 	shortErrorMessage,
@@ -45,6 +47,7 @@ export async function runRead(
 		case "element":
 			return readElement(page, subject, timeoutMs);
 		case "count":
+			await failOnAmbiguousFrames(page, subject.locator);
 			return present(await buildLocator(page, subject.locator).count());
 		case "url":
 			return present(page.url());
@@ -62,6 +65,7 @@ async function readElement(
 	subject: ElementReadSubject,
 	timeoutMs: number,
 ): Promise<ReadResult> {
+	await failOnAmbiguousFrames(page, subject.locator);
 	const locator = buildLocator(page, subject.locator);
 	const description = describeLocator(subject.locator);
 	const count = await locator.count();
@@ -81,6 +85,9 @@ async function readElement(
 		if (isTimeoutError(error)) {
 			return noElement;
 		}
+		if (isStrictModeViolation(error)) {
+			throw new ShimError("strictness", shortErrorMessage(error));
+		}
 		throw new ShimError(
 			"read",
 			`reading ${subject.extract.type} of ${description} failed: ${shortErrorMessage(error)}`,
@@ -95,10 +102,12 @@ async function extract(
 ): Promise<ReadResult> {
 	const extraction = subject.extract;
 	switch (extraction.type) {
-		case "text": {
-			const text = await locator.textContent({ timeout });
-			return present(normalizeWhitespace(text ?? ""));
-		}
+		case "text":
+			return present(
+				normalizeWhitespace(
+					await locator.evaluate(elementText, undefined, { timeout }),
+				),
+			);
 		case "value":
 			return present(await locator.inputValue({ timeout }));
 		case "attr": {
@@ -110,6 +119,68 @@ async function extract(
 		default:
 			return assertNever(extraction);
 	}
+}
+
+/**
+ * Fails at once when a `frame:` segment matches more than one iframe
+ * (SPEC 6). Playwright would read the first frame silently.
+ */
+async function failOnAmbiguousFrames(
+	page: Page,
+	segments: readonly LocatorSegment[],
+): Promise<void> {
+	for (const frame of frameOwners(page, segments)) {
+		const count = await frame.locator.count();
+		if (count > 1) {
+			throw await strictnessError(
+				frame.locator,
+				describeLocator(frame.segments),
+				count,
+			);
+		}
+	}
+}
+
+/**
+ * An element's text as Playwright's text engine and `toHaveText` see it:
+ * text nodes in order, then any shadow root, skipping SCRIPT, NOSCRIPT,
+ * STYLE, and the document head; a submit or button input gives its value.
+ * It runs in the page, so it must stay self-contained.
+ */
+function elementText(root: Node): string {
+	const skipped = (node: Node): boolean =>
+		node.nodeName === "SCRIPT" ||
+		node.nodeName === "NOSCRIPT" ||
+		node.nodeName === "STYLE" ||
+		document.head?.contains(node) === true;
+	const textOf = (node: Node): string => {
+		if (skipped(node)) {
+			return "";
+		}
+		if (
+			node instanceof HTMLInputElement &&
+			(node.type === "submit" || node.type === "button")
+		) {
+			return node.value;
+		}
+		let text = "";
+		for (
+			let child = node.firstChild;
+			child !== null;
+			child = child.nextSibling
+		) {
+			if (child.nodeType === Node.TEXT_NODE) {
+				text += child.nodeValue ?? "";
+			} else if (child.nodeType === Node.ELEMENT_NODE) {
+				text += textOf(child);
+			}
+		}
+		if (node instanceof Element && node.shadowRoot !== null) {
+			text += textOf(node.shadowRoot);
+		}
+		return text;
+	};
+	return textOf(root);
 }
 
 async function readEval(

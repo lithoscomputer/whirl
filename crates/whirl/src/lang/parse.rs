@@ -2048,7 +2048,13 @@ fn json_for_validation(text: &str) -> Result<String, LineError> {
     let mut pos = 0;
     while pos < chars.len() {
         let ch = chars[pos];
-        if ch == '\\' && chars.get(pos + 1) == Some(&'{') && chars.get(pos + 2) == Some(&'{') {
+        // `\\{{` inside a string is an escaped backslash before a
+        // reference, not the `\{{` escape.
+        if ch == '\\'
+            && !escaped
+            && chars.get(pos + 1) == Some(&'{')
+            && chars.get(pos + 2) == Some(&'{')
+        {
             out.push('{');
             out.push('{');
             pos += 3;

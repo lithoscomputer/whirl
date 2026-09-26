@@ -188,7 +188,13 @@ impl VarStore {
         let mut pos = 0;
         while pos < chars.len() {
             let ch = chars[pos];
-            if ch == '\\' && chars.get(pos + 1) == Some(&'{') && chars.get(pos + 2) == Some(&'{') {
+            // `\\{{` inside a string is an escaped backslash before a
+            // reference, not the `\{{` escape.
+            if ch == '\\'
+                && !escaped
+                && chars.get(pos + 1) == Some(&'{')
+                && chars.get(pos + 2) == Some(&'{')
+            {
                 out.push_str("{{");
                 pos += 3;
                 continue;
@@ -556,6 +562,21 @@ mod tests {
             json,
             r#"{"n": 42, "who": "Ada \"Lovelace\"", "hi": "Hi Ada \"Lovelace\"", "raw": "{{x}}"}"#
         );
+    }
+
+    #[test]
+    fn json_templates_keep_an_escaped_backslash_before_a_reference() {
+        let mut store = VarStore::new();
+        store.set_input("dir", "tmp");
+        let span = Span {
+            line:   1,
+            column: 1,
+            len:    1,
+        };
+        let json = store
+            .resolve_json(r#"{"path": "C:\\{{dir}}", "raw": "\\\{{dir}}"}"#, span)
+            .expect("resolves");
+        assert_eq!(json, r#"{"path": "C:\\tmp", "raw": "\\{{dir}}"}"#);
     }
 
     #[test]

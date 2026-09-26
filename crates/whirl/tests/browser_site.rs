@@ -2712,6 +2712,8 @@ testid:home attr:aria-current != page
 testid:current attr:aria-current == page
 testid:current attr:href urlQueryParam q == café
 testid:missing text not exists
+testid:styled text == "Total 5"
+testid:shadow text == "Inside shadow"
 [Captures]
 order: testid:late text regex /Order #(\w+)/
 rows: css:.row count
@@ -2732,6 +2734,8 @@ fn check_failures_report_their_codes() {
         ("testid:home attr:aria-current == page", "missing-value"),
         ("css:.row count == 4", "assert"),
         ("css:.row text == One", "strictness"),
+        ("frame:iframe.twin >> css:p text == one", "strictness"),
+        ("frame:iframe.twin >> css:p count == 1", "strictness"),
     ] {
         let dir = TestDir::new();
         dir.file(

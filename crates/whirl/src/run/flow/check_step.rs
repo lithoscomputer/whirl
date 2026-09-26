@@ -35,6 +35,10 @@ use crate::run::vars::{MASK, VarStore};
 /// `evaluate-checks-in-rust` §1.3): 100, 250, 500, then 1000 ms.
 const POLL_INTERVALS_MS: [u64; 4] = [100, 250, 500, 1000];
 
+/// A retry needs at least this much budget. A read with less time can
+/// time out inside the shim and hide the last real result.
+const MIN_RETRY_MS: u64 = 50;
+
 /// Shim error kinds that mean "not passing yet" for a page read (SPEC
 /// 9.7): page churn mid-read, and `eval` scripts that throw or return a
 /// value outside the result contract.
@@ -346,7 +350,15 @@ impl FlowExec<'_> {
                 break timed_out(budget, last.take());
             }
             match self
-                .read(node, &prepared.source, remaining, budget, client, state)
+                .read(
+                    node,
+                    &prepared.source,
+                    remaining,
+                    budget,
+                    (!retry).then_some(title),
+                    client,
+                    state,
+                )
                 .await
             {
                 Attempt::End(end) => break end,
@@ -398,7 +410,15 @@ impl FlowExec<'_> {
                 break timed_out(budget, last.take());
             }
             match self
-                .read(node, &prepared.source, remaining, budget, client, state)
+                .read(
+                    node,
+                    &prepared.source,
+                    remaining,
+                    budget,
+                    (!retry).then_some(title),
+                    client,
+                    state,
+                )
                 .await
             {
                 Attempt::End(end) => break end,
@@ -490,13 +510,16 @@ impl FlowExec<'_> {
         let _ = client.run_step(&request).await;
     }
 
-    /// Reads the line's subject once.
+    /// Reads the line's subject once. `title` names the read's trace group
+    /// when the line opened none of its own (ADR `evaluate-checks-in-rust`
+    /// §1.3).
     async fn read(
         &mut self,
         node: StepNode<'_>,
         source: &Source,
         remaining: u64,
         budget: LineBudget,
+        title: Option<&str>,
         client: &mut ShimClient,
         state: &mut EntryState,
     ) -> Attempt {
@@ -506,7 +529,7 @@ impl FlowExec<'_> {
                     subject: subject.clone(),
                 };
                 let result = match self
-                    .shim_call(node, command, remaining, budget, client, state)
+                    .shim_call(node, command, remaining, budget, title, client, state)
                     .await
                 {
                     Ok(result) => result,
@@ -542,7 +565,7 @@ impl FlowExec<'_> {
                         body: needs_body,
                     };
                     let result = match self
-                        .shim_call(node, command, remaining, budget, client, state)
+                        .shim_call(node, command, remaining, budget, title, client, state)
                         .await
                     {
                         Ok(result) => result,
@@ -576,6 +599,7 @@ impl FlowExec<'_> {
         command: StepCommand,
         timeout_ms: u64,
         budget: LineBudget,
+        title: Option<&str>,
         client: &mut ShimClient,
         state: &mut EntryState,
     ) -> Result<Json, Attempt> {
@@ -583,7 +607,7 @@ impl FlowExec<'_> {
             entry_start: false,
             command,
             timeout_ms,
-            title: None,
+            title: title.map(str::to_owned),
         };
         let started = Instant::now();
         match client.run_step(&request).await {
@@ -722,16 +746,17 @@ fn remaining_ms(deadline: Instant) -> u64 {
     .unwrap_or(u64::MAX)
 }
 
-/// Waits before the next read. Returns false when the budget has no
-/// time left for another read.
+/// Waits before the next read. Returns false when the budget has too
+/// little time left for another read, so the line keeps the result of its
+/// last real attempt.
 async fn pause(deadline: Instant, attempt: usize) -> bool {
     let interval = POLL_INTERVALS_MS[attempt.min(POLL_INTERVALS_MS.len() - 1)];
     let remaining = remaining_ms(deadline);
-    if remaining == 0 {
+    if remaining < MIN_RETRY_MS {
         return false;
     }
     sleep(Duration::from_millis(interval.min(remaining))).await;
-    remaining_ms(deadline) > 0
+    remaining_ms(deadline) >= MIN_RETRY_MS
 }
 
 /// The end of a line whose budget ran out: an entry-timeout failure when

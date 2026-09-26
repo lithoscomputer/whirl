@@ -191,8 +191,11 @@ fn redundant_presence_counts(file: &File, lints: &mut Vec<Lint>) {
             }
             let next = if let Some((locator, kind, count)) = count_check(&pair[1]) {
                 let accepts_zero = match kind {
-                    PredicateKind::Eq | PredicateKind::Ge => count <= 0,
-                    PredicateKind::Ne | PredicateKind::Lt => count != 0,
+                    PredicateKind::Eq => count == 0,
+                    PredicateKind::Ne => count != 0,
+                    PredicateKind::Gt => count < 0,
+                    PredicateKind::Ge => count <= 0,
+                    PredicateKind::Lt => count > 0,
                     PredicateKind::Le => count >= 0,
                     _ => false,
                 };
@@ -890,6 +893,9 @@ mod tests {
         for source in [
             "VISIT /\n[Asserts]\ncss:\"li.item\" count > 0\ncss:\"li.item\" count == 3\n",
             "VISIT /\n[Asserts]\nrole:button \"Save\" count != 0\nrole:button \"Save\" enabled\n",
+            // These counts reject zero, so they wait for the element too.
+            "VISIT /\n[Asserts]\ntestid:card count >= 1\ntestid:card count < -1\n",
+            "VISIT /\n[Asserts]\ntestid:card count >= 1\ntestid:card count == -1\n",
         ] {
             assert_eq!(lint(source).len(), 1, "source:\n{source}");
         }
@@ -908,6 +914,9 @@ mod tests {
             "VISIT /\n[Asserts]\ntestid:card count >= 1\ntitle == Home\ntestid:card visible\n",
             // The same text through a different segment shape.
             "VISIT /\n[Asserts]\ntext:Save count >= 1\ntext~:Save visible\n",
+            // Counts that accept zero do not wait for the element.
+            "VISIT /\n[Asserts]\ntestid:card count >= 1\ntestid:card count > -1\n",
+            "VISIT /\n[Asserts]\ntestid:card count >= 1\ntestid:card count < 2\n",
         ] {
             assert_eq!(lint(source), Vec::new(), "source:\n{source}");
         }

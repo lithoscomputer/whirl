@@ -26,6 +26,9 @@ use tracing::{Instrument as _, debug, debug_span, warn};
 
 pub(super) mod wire;
 
+/// The protocol version this Whirl speaks (protocol section 3).
+pub(crate) const PROTOCOL: u64 = 2;
+
 /// Environment variable naming the built shim entry (protocol section 8).
 pub(crate) const SHIM_JS_ENV: &str = "WHIRL_SHIM_JS";
 /// Environment variable naming the node executable (protocol section 8).
@@ -89,6 +92,11 @@ pub(crate) enum ShimError {
         )
     )]
     BundleOutdated { installed: Option<String> },
+    #[error(
+        "the shim speaks protocol {protocol}, but this whirl needs protocol {PROTOCOL}; \
+         run `whirl install` to refresh it"
+    )]
+    ProtocolMismatch { protocol: u64 },
     #[error("the shim did not complete {command} within {timeout_ms}ms")]
     TimedOut {
         command:    &'static str,
@@ -614,7 +622,13 @@ impl ShimClient {
 
     /// `hello` (protocol section 3): sent once after spawn.
     pub(crate) async fn hello(&mut self) -> Result<HelloResult, ShimError> {
-        self.request("hello", serde_json::json!({})).await
+        let hello: HelloResult = self.request("hello", serde_json::json!({})).await?;
+        if hello.protocol != PROTOCOL {
+            return Err(ShimError::ProtocolMismatch {
+                protocol: hello.protocol,
+            });
+        }
+        Ok(hello)
     }
 
     /// `startFlow` (protocol section 3): creates the browser context

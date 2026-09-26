@@ -117,7 +117,16 @@ export function classifyEvalResult(value: unknown): EvalClassification {
 				return false;
 			}
 			ancestors.push(candidate);
-			const fine = candidate.every((item) => acceptable(item));
+			// A hole in a sparse array is undefined; `every` would skip it.
+			let fine = true;
+			for (let index = 0; fine && index < candidate.length; index += 1) {
+				if (index in candidate) {
+					fine = acceptable(candidate[index]);
+				} else {
+					reason = describe(undefined);
+					fine = false;
+				}
+			}
 			ancestors.pop();
 			return fine;
 		}

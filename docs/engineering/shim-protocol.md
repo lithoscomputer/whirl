@@ -314,12 +314,17 @@ section 9.7). It replies with `{"type": "value", "value": ...}` or
 - `element` resolves the locator once. More than one match fails at once
   with error kind `"strictness"` and candidates. No match, or an absent
   attribute on the element, is `missing`. `text` returns the normalized text
-  content (SPEC section 9.2), `value` the input value, and `attr` the
-  attribute value, each as a string. `value` on an element that is not an
+  content (SPEC section 9.2) as Playwright's text engine sees it: text nodes
+  and shadow roots, without `script`, `noscript`, `style`, or document head
+  content. `value` returns the input value, and `attr` the attribute value,
+  each as a string. `value` on an element that is not an
   input is error kind `"read"`. An element that detaches during the read
   reads as `missing`.
 - `count` returns the current number of matches as a JSON number. It is never
   `missing`.
+- For `element` and `count`, a `frame` segment that matches more than one
+  iframe fails at once with error kind `"strictness"` and the iframes as
+  candidates.
 - `url` returns `page.url()`, and `title` the normalized document title.
 - `eval` runs under the `evalAction` rules, then applies the SPEC section 10
   result contract inside the page: a string, `null`, a boolean, a finite
