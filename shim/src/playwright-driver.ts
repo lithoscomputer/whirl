@@ -108,6 +108,12 @@ interface FlowState {
 	} | null;
 	/** The screencast recorder; null when Playwright's recorder or no video. */
 	readonly recorder: ScreencastRecorder | null;
+	/**
+	 * The page function a clicked element calls to confirm a trusted click.
+	 * It is bound once for the whole context at flow start, so a click step
+	 * does not spend its own timeout on the setup round trip.
+	 */
+	readonly clickBinding: string;
 }
 
 /** Resolves true when the promise settles in time, false on the deadline. */
@@ -281,7 +287,6 @@ export class PlaywrightDriver implements ShimDriver {
 	readonly #clickReceipts = new WeakMap<
 		Page,
 		{
-			readonly binding: string;
 			next: number;
 			received: number;
 		}
@@ -376,6 +381,15 @@ export class PlaywrightDriver implements ShimDriver {
 		};
 		const context = await browser.newContext(contextOptions);
 		context.setDefaultNavigationTimeout(params.navTimeoutMs);
+		// Bound before any page exists, so the main page and every popup
+		// have it without a round trip inside a step's timeout.
+		const clickBinding = `__whirlClick_${randomUUID().replaceAll("-", "")}`;
+		await context.exposeBinding(clickBinding, ({ page }, token: unknown) => {
+			const receipt = this.#clickReceipts.get(page);
+			if (receipt !== undefined && typeof token === "number") {
+				receipt.received = token;
+			}
+		});
 		const blockedHosts = new Set<string>();
 		if (params.allowHosts !== null) {
 			await installHostFiltering(context, params.allowHosts, blockedHosts);
@@ -414,6 +428,7 @@ export class PlaywrightDriver implements ShimDriver {
 			traceActive: params.trace,
 			video: params.video,
 			recorder,
+			clickBinding,
 		};
 		let videoFps: number | null = null;
 		if (params.video !== null) {
@@ -879,18 +894,14 @@ export class PlaywrightDriver implements ShimDriver {
 
 	async #click(page: Page, locator: Locator, timeoutMs: number): Promise<void> {
 		const deadline = performance.now() + timeoutMs;
+		const binding = this.#flow?.clickBinding;
+		if (binding === undefined) {
+			throw new ShimError("internal", "click without an open flow");
+		}
 		let receipt = this.#clickReceipts.get(page);
 		if (receipt === undefined) {
-			const state = {
-				binding: `__whirlClick_${randomUUID().replaceAll("-", "")}`,
-				next: 0,
-				received: 0,
-			};
-			await page.exposeFunction(state.binding, (token: unknown) => {
-				if (typeof token === "number") state.received = token;
-			});
-			this.#clickReceipts.set(page, state);
-			receipt = state;
+			receipt = { next: 0, received: 0 };
+			this.#clickReceipts.set(page, receipt);
 		}
 		const token = ++receipt.next;
 		const listener = await locator.evaluateHandle(
@@ -908,7 +919,7 @@ export class PlaywrightDriver implements ShimDriver {
 				element.addEventListener("click", onClick, { capture: true });
 				return () => element.removeEventListener("click", onClick, true);
 			},
-			{ binding: receipt.binding, token },
+			{ binding, token },
 			{ timeout: Math.max(1, deadline - performance.now()) },
 		);
 		try {

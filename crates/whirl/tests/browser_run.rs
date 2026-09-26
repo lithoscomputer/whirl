@@ -552,7 +552,10 @@ fn a_missing_element_reports_what_the_action_waited_for() {
 #[test]
 fn a_covered_element_reports_the_overlay_and_masks_its_secret() {
     let dir = TestDir::new();
-    dir.file("covered.whirl", "VISIT \"data:text/html,<button>Sign in</button><div style=position:fixed;inset:0>{{env.OVERLAY}}</div>\"\nCLICK role:button \"Sign in\" @200ms\n");
+    // Playwright names the covering element only after a click attempt's
+    // hit test, so the budget must leave room for that attempt even on a
+    // loaded CI runner; a 200 ms budget did not.
+    dir.file("covered.whirl", "VISIT \"data:text/html,<button>Sign in</button><div style=position:fixed;inset:0>{{env.OVERLAY}}</div>\"\nCLICK role:button \"Sign in\" @1s\n");
     let output = run_whirl_env(
         &dir,
         &["--trace", "--report-json", "report.json", "covered.whirl"],
