@@ -15,7 +15,9 @@
 // FAKE_SHIM_IGNORE_CANCEL=1 in the environment also enables the
 // ignore-cancel mode from the start. FAKE_SHIM_VIDEO_SKIPPED=REASON makes
 // startFlow start a 60 fps recording and endFlow report it skipped with
-// that reason.
+// that reason. FAKE_SHIM_VIDEO_BLANK=REASON makes startFlow start a 60 fps
+// recording and endFlow report it saved, but blank for that reason; no
+// file is written.
 
 "use strict";
 
@@ -27,6 +29,8 @@ let ignoreLifecycle = false;
 let ignoreShutdown = false;
 let ignoreCancel = process.env.FAKE_SHIM_IGNORE_CANCEL === "1";
 const videoSkipped = process.env.FAKE_SHIM_VIDEO_SKIPPED ?? null;
+const videoBlank = process.env.FAKE_SHIM_VIDEO_BLANK ?? null;
+let videoPath = null;
 
 function reply(id, result) {
   process.stdout.write(JSON.stringify({ id, ok: true, result }) + "\n");
@@ -87,11 +91,17 @@ rl.on("line", (line) => {
       break;
     case "startFlow":
       if (ignoreLifecycle) break;
-      reply(id, videoSkipped === null ? {} : { videoFps: 60 });
+      if (videoBlank !== null) videoPath = params.video.finalPath;
+      reply(id, videoSkipped === null && videoBlank === null ? {} : { videoFps: 60 });
       break;
     case "endFlow":
       if (ignoreLifecycle) break;
-      reply(id, { blockedHosts: ["a.example", "b.example"], videoPath: null, videoSkipped });
+      reply(id, {
+        blockedHosts: ["a.example", "b.example"],
+        videoPath,
+        videoSkipped,
+        videoBlank,
+      });
       break;
     case "cancelFlow":
       if (ignoreCancel) break;
