@@ -694,8 +694,9 @@ impl FlowExec<'_> {
                         .transpose()?,
                 }
             }
-            K::Click { target } => StepCommand::Click {
+            K::Click { target, button } => StepCommand::Click {
                 locator: self.locator(target, engine)?,
+                button:  button.name().to_owned(),
             },
             K::Dblclick { target } => StepCommand::Dblclick {
                 locator: self.locator(target, engine)?,

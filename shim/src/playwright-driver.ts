@@ -40,6 +40,7 @@ import type {
 	EndFlowResult,
 	ErrorKind,
 	LocatorSegment,
+	MouseButton,
 	PageExpectation,
 	ReadSubject,
 	StartFlowParams,
@@ -152,6 +153,19 @@ const redirectStatuses = new Set([301, 302, 303, 307, 308]);
 
 /** The browser's own redirect-hop limit. */
 const maxRedirectHops = 20;
+
+const mouseButtons: readonly MouseButton[] = ["left", "right", "middle"];
+
+/**
+ * The trusted event that shows a click reached its target. Only the left
+ * button fires `click`: a right click fires `contextmenu` in every engine,
+ * and a middle click fires `auxclick`.
+ */
+const clickEvents: Readonly<Record<MouseButton, string>> = {
+	left: "click",
+	right: "contextmenu",
+	middle: "auxclick",
+};
 
 /** The absolute target of a redirect response, or null when it is not one. */
 function redirectTarget(
@@ -290,7 +304,7 @@ interface Point {
  * Runs in every frame before page scripts (SPEC 7.4). Playwright's AI
  * snapshot, like page scripts, cannot see inside a closed shadow root, so a
  * flow that uses ACT opens every root a page script attaches, which gives
- * ACT the view Stagehand gets from Chrome's extension API. The page can
+ * ACT the view that a browser extension's API has. The page can
  * notice: `host.shadowRoot` is no longer null. Declarative closed roots in
  * HTML are created by the parser and stay closed.
  */
@@ -707,7 +721,8 @@ export class PlaywrightDriver implements ShimDriver {
 					waitUntil: "domcontentloaded",
 				});
 				return {};
-			case "click":
+			case "click": {
+				const button = fieldEnum(params, "button", mouseButtons);
 				await this.#locatorAction(
 					page,
 					params,
@@ -715,7 +730,11 @@ export class PlaywrightDriver implements ShimDriver {
 						// Styled checkboxes and radios often cover the native input,
 						// which makes a click wait out the step. Focus and Space have
 						// the click's effect, as CHECK relies on (SPEC 7 and 7.4).
-						if (fromSnapshot && (await isNativeToggle(locator, timeoutMs))) {
+						if (
+							button === "left" &&
+							fromSnapshot &&
+							(await isNativeToggle(locator, timeoutMs))
+						) {
 							await locator.press("Space", { timeout: timeoutMs });
 							return;
 						}
@@ -723,6 +742,7 @@ export class PlaywrightDriver implements ShimDriver {
 							page,
 							locator,
 							timeoutMs,
+							button,
 							fromSnapshot
 								? await textTargetPosition(locator, timeoutMs)
 								: undefined,
@@ -730,6 +750,7 @@ export class PlaywrightDriver implements ShimDriver {
 					},
 				);
 				return {};
+			}
 			case "dblclick":
 				await this.#locatorAction(
 					page,
@@ -1032,6 +1053,7 @@ export class PlaywrightDriver implements ShimDriver {
 		page: Page,
 		locator: Locator,
 		timeoutMs: number,
+		button: MouseButton,
 		position?: Point,
 	): Promise<void> {
 		const deadline = performance.now() + timeoutMs;
@@ -1045,8 +1067,9 @@ export class PlaywrightDriver implements ShimDriver {
 			this.#clickReceipts.set(page, receipt);
 		}
 		const token = ++receipt.next;
+		const eventType = clickEvents[button];
 		const listener = await locator.evaluateHandle(
-			(element, { binding, token }) => {
+			(element, { binding, token, eventType }) => {
 				const view = element.ownerDocument.defaultView as unknown as Record<
 					string,
 					(token: number) => Promise<void>
@@ -1057,14 +1080,15 @@ export class PlaywrightDriver implements ShimDriver {
 						// The click handler can destroy the document immediately.
 					});
 				};
-				element.addEventListener("click", onClick, { capture: true });
-				return () => element.removeEventListener("click", onClick, true);
+				element.addEventListener(eventType, onClick, { capture: true });
+				return () => element.removeEventListener(eventType, onClick, true);
 			},
-			{ binding, token },
+			{ binding, token, eventType },
 			{ timeout: Math.max(1, deadline - performance.now()) },
 		);
 		try {
 			await locator.click({
+				button,
 				timeout: Math.max(1, deadline - performance.now()),
 				...(position === undefined ? {} : { position }),
 			});

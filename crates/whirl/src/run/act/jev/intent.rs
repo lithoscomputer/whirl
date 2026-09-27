@@ -34,6 +34,7 @@ use std::collections::HashMap;
 use serde_json::{Map, Value as Json, json};
 
 use super::client::{JevAnswer, JevQuestion, choice};
+use crate::lang::ast::MouseButton;
 
 /// Each kind of action and how Jev reads it. Whirl has no scroll, drag, or
 /// page-level actions, but naming them keeps such instructions out of the
@@ -126,9 +127,9 @@ pub(super) struct Intent {
     pub(super) click_fits:      bool,
     /// The key to press, when Jev named one.
     pub(super) key:             Option<&'static str>,
-    /// True when the instruction asks for a right or middle click, which
-    /// Whirl cannot do.
-    pub(super) other_button:    bool,
+    /// The mouse button a click presses; left unless Jev is sure of
+    /// another.
+    pub(super) button:          MouseButton,
     /// The end state a checkbox or switch must reach, when named.
     pub(super) toggle:          Option<bool>,
     /// True when typing must be followed by choosing a suggestion.
@@ -278,7 +279,10 @@ pub(super) fn read(answers: &HashMap<String, JevAnswer>, accept: f64) -> Option<
         family,
         click_fits,
         key: named("key").and_then(|key| KEYS.iter().copied().find(|known| *known == key)),
-        other_button: matches!(named("mouse_button").as_deref(), Some("right" | "middle")),
+        button: named("mouse_button")
+            .as_deref()
+            .and_then(MouseButton::from_name)
+            .unwrap_or(MouseButton::Left),
         toggle: match named("toggle_state").as_deref() {
             Some("on") => Some(true),
             Some("off") => Some(false),
@@ -382,11 +386,26 @@ mod tests {
             family:          "click",
             click_fits:      true,
             key:             Some("Enter"),
-            other_button:    false,
+            button:          MouseButton::Left,
             toggle:          Some(true),
             pick_suggestion: false,
             fill_value:      FillValue::NotAsked,
         });
+    }
+
+    #[test]
+    fn a_sure_right_or_middle_button_is_read_and_an_unsure_one_is_left() {
+        let button = |choice: &str, confidence: f64| {
+            let mut answers = answers(answer("click", 0.9, &[("click", 0.9)]));
+            answers.insert(
+                "mouse_button".to_owned(),
+                answer(choice, confidence, &[(choice, confidence)]),
+            );
+            read(&answers, 0.7).map(|intent| intent.button)
+        };
+        assert_eq!(button("right", 0.9), Some(MouseButton::Right));
+        assert_eq!(button("middle", 0.9), Some(MouseButton::Middle));
+        assert_eq!(button("right", 0.5), Some(MouseButton::Left));
     }
 
     #[test]

@@ -47,11 +47,10 @@ requests, which `lithos-llm` prices from its catalog.
 - **local** (default): flows in `local/flows/` against the pages in
   `local/site/`, which the script serves on `127.0.0.1`. A page reaches a
   second site through `localhost`. These runs are deterministic apart from
-  the model. The `stagehand-*` tasks use saved copies of real sites from
-  Stagehand's evals, in `local/site/stagehand/` (see its README). Other
-  tasks make the model reason: compare prices, tell identical buttons apart
-  by their row, or find an element that the instruction names by meaning
-  only.
+  the model. The `saved-*` tasks use saved copies of real sites, in
+  `local/site/saved/` (see its README). Other tasks make the model reason:
+  compare prices, tell identical buttons apart by their row, or find an
+  element that the instruction names by meaning only.
 - **live** (opt-in): flows in `live/flows/` against real websites. The sites
   can change or block the browser at any time.
 

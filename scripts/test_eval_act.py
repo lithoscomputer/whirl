@@ -47,7 +47,7 @@ class ClassifyTest(unittest.TestCase):
 
     def test_a_task_with_several_act_lines_sums_their_measurements(self):
         report = file_report(
-            "x/stagehand-checkboxes.whirl",
+            "x/saved-checkboxes.whirl",
             "passed",
             [entry("Two.", "passed", [step(act=act_report(), duration_ms=1000), step(act=act_report(calls=2, cost=500), duration_ms=3000)])],
         )
@@ -61,7 +61,7 @@ class ClassifyTest(unittest.TestCase):
 
     def test_actions_jev_chose_are_counted(self):
         report = file_report(
-            "x/stagehand-google-search.whirl",
+            "x/saved-google-search.whirl",
             "passed",
             [entry("Two.", "passed", [step(act=act_report(planned_by=("jev",))), step(act=act_report(planned_by=("llm",)))])],
         )

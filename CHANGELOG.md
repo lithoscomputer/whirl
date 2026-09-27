@@ -2,12 +2,13 @@
 
 ## Unreleased
 
+- Add `RIGHTCLICK` and `MIDDLECLICK`, which click an element with the right or middle mouse button, to test a page's own context menu or `auxclick` handling. `ACT` runs them when the model answers `click` with `right` or `middle`, and with `--jev`, Jev plans them without the model.
 - With `--jev`, choose from lists and dropdowns built without a native select: click the option the instruction names, or open the control and click the option in step two.
 - With `--jev`, describe an element in a table by its table's caption or name and its column's header, so Jev tells apart two calendar months that both show a 14.
-- With `--jev`, accept a clear leader when Jev is nearly certain something matches, hold an uneasy pick while the next list tries, and let copies of one control in one item share Jev's vote, as Stagehand does.
-- With `--jev`, try every named element when no control fits, ask the full list in parallel parts when Jev rejects the shortened one, and confirm an exact quoted name with one small request, as Stagehand does.
-- With `--jev`, let Jev say which quoted string or placeholder is the text to type, and read unquoted text with a small model call that sees only the instruction and must copy its words, as Stagehand does.
-- With `--jev`, ask Jev Stagehand's fuller intent question: richer action kinds, a merged vote when a click competes with a select, a double-click, or a key press, and the key, mouse button, checkbox end state, and suggestion step in the same request.
+- With `--jev`, accept a clear leader when Jev is nearly certain something matches, hold an uneasy pick while the next list tries, and let copies of one control in one item share Jev's vote.
+- With `--jev`, try every named element when no control fits, ask the full list in parallel parts when Jev rejects the shortened one, and confirm an exact quoted name with one small request.
+- With `--jev`, let Jev say which quoted string or placeholder is the text to type, and read unquoted text with a small model call that sees only the instruction and must copy its words.
+- With `--jev`, ask Jev a fuller intent question: richer action kinds, a merged vote when a click competes with a select, a double-click, or a key press, and the key, mouse button, checkbox end state, and suggestion step in the same request.
 - Add `--jev`, which plans `ACT` with TypeSafe's Jev first and falls back to the `model` option when Jev is unsure, cannot supply an argument, or fails. `TYPESAFE_API_KEY` holds Jev's key, and `WHIRL_JEV_ENDPOINT` sends its requests to another server. Whirl asks Jev through `lithos-llm`, which prices its requests. JSON reports record the planner of each action and Jev's requests, tokens, and cost, which the step's cost includes.
 - When the text `ACT` types matches a string the instruction quotes, type the instruction's characters, so a model that changes the case or spacing of `"AbC 123"` still types `AbC 123`.
 - After `ACT` fills a field, read the value back. When the field does not hold it, as when a `maxlength` cuts it short, the step fails with `act-fill-mismatch` instead of passing silently. Case, spaces, and punctuation do not count, so a field that formats its value still passes.
@@ -15,7 +16,7 @@
 - Add `ACT locator "instruction"`, which shows the model only one element and what it contains, for long pages.
 - Leave each link's URL and the cursor hints out of the snapshot `ACT` sends, about a third of a link-heavy page.
 - When `ACT` clicks, double-clicks, or hovers an element that wraps a narrower one, such as a custom dropdown's trigger, point at the element that shows its text instead of the wrapper's center.
-- In a file that uses `ACT`, open every shadow root that page scripts attach, so `ACT` sees and acts inside closed shadow roots, as Stagehand does.
+- In a file that uses `ACT`, open every shadow root that page scripts attach, so `ACT` sees and acts inside closed shadow roots.
 - When a page replaces the element `ACT` chose while the model answers, as a re-render after load does, `ACT` takes a new snapshot and asks once more instead of waiting out the step timeout. A second replacement fails the step at once with `stale-ref`.
 - Replace the check operators with Hurl's vocabulary. A check is `subject { filter } [not] predicate`, with predicates such as `startsWith`, `isInteger`, and `exists`, and filters such as `count`, `regex`, `toInt`, `split`, `urlQueryParam`, and `base64Decode`. Captures take the same filters, and `regex` is now one of them.
 - Replace JSON Pointer with JSONPath: `json:/items/0/id` becomes `json:$.items[0].id`, and a query such as `json:$.items[*].sku` gives a list.
@@ -31,7 +32,7 @@
 - Move the browser shim to protocol 2; `whirl install` provisions the matching bundle.
 - Keep variable types. Captures keep the type of their value, `--var`, `--variables-file`, and `{{env.NAME}}` values are typed as Hurl types `--variable`, and a bare `{{name}}` that is a whole expected value compares with its type. In an HTTP JSON body or a JSON literal, a bare `{{name}}` inserts the variable as JSON.
 - Write JSON report version 2, where each capture is `{type, value}` and numbers keep their exact text. `whirl report` and `--rerun-failed` read versions 1 and 2, and the HTML report shows each capture's type.
-- Add `ACT "instruction"`, which asks a language model to choose one element action from a Playwright AI snapshot of the page and runs it as the matching Whirl action, following Stagehand's `act()`. The new `model` option selects the model through `lithos-llm`. `WHIRL_LLM_ENDPOINT` and `WHIRL_LLM_API_KEY` send calls to one OpenAI-compatible server instead. `{{env.NAME}}` values reach the model only as placeholders, and JSON reports record the actions ACT ran and the tokens it used.
+- Add `ACT "instruction"`, which asks a language model to choose one element action from a Playwright AI snapshot of the page and runs it as the matching Whirl action. The new `model` option selects the model through `lithos-llm`. `WHIRL_LLM_ENDPOINT` and `WHIRL_LLM_API_KEY` send calls to one OpenAI-compatible server instead. `{{env.NAME}}` values reach the model only as placeholders, and JSON reports record the actions ACT ran and the tokens it used.
 - `whirl check` reports `ACT` without a `model` option and a model the catalog cannot route.
 - Raise the minimum supported Rust version to 1.88, which `lithos-llm` requires.
 

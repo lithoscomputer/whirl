@@ -1,0 +1,9 @@
+[Options]
+base: {{env.EVAL_BASE}}
+model: {{model}}
+
+# The first departing flight on a saved Google Flights page, asked in words.
+VISIT /saved/google-flights/
+ACT "click the first departing flight" @60s
+[Asserts]
+url contains /saved/google-flights/return-flight.html

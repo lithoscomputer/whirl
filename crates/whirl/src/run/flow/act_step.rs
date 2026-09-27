@@ -211,8 +211,8 @@ impl FlowExec<'_> {
                     description,
                     then,
                 }) => (action, description, then),
-                // Stagehand keeps the first action's result when step
-                // two finds nothing.
+                // When step two finds nothing, the line passes with the
+                // first action (SPEC 7.4).
                 Ok(ActDecision::NoMatch) if first_action.is_some() => break StepEnd::Passed,
                 Ok(ActDecision::NoMatch) => {
                     break StepEnd::Failed(act_failure(

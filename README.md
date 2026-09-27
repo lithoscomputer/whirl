@@ -256,3 +256,15 @@ Unless you explicitly state otherwise, any contribution intentionally
 submitted for inclusion in the work by you, as defined in the Apache-2.0
 license, shall be dual licensed as above, without any additional terms or
 conditions.
+
+## Acknowledgments
+
+Whirl drives every browser through [Playwright](https://playwright.dev), by
+Microsoft. Its locators, auto-waiting, tracing, and browser builds do much of
+the work under each flow.
+
+`ACT` is modeled on the `act()` method of
+[Stagehand](https://github.com/browserbase/stagehand), by Browserbase.
+Whirl's `ACT` prompts and parts of its Jev planner are ported from Stagehand
+under its MIT license, and some `ACT` evals run on pages saved from
+Stagehand's eval sites.

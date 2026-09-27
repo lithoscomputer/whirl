@@ -188,7 +188,7 @@ test("cancelFlow interleaves with a slow in-flight step", async (t) => {
 	harness.send(`{"id": 1, "cmd": "startFlow", "params": ${startFlowParams}}`);
 	await harness.waitForResponses(1);
 	harness.send(
-		'{"id": 2, "cmd": "click", "params": {"timeoutMs": 5000, "title": "CLICK x", "locator": []}}',
+		'{"id": 2, "cmd": "click", "params": {"timeoutMs": 5000, "title": "CLICK x", "locator": [], "button": "left"}}',
 	);
 	// The read loop keeps consuming stdin while the step is in flight.
 	harness.send('{"id": 3, "cmd": "cancelFlow", "params": {}}');

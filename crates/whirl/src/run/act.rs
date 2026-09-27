@@ -1,6 +1,6 @@
 //! `ACT` (SPEC 7.4): a language model chooses one element action from an
 //! AI snapshot of the selected tab, and Whirl runs it as an ordinary
-//! action. The design follows Stagehand's `act()`, without its cache.
+//! action.
 
 mod decision;
 mod instruction;

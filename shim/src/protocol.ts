@@ -244,6 +244,9 @@ export interface ResponseRead {
 
 export type BrowserEngine = "chromium" | "firefox" | "webkit";
 
+/** The button a `click` command presses (SPEC section 7). */
+export type MouseButton = "left" | "right" | "middle";
+
 export interface ViewportSize {
 	readonly width: number;
 	readonly height: number;

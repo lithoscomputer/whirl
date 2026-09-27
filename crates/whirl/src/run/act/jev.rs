@@ -4,7 +4,7 @@
 //! Jev answers closed questions in a few hundred milliseconds but cannot
 //! write text. One request asks which kind of action the instruction wants.
 //! A second asks which element, from the candidates that kind of action can
-//! target, twice as Stagehand's Jev path does: `best` must choose, and
+//! target, twice: `best` must choose, and
 //! `strict` may say that none fits. Arguments come from the instruction
 //! itself (see [`args`]). When Jev is unsure, when an argument is missing,
 //! or when a request fails, the fallback planner plans the step, with Jev's
@@ -28,6 +28,7 @@ use tokio::task::JoinSet;
 use self::client::{JevAnswer, JevError, JevQuestion, JevResponse, choice, noul};
 use self::intent::{FillValue, Intent};
 use self::outline::{Outline, View, shortlist};
+use crate::lang::ast::MouseButton;
 use crate::run::act::decision::{ActInference, ActMethod};
 use crate::run::act::instruction::quoted_strings;
 use crate::run::act::model::ModelClient;
@@ -51,7 +52,7 @@ const PRUNE_KEEP: usize = 30;
 const NONE_UNEASY: f64 = 0.5;
 /// A held pick is used only while none-of-these stays below this.
 const HELD_NONE_MAX: f64 = 0.7;
-/// The relaxed rule (Stagehand's eval findings): a split-but-right pick at
+/// The relaxed rule, from eval findings: a split-but-right pick at
 /// 0.5 or more, when strict is nearly certain something matches and the
 /// leader is clear, at least 0.6 and 2.5 times the runner-up.
 const SURE_ENOUGH: f64 = 0.5;
@@ -183,9 +184,8 @@ impl JevPlanner {
         else {
             return Outcome::Unsure(None);
         };
-        // Whirl clicks with the left button only, and choosing a suggestion
-        // after typing is a second step.
-        if intent.other_button || (intent.family == "fill" && intent.pick_suggestion) {
+        // Choosing a suggestion after typing is a second step.
+        if intent.family == "fill" && intent.pick_suggestion {
             return Outcome::Unsure(None);
         }
         let outline = Outline::parse(request.snapshot.raw());
@@ -267,6 +267,7 @@ impl JevPlanner {
         // A click toggles; when the control is already in the state the
         // instruction asks for, a click would undo it.
         if method == ActMethod::Click
+            && intent.button == MouseButton::Left
             && CHECKABLE_ROLES.contains(&node.role.as_str())
             && intent.toggle == Some(node.checked)
         {
@@ -285,6 +286,12 @@ impl JevPlanner {
                     .map(str::to_owned)
             }
             ActMethod::Press => key,
+            ActMethod::Click => match intent.button {
+                MouseButton::Left => None,
+                button @ (MouseButton::Right | MouseButton::Middle) => {
+                    Some(button.name().to_owned())
+                }
+            },
             _ => None,
         };
         let needs_argument = !matches!(
@@ -319,7 +326,7 @@ impl JevPlanner {
 
     /// The text to type when the instruction does not quote it: a small
     /// model call that sees only the instruction, and whose answer must be
-    /// the instruction's own words (Stagehand's argument call).
+    /// the instruction's own words.
     async fn text_argument(
         &self,
         request: &PlanRequest<'_>,
@@ -344,9 +351,8 @@ impl JevPlanner {
     /// The element Jev chooses, trying each tier of candidates in turn: the
     /// view for the action, then every named element. Within a tier, a long
     /// list is first cut to its best word matches, and the full list is
-    /// asked only when Jev rejects the cut one. This is Stagehand's
-    /// `pickTarget`. `quoted` are the instruction's quoted strings that are
-    /// not the text to type.
+    /// asked only when Jev rejects the cut one. `quoted` are the
+    /// instruction's quoted strings that are not the text to type.
     async fn pick(
         &self,
         outline: &Outline,
@@ -464,7 +470,7 @@ impl JevPlanner {
     }
 
     /// Jev's verdict on one list of candidates: `best` must choose, and
-    /// `strict` may say none fits (Stagehand's `pickCandidate`). A list too
+    /// `strict` may say none fits. A list too
     /// large for one request is split into parts that each nominate their
     /// likeliest candidates, in parallel, and the nominees are then judged
     /// together.

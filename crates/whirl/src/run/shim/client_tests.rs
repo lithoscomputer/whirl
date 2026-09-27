@@ -126,6 +126,7 @@ async fn step_params_carry_the_common_timeout_and_title() {
         entry_start: false,
         command:     StepCommand::Click {
             locator: locator.clone(),
+            button:  "left".to_owned(),
         },
         timeout_ms:  1_000,
         title:       Some("CLICK text:\"Add to cart\"".to_owned()),
@@ -140,6 +141,7 @@ async fn step_params_carry_the_common_timeout_and_title() {
             "cmd": "click",
             "params": {
                 "locator": locator,
+                "button": "left",
                 "timeoutMs": 1_000,
                 "title": "CLICK text:\"Add to cart\"",
             },

@@ -352,8 +352,10 @@ pub(crate) enum ActionKind {
     Visit {
         url: Value,
     },
+    /// `CLICK`, `RIGHTCLICK`, or `MIDDLECLICK`, by the button it presses.
     Click {
         target: Locator,
+        button: MouseButton,
     },
     Dblclick {
         target: Locator,
@@ -427,6 +429,43 @@ impl StoreScope {
             Self::Local => "local",
             Self::Session => "session",
             Self::Cookie => "cookie",
+        }
+    }
+}
+
+/// The mouse button a click verb presses (SPEC 7).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MouseButton {
+    Left,
+    Right,
+    Middle,
+}
+
+impl MouseButton {
+    /// The verb that clicks with this button.
+    pub(crate) fn keyword(self) -> &'static str {
+        match self {
+            Self::Left => "CLICK",
+            Self::Right => "RIGHTCLICK",
+            Self::Middle => "MIDDLECLICK",
+        }
+    }
+
+    /// The button's name in Playwright and in the `ACT` `click` argument.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Left => "left",
+            Self::Right => "right",
+            Self::Middle => "middle",
+        }
+    }
+
+    pub(crate) fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "left" => Some(Self::Left),
+            "right" => Some(Self::Right),
+            "middle" => Some(Self::Middle),
+            _ => None,
         }
     }
 }

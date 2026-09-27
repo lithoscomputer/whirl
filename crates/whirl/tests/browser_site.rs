@@ -660,6 +660,86 @@ css:"#upload-name" text == avatar.txt
 }
 
 #[test]
+fn rightclick_and_middleclick_press_their_buttons() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    // A right click opens the page's own menu and never fires `click`; a
+    // middle click fires `auxclick` alone.
+    dir.file(
+        "buttons.whirl",
+        r##"VISIT /buttons.html
+RIGHTCLICK "report.pdf"
+[Asserts]
+role:menu "File actions" visible
+role:menuitem Rename visible
+
+MIDDLECLICK css:"#counter"
+[Asserts]
+css:"#counter" text == "click 0, auxclick 1, contextmenu 0"
+css:"#counter" attr:data-button == 1
+
+RIGHTCLICK css:"#counter"
+[Asserts]
+css:"#counter" text startsWith "click 0,"
+css:"#counter" text endsWith "contextmenu 1"
+css:"#counter" attr:data-button == 2
+"##,
+    );
+    for engine in engines() {
+        let output = run_whirl(&dir, &[
+            "--base",
+            &server.base(),
+            "--browser",
+            engine,
+            "buttons.whirl",
+        ]);
+        let stdout = stdout_text(&output);
+        assert_eq!(exit_code(&output), 0, "{engine} stdout:\n{stdout}");
+    }
+}
+
+#[test]
+fn a_middle_click_on_a_link_follows_each_engines_own_rule() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    // SPEC 7: Firefox opens a popup, Chromium opens a tab without an
+    // opener that POPUP cannot name, and WebKit follows the link.
+    let flows = [
+        ("chromium", "[Asserts]\nurl endsWith /buttons.html\n"),
+        ("firefox", "POPUP docs\nTAB docs\nPAGE /second.html\n"),
+        ("webkit", "PAGE /second.html\n"),
+    ];
+    for (engine, rest) in flows {
+        if !engines().contains(&engine) {
+            continue;
+        }
+        dir.file(
+            "middle.whirl",
+            &format!("VISIT /buttons.html\nMIDDLECLICK role:link Docs\n{rest}"),
+        );
+        let output = run_whirl(&dir, &[
+            "--base",
+            &server.base(),
+            "--browser",
+            engine,
+            "middle.whirl",
+        ]);
+        let stdout = stdout_text(&output);
+        assert_eq!(exit_code(&output), 0, "{engine} stdout:\n{stdout}");
+    }
+}
+
+/// Chromium, and with `WHIRL_TEST_ALL_BROWSERS` (check:nightly) Firefox and
+/// WebKit too.
+fn engines() -> &'static [&'static str] {
+    if env::var_os("WHIRL_TEST_ALL_BROWSERS").is_some() {
+        &["chromium", "firefox", "webkit"]
+    } else {
+        &["chromium"]
+    }
+}
+
+#[test]
 fn an_ambiguous_locator_fails_with_the_candidate_list() {
     let server = SiteServer::start();
     let dir = TestDir::new();
