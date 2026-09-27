@@ -70,6 +70,23 @@ pub(crate) fn key(instruction: &str) -> Option<String> {
     }
 }
 
+/// Whether the instruction says `label` as a run of whole words, ignoring
+/// case and punctuation.
+pub(crate) fn says(instruction: &str, label: &str) -> bool {
+    let label = words(label);
+    !label.is_empty()
+        && words(instruction)
+            .windows(label.len())
+            .any(|window| window == label)
+}
+
+fn words(text: &str) -> Vec<String> {
+    text.split(|ch: char| !ch.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_lowercase)
+        .collect()
+}
+
 /// The one option of a native select that the instruction names, spelled
 /// as the page spells it. The select's own name does not count.
 pub(crate) fn option<'a>(
@@ -77,21 +94,11 @@ pub(crate) fn option<'a>(
     options: &[&'a str],
     select_name: Option<&str>,
 ) -> Option<&'a str> {
-    let words = |text: &str| -> Vec<String> {
-        text.split(|ch: char| !ch.is_alphanumeric())
-            .filter(|word| !word.is_empty())
-            .map(str::to_lowercase)
-            .collect()
-    };
-    let said = words(instruction);
     let named: Vec<&str> = options
         .iter()
         .copied()
         .filter(|option| !select_name.is_some_and(|name| same_text(name, option)))
-        .filter(|option| {
-            let option = words(option);
-            !option.is_empty() && said.windows(option.len()).any(|window| window == option)
-        })
+        .filter(|option| says(instruction, option))
         .collect();
     match named.as_slice() {
         [option] => Some(option),
@@ -147,6 +154,13 @@ mod tests {
         );
         assert_eq!(fill_values(&typed), vec!["%secret1%"]);
         assert!(is_placeholder(&typed, "%secret1%"));
+    }
+
+    #[test]
+    fn a_label_is_said_as_whole_words() {
+        assert!(says("choose United Kingdom, please", "united kingdom"));
+        assert!(!says("choose Portugal", "Port"));
+        assert!(!says("choose Canada", ""));
     }
 
     #[test]

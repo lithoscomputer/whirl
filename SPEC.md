@@ -506,18 +506,24 @@ that kind of action can target. The first request also asks for the key to
 press, the mouse button, the end state of a checkbox or switch, and whether
 typing ends with choosing a suggestion. When Jev splits its vote between a
 click and a select, a double-click, or a key press, and the two together reach
-0.85, Whirl takes the more likely one; a select on a page without a native
-select is then a click. A right or middle click, a suggestion to choose after
-typing, and a click that would undo a checkbox already in the asked state go
-to the model. Each element is described by its role, name, and value, the text
-of its table row or list item, the caption or name of its table and the header
-of its column, the named sections around it, the nearest heading, and its
-place among elements that look the same. When no element in that list fits,
-Jev looks at every element with a name or text, which catches custom controls
-built from plain elements. A list of more than 40 elements is first cut to the
-30 whose descriptions share the most words with the instruction; when Jev
-rejects the cut list, it sees the whole list, split into parts of at most 254
-elements that it reads in parallel. When exactly one element has the name the
+0.85, Whirl takes the more likely one; a merged vote on a page without a
+native select is then a click. When Jev is sure the instruction chooses from a
+list but the page has no native select, Whirl clicks the option the
+instruction names: an element with an option role whose label the instruction
+says as whole words, or else such a list item or clickable element, and Jev
+confirms it. When no named option shows, Jev picks the control that opens the
+list as the first of two steps, and step two clicks the named option on the
+new snapshot. A right or middle click, a suggestion to choose after typing,
+and a click that would undo a checkbox already in the asked state go to the
+model. Each element is described by its role, name, and value, the text of its
+table row or list item, the caption or name of its table and the header of its
+column, the named sections around it, the nearest heading, and its place among
+elements that look the same. When no element in that list fits, Jev looks at
+every element with a name or text, which catches custom controls built from
+plain elements. A list of more than 40 elements is first cut to the 30 whose
+descriptions share the most words with the instruction; when Jev rejects the
+cut list, it sees the whole list, split into parts of at most 254 elements
+that it reads in parallel. When exactly one element has the name the
 instruction quotes, one small request confirms it. For `press`, a focused
 control is the target without a question. Arguments come from the instruction
 itself. For `fill`, a lone placeholder is the text to type. Otherwise Jev says
@@ -535,12 +541,13 @@ list tries, and is used only if none-of-these stays at 0.7 or less. When Jev
 splits its vote between copies of one control in one table row or list item,
 either copy is the answer. Jev's choice is checked like a model answer. When
 Jev is not confident, when it cannot supply an argument, for step two of a
-two-step action, and when a Jev request fails, the model plans the step
-instead, and its prompt lists Jev's likely matches when Jev has some. Jev
-receives the instruction, with masked values as placeholders, and the element
-descriptions. Whirl asks Jev through `lithos-llm` as `typesafe/jev-latest` and
-prices its requests from the catalog. Jev's usage is reported apart from the
-model's, and the step's cost includes both.
+two-step action when no named option shows, and when a Jev request fails, the
+model plans the step instead, and its prompt lists Jev's likely matches when
+Jev has some. Jev receives the instruction, with masked values as
+placeholders, and the element descriptions. Whirl asks Jev through
+`lithos-llm` as `typesafe/jev-latest` and prices its requests from the
+catalog. Jev's usage is reported apart from the model's, and the step's cost
+includes both.
 
 A custom dropdown that must open before an option can be chosen is a two-step
 action. The model marks its first answer as two-step. Whirl runs that action,

@@ -44,6 +44,12 @@ impl ActInference {
             two_step: false,
         }
     }
+
+    /// The same answer, marked as the first of two steps.
+    pub(crate) fn first_of_two(mut self) -> Self {
+        self.two_step = true;
+        self
+    }
 }
 
 /// The methods the model may choose. The names are Stagehand's, so its

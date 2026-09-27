@@ -1013,3 +1013,71 @@ fn copies_of_one_control_in_one_item_share_jevs_vote() {
     assert_eq!(step["act"]["actions"][0]["plannedBy"], "jev");
     assert_eq!(step["act"]["usage"]["modelCalls"], 0);
 }
+
+#[test]
+fn jev_clicks_the_named_option_of_a_custom_listbox() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    // Sure it is a select, but the page has no native select: the option
+    // the instruction names is clicked, after Jev confirms it.
+    twin.jev(&[jev_intent("select", 0.98), jev_only("e5", 0.95)]);
+    let page = "<h1>Country</h1><ul role=listbox aria-label=Country>\
+        <li role=option onclick=\"document.querySelector('h1').textContent='Poland chosen'\">Poland</li>\
+        <li role=option onclick=\"document.querySelector('h1').textContent='Portugal chosen'\">Portugal</li></ul>";
+    let flow = dir.file(
+        "jev-listbox.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{}ACT \"choose Portugal from the country list\"\n\
+             [Asserts]\nrole:heading \"Portugal chosen\" visible\n",
+            visit_html(page)
+        ),
+    );
+    let output = twin.run_jev(&dir, &flow, &[]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+    let step = act_step(&dir);
+    assert_eq!(
+        step["act"]["actions"][0]["line"],
+        "CLICK role:option \"Portugal\""
+    );
+    assert_eq!(step["act"]["actions"][0]["plannedBy"], "jev");
+    assert_eq!(step["act"]["usage"]["modelCalls"], 0);
+    assert_eq!(step["act"]["usage"]["jev"]["requests"], 2);
+}
+
+#[test]
+fn jev_opens_a_custom_dropdown_and_chooses_the_named_option() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    // No option shows until the button opens the list: Jev picks the
+    // button as step one, then the named option on the fresh snapshot.
+    twin.jev(&[
+        jev_intent("select", 0.98),
+        jev_only("e3", 0.9),
+        jev_only("e6", 0.95),
+    ]);
+    let page = "<h1>Mug</h1>\
+        <button onclick=\"document.getElementById('colors').hidden=false\">Choose a color</button>\
+        <ul id=colors hidden>\
+        <li style=\"cursor:pointer\" onclick=\"document.querySelector('h1').textContent='Red chosen'\">Red</li>\
+        <li style=\"cursor:pointer\" onclick=\"document.querySelector('h1').textContent='Blue chosen'\">Blue</li></ul>";
+    let flow = dir.file(
+        "jev-dropdown.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{}ACT \"choose Blue from the color dropdown\"\n\
+             [Asserts]\nrole:heading \"Blue chosen\" visible\n",
+            visit_html(page)
+        ),
+    );
+    let output = twin.run_jev(&dir, &flow, &[]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+    let step = act_step(&dir);
+    let actions = step["act"]["actions"].as_array().expect("actions");
+    assert_eq!(actions.len(), 2);
+    assert_eq!(actions[0]["line"], "CLICK role:button \"Choose a color\"");
+    assert_eq!(actions[1]["line"], "CLICK role:listitem");
+    assert!(actions.iter().all(|action| action["plannedBy"] == "jev"));
+    assert_eq!(step["act"]["usage"]["modelCalls"], 0);
+    assert_eq!(step["act"]["usage"]["jev"]["requests"], 3);
+}

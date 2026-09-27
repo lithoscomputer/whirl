@@ -71,6 +71,14 @@ const INPUT_ROLES: &[&str] = &["textbox", "searchbox", "combobox", "spinbutton",
 /// Ancestors whose text tells repeated elements apart.
 const ITEM_ROLES: &[&str] = &["row", "listitem", "article"];
 const TABLE_ROLES: &[&str] = &["table", "grid", "treegrid"];
+/// Roles of the choices in a list or menu.
+const OPTION_ROLES: &[&str] = &[
+    "option",
+    "menuitem",
+    "menuitemradio",
+    "menuitemcheckbox",
+    "treeitem",
+];
 /// Cells of a row, headers included.
 const CELL_ROLES: &[&str] = &["cell", "gridcell", "columnheader", "rowheader"];
 /// Longest context text sent per candidate, in characters.
@@ -128,6 +136,37 @@ impl Outline {
             View::Keyboard => self.fits(index, View::Pointer) || self.fits(index, View::Input),
             View::Broad => node.name.is_some() || node.text.is_some() || node.pointer,
         }
+    }
+
+    /// The elements that may be a list's options, in two tiers: elements
+    /// with an option role, then list items and elements the page styles as
+    /// clickable. Custom dropdowns often build their options from plain
+    /// elements. Each element has a label: a name or text.
+    pub(crate) fn option_tiers(&self) -> [Vec<usize>; 2] {
+        let labelled = |index: usize| {
+            let node = &self.nodes[index];
+            node.element.is_some() && !is_root(node) && self.label(index).is_some()
+        };
+        let roles: Vec<usize> = (0..self.nodes.len())
+            .filter(|&index| {
+                labelled(index) && OPTION_ROLES.contains(&self.nodes[index].role.as_str())
+            })
+            .collect();
+        let plain: Vec<usize> = (0..self.nodes.len())
+            .filter(|&index| {
+                let node = &self.nodes[index];
+                labelled(index)
+                    && !OPTION_ROLES.contains(&node.role.as_str())
+                    && (node.pointer || node.role == "listitem")
+            })
+            .collect();
+        [roles, plain]
+    }
+
+    /// What an element says: its name, or else its text.
+    pub(crate) fn label(&self, index: usize) -> Option<&str> {
+        let node = &self.nodes[index];
+        node.name.as_deref().or(node.text.as_deref())
     }
 
     /// The focused element, when it is one a key press can target.
@@ -196,7 +235,11 @@ impl Outline {
         if let Some(text) = &node.text {
             description.insert("value".to_owned(), json!(text));
         }
+        // An element with neither name nor text, such as an unlabeled
+        // input, takes the text beside it; an element with its own text
+        // would take its neighbour's, as a list item would its sibling's.
         if node.name.is_none()
+            && node.text.is_none()
             && let Some(before) = self.label_before(index)
         {
             description.insert("label".to_owned(), json!(before));
@@ -583,6 +626,21 @@ mod tests {
     }
 
     #[test]
+    fn options_come_from_option_roles_then_clickable_plain_elements() {
+        let outline = Outline::parse(
+            "- generic [ref=e1]:\n  - listbox \"Country\" [ref=e2]:\n    - option \"Portugal\" [ref=e3]\n  - generic [ref=e4] [cursor=pointer]: Canada\n  - list [ref=e5]:\n    - listitem [ref=e6]: Red\n  - generic [ref=e7]: Country\n",
+        );
+        let refs = |tier: &Vec<usize>| {
+            tier.iter()
+                .map(|&index| outline.node(index).element.clone().unwrap_or_default())
+                .collect::<Vec<_>>()
+        };
+        let [roles, plain] = outline.option_tiers();
+        assert_eq!(refs(&roles), ["e3"]);
+        assert_eq!(refs(&plain), ["e4", "e6"]);
+    }
+
+    #[test]
     fn a_native_select_lists_its_options() {
         let outline = Outline::parse(
             "- generic [ref=e1]:\n  - combobox \"Size\" [ref=e3]:\n    - option \"Small\" [selected]\n    - option \"Large\"\n",
@@ -602,6 +660,17 @@ mod tests {
             outline.describe(inputs[0], &HashMap::new()),
             json!({"role": "textbox", "label": "Last name"})
         );
+    }
+
+    #[test]
+    fn an_element_with_text_takes_no_label_from_its_neighbour() {
+        let outline = Outline::parse(
+            "- generic [ref=e1]:\n  - list [ref=e2]:\n    - listitem [ref=e3]: Red\n    - listitem [ref=e4]: Blue\n",
+        );
+        let [_, items] = outline.option_tiers();
+        let blue = outline.describe(items[1], &HashMap::new());
+        assert_eq!(blue.get("label"), None);
+        assert_eq!(blue["value"], json!("Blue"));
     }
 
     #[test]

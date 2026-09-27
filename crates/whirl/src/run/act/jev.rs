@@ -149,9 +149,15 @@ impl ActPlanner for JevPlanner {
 
 impl JevPlanner {
     async fn choose(&self, request: PlanRequest<'_>, usage: &mut PlanUsage) -> Outcome {
-        // Step two of a two-step action needs the model's plan of step one.
+        // Step two of a two-step action: the option the instruction names,
+        // now that the first step opened its list. Anything else needs the
+        // model's plan of step one.
         if !matches!(request.step, PlanStep::First) {
-            return Outcome::Unsure(None);
+            let outline = Outline::parse(request.snapshot.raw());
+            return match self.pick_option(&outline, &request, usage).await {
+                Some(index) => Outcome::Chosen(click_on(&outline, index)),
+                None => Outcome::Unsure(None),
+            };
         }
         let instruction = request.instruction.prompt();
         let fill_values: Vec<(String, bool)> = args::fill_values(request.instruction)
@@ -183,12 +189,31 @@ impl JevPlanner {
             return Outcome::Unsure(None);
         }
         let outline = Outline::parse(request.snapshot.raw());
-        // A merged click-or-select vote on a page with no native select is
-        // a click on a custom control.
-        let family = if intent.family == "select"
-            && intent.click_fits
-            && outline.view(View::Select).is_empty()
-        {
+        // A list or dropdown built without a native select: click the
+        // option the instruction names when it shows, or else open the
+        // control and choose the option on the next snapshot. A merged
+        // click-or-select vote is a plain click.
+        let family = if intent.family == "select" && outline.view(View::Select).is_empty() {
+            if let Some(index) = self.pick_option(&outline, &request, usage).await {
+                return Outcome::Chosen(click_on(&outline, index));
+            }
+            if !intent.click_fits {
+                let quoted = quoted_strings(instruction);
+                return match self
+                    .pick(
+                        &outline,
+                        &[View::Pointer, View::Broad],
+                        &request,
+                        Goal::Opener,
+                        &quoted,
+                        usage,
+                    )
+                    .await
+                {
+                    Ok(index) => Outcome::Chosen(click_on(&outline, index).first_of_two()),
+                    Err(hint) => Outcome::Unsure(hint),
+                };
+            }
             "click"
         } else {
             intent.family
@@ -229,7 +254,10 @@ impl JevPlanner {
         let focused = key.as_ref().and(outline.focused());
         let index = match focused {
             Some(index) => index,
-            None => match self.pick(&outline, tiers, &request, &quoted, usage).await {
+            None => match self
+                .pick(&outline, tiers, &request, Goal::Target, &quoted, usage)
+                .await
+            {
                 Ok(index) => index,
                 Err(hint) => return Outcome::Unsure(hint),
             },
@@ -324,6 +352,7 @@ impl JevPlanner {
         outline: &Outline,
         tiers: &[View],
         request: &PlanRequest<'_>,
+        goal: Goal,
         quoted: &[&str],
         usage: &mut PlanUsage,
     ) -> Pick {
@@ -368,7 +397,15 @@ impl JevPlanner {
                 && let [only] = exact_name_matches(outline, &candidates, name).as_slice()
             {
                 let judged = self
-                    .judge(outline, &[*only], &descriptions, request, false, usage)
+                    .judge(
+                        outline,
+                        &[*only],
+                        &descriptions,
+                        request,
+                        goal,
+                        false,
+                        usage,
+                    )
                     .await;
                 if judged.accepted && judged.none <= NONE_UNEASY {
                     return Ok(*only);
@@ -392,6 +429,7 @@ impl JevPlanner {
                         &attempt,
                         &descriptions,
                         request,
+                        goal,
                         allow_shards,
                         usage,
                     )
@@ -436,6 +474,7 @@ impl JevPlanner {
         candidates: &[usize],
         descriptions: &HashMap<usize, Json>,
         request: &PlanRequest<'_>,
+        goal: Goal,
         allow_shards: bool,
         usage: &mut PlanUsage,
     ) -> Judged {
@@ -445,7 +484,7 @@ impl JevPlanner {
             return Judged::rejected();
         }
         let finalists = if shards.len() > 1 {
-            self.nominate(outline, &shards, descriptions, request, usage)
+            self.nominate(outline, &shards, descriptions, request, goal, usage)
                 .await
         } else {
             candidates.to_vec()
@@ -464,22 +503,23 @@ impl JevPlanner {
             [only] => Some(*only),
             _ => None,
         };
-        let best = match single {
-            Some(only) => noul(json!({
-                "question": "Is this element a plausible target for the instruction?",
+        let note = "Pick the best available element even if the wording does not match exactly.";
+        let best = if let Some(only) = single {
+            noul(json!({
+                "question": goal.plausible(),
                 "instruction": instruction,
                 "element": descriptions[&only],
-            })),
-            None => choice(
-                json!({
-                    "question": instruction,
-                    "note": "Pick the best available element even if the wording does not match exactly.",
-                }),
+            }))
+        } else if let Some(question) = goal.question() {
+            choice(
+                json!({ "question": question, "instruction": instruction, "note": note }),
                 criteria,
-            ),
+            )
+        } else {
+            choice(json!({ "question": instruction, "note": note }), criteria)
         };
         let questions = vec![
-            ("strict", choice(json!(instruction), strict)),
+            ("strict", choice(goal.instructions(instruction), strict)),
             ("best", best),
         ];
         let Some(response) = self
@@ -546,6 +586,58 @@ impl JevPlanner {
         }
     }
 
+    /// The option of a custom list or dropdown that the instruction names:
+    /// the elements of the first option tier whose label the instruction
+    /// says, else of the second. Two different labels are ambiguous. Copies
+    /// of one label go to Jev, which also confirms a single match.
+    async fn pick_option(
+        &self,
+        outline: &Outline,
+        request: &PlanRequest<'_>,
+        usage: &mut PlanUsage,
+    ) -> Option<usize> {
+        let instruction = request.instruction.prompt();
+        for tier in outline.option_tiers() {
+            let named: Vec<usize> = tier
+                .into_iter()
+                .filter(|&index| {
+                    outline
+                        .label(index)
+                        .is_some_and(|label| args::says(instruction, label))
+                })
+                .collect();
+            let Some(&first) = named.first() else {
+                continue;
+            };
+            let label = |index: usize| outline.label(index).map(str::to_lowercase);
+            if named.iter().any(|&index| label(index) != label(first)) {
+                return None;
+            }
+            let twins = outline.twins(&named);
+            let descriptions: HashMap<usize, Json> = named
+                .iter()
+                .map(|&index| (index, outline.describe(index, &twins)))
+                .collect();
+            let judged = self
+                .judge(
+                    outline,
+                    &named,
+                    &descriptions,
+                    request,
+                    Goal::Option,
+                    false,
+                    usage,
+                )
+                .await;
+            return if judged.accepted && judged.none <= NONE_UNEASY {
+                judged.chosen
+            } else {
+                None
+            };
+        }
+        None
+    }
+
     /// Each part of a split list nominates its likeliest candidates, in
     /// parallel requests.
     async fn nominate(
@@ -554,6 +646,7 @@ impl JevPlanner {
         shards: &[Vec<usize>],
         descriptions: &HashMap<usize, Json>,
         request: &PlanRequest<'_>,
+        goal: Goal,
         usage: &mut PlanUsage,
     ) -> Vec<usize> {
         let instruction = request.instruction.prompt();
@@ -564,7 +657,7 @@ impl JevPlanner {
                 .map(|&index| (element(outline, index), descriptions[&index].clone()))
                 .collect();
             options.insert(NONE.to_owned(), json!(NONE_DESCRIPTION));
-            let questions = vec![("shard", choice(json!(instruction), options))];
+            let questions = vec![("shard", choice(goal.instructions(instruction), options))];
             let state = json!({ "instruction": instruction });
             let jev = Arc::clone(&self.jev);
             let deadline = request.deadline;
@@ -658,6 +751,49 @@ fn without_position(description: &Json) -> Json {
     description
 }
 
+/// What a pick looks for.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Goal {
+    /// The element the instruction acts on.
+    Target,
+    /// The control that opens the list the instruction chooses from.
+    Opener,
+    /// The option the instruction chooses.
+    Option,
+}
+
+impl Goal {
+    /// The question a pick asks, when it is not the instruction itself.
+    fn question(self) -> Option<&'static str> {
+        match self {
+            Self::Target => None,
+            Self::Opener => {
+                Some("Which element opens the dropdown or list that the instruction chooses from?")
+            }
+            Self::Option => Some("Which element is the option the instruction asks to choose?"),
+        }
+    }
+
+    /// The yes-or-no question about a lone candidate.
+    fn plausible(self) -> &'static str {
+        match self {
+            Self::Target => "Is this element a plausible target for the instruction?",
+            Self::Opener => {
+                "Does this element open the dropdown or list that the instruction chooses from?"
+            }
+            Self::Option => "Is this element the option the instruction asks to choose?",
+        }
+    }
+
+    /// A choice question's instructions.
+    fn instructions(self, instruction: &str) -> Json {
+        match self.question() {
+            None => json!(instruction),
+            Some(question) => json!({ "question": question, "instruction": instruction }),
+        }
+    }
+}
+
 /// Jev's verdict on one list of candidates.
 #[derive(Debug)]
 struct Judged {
@@ -743,6 +879,16 @@ fn likely(
         })
         .collect();
     Some(hint(&likely))
+}
+
+/// A click on an element Jev chose.
+fn click_on(outline: &Outline, index: usize) -> ActInference {
+    ActInference::chosen(
+        element(outline, index),
+        describe_line(&outline.describe(index, &HashMap::new())),
+        ActMethod::Click,
+        Vec::new(),
+    )
 }
 
 fn element(outline: &Outline, index: usize) -> String {
