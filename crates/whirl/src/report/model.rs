@@ -143,8 +143,16 @@ pub(crate) struct StepReport {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ActReport {
     pub(crate) model:   String,
+    /// The planner that chose the actions: `llm`, or `jev` with `--jev`.
+    #[serde(default = "llm_planner")]
+    pub(crate) planner: String,
     pub(crate) actions: Vec<ActActionReport>,
     pub(crate) usage:   ActUsage,
+}
+
+/// Reports written before planners existed used the language model.
+fn llm_planner() -> String {
+    "llm".to_owned()
 }
 
 /// One action an `ACT` step ran.
@@ -155,6 +163,9 @@ pub(crate) struct ActActionReport {
     pub(crate) line:        String,
     /// The model's description of the element.
     pub(crate) description: String,
+    /// Which planner chose this action: `llm` or `jev`.
+    #[serde(default = "llm_planner")]
+    pub(crate) planned_by:  String,
 }
 
 /// Token usage summed over an `ACT` step's model calls.
@@ -169,6 +180,19 @@ pub(crate) struct ActUsage {
     /// Present only when every call was priced.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) cost_usd_micros: Option<u64>,
+    /// Jev's requests and tokens; present only with `--jev`. Jev has no
+    /// catalog price, so `costUsdMicros` leaves it out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) jev:             Option<ActJevUsage>,
+}
+
+/// What an `ACT` step's Jev requests used.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ActJevUsage {
+    pub(crate) requests:      u32,
+    pub(crate) input_tokens:  u64,
+    pub(crate) output_tokens: u64,
 }
 
 /// One entry's result: its steps, captures, and artifacts.

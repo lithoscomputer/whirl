@@ -57,8 +57,13 @@ pub(crate) fn system_prompt() -> String {
 }
 
 /// The user message: the instruction prompt plus the page snapshot.
-pub(crate) fn user_message(instruction: &str, snapshot: &str) -> String {
-    format!("instruction: {instruction}\nAccessibility Tree: \n{snapshot}\n")
+pub(crate) fn user_message(instruction: &str, hint: Option<&str>, snapshot: &str) -> String {
+    match hint {
+        Some(hint) => {
+            format!("instruction: {instruction}\n{hint}\nAccessibility Tree: \n{snapshot}\n")
+        }
+        None => format!("instruction: {instruction}\nAccessibility Tree: \n{snapshot}\n"),
+    }
 }
 
 /// The first planning prompt for an `ACT` instruction.

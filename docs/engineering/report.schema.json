@@ -190,6 +190,12 @@
                           "model": {
                             "type": "string"
                           },
+                          "planner": {
+                            "enum": [
+                              "llm",
+                              "jev"
+                            ]
+                          },
                           "actions": {
                             "type": "array",
                             "items": {
@@ -204,6 +210,12 @@
                                 },
                                 "description": {
                                   "type": "string"
+                                },
+                                "plannedBy": {
+                                  "enum": [
+                                    "llm",
+                                    "jev"
+                                  ]
                                 }
                               }
                             }
@@ -231,6 +243,28 @@
                               "costUsdMicros": {
                                 "type": "integer",
                                 "minimum": 0
+                              },
+                              "jev": {
+                                "type": "object",
+                                "required": [
+                                  "requests",
+                                  "inputTokens",
+                                  "outputTokens"
+                                ],
+                                "properties": {
+                                  "requests": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  },
+                                  "inputTokens": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  },
+                                  "outputTokens": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  }
+                                }
                               }
                             }
                           }

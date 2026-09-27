@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add `--jev`, which plans `ACT` with TypeSafe's Jev first and falls back to the `model` option when Jev is unsure, cannot supply an argument, or fails. `TYPESAFE_API_KEY` holds Jev's key, and `WHIRL_JEV_ENDPOINT` sends its requests to another server. JSON reports record the planner of each action and Jev's requests and tokens.
 - When the text `ACT` types matches a string the instruction quotes, type the instruction's characters, so a model that changes the case or spacing of `"AbC 123"` still types `AbC 123`.
 - After `ACT` fills a field, read the value back. When the field does not hold it, as when a `maxlength` cuts it short, the step fails with `act-fill-mismatch` instead of passing silently. Case, spaces, and punctuation do not count, so a field that formats its value still passes.
 - When `ACT` clicks a native checkbox or radio input, focus it and press Space, as `CHECK` does, so a styled control that covers the input does not make the click wait out the step.

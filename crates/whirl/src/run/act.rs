@@ -4,6 +4,7 @@
 
 mod decision;
 mod instruction;
+mod jev;
 mod model;
 mod planner;
 mod prompt;
@@ -11,6 +12,9 @@ mod snapshot;
 
 pub(crate) use decision::{ActDecision, FollowUp};
 pub(crate) use instruction::Instruction;
+pub(crate) use jev::{JevClient, JevPlanner, JevSetupError};
 pub(crate) use model::{ModelCatalog, ModelClient, ModelSetupError};
-pub(crate) use planner::{ActPlanner, LlmPlanner, PlanError, PlanRequest, PlanStep, PlanUsage};
+pub(crate) use planner::{
+    ActPlanner, LlmPlanner, PlanError, PlanRequest, PlanStep, PlanUsage, PlannedBy,
+};
 pub(crate) use snapshot::PageSnapshot;

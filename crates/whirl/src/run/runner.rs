@@ -16,7 +16,9 @@ use tracing::{Instrument as _, debug, info, info_span, warn};
 
 use crate::lang::ast::File;
 use crate::report::model::{FileReport, FlowRoles, RunReport, SETUP_ENTRY, Status, Timing};
-use crate::run::act::{ActPlanner, LlmPlanner, ModelClient, ModelSetupError};
+use crate::run::act::{
+    ActPlanner, JevClient, JevPlanner, JevSetupError, LlmPlanner, ModelClient, ModelSetupError,
+};
 use crate::run::artifacts::{self, ArtifactsError, Flow};
 use crate::run::flow::{
     FlowFlags, FlowOutcome, FlowRun, Overrides, SetupHandoff, run_flow, setup_path_for,
@@ -38,6 +40,8 @@ pub(crate) struct RunSettings {
     /// Hashes of the exact source bytes that the CLI parsed, keyed by input
     /// path.
     pub(crate) source_hashes: HashMap<PathBuf, String>,
+    /// `--jev`: plan `ACT` with Jev first (SPEC 7.4, 13).
+    pub(crate) jev:           bool,
 }
 
 /// A failure before any flow runs.
@@ -53,6 +57,10 @@ pub(crate) enum RunnerError {
     /// could not be built.
     #[error(transparent)]
     Model(#[from] ModelSetupError),
+    /// A runtime error (exit 3): `--jev` is set, a flow uses `ACT`, and
+    /// the Jev client could not be built.
+    #[error(transparent)]
+    Jev(#[from] JevSetupError),
     /// A usage error (exit 4): `--save-storage` needs a single file.
     #[error("--save-storage requires a single input file, got {count}")]
     SaveStorageManyFiles { count: usize },
@@ -185,6 +193,16 @@ pub(crate) async fn run_files(
     .await
 }
 
+/// The run's `ACT` planner (SPEC 7.4): the language model, or with `--jev`
+/// Jev first and the language model as its fallback.
+fn act_planner(jev: bool) -> Result<Arc<dyn ActPlanner>, RunnerError> {
+    let llm: Arc<dyn ActPlanner> = Arc::new(LlmPlanner::new(ModelClient::from_env()?));
+    if !jev {
+        return Ok(llm);
+    }
+    Ok(Arc::new(JevPlanner::new(JevClient::from_env()?, llm)))
+}
+
 /// Filesystem preparation runs on the blocking pool, including path
 /// canonicalization, artifact collision checks, and installed-shim lookup.
 struct PreparedRun {
@@ -234,8 +252,8 @@ impl PreparedRun {
         let launch = resolve_launch()?;
 
         let all_files: Vec<&File> = files.iter().chain(setups.iter()).collect();
-        let planner: Option<Arc<dyn ActPlanner>> = if all_files.iter().any(|file| file.uses_act()) {
-            Some(Arc::new(LlmPlanner::new(ModelClient::from_env()?)))
+        let planner = if all_files.iter().any(|file| file.uses_act()) {
+            Some(act_planner(settings.jev)?)
         } else {
             None
         };

@@ -210,9 +210,11 @@ mod tests {
         let act_line = entry.steps[0].line;
         entry.steps[0].act = Some(ActReport {
             model:   "gpt-test".to_owned(),
+            planner: "llm".to_owned(),
             actions: vec![ActActionReport {
                 line:        "CLICK role:button \"Sign in\"".to_owned(),
                 description: "the sign-in button".to_owned(),
+                planned_by:  "llm".to_owned(),
             }],
             usage:   ActUsage::default(),
         });

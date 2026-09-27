@@ -223,6 +223,10 @@ struct RunArgs {
     #[arg(long)]
     har: bool,
 
+    /// Plan ACT with TypeSafe Jev first, falling back to the model option.
+    #[arg(long)]
+    jev: bool,
+
     /// Override the `storage` option.
     #[arg(long, value_name = "PATH")]
     storage: Option<PathBuf>,
@@ -935,6 +939,7 @@ fn run_command(args: &RunArgs) -> Exit {
         },
         overrides,
         base_vars,
+        jev: args.jev,
     };
     let files: Vec<ast::File> = checked.inputs.into_iter().map(|input| input.file).collect();
     let setups: Vec<ast::File> = checked.setups.into_iter().map(|input| input.file).collect();

@@ -46,10 +46,13 @@ Checks and captures add `type-mismatch`, `filter-error`, and `missing-value`,
 and report a false predicate as `assert` (SPEC 9.7). An `eval` subject reports
 the shim kinds `eval` and `eval-result`.
 `ACT` steps add `act-no-match`, `act-invalid-decision`, `act-model`,
-`act-fill-mismatch`, and `stale-ref` (SPEC 7.4). An `ACT` step also has an `act` object: `model`; `actions`, each with a
-`line` in Whirl syntax and the model's `description`; and `usage`, with
-`modelCalls`, `inputTokens`, `outputTokens`, and `costUsdMicros` when every
-call was priced. Arguments keep their `%name%` placeholders.
+`act-fill-mismatch`, and `stale-ref` (SPEC 7.4). An `ACT` step also has an `act` object: `model`;
+`planner`, `llm` or with `--jev` `jev`; `actions`, each with a `line` in
+Whirl syntax, the `description` of the element, and `plannedBy`, the planner
+that chose it; and `usage`, with `modelCalls`, `inputTokens`, `outputTokens`,
+`costUsdMicros` when every call was priced, and with `--jev` a `jev` object of
+`requests`, `inputTokens`, and `outputTokens`. Jev has no catalog price, so
+`costUsdMicros` leaves it out. Arguments keep their `%name%` placeholders.
 `internal` covers an invalid shim result. Codes are stable; message text may
 change and must not be parsed. Secret masking covers diagnostic action logs in
 run reports. `check` reports source text without resolving environment variables.

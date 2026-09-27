@@ -10,9 +10,10 @@ use lithos_llm::types::ErrorKind;
 use serde_json::Value as Json;
 
 use super::{EntryState, FlowExec, StepBudget, StepEnd, StepNode, entry_timeout_error};
-use crate::report::model::{ActActionReport, ActReport, ActUsage, StepError};
+use crate::report::model::{ActActionReport, ActJevUsage, ActReport, ActUsage, StepError};
 use crate::run::act::{
     ActDecision, FollowUp, Instruction, PageSnapshot, PlanError, PlanRequest, PlanStep, PlanUsage,
+    PlannedBy,
 };
 use crate::run::shim::{
     AriaSnapshotResult, ReadResult, ShimClient, StepCommand, StepOutcome, StepRequest,
@@ -87,9 +88,13 @@ fn act_failure(code: &str, message: &str) -> StepError {
 }
 
 /// Token usage for the report: cached prompt tokens count as input, and
-/// reasoning tokens as output.
-fn usage_report(usage: PlanUsage) -> ActUsage {
-    let PlanUsage { model_calls, model } = usage;
+/// reasoning tokens as output. Jev's usage appears only with `--jev`.
+fn usage_report(usage: PlanUsage, jev_planner: bool) -> ActUsage {
+    let PlanUsage {
+        model_calls,
+        model,
+        jev,
+    } = usage;
     let tokens = model.tokens;
     ActUsage {
         model_calls,
@@ -99,6 +104,11 @@ fn usage_report(usage: PlanUsage) -> ActUsage {
             .saturating_add(tokens.cache_write),
         output_tokens: tokens.output.saturating_add(tokens.reasoning),
         cost_usd_micros: model.cost.map(|cost| cost.usd_micros),
+        jev: jev_planner.then_some(ActJevUsage {
+            requests:      jev.requests,
+            input_tokens:  jev.input_tokens,
+            output_tokens: jev.output_tokens,
+        }),
     }
 }
 
@@ -170,9 +180,11 @@ impl FlowExec<'_> {
                     step,
                     model: &model,
                     deadline: line.deadline,
+                    hint: None,
                 })
                 .await;
             usage = usage.saturating_add(plan.usage);
+            let planned_by = plan.planned_by;
             let inference = match plan.answer {
                 Ok(inference) => inference,
                 Err(PlanError::Model(error)) => break self.model_failure(&error, &line),
@@ -220,6 +232,7 @@ impl FlowExec<'_> {
             actions.push(ActActionReport {
                 line:        self.vars.mask(&action.line()),
                 description: self.vars.mask(&description),
+                planned_by:  planned_by.as_str().to_owned(),
             });
             if let Some(read_back) = action.fill_read_back(instruction) {
                 match self
@@ -243,10 +256,12 @@ impl FlowExec<'_> {
                 FollowUp::Replan | FollowUp::Done => break StepEnd::Passed,
             }
         };
+        let jev_planner = planner.name() == PlannedBy::Jev.as_str();
         let report = ActReport {
             model,
+            planner: planner.name().to_owned(),
             actions,
-            usage: usage_report(usage),
+            usage: usage_report(usage, jev_planner),
         };
         (end, Some(report))
     }

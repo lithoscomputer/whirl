@@ -122,6 +122,34 @@ impl ModelTwin {
         self.script(&scripts);
     }
 
+    /// Queues Jev answers (`POST /v1/systemone`), one per request, in
+    /// order. Each item is a full transcript script.
+    fn jev(&self, scripts: &[Json]) {
+        let scenarios: Vec<Json> = scripts
+            .iter()
+            .map(|script| json!({"matcher": {"endpoint": "systemone"}, "script": script}))
+            .collect();
+        let response = self
+            .http
+            .post(format!("{}/__admin/scenarios", self.url))
+            .bearer_auth(API_KEY)
+            .header("content-type", "application/json")
+            .body(json!({"scenarios": scenarios}).to_string())
+            .send()
+            .expect("the twin should accept scenarios");
+        assert!(response.status().is_success(), "{:?}", response.text());
+    }
+
+    /// Runs `whirl --jev` with Jev's endpoint and key pointing here.
+    fn run_jev(&self, dir: &TestDir, flow: &Path, env: &[(&str, &str)]) -> Output {
+        let mut env = env.to_vec();
+        env.extend([
+            ("WHIRL_JEV_ENDPOINT", self.url.as_str()),
+            ("TYPESAFE_API_KEY", API_KEY),
+        ]);
+        self.run_with_args(dir, flow, &env, &["--jev"])
+    }
+
     /// The twin's request log as text.
     fn request_log(&self) -> String {
         self.http
@@ -655,5 +683,176 @@ fn typed_text_keeps_the_characters_the_instruction_quotes() {
     assert_eq!(
         act_step(&dir)["act"]["actions"][0]["line"],
         "FILL role:textbox \"Search\" \"AbC 123\""
+    );
+}
+
+/// A Jev answer body, as `/v1/systemone` returns it.
+fn jev_answer(answers: &Json) -> Json {
+    json!({
+        "kind": "transcript",
+        "status": 200,
+        "content_type": "application/json",
+        "body": {"model": "jev-1.13.0", "answers": answers, "usage": {"input_tokens": 500, "output_tokens": 70}}
+    })
+}
+
+fn jev_intent(intent: &str, confidence: f64) -> Json {
+    jev_answer(&json!({
+        "intent": {"type": "choice", "choice": intent, "confidence": confidence,
+                   "probabilities": {intent: confidence}}
+    }))
+}
+
+/// Jev's pick among one candidate: `best` is a yes-or-no probability.
+fn jev_only(element_id: &str, plausible: f64) -> Json {
+    jev_answer(&json!({
+        "strict": {"type": "choice", "choice": element_id, "confidence": 0.97,
+                   "probabilities": {element_id: 0.97, "none_match": 0.03}},
+        "best": {"type": "noul", "noul": plausible}
+    }))
+}
+
+const TWO_BUTTONS: &str = "<h1>Shop</h1>\
+    <button onclick=\"document.querySelector('h1').textContent='Saved'\">Save</button>\
+    <button onclick=\"document.querySelector('h1').textContent='Shared'\">Share</button>";
+
+#[test]
+fn jev_acts_without_a_model_call_when_it_is_sure() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.jev(&[jev_intent("click", 0.95), jev_only("e3", 0.95)]);
+    let flow = dir.file(
+        "jev-click.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{SHOP}ACT \"add the item to the cart\"\n\
+             [Asserts]\nrole:heading \"Added\" visible\n"
+        ),
+    );
+    let output = twin.run_jev(&dir, &flow, &[]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+
+    let step = act_step(&dir);
+    assert_eq!(step["act"]["planner"], "jev");
+    assert_eq!(step["act"]["actions"][0]["plannedBy"], "jev");
+    assert_eq!(
+        step["act"]["actions"][0]["line"],
+        "CLICK role:button \"Add to cart\""
+    );
+    assert_eq!(step["act"]["usage"]["modelCalls"], 0);
+    assert_eq!(step["act"]["usage"]["jev"]["requests"], 2);
+    assert_eq!(step["act"]["usage"]["jev"]["inputTokens"], 1000);
+    let log = twin.request_log();
+    assert!(!log.contains("chat.completions"), "log:\n{log}");
+    assert!(log.contains("add the item to the cart"), "log:\n{log}");
+}
+
+#[test]
+fn an_unsure_jev_leaves_the_step_to_the_model_with_its_likely_matches() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.jev(&[
+        jev_intent("click", 0.9),
+        jev_answer(&json!({
+            "strict": {"type": "choice", "choice": "e3", "confidence": 0.6,
+                       "probabilities": {"e3": 0.6, "e4": 0.3, "none_match": 0.1}},
+            "best": {"type": "choice", "choice": "e3", "confidence": 0.6,
+                     "probabilities": {"e3": 0.6, "e4": 0.4}}
+        })),
+    ]);
+    twin.answer(&[click("e4", false)]);
+    let flow = dir.file(
+        "jev-unsure.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{}ACT \"share it\"\n\
+             [Asserts]\nrole:heading \"Shared\" visible\n",
+            visit_html(TWO_BUTTONS)
+        ),
+    );
+    let output = twin.run_jev(&dir, &flow, &[]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+
+    let step = act_step(&dir);
+    assert_eq!(step["act"]["planner"], "jev");
+    assert_eq!(step["act"]["actions"][0]["plannedBy"], "llm");
+    assert_eq!(step["act"]["usage"]["modelCalls"], 1);
+    assert_eq!(step["act"]["usage"]["jev"]["requests"], 2);
+    let log = twin.request_log();
+    assert!(
+        log.contains("A classifier found these likely matches"),
+        "the model sees Jev's likely matches; log:\n{log}"
+    );
+    assert!(log.contains("- e3: button"), "log:\n{log}");
+}
+
+#[test]
+fn a_failed_jev_request_leaves_the_step_to_the_model() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.jev(&[json!({
+        "kind": "transcript",
+        "status": 401,
+        "content_type": "application/json",
+        "body": {"detail": {"error_type": "authentication_error", "message": "Cannot authenticate"}}
+    })]);
+    twin.answer(&[click("e3", false)]);
+    let flow = dir.file(
+        "jev-error.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{SHOP}ACT \"add the item to the cart\"\n\
+             [Asserts]\nrole:heading \"Added\" visible\n"
+        ),
+    );
+    let output = twin.run_jev(&dir, &flow, &[]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+    let step = act_step(&dir);
+    assert_eq!(step["act"]["actions"][0]["plannedBy"], "llm");
+    assert_eq!(step["act"]["usage"]["jev"]["requests"], 1);
+}
+
+#[test]
+fn jev_fills_a_masked_value_that_never_reaches_it() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.jev(&[jev_intent("fill", 0.95), jev_only("e3", 0.9)]);
+    let flow = dir.file(
+        "jev-secret.whirl",
+        "[Options]\nmodel: gpt-test\n\
+         VISIT \"data:text/html,<h1>Login</h1><input type=password aria-label=Password>\"\n\
+         ACT \"type {{env.WHIRL_ACT_SECRET}} into the password field\"\n\
+         [Asserts]\nlabel:Password value == {{env.WHIRL_ACT_SECRET}}\n",
+    );
+    let secret = "hunter2-jev-secret";
+    let output = twin.run_jev(&dir, &flow, &[("WHIRL_ACT_SECRET", secret)]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+
+    let log = twin.request_log();
+    assert!(!log.contains(secret), "the secret reached Jev:\n{log}");
+    assert!(log.contains("%env.WHIRL_ACT_SECRET%"), "log:\n{log}");
+    let step = act_step(&dir);
+    assert_eq!(step["act"]["actions"][0]["plannedBy"], "jev");
+    assert_eq!(
+        step["act"]["actions"][0]["line"],
+        "FILL role:textbox \"Password\" \"%env.WHIRL_ACT_SECRET%\""
+    );
+}
+
+#[test]
+fn jev_without_a_key_is_a_runtime_error() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    let flow = dir.file(
+        "jev-no-key.whirl",
+        &format!("[Options]\nmodel: gpt-test\n{SHOP}ACT \"add the item to the cart\"\n"),
+    );
+    let output = twin.run_with_args(&dir, &flow, &[("TYPESAFE_API_KEY", "")], &["--jev"]);
+    assert_eq!(exit_code(&output), 3);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--jev needs TYPESAFE_API_KEY"),
+        "stderr:\n{stderr}"
     );
 }
