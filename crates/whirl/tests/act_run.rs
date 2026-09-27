@@ -583,3 +583,77 @@ fn act_selects_a_radio_that_a_styled_overlay_covers() {
     let stdout = stdout_text(&output);
     assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
 }
+
+fn fill(element_id: &str, text: &str) -> Json {
+    json!({
+        "action": {"elementId": element_id, "description": "the field", "method": "fill", "arguments": [text]},
+        "twoStep": false
+    })
+}
+
+#[test]
+fn a_fill_that_the_field_does_not_keep_fails_the_entry() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.answer(&[fill("e3", "ABC-12345")]);
+    let page = "<h1>Voucher</h1><input aria-label=Code maxlength=4>";
+    let flow = dir.file(
+        "truncated.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{}ACT \"enter the code ABC-12345\"\n",
+            visit_html(page)
+        ),
+    );
+    let output = twin.run(&dir, &flow, &[]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 1, "stdout:\n{stdout}");
+    let step = act_step(&dir);
+    assert_eq!(step["error"]["code"], "act-fill-mismatch");
+    assert_eq!(
+        step["error"]["message"],
+        "act-fill-mismatch: after FILL role:textbox \"Code\" \"ABC-12345\", the field holds \"ABC-\""
+    );
+}
+
+#[test]
+fn a_fill_that_the_field_formats_passes() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.answer(&[fill("e3", "5551234567")]);
+    let page = "<h1>Contact</h1><input aria-label=Phone oninput=\"const d=this.value.replace(/\\D/g,'');\
+        this.value='('+d.slice(0,3)+') '+d.slice(3,6)+'-'+d.slice(6)\">";
+    let flow = dir.file(
+        "formatted.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{}ACT \"enter the phone number 5551234567\"\n\
+             [Asserts]\nlabel:Phone value == \"(555) 123-4567\"\n",
+            visit_html(page)
+        ),
+    );
+    let output = twin.run(&dir, &flow, &[]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+}
+
+#[test]
+fn typed_text_keeps_the_characters_the_instruction_quotes() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.answer(&[fill("e3", "abc 123")]);
+    let page = "<h1>Search</h1><input aria-label=Search>";
+    let flow = dir.file(
+        "grounded.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{}ACT \"type \\\"AbC 123\\\" into the search field\"\n\
+             [Asserts]\nlabel:Search value == \"AbC 123\"\n",
+            visit_html(page)
+        ),
+    );
+    let output = twin.run(&dir, &flow, &[]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+    assert_eq!(
+        act_step(&dir)["act"]["actions"][0]["line"],
+        "FILL role:textbox \"Search\" \"AbC 123\""
+    );
+}

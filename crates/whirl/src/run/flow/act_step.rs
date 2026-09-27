@@ -12,7 +12,9 @@ use serde_json::Value as Json;
 use super::{EntryState, FlowExec, StepBudget, StepEnd, StepNode, entry_timeout_error};
 use crate::report::model::{ActActionReport, ActReport, ActUsage, StepError};
 use crate::run::act::{ActDecision, FollowUp, Instruction, PageSnapshot, prompts};
-use crate::run::shim::{AriaSnapshotResult, ShimClient, StepCommand, StepOutcome, StepRequest};
+use crate::run::shim::{
+    AriaSnapshotResult, ReadResult, ShimClient, StepCommand, StepOutcome, StepRequest,
+};
 
 /// The budget of one `ACT` line.
 #[derive(Clone, Copy, Debug)]
@@ -59,11 +61,19 @@ impl ActLine<'_> {
     }
 }
 
-/// A failed shim call inside an `ACT` line: its classified end, and
-/// whether it failed only because the page replaced the snapshot element.
+/// A failed shim call inside an `ACT` line: its classified end, and the
+/// kind of the shim's error answer, if the shim answered.
 struct ShimFailure {
-    end:       StepEnd,
-    stale_ref: bool,
+    end:        StepEnd,
+    shim_error: Option<String>,
+}
+
+impl ShimFailure {
+    /// Whether the call failed only because the page replaced the snapshot
+    /// element.
+    fn stale_ref(&self) -> bool {
+        self.shim_error.as_deref() == Some("stale-ref")
+    }
 }
 
 fn act_failure(code: &str, message: &str) -> StepError {
@@ -201,7 +211,7 @@ impl FlowExec<'_> {
                 .await
             {
                 Ok(_) => {}
-                Err(failure) if failure.stale_ref && stale_retry_left => {
+                Err(failure) if failure.stale_ref() && stale_retry_left => {
                     stale_retry_left = false;
                     continue;
                 }
@@ -211,6 +221,21 @@ impl FlowExec<'_> {
                 line:        self.vars.mask(&action.line()),
                 description: self.vars.mask(&description),
             });
+            if let Some(read_back) = action.fill_read_back(instruction) {
+                match self
+                    .read_back_value(&mut line, read_back.command.clone(), client, state)
+                    .await
+                {
+                    Ok(Some(held)) if !read_back.matches(&held) => {
+                        break StepEnd::Failed(act_failure(
+                            "act-fill-mismatch",
+                            &self.vars.mask(&read_back.mismatch(&action, &held)),
+                        ));
+                    }
+                    Ok(_) => {}
+                    Err(failure) => break failure.end,
+                }
+            }
             match then {
                 FollowUp::Replan if first_action.is_none() => {
                     first_action = Some(action.describe_for_model(&description));
@@ -238,8 +263,8 @@ impl FlowExec<'_> {
         let timeout_ms = line.remaining_ms();
         if timeout_ms == 0 {
             return Err(ShimFailure {
-                end:       line.timed_out(),
-                stale_ref: false,
+                end:        line.timed_out(),
+                shim_error: None,
             });
         }
         let request = StepRequest {
@@ -259,13 +284,40 @@ impl FlowExec<'_> {
                     timeout_ms,
                     elapsed: started.elapsed(),
                 };
-                let stale_ref =
-                    matches!(&outcome, StepOutcome::ShimError(error) if error.kind == "stale-ref");
+                let shim_error = match &outcome {
+                    StepOutcome::ShimError(error) => Some(error.kind.clone()),
+                    _ => None,
+                };
                 Err(ShimFailure {
                     end: self.apply_outcome(line.node, outcome, state, budget),
-                    stale_ref,
+                    shim_error,
                 })
             }
+        }
+    }
+
+    /// Reads the value a fill left in its field. `None` means Whirl cannot
+    /// tell: the budget is spent, the element is gone, or it has no value,
+    /// such as a `contenteditable` element.
+    async fn read_back_value(
+        &mut self,
+        line: &mut ActLine<'_>,
+        command: StepCommand,
+        client: &mut ShimClient,
+        state: &mut EntryState,
+    ) -> Result<Option<String>, ShimFailure> {
+        if line.remaining_ms() == 0 {
+            return Ok(None);
+        }
+        match self.act_shim_call(line, command, client, state).await {
+            Ok(result) => match serde_json::from_value::<ReadResult>(result) {
+                Ok(ReadResult::Value {
+                    value: Json::String(held),
+                }) => Ok(Some(held)),
+                _ => Ok(None),
+            },
+            Err(failure) if failure.shim_error.is_some() => Ok(None),
+            Err(failure) => Err(failure),
         }
     }
 
