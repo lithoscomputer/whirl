@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- After `ACT` fills a field, read the value back. When the field does not hold it, as when a `maxlength` cuts it short, the step fails with `act-fill-mismatch` instead of passing silently. Case, spaces, and punctuation do not count, so a field that formats its value still passes.
 - When `ACT` clicks a native checkbox or radio input, focus it and press Space, as `CHECK` does, so a styled control that covers the input does not make the click wait out the step.
 - Add `ACT locator "instruction"`, which shows the model only one element and what it contains, for long pages.
 - Leave each link's URL and the cursor hints out of the snapshot `ACT` sends, about a third of a link-heavy page.

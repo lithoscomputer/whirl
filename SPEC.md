@@ -482,6 +482,13 @@ Other locators in that file can then reach inside them too. A page can notice
 the change: a host's `shadowRoot` is no longer `null`. Closed shadow roots that
 the HTML itself declares stay closed.
 
+After a `fill`, Whirl reads the field's value back. The line fails when the
+field does not hold the value, as when a `maxlength` cuts it short or a script
+clears it. Case, spaces, and punctuation do not count, so a field that formats
+its value, such as a phone number, passes. Whirl skips the check when the
+element has no value to read, such as a `contenteditable` element, or when the
+page has removed it.
+
 A custom dropdown that must open before an option can be chosen is a two-step
 action. The model marks its first answer as two-step. Whirl runs that action,
 takes a new snapshot, and asks for the second action. When the second answer
@@ -501,6 +508,8 @@ An `ACT` line fails the entry when:
   placeholder (`act-invalid-decision`),
 - the chosen element is replaced again after Whirl asked once more
   (`stale-ref`),
+- a filled field does not hold the value (`act-fill-mismatch`); the message
+  shows what the field holds unless the value is masked,
 - the chosen action fails, with that action's error, or
 - the step budget expires, like any step.
 

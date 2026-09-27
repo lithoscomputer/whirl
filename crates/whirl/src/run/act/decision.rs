@@ -233,6 +233,24 @@ impl PlannedAction {
         }
     }
 
+    /// For a fill, the read that checks the field afterwards (SPEC 7.4).
+    pub(crate) fn fill_read_back(&self, instruction: &Instruction) -> Option<FillReadBack> {
+        let Self::Fill { target, text } = self else {
+            return None;
+        };
+        let expected = instruction
+            .bindings()
+            .fill(&text.0)
+            .expect("the decision checked every placeholder is bound");
+        Some(FillReadBack {
+            command: StepCommand::Read {
+                subject: json!({"type": "element", "locator": target.locator_wire(), "extract": {"type": "value"}}),
+            },
+            shows_value: expected == text.0,
+            expected,
+        })
+    }
+
     /// The action as a Whirl line, such as `CLICK role:button "Sign in"`.
     /// Placeholders stay placeholders, so no secret reaches a report.
     pub(crate) fn line(&self) -> String {
@@ -261,6 +279,45 @@ impl PlannedAction {
             argument.map_or("", |argument| argument.0.as_str())
         )
     }
+}
+
+/// The check that a fill left its value in the field (SPEC 7.4).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct FillReadBack {
+    /// The non-waiting read of the field's value.
+    pub(crate) command: StepCommand,
+    /// The value the fill typed, with placeholders filled in.
+    expected:           String,
+    /// False when the value holds a masked value, which no message shows.
+    shows_value:        bool,
+}
+
+impl FillReadBack {
+    /// Whether the field holds the filled value. Case, spaces, and
+    /// punctuation do not count, so a field that formats its value, such as
+    /// a phone number, still matches.
+    pub(crate) fn matches(&self, held: &str) -> bool {
+        significant(held).eq(significant(&self.expected))
+    }
+
+    /// Why the line fails when the field holds `held` instead.
+    pub(crate) fn mismatch(&self, action: &PlannedAction, held: &str) -> String {
+        if self.shows_value {
+            format!("after {}, the field holds {}", action.line(), quote(held))
+        } else {
+            format!(
+                "after {}, the field does not hold the filled value",
+                action.line()
+            )
+        }
+    }
+}
+
+/// The letters and digits of `text`, in lowercase.
+fn significant(text: &str) -> impl Iterator<Item = char> + '_ {
+    text.chars()
+        .filter(|ch| ch.is_alphanumeric())
+        .flat_map(char::to_lowercase)
 }
 
 /// Why an answer cannot become an action.
@@ -368,6 +425,78 @@ mod tests {
             locator: json!([{"type": "ref", "ref": "e4"}]),
             value:   "ada@example.com".to_owned(),
         });
+    }
+
+    fn perform(answer: Json, instruction: &Instruction) -> PlannedAction {
+        match snapshot().decide(inference(answer), instruction) {
+            Ok(ActDecision::Perform { action, .. }) => action,
+            other => panic!("expected an action, got {other:?}"),
+        }
+    }
+
+    fn fill(argument: &str) -> Json {
+        json!({
+            "action": {"elementId": "e4", "description": "Email field", "method": "fill", "arguments": [argument]},
+            "twoStep": false
+        })
+    }
+
+    #[test]
+    fn a_fill_reads_its_field_back_ignoring_case_spaces_and_punctuation() {
+        let instruction = instruction("enter the phone number");
+        let action = perform(fill("5551234567"), &instruction);
+        let read_back = action
+            .fill_read_back(&instruction)
+            .expect("a fill reads back");
+        assert_eq!(read_back.command, StepCommand::Read {
+            subject: json!({"type": "element", "locator": [{"type": "ref", "ref": "e4"}], "extract": {"type": "value"}}),
+        });
+        assert!(read_back.matches("5551234567"));
+        assert!(read_back.matches("(555) 123-4567"));
+        assert!(!read_back.matches("55512"));
+        assert!(!read_back.matches(""));
+        assert_eq!(
+            read_back.mismatch(&action, "55512"),
+            r#"after FILL role:textbox "Email" "5551234567", the field holds "55512""#
+        );
+        let click = perform(click_answer("e5"), &instruction);
+        assert_eq!(click.fill_read_back(&instruction), None);
+    }
+
+    #[test]
+    fn a_fill_mismatch_never_shows_a_masked_value() {
+        let mut vars = VarStore::new();
+        vars.record_secret("hunter2");
+        vars.set_input("password", "hunter2");
+        let value = Value {
+            segments: vec![
+                ValueSegment::Literal("type ".to_owned()),
+                ValueSegment::Var("password".to_owned()),
+            ],
+            span:     Span {
+                line:   1,
+                column: 1,
+                len:    1,
+            },
+            quoted:   true,
+        };
+        let instruction = Instruction::try_new(&value, &mut vars).expect("resolves");
+        let action = perform(fill("%secret1%"), &instruction);
+        let read_back = action
+            .fill_read_back(&instruction)
+            .expect("a fill reads back");
+        assert!(read_back.matches("hunter2"));
+        assert_eq!(
+            read_back.mismatch(&action, "hunt"),
+            r#"after FILL role:textbox "Email" "%secret1%", the field does not hold the filled value"#
+        );
+    }
+
+    fn click_answer(element_id: &str) -> Json {
+        json!({
+            "action": {"elementId": element_id, "description": "", "method": "click", "arguments": []},
+            "twoStep": false
+        })
     }
 
     #[test]

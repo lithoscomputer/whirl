@@ -45,8 +45,8 @@ Step `error.code` uses the [shim error kinds](shim-protocol.md#7-error-kinds), p
 Checks and captures add `type-mismatch`, `filter-error`, and `missing-value`,
 and report a false predicate as `assert` (SPEC 9.7). An `eval` subject reports
 the shim kinds `eval` and `eval-result`.
-`ACT` steps add `act-no-match`, `act-invalid-decision`, `act-model`, and
-`stale-ref` (SPEC 7.4). An `ACT` step also has an `act` object: `model`; `actions`, each with a
+`ACT` steps add `act-no-match`, `act-invalid-decision`, `act-model`,
+`act-fill-mismatch`, and `stale-ref` (SPEC 7.4). An `ACT` step also has an `act` object: `model`; `actions`, each with a
 `line` in Whirl syntax and the model's `description`; and `usage`, with
 `modelCalls`, `inputTokens`, `outputTokens`, and `costUsdMicros` when every
 call was priced. Arguments keep their `%name%` placeholders.
