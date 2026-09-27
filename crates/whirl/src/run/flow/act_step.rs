@@ -6,12 +6,14 @@
 use std::error::Error as _;
 use std::time::{Duration, Instant};
 
-use lithos_llm::types::{ErrorKind, Usage};
+use lithos_llm::types::ErrorKind;
 use serde_json::Value as Json;
 
 use super::{EntryState, FlowExec, StepBudget, StepEnd, StepNode, entry_timeout_error};
 use crate::report::model::{ActActionReport, ActReport, ActUsage, StepError};
-use crate::run::act::{ActDecision, FollowUp, Instruction, PageSnapshot, prompts};
+use crate::run::act::{
+    ActDecision, FollowUp, Instruction, PageSnapshot, PlanError, PlanRequest, PlanStep, PlanUsage,
+};
 use crate::run::shim::{
     AriaSnapshotResult, ReadResult, ShimClient, StepCommand, StepOutcome, StepRequest,
 };
@@ -86,8 +88,9 @@ fn act_failure(code: &str, message: &str) -> StepError {
 
 /// Token usage for the report: cached prompt tokens count as input, and
 /// reasoning tokens as output.
-fn usage_report(model_calls: u32, usage: Usage) -> ActUsage {
-    let tokens = usage.tokens;
+fn usage_report(usage: PlanUsage) -> ActUsage {
+    let PlanUsage { model_calls, model } = usage;
+    let tokens = model.tokens;
     ActUsage {
         model_calls,
         input_tokens: tokens
@@ -95,7 +98,7 @@ fn usage_report(model_calls: u32, usage: Usage) -> ActUsage {
             .saturating_add(tokens.cache_read)
             .saturating_add(tokens.cache_write),
         output_tokens: tokens.output.saturating_add(tokens.reasoning),
-        cost_usd_micros: usage.cost.map(|cost| cost.usd_micros),
+        cost_usd_micros: model.cost.map(|cost| cost.usd_micros),
     }
 }
 
@@ -111,8 +114,8 @@ impl FlowExec<'_> {
         client: &mut ShimClient,
         state: &mut EntryState,
     ) -> (StepEnd, Option<ActReport>) {
-        let (Some(model_client), Some(model)) = (self.run.model, self.options.model.clone()) else {
-            let error = act_failure("act-model", "ACT needs the model option and a model client");
+        let (Some(planner), Some(model)) = (self.run.planner, self.options.model.clone()) else {
+            let error = act_failure("act-model", "ACT needs the model option and a planner");
             return (StepEnd::Error(error), None);
         };
         let mut line = ActLine {
@@ -122,11 +125,8 @@ impl FlowExec<'_> {
             budget,
             entry_start: state.steps.is_empty(),
         };
-        let placeholders = instruction.bindings().placeholders();
-        let system = prompts::system_prompt();
         let mut actions = Vec::new();
-        let mut usage = Usage::default();
-        let mut model_calls = 0;
+        let mut usage = PlanUsage::default();
         // Step two's prompt describes the action step one ran.
         let mut first_action: Option<String> = None;
         // A page can replace the chosen element while the model answers.
@@ -157,27 +157,27 @@ impl FlowExec<'_> {
                 Err(failure) => break failure.end,
             };
 
-            let prompt = match &first_action {
-                None => prompts::act_prompt(instruction.prompt(), &placeholders),
-                Some(first) => prompts::step_two_prompt(instruction.prompt(), first, &placeholders),
+            let step = match &first_action {
+                None => PlanStep::First,
+                Some(first) => PlanStep::Second {
+                    first_action: first,
+                },
             };
-            let user = prompts::user_message(&prompt, snapshot.text());
-            model_calls += 1;
-            let reply = match model_client
-                .plan(&model, &system, &user, line.deadline)
-                .await
-            {
-                Ok(reply) => reply,
-                Err(error) => break self.model_failure(&error, &line),
-            };
-            usage = usage.saturating_add(reply.usage);
-            let inference = match reply.answer {
+            let plan = planner
+                .plan(PlanRequest {
+                    instruction,
+                    snapshot: &snapshot,
+                    step,
+                    model: &model,
+                    deadline: line.deadline,
+                })
+                .await;
+            usage = usage.saturating_add(plan.usage);
+            let inference = match plan.answer {
                 Ok(inference) => inference,
-                Err(error) => {
-                    break StepEnd::Failed(act_failure(
-                        "act-invalid-decision",
-                        &format!("the model's answer does not match the ACT schema: {error}"),
-                    ));
+                Err(PlanError::Model(error)) => break self.model_failure(&error, &line),
+                Err(error @ PlanError::Answer(_)) => {
+                    break StepEnd::Failed(act_failure("act-invalid-decision", &error.to_string()));
                 }
             };
             let (action, description, then) = match snapshot.decide(inference, instruction) {
@@ -246,7 +246,7 @@ impl FlowExec<'_> {
         let report = ActReport {
             model,
             actions,
-            usage: usage_report(model_calls, usage),
+            usage: usage_report(usage),
         };
         (end, Some(report))
     }

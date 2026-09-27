@@ -5,15 +5,12 @@
 mod decision;
 mod instruction;
 mod model;
+mod planner;
 mod prompt;
 mod snapshot;
 
 pub(crate) use decision::{ActDecision, FollowUp};
 pub(crate) use instruction::Instruction;
 pub(crate) use model::{ModelCatalog, ModelClient, ModelSetupError};
+pub(crate) use planner::{ActPlanner, LlmPlanner, PlanError, PlanRequest, PlanStep, PlanUsage};
 pub(crate) use snapshot::PageSnapshot;
-
-/// The system prompt, the first planning prompt, and the step-two prompt.
-pub(crate) mod prompts {
-    pub(crate) use super::prompt::{act_prompt, step_two_prompt, system_prompt, user_message};
-}
