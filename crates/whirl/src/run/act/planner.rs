@@ -37,6 +37,9 @@ pub(crate) struct PlanRequest<'a> {
     pub(crate) model:       &'a str,
     /// When planning must end, retries included.
     pub(crate) deadline:    Instant,
+    /// Likely elements another planner found, which the prompt shows the
+    /// model before the snapshot.
+    pub(crate) hint:        Option<&'a str>,
 }
 
 /// What one planning step spent.
@@ -44,6 +47,25 @@ pub(crate) struct PlanRequest<'a> {
 pub(crate) struct PlanUsage {
     pub(crate) model_calls: u32,
     pub(crate) model:       Usage,
+    pub(crate) jev:         JevUsage,
+}
+
+/// What Jev requests used.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct JevUsage {
+    pub(crate) requests:        u32,
+    pub(crate) input_tokens:    u64,
+    pub(crate) output_tokens:   u64,
+    pub(crate) cost_usd_micros: u64,
+    /// True when the catalog could not price an answered request.
+    pub(crate) unpriced:        bool,
+}
+
+impl JevUsage {
+    /// The requests' cost, when every answered one was priced.
+    pub(crate) fn cost(self) -> Option<u64> {
+        (!self.unpriced).then_some(self.cost_usd_micros)
+    }
 }
 
 impl PlanUsage {
@@ -51,6 +73,35 @@ impl PlanUsage {
         Self {
             model_calls: self.model_calls.saturating_add(other.model_calls),
             model:       self.model.saturating_add(other.model),
+            jev:         JevUsage {
+                requests:        self.jev.requests.saturating_add(other.jev.requests),
+                input_tokens:    self.jev.input_tokens.saturating_add(other.jev.input_tokens),
+                output_tokens:   self
+                    .jev
+                    .output_tokens
+                    .saturating_add(other.jev.output_tokens),
+                cost_usd_micros: self
+                    .jev
+                    .cost_usd_micros
+                    .saturating_add(other.jev.cost_usd_micros),
+                unpriced:        self.jev.unpriced || other.jev.unpriced,
+            },
+        }
+    }
+}
+
+/// Which planner chose an answer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PlannedBy {
+    Llm,
+    Jev,
+}
+
+impl PlannedBy {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Llm => "llm",
+            Self::Jev => "jev",
         }
     }
 }
@@ -68,8 +119,9 @@ pub(crate) enum PlanError {
 /// One planning step's result. The usage counts even when planning fails.
 #[derive(Debug)]
 pub(crate) struct Plan {
-    pub(crate) answer: Result<ActInference, PlanError>,
-    pub(crate) usage:  PlanUsage,
+    pub(crate) answer:     Result<ActInference, PlanError>,
+    pub(crate) usage:      PlanUsage,
+    pub(crate) planned_by: PlannedBy,
 }
 
 /// The future a planner returns. It is boxed, so the trait is
@@ -83,6 +135,9 @@ pub(crate) type PlanFuture<'a> = Pin<Box<dyn Future<Output = Plan> + Send + 'a>>
 /// by `request.deadline`. The run shares one planner across its workers.
 pub(crate) trait ActPlanner: fmt::Debug + Send + Sync {
     fn plan<'a>(&'a self, request: PlanRequest<'a>) -> PlanFuture<'a>;
+
+    /// The name reports give this planner, such as `llm`.
+    fn name(&self) -> &'static str;
 }
 
 /// Plans with one structured call to the `model` option's language model,
@@ -109,7 +164,7 @@ impl ActPlanner for LlmPlanner {
                     prompt::step_two_prompt(instruction.prompt(), first_action, &placeholders)
                 }
             };
-            let user = prompt::user_message(&prompt, request.snapshot.text());
+            let user = prompt::user_message(&prompt, request.hint, request.snapshot.text());
             let reply = self
                 .client
                 .plan(
@@ -128,8 +183,14 @@ impl ActPlanner for LlmPlanner {
                 usage: PlanUsage {
                     model_calls: 1,
                     model,
+                    jev: JevUsage::default(),
                 },
+                planned_by: PlannedBy::Llm,
             }
         })
+    }
+
+    fn name(&self) -> &'static str {
+        PlannedBy::Llm.as_str()
     }
 }

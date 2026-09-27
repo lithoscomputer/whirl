@@ -175,7 +175,7 @@ pub(crate) fn same_text(left: &str, right: &str) -> bool {
 /// curly single quotes, or in straight single quotes that stand at word
 /// boundaries, so the apostrophe in "user's" opens no quote. A quote does
 /// not cross a line. The rules are those of Stagehand's `quotedStrings`.
-fn quoted_strings(text: &str) -> Vec<&str> {
+pub(crate) fn quoted_strings(text: &str) -> Vec<&str> {
     let is_word = |ch: Option<char>| ch.is_some_and(|ch| ch.is_alphanumeric() || ch == '_');
     let mut found = Vec::new();
     let mut start = 0;

@@ -25,6 +25,27 @@ struct InferredAction {
     arguments:   Vec<String>,
 }
 
+impl ActInference {
+    /// A one-step answer that another planner chose, in the model's
+    /// terms, so it goes through [`PageSnapshot::decide`] like any answer.
+    pub(crate) fn chosen(
+        element_id: String,
+        description: String,
+        method: ActMethod,
+        arguments: Vec<String>,
+    ) -> Self {
+        Self {
+            action:   Some(InferredAction {
+                element_id,
+                description,
+                method,
+                arguments,
+            }),
+            two_step: false,
+        }
+    }
+}
+
 /// The methods the model may choose. The names are Stagehand's, so its
 /// prompts carry over; each maps to one Whirl verb.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]

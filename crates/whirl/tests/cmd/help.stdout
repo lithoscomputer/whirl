@@ -35,6 +35,7 @@ Options:
       --video                     Record a .webm video of each file's run
       --video-fps <N>             Frames per second for --video on Chromium (1 to 60; default 60)
       --har                       Record a .har network log per file
+      --jev                       Plan ACT with TypeSafe Jev first, falling back to the model option
       --storage <PATH>            Override the `storage` option
       --save-storage <PATH>       Write the final storage state after a successful run
       --entry-timeout <DURATION>  Override the `entry-timeout` option

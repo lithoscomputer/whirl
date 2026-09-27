@@ -76,6 +76,7 @@ pub(crate) fn quote(text: &str) -> String {
 /// One AI snapshot of the selected tab.
 #[derive(Clone, Debug)]
 pub(crate) struct PageSnapshot {
+    raw:   String,
     text:  String,
     nodes: HashMap<ElementRef, SnapshotNode>,
 }
@@ -86,9 +87,15 @@ impl PageSnapshot {
     pub(crate) fn parse(snapshot: &str) -> Self {
         let nodes = snapshot.lines().filter_map(parse_line).collect();
         Self {
+            raw: snapshot.to_owned(),
             text: condense(snapshot),
             nodes,
         }
+    }
+
+    /// The snapshot as the shim took it, cursor hints included.
+    pub(crate) fn raw(&self) -> &str {
+        &self.raw
     }
 
     /// The snapshot as the model reads it (SPEC 7.4).

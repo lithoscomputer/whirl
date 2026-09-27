@@ -498,6 +498,27 @@ its value, such as a phone number, passes. Whirl skips the check when the
 element has no value to read, such as a `contenteditable` element, or when the
 page has removed it.
 
+With `--jev` (section 13), TypeSafe's Jev plans first, as in Stagehand's
+experimental Jev path. Jev is a classifier: it answers closed questions in a
+few hundred milliseconds but cannot write text. Whirl asks it which kind of
+action the instruction wants, then which element, from the snapshot elements
+that kind of action can target. Each element is described by its role, name,
+and value, the text of its table row or list item, the named sections around
+it, the nearest heading, and its place among elements that look the same.
+When there are more than 40 such elements, Jev sees the 30 whose descriptions
+share the most words with the instruction. For `press`, a focused control is
+the target without a question. Arguments come from the instruction itself: the one quoted string or
+placeholder that does not name the field for `fill`, the named key for
+`press`, and the one option of a native select that the instruction names.
+Jev's choice is checked like a model answer. When Jev is not confident, when
+it cannot supply an argument, for step two of a two-step action, and when a
+Jev request fails, the model plans the step instead, and its prompt lists
+Jev's likely matches when Jev has some. Jev receives the instruction, with
+masked values as placeholders, and the element descriptions. Whirl asks Jev
+through `lithos-llm` as `typesafe/jev-latest` and prices its requests from the
+catalog. Jev's usage is reported apart from the model's, and the step's cost
+includes both.
+
 A custom dropdown that must open before an option can be chosen is a two-step
 action. The model marks its first answer as two-step. Whirl runs that action,
 takes a new snapshot, and asks for the second action. When the second answer
@@ -536,9 +557,10 @@ snapshot contains text that the page shows, including values typed by earlier
 steps; Whirl does not mask page content.
 
 The step's report text is the authored line. The JSON report adds an `act`
-object to the step: the model, each action that ran as a Whirl line with the
-model's description of the element, and the token usage and cost of the model
-calls. A rendered line such as `CLICK role:button "Sign in"` describes the
+object to the step: the model, the planner, each action that ran as a Whirl
+line with the description of the element and the planner that chose it, and
+the token usage and cost of the model calls, and with `--jev` Jev's requests,
+tokens, and cost. A rendered line such as `CLICK role:button "Sign in"` describes the
 element; it is not guaranteed to be unique on the page.
 
 ## 8. PAGE
@@ -832,7 +854,7 @@ Whirl masks every value sourced from `env.*` in the textual output it generates:
 - **Failure.** The first failing step fails the entry, and a failed entry stops its file; remaining entries in that file are skipped and reported as skipped. Other files still run. On failure Whirl saves a full-page screenshot and, with `--trace`, a Playwright trace to the artifacts directory.
 - **Navigation.** `VISIT` completes when the new document reaches `DOMContentLoaded`: the HTML is parsed and its synchronous scripts have run. It does not wait for the `load` event, because images, fonts, iframes, and media hold `load` open for reasons a flow never asserted, and every later line waits for what it needs anyway: actions wait for their element to be actionable, asserts and `PAGE` retry. A page that only becomes usable after `load` needs an assert on that state before an `EVAL` or `SCREENSHOT`, which run once without waiting.
 - **Retries.** Page checks and page captures read their value again on the schedule of section 9.7 until they pass or the step timeout expires. Response checks, response captures, and `eval` captures read once.
-- **ACT.** An `ACT` line is one step. Its snapshots, model calls, and actions share its step timeout. Model calls take seconds, so an `ACT` line that needs more than the step timeout sets its own, such as `@60s`.
+- **ACT.** An `ACT` line is one step. Its snapshots, model calls, Jev requests, and actions share its step timeout. Model calls take seconds, so an `ACT` line that needs more than the step timeout sets its own, such as `@60s`.
 - **Timeouts.** Each action, PAGE, assert, and capture line gets the step timeout (`step-timeout` option, default 10s); `VISIT` gets the navigation timeout (`nav-timeout` option, default 30s). A trailing `@duration` on any such line overrides its own budget: `CLICK "Generate report" @60s`. The optional `entry-timeout` option caps an entry's total time across all of its lines; when it expires, the in-flight step fails with an entry-timeout error. An entry without one is still bounded by its per-step timeouts. The suffix must be bare: a line’s final bare token of the form `@duration` is always its timeout, and a quoted `"@60s"` is an ordinary value. Timeouts are enforced from outside the page, so they hold even when the page cannot respond — an `EVAL` script blocking the renderer or returning a Promise that never settles. When a timed-out step cannot be cancelled cleanly, Whirl closes that flow's browser context; if closing also stalls, it terminates and restarts only that worker's shim process. Either way the flow fails and reports normally, and other files are unaffected.
 - **Setup.** Files with a `setup` option run after their setup flows. Whirl first runs every distinct setup flow named by the inputs, once each and in parallel like any files, then runs the remaining files, each starting from its setup flow's saved state with the setup flow's captures as `{{setup.name}}`. A setup flow that is also an input runs once, as the setup. A failed setup flow reports normally, and each of its dependents reports a `[setup]` failure naming the setup flow and its first failing step, without opening a browser. Setup flows are one level deep.
 - **Parallelism.** Files run in parallel across worker slots (`--jobs`, default: logical CPU count). A single file is never parallelized.
@@ -885,6 +907,7 @@ nothing and exits with code 1 when any file would change.
 | `--save-storage PATH` | Write the final storage state after a successful run (single file only) |
 | `--entry-timeout DURATION` | Override the entry-timeout option |
 | `--user-agent UA` | Override the user-agent option with `chrome`, `firefox`, `safari`, or a literal string |
+| `--jev` | Plan `ACT` with TypeSafe's Jev first, and the `model` option when Jev is unsure (section 7.4) |
 
 Exit codes:
 
@@ -903,6 +926,13 @@ OpenAI-compatible Chat Completions server at `<url>/v1/chat/completions`. The
 does not check it against the catalog. `WHIRL_LLM_API_KEY`, when set, is sent
 to that server as a bearer token. These variables serve local model servers,
 proxies, and tests.
+
+`--jev` reads Jev's key from `TYPESAFE_API_KEY`. Without it, a run whose files
+use `ACT` fails before any flow starts, with a runtime error (exit 3).
+`WHIRL_JEV_ENDPOINT=http://host:port` sends Jev's requests to
+`<url>/v1/systemone` on another server, such as a test double. `--jev` does
+nothing in a run whose files do not use `ACT`. `--rerun-failed` does not read
+it from a report; pass it again.
 
 `--video` records the `main` tab (section 7.1). On Chromium, Whirl records the page's own screencast frames through Playwright's bundled ffmpeg at 60 frames per second, or at the rate `--video-fps` names; a still page holds its last frame, so the recording always plays at a constant rate. Firefox and WebKit use Playwright's recorder at its fixed rate of 25 frames per second. `--video-fps` on those engines is not an error: the file records at 25 frames per second and reports a warning, because the recording is evidence, not a result. A missing ffmpeg fails the file as a runtime error; `whirl install` provisions it with every browser build, and `whirl doctor` checks for it.
 
@@ -991,7 +1021,7 @@ The artifact override applies to each input's relative paths. Destination protec
 
 Rust source, configuration, and project setup follow the [Brynary Rust Style Guide](https://github.com/brynary/rust-style-guide). TypeScript source and language tooling follow the [Brynary TypeScript Style Guide](https://github.com/brynary/typescript-style-guide) for language-level and authoring conventions. The shim targets the pinned private Node runtime specified here, so the TypeScript guide's Bun-specific runtime, API, package-management, and test-runner policies do not apply. This specification and accepted Whirl ADRs take precedence over both guides.
 
-- `whirl` is a single Rust binary containing the parser, the runner, the check engine, the reporters, and the shim manager. It also makes `ACT`'s language model calls itself, through the `lithos-llm` client; the shim only takes the page snapshot and runs the chosen action.
+- `whirl` is a single Rust binary containing the parser, the runner, the check engine, the reporters, and the shim manager. It also makes `ACT`'s language model calls and, with `--jev`, its Jev requests itself, through the `lithos-llm` client; the shim only takes the page snapshot and runs the chosen action.
 - Whirl drives browsers through a thin Node shim that Whirl owns: a small, stable JSON API over stdio pipes, shaped like Whirl's closed vocabulary and implemented on the Playwright library. The Rust binary launches the shim as a child process. Whirl does not reimplement browser automation and does not speak CDP or Playwright's internal driver protocol, so it inherits Playwright's auto-waiting, retrying assertions, locator engine, tracing, and three browser engines — and Playwright upgrades stay internal to the shim.
 - `whirl install` downloads the pinned shim bundle (a private Node runtime, the shim, and the `@playwright/test` package) and the browser builds. Users do not need Node installed. Each Whirl release pins exactly one Playwright version.
 - Rust evaluates every filter and predicate (ADR [evaluate-checks-in-rust](docs/engineering/decisions/evaluate-checks-in-rust.md)). The shim reads raw values: page strings, `eval` results, and each response's status, headers, and body bytes. Rust owns the retry loop for page checks and page captures, on Playwright's poll schedule.
