@@ -287,6 +287,10 @@ export interface EndFlowParams {
 export interface EndFlowResult {
 	readonly blockedHosts: readonly string[];
 	readonly videoPath: string | null;
+	/** Why the shim skipped a requested recording, or null. */
+	readonly videoSkipped: string | null;
+	/** Why a saved recording holds only a white frame, or null. */
+	readonly videoBlank: string | null;
 }
 
 // --- Step commands (protocol 4) ---

@@ -246,6 +246,12 @@ pub(crate) struct EndFlowParams {
 pub(crate) struct EndFlowResult {
     pub(crate) blocked_hosts: Vec<String>,
     pub(crate) video_path:    Option<String>,
+    /// Why the shim skipped a requested recording. Older shims omit it.
+    #[serde(default)]
+    pub(crate) video_skipped: Option<String>,
+    /// Why a saved recording holds only a white frame. Older shims omit it.
+    #[serde(default)]
+    pub(crate) video_blank:   Option<String>,
 }
 
 /// A step command's own params (protocol section 4). Locator, PAGE

@@ -107,8 +107,18 @@ Result: `{"browserVersion": "...", "nodeVersion": "...", "playwrightVersion": ".
   page's CDP screencast through Playwright's bundled ffmpeg at that rate,
   holding the last frame while the page is still. A number for another
   engine, or a missing ffmpeg, fails `startFlow` with kind `"internal"`.
-  An ffmpeg failure at `endFlow` fails `endFlow` the same way. `cancelFlow`
-  discards an in-progress screencast recording.
+  When no screencast frame has arrived by `endFlow`, the shim captures the
+  page with `Page.captureScreenshot` and holds that frame from the start
+  of the recording. For a page that has not painted yet, as right after a
+  navigation, Chrome answers "Unable to capture screenshot", so the shim
+  waits 50 ms and tries again, for up to 1 second. A screencast frame that
+  arrives meanwhile serves as well. When the shim still has no frame, when
+  the capture fails for another reason, or after 5 seconds in all, the
+  recording holds a white frame of the viewport's size, and the shim
+  reports why in `videoBlank`. When ffmpeg fails, or does not finish
+  within 10 seconds, at `endFlow`, the shim discards the recording and
+  reports why in `videoSkipped`. `cancelFlow` discards an in-progress
+  screencast recording.
 
 ### `endFlow`
 
@@ -121,9 +131,14 @@ Ends the flow and closes the context. Params:
 - `saveStoragePath` writes the context storage state before close.
 - `tracePath` exports the trace there; `null` discards a running trace.
 
-Result: `{"blockedHosts": ["host", ...], "videoPath": "abs path" | null}`.
+Result: `{"blockedHosts": ["host", ...], "videoPath": "abs path" | null, "videoSkipped": "reason" | null, "videoBlank": "reason" | null}`.
 `blockedHosts` is the sorted, de-duplicated set of hostnames blocked by
-`allowHosts` during the flow.
+`allowHosts` during the flow. `videoSkipped` says why the shim skipped a
+requested recording, such as an ffmpeg failure. `videoBlank` says why a
+saved recording holds only a white frame, such as a failed capture of a
+crashed page; `videoPath` still names the recording. Rust reports each
+as a warning and does not change the flow's status. Older shims omit
+them.
 
 ### `cancelFlow`
 

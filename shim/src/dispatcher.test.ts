@@ -45,7 +45,12 @@ class FakeDriver implements ShimDriver {
 
 	async endFlow(_params: EndFlowParams): Promise<EndFlowResult> {
 		this.log.push("endFlow");
-		return { blockedHosts: ["a.example.com"], videoPath: null };
+		return {
+			blockedHosts: ["a.example.com"],
+			videoPath: null,
+			videoSkipped: null,
+			videoBlank: null,
+		};
 	}
 
 	async cancelFlow(): Promise<void> {
@@ -177,7 +182,12 @@ test("startFlow and endFlow round-trip through the driver", async (t) => {
 	assert.deepEqual(responses[1], {
 		id: 2,
 		ok: true,
-		result: { blockedHosts: ["a.example.com"], videoPath: null },
+		result: {
+			blockedHosts: ["a.example.com"],
+			videoPath: null,
+			videoSkipped: null,
+			videoBlank: null,
+		},
 	});
 });
 

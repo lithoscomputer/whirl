@@ -2913,6 +2913,172 @@ fn a_cancelled_flow_with_video_leaves_no_recorder_behind() {
 }
 
 #[test]
+fn short_video_flows_on_still_pages_pass_with_a_recording() {
+    // Chromium sends a screencast frame only when the page paints, and the
+    // frame arrives some time later. On a warm browser these flows often
+    // end first: an HTTP entry never paints the blank page, and a lone
+    // VISIT ends when the document has parsed.
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    let flows = [
+        (
+            "http-1",
+            "HTTP GET /stable.html\n[Asserts]\nstatus == 200\n",
+        ),
+        (
+            "http-2",
+            "HTTP GET /stable.html\n[Asserts]\nstatus == 200\n",
+        ),
+        ("visit-1", "VISIT /stable.html\n"),
+        ("visit-2", "VISIT /stable.html\n"),
+    ];
+    for (name, source) in flows {
+        dir.file(&format!("{name}.whirl"), source);
+    }
+    // One job runs every flow in one warm browser.
+    let output = run_whirl(&dir, &[
+        "--base",
+        &server.base(),
+        "--video",
+        "--jobs",
+        "1",
+        "--report-json",
+        "report.json",
+        ".",
+    ]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+    assert!(!stdout.contains("warning"), "stdout:\n{stdout}");
+    for (name, _) in flows {
+        let video = dir.artifacts().join(format!("{name}/video.webm"));
+        assert!(video.is_file(), "{name} should write video.webm");
+        let (frames, _, duration) = inspect_recording(&dir, &video, name);
+        assert!(
+            frames >= 1 && duration > 0.0,
+            "{name}: {frames} frames over {duration:.2}s"
+        );
+    }
+    let report: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(dir.path.join("report.json")).expect("JSON report"),
+    )
+    .expect("valid JSON");
+    for file in report["files"].as_array().expect("files") {
+        assert_eq!(file["status"], "passed", "{file}");
+        assert!(
+            file["artifacts"]
+                .as_array()
+                .expect("artifacts")
+                .iter()
+                .any(|artifact| artifact
+                    .as_str()
+                    .is_some_and(|path| path.ends_with("video.webm"))),
+            "{file}"
+        );
+    }
+}
+
+#[test]
+fn a_skipped_recording_is_a_warning_and_the_file_still_passes() {
+    // An ffmpeg that fails while it finishes the recording cannot be made
+    // on demand, so the fake shim reports the skip.
+    let dir = TestDir::new();
+    dir.file("flow.whirl", "VISIT https://example.test/\n");
+    let shim = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake_shim.js");
+    let reason = "ffmpeg exited with status 1: pipe:0: Invalid data found when processing input";
+    let output = run_whirl_env(
+        &dir,
+        &[
+            "--video",
+            "--report-json",
+            "report.json",
+            "--report-html",
+            "report.html",
+            "flow.whirl",
+        ],
+        &[
+            ("WHIRL_SHIM_JS", shim.to_str().expect("shim path")),
+            ("FAKE_SHIM_VIDEO_SKIPPED", reason),
+        ],
+    );
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+    let warning = format!("video recording skipped: {reason}");
+    assert!(
+        stdout.contains(&format!("warning: {warning}")),
+        "stdout:\n{stdout}"
+    );
+    let report: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(dir.path.join("report.json")).expect("JSON report"),
+    )
+    .expect("valid JSON");
+    assert_eq!(report["files"][0]["status"], "passed");
+    assert_eq!(report["files"][0]["warnings"][0], warning.as_str());
+    // No recording, so no frame rate, though the shim started one at 60.
+    assert!(
+        report["files"][0]["runtime"].is_object(),
+        "report:\n{report}"
+    );
+    assert!(
+        report["files"][0]["runtime"].get("videoFps").is_none(),
+        "report:\n{report}"
+    );
+    let html = fs::read_to_string(dir.path.join("report.html")).expect("HTML report");
+    assert!(html.contains("data-status=\"passed\""));
+    assert!(html.contains("Recording unavailable."));
+}
+
+#[test]
+fn a_blank_recording_is_a_warning_and_stays_listed() {
+    // A page that Chrome cannot capture, as a crashed one, cannot be made
+    // on demand, so the fake shim reports the white recording.
+    let dir = TestDir::new();
+    dir.file(
+        "flow.whirl",
+        "VISIT https://example.test/?token={{env.WHIRL_TEST_SECRET}}\n",
+    );
+    let shim = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake_shim.js");
+    // The reason holds the secret, which the warning masks.
+    let reason =
+        "capturing the page failed: Internal error at https://example.test/?token=blank-secret";
+    let output = run_whirl_env(
+        &dir,
+        &["--video", "--report-json", "report.json", "flow.whirl"],
+        &[
+            ("WHIRL_SHIM_JS", shim.to_str().expect("shim path")),
+            ("WHIRL_TEST_SECRET", "blank-secret"),
+            ("FAKE_SHIM_VIDEO_BLANK", reason),
+        ],
+    );
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+    let warning = "video recording is blank: capturing the page failed: Internal error at \
+                   https://example.test/?token=***";
+    assert!(
+        stdout.contains(&format!("warning: {warning}")),
+        "stdout:\n{stdout}"
+    );
+    assert!(!stdout.contains("blank-secret"), "stdout:\n{stdout}");
+    let text = fs::read_to_string(dir.path.join("report.json")).expect("JSON report");
+    assert!(!text.contains("blank-secret"), "report:\n{text}");
+    let report: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+    let file = &report["files"][0];
+    assert_eq!(file["status"], "passed");
+    assert_eq!(file["warnings"], serde_json::json!([warning]));
+    // Unlike a skipped recording, a blank one stays listed, with its rate.
+    assert!(
+        file["artifacts"]
+            .as_array()
+            .expect("artifacts")
+            .iter()
+            .any(|artifact| artifact
+                .as_str()
+                .is_some_and(|path| path.ends_with("video.webm"))),
+        "report:\n{report}"
+    );
+    assert_eq!(file["runtime"]["videoFps"], 60, "report:\n{report}");
+}
+
+#[test]
 fn an_explicit_video_fps_on_firefox_warns_and_records_at_the_engine_rate() {
     // Needs firefox installed, so it runs only in check:nightly.
     if env::var_os("WHIRL_TEST_ALL_BROWSERS").is_none() {

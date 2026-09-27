@@ -1562,6 +1562,28 @@ pub(crate) async fn run_flow(run: &FlowRun<'_>, client: &mut ShimClient) -> Flow
                                 .into_owned(),
                         );
                     }
+                    // A recording is evidence, not a result: a skipped one
+                    // never changes the file's status (SPEC 13).
+                    // The report then has no frame rate, as for any flow
+                    // without a recording.
+                    if let Some(reason) = result.video_skipped {
+                        exec.warnings.push(format!(
+                            "video recording skipped: {}",
+                            exec.vars.mask(&reason)
+                        ));
+                        if let Some(runtime) = report.runtime.as_mut() {
+                            runtime.video_fps = None;
+                        }
+                    }
+                    // A blank recording stays listed, with its frame rate.
+                    // The warning explains its white frame, and the file's
+                    // status does not change.
+                    if let Some(reason) = result.video_blank {
+                        exec.warnings.push(format!(
+                            "video recording is blank: {}",
+                            exec.vars.mask(&reason)
+                        ));
+                    }
                     if run.flags.har {
                         report.artifacts.push(
                             run.report_dir

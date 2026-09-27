@@ -178,6 +178,8 @@ export class Dispatcher {
 				this.#respondOk(id, slot, {
 					blockedHosts: [...result.blockedHosts],
 					videoPath: result.videoPath,
+					videoSkipped: result.videoSkipped,
+					videoBlank: result.videoBlank,
 				});
 				return;
 			}
