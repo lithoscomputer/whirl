@@ -26,7 +26,7 @@ use serde_json::{Map, Value as Json, json};
 use tokio::task::JoinSet;
 
 use self::client::{JevAnswer, JevError, JevQuestion, JevResponse, choice, noul};
-use self::intent::{FillValue, Intent};
+use self::intent::{FillValue, Intent, ScrollArea, ScrollWay};
 use self::outline::{Outline, View, shortlist};
 use crate::lang::ast::MouseButton;
 use crate::run::act::decision::{ActInference, ActMethod};
@@ -189,6 +189,11 @@ impl JevPlanner {
             return Outcome::Unsure(None);
         }
         let outline = Outline::parse(request.snapshot.raw());
+        match intent.family {
+            "drag" => return self.plan_drag(&outline, &request, usage).await,
+            "scroll" => return self.plan_scroll(&outline, &intent, &request, usage).await,
+            _ => {}
+        }
         // A list or dropdown built without a native select: click the
         // option the instruction names when it shows, or else open the
         // control and choose the option on the next snapshot. A merged
@@ -310,6 +315,126 @@ impl JevPlanner {
         ))
     }
 
+    /// A drag: Jev picks the element to drag, then where to drop it.
+    async fn plan_drag(
+        &self,
+        outline: &Outline,
+        request: &PlanRequest<'_>,
+        usage: &mut PlanUsage,
+    ) -> Outcome {
+        let quoted = quoted_strings(request.instruction.prompt());
+        let dragged = match self
+            .pick(
+                outline,
+                &[View::Broad],
+                request,
+                Goal::Dragged,
+                &quoted,
+                usage,
+            )
+            .await
+        {
+            Ok(index) => index,
+            Err(hint) => return Outcome::Unsure(hint),
+        };
+        let drop = match self
+            .pick(
+                outline,
+                &[View::Container, View::Broad],
+                request,
+                Goal::Drop { dragged },
+                &quoted,
+                usage,
+            )
+            .await
+        {
+            Ok(index) => index,
+            Err(hint) => return Outcome::Unsure(hint),
+        };
+        Outcome::Chosen(ActInference::chosen(
+            element(outline, dragged),
+            describe_line(&outline.describe(dragged, &HashMap::new())),
+            ActMethod::DragAndDrop,
+            vec![element(outline, drop)],
+        ))
+    }
+
+    /// A scroll: the way comes from the first request and a position from
+    /// the instruction's words. The page scrolls through its root element;
+    /// a part of the page, or an element to bring into view, is Jev's pick.
+    async fn plan_scroll(
+        &self,
+        outline: &Outline,
+        intent: &Intent,
+        request: &PlanRequest<'_>,
+        usage: &mut PlanUsage,
+    ) -> Outcome {
+        let instruction = request.instruction.prompt();
+        let quoted = quoted_strings(instruction);
+        let (method, arguments) = match intent.scroll_way {
+            Some(ScrollWay::IntoView) => {
+                return match self
+                    .pick(
+                        outline,
+                        &[View::Broad],
+                        request,
+                        Goal::IntoView,
+                        &quoted,
+                        usage,
+                    )
+                    .await
+                {
+                    Ok(index) => Outcome::Chosen(ActInference::chosen(
+                        element(outline, index),
+                        describe_line(&outline.describe(index, &HashMap::new())),
+                        ActMethod::ScrollIntoView,
+                        Vec::new(),
+                    )),
+                    Err(hint) => Outcome::Unsure(hint),
+                };
+            }
+            Some(ScrollWay::Down) => (ActMethod::NextChunk, Vec::new()),
+            Some(ScrollWay::Up) => (ActMethod::PrevChunk, Vec::new()),
+            Some(ScrollWay::Left) => (ActMethod::ScrollLeft, Vec::new()),
+            Some(ScrollWay::Right) => (ActMethod::ScrollRight, Vec::new()),
+            Some(ScrollWay::Position) => match args::percent(instruction) {
+                Some(percent) => (ActMethod::ScrollTo, vec![percent.to_string()]),
+                None => return Outcome::Unsure(None),
+            },
+            None => return Outcome::Unsure(None),
+        };
+        let (index, description) = match intent.scroll_area {
+            Some(ScrollArea::Page) => match outline.root() {
+                Some(root) => (root, "the page".to_owned()),
+                None => return Outcome::Unsure(None),
+            },
+            Some(ScrollArea::Part) => match self
+                .pick(
+                    outline,
+                    &[View::Container, View::Broad],
+                    request,
+                    Goal::ScrollArea,
+                    &quoted,
+                    usage,
+                )
+                .await
+            {
+                Ok(index) => (
+                    index,
+                    describe_line(&outline.describe(index, &HashMap::new())),
+                ),
+                Err(hint) => return Outcome::Unsure(hint),
+            },
+            None => return Outcome::Unsure(None),
+        };
+        Outcome::Chosen(ActInference::chosen(
+            element(outline, index),
+            description,
+            method,
+            arguments,
+        ))
+    }
+
     /// What kind of action the instruction asks for, and its details, when
     /// Jev is sure of the kind.
     async fn intent(
@@ -380,7 +505,11 @@ impl JevPlanner {
                 }
             };
         for &view in tiers {
-            let candidates = outline.view(view);
+            let candidates: Vec<usize> = outline
+                .view(view)
+                .into_iter()
+                .filter(|&index| goal.allows(outline, index))
+                .collect();
             if candidates.is_empty() || seen.contains(&candidates) {
                 continue;
             }
@@ -766,6 +895,14 @@ enum Goal {
     Opener,
     /// The option the instruction chooses.
     Option,
+    /// The element a drag moves.
+    Dragged,
+    /// Where a drag drops the element at `dragged`.
+    Drop { dragged: usize },
+    /// The part of the page a scroll moves.
+    ScrollArea,
+    /// The element a scroll brings into view.
+    IntoView,
 }
 
 impl Goal {
@@ -777,6 +914,14 @@ impl Goal {
                 Some("Which element opens the dropdown or list that the instruction chooses from?")
             }
             Self::Option => Some("Which element is the option the instruction asks to choose?"),
+            Self::Dragged => Some("Which element does the instruction ask to drag or move?"),
+            Self::Drop { .. } => Some(
+                "Onto which element or area does the instruction ask to drop the dragged element?",
+            ),
+            Self::ScrollArea => Some(
+                "Which panel, list, dialog, frame, or area does the instruction ask to scroll?",
+            ),
+            Self::IntoView => Some("Which element does the instruction ask to scroll into view?"),
         }
     }
 
@@ -788,6 +933,24 @@ impl Goal {
                 "Does this element open the dropdown or list that the instruction chooses from?"
             }
             Self::Option => "Is this element the option the instruction asks to choose?",
+            Self::Dragged => "Is this the element the instruction asks to drag or move?",
+            Self::Drop { .. } => "Is this where the instruction asks to drop the dragged element?",
+            Self::ScrollArea => "Is this the area the instruction asks to scroll?",
+            Self::IntoView => "Is this the element the instruction asks to scroll into view?",
+        }
+    }
+
+    /// Whether a candidate can be the answer: a drop cannot land on the
+    /// dragged element or inside it.
+    fn allows(self, outline: &Outline, index: usize) -> bool {
+        match self {
+            Self::Drop { dragged } => !outline.within(index, dragged),
+            Self::Target
+            | Self::Opener
+            | Self::Option
+            | Self::Dragged
+            | Self::ScrollArea
+            | Self::IntoView => true,
         }
     }
 

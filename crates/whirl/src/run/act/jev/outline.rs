@@ -50,6 +50,9 @@ pub(crate) enum View {
     /// Every element with a name or text: the last look, for custom
     /// widgets built from plain elements.
     Broad,
+    /// Parts of a page that scroll or take a drop: regions, lists,
+    /// dialogs, frames, and the like.
+    Container,
 }
 
 const POINTER_ROLES: &[&str] = &[
@@ -67,6 +70,26 @@ const POINTER_ROLES: &[&str] = &[
     "combobox",
 ];
 const INPUT_ROLES: &[&str] = &["textbox", "searchbox", "combobox", "spinbutton", "slider"];
+const CONTAINER_ROLES: &[&str] = &[
+    "dialog",
+    "alertdialog",
+    "region",
+    "main",
+    "navigation",
+    "complementary",
+    "list",
+    "listbox",
+    "tree",
+    "table",
+    "grid",
+    "treegrid",
+    "tabpanel",
+    "feed",
+    "log",
+    "menu",
+    "document",
+    "iframe",
+];
 /// Ancestors whose text tells repeated elements apart.
 const ITEM_ROLES: &[&str] = &["row", "listitem", "article"];
 const TABLE_ROLES: &[&str] = &["table", "grid", "treegrid"];
@@ -134,7 +157,22 @@ impl Outline {
             View::Select => role == "combobox" && !self.options(index).is_empty(),
             View::Keyboard => self.fits(index, View::Pointer) || self.fits(index, View::Input),
             View::Broad => node.name.is_some() || node.text.is_some() || node.pointer,
+            View::Container => CONTAINER_ROLES.contains(&role),
         }
+    }
+
+    /// The snapshot's first element: the page's `<body>`, or the scope of a
+    /// scoped `ACT`.
+    pub(crate) fn root(&self) -> Option<usize> {
+        self.nodes
+            .first()
+            .filter(|node| node.parent.is_none() && node.element.is_some())
+            .map(|_| 0)
+    }
+
+    /// Whether `index` is `container` or lies inside it.
+    pub(crate) fn within(&self, index: usize, container: usize) -> bool {
+        index == container || self.ancestors(index).any(|ancestor| ancestor == container)
     }
 
     /// The elements that may be a list's options, in two tiers: elements
@@ -559,6 +597,46 @@ mod tests {
           - button "Delete" [ref=e22] [cursor=pointer]
   - paragraph [ref=e83]: "Result: none"
 "#;
+
+    const BOARD: &str = r#"- generic [active] [ref=e1]:
+  - heading "Sprint board" [level=1] [ref=e2]
+  - main [ref=e3]:
+    - region "To do" [ref=e4]:
+      - article [ref=e6]: Fix login timeout
+    - region "Done" [ref=e11]:
+      - heading "Done" [level=2] [ref=e12]
+  - iframe [ref=e20]:
+    - generic [ref=f1e1]:
+      - paragraph [ref=f1e2]: Incident
+"#;
+
+    #[test]
+    fn containers_are_the_parts_that_scroll_or_take_a_drop() {
+        let outline = Outline::parse(BOARD);
+        let refs: Vec<&str> = outline
+            .view(View::Container)
+            .into_iter()
+            .map(|index| outline.node(index).element.as_deref().unwrap_or_default())
+            .collect();
+        assert_eq!(refs, ["e3", "e4", "e11", "e20"]);
+        assert_eq!(outline.root(), Some(0));
+        assert_eq!(Outline::parse("- heading \"No ref\"\n").root(), None);
+    }
+
+    #[test]
+    fn an_element_is_within_itself_and_its_ancestors() {
+        let outline = Outline::parse(BOARD);
+        let index = |element: &str| {
+            (0..outline.nodes.len())
+                .find(|&index| outline.node(index).element.as_deref() == Some(element))
+                .expect("the element is in the board")
+        };
+        assert!(outline.within(index("e6"), index("e6")));
+        assert!(outline.within(index("e6"), index("e4")));
+        assert!(outline.within(index("e6"), index("e3")));
+        assert!(!outline.within(index("e6"), index("e11")));
+        assert!(!outline.within(index("e4"), index("e6")));
+    }
 
     #[test]
     fn nodes_keep_their_role_name_ref_value_and_parent() {

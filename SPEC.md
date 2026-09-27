@@ -543,8 +543,15 @@ instruction names: an element with an option role whose label the instruction
 says as whole words, or else such a list item or clickable element, and Jev
 confirms it. When no named option shows, Jev picks the control that opens the
 list as the first of two steps, and step two clicks the named option on the
-new snapshot. A suggestion to choose after typing, a click that would undo a
-checkbox already in the asked state, a drag, and a scroll go to the model.
+new snapshot. For a drag, Jev picks the element to drag, then where to drop
+it, first from the parts of the page that can take a drop, such as regions,
+lists, and dialogs, then from every named element. For a scroll, the first
+request also asks which way it goes and whether the whole page or a part of it
+scrolls. The page scrolls through its root element; Jev picks the part, from
+the same candidates as a drop, or the element to bring into view; and a
+position comes from the instruction's words: a percent, a fraction such as
+0.75, halfway, the top, or the bottom. A suggestion to choose after typing and
+a click that would undo a checkbox already in the asked state go to the model.
 Each element is described by its role, name, and value, the text of its
 table row or list item, the caption or name of its table and the header of its
 column, the named sections around it, the nearest heading, and its place among
