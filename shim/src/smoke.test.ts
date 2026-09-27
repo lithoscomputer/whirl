@@ -59,6 +59,7 @@ test("the driver runs a flow against a data: URL in chromium", {
 			blockedHosts: [],
 			videoPath: null,
 			videoSkipped: null,
+			videoBlank: null,
 		});
 	} finally {
 		await driver.dispose();

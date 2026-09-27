@@ -8,7 +8,7 @@
 // its last frame and a fast page drops frames, without clock drift. A
 // page that sends no frame before the recording stops is captured, and
 // that frame fills the recording. A page that cannot be captured gets a
-// white frame, as in Playwright's recorder.
+// white frame, as in Playwright's recorder, and the outcome says why.
 
 import type { ChildProcess } from "node:child_process";
 import { spawn } from "node:child_process";
@@ -265,7 +265,7 @@ export type FrameCapture =
 	/** The page has not painted yet, so a later capture can work. */
 	| { readonly type: "unpainted" }
 	/** The capture failed for another reason, as for a crashed page. */
-	| { readonly type: "failed" };
+	| { readonly type: "failed"; readonly reason: string };
 
 /**
  * Where a recording's JPEG frames come from. In a flow it is the page's
@@ -353,10 +353,11 @@ export class PageScreencast implements FrameSource {
 		} catch (error: unknown) {
 			// Chrome has nothing to copy until the page paints once, as on a
 			// new tab or right after a navigation.
-			const unpainted =
-				error instanceof Error &&
-				error.message.includes("Unable to capture screenshot");
-			return { type: unpainted ? "unpainted" : "failed" };
+			const message = error instanceof Error ? error.message : String(error);
+			if (message.includes("Unable to capture screenshot")) {
+				return { type: "unpainted" };
+			}
+			return { type: "failed", reason: message };
 		}
 	}
 
@@ -394,10 +395,19 @@ function whiteFrame(width: number, height: number): Buffer {
 	).data;
 }
 
-/** How a recording ended. A skipped recording leaves no file. */
+/** How a recording ended. */
 export type RecordingOutcome =
 	| { readonly type: "saved" }
+	/** Saved, but it holds only a white frame, for `reason`. */
+	| { readonly type: "blank"; readonly reason: string }
+	/** A skipped recording leaves no file. */
 	| { readonly type: "skipped"; readonly reason: string };
+
+/** The frame that a recording holds to its end. */
+type LastFrame =
+	| { readonly type: "page"; readonly frame: Buffer }
+	/** A white frame, because the page gave no frame, for `reason`. */
+	| { readonly type: "blank"; readonly frame: Buffer; readonly reason: string };
 
 /**
  * One recording of one page. `start` opens ffmpeg and the frame source;
@@ -502,48 +512,69 @@ export class ScreencastRecorder {
 	 * a still page can end before the first frame arrives, so capture the
 	 * page now. A page that has not painted yet is captured again for up
 	 * to the source's `paintWaitMs`, and a screencast frame that arrives
-	 * meanwhile is as good. Without a frame, the frame is white. Whatever
-	 * the frame, it fills the recording from its start.
+	 * meanwhile is as good. Without a frame, the frame is white, and the
+	 * result gives the reason. Whatever the frame, it fills the recording
+	 * from its start.
 	 */
-	async #firstFrame(): Promise<Buffer> {
+	async #firstFrame(): Promise<LastFrame> {
 		this.#clock.startAt(this.#startMs);
 		const startedMs = performance.now();
 		const retryEndMs = startedMs + this.#source.paintWaitMs;
 		const endMs = startedMs + frameCaptureTimeoutMs;
 		for (;;) {
-			const capture: FrameCapture = (await withinMs(
+			const capture = await withinMs(
 				this.#source.capture(),
 				endMs - performance.now(),
-			)) ?? { type: "failed" };
+			);
 			if (this.#held !== null) {
-				return this.#held;
+				return { type: "page", frame: this.#held };
+			}
+			if (capture === null) {
+				return this.#blank(
+					`capturing the page took more than ${frameCaptureTimeoutMs}ms`,
+				);
 			}
 			if (capture.type === "frame") {
-				return capture.frame;
+				return { type: "page", frame: capture.frame };
 			}
-			if (
-				capture.type === "failed" ||
-				performance.now() + captureRetryDelayMs > retryEndMs
-			) {
-				return whiteFrame(this.#width, this.#height);
+			if (capture.type === "failed") {
+				return this.#blank(`capturing the page failed: ${capture.reason}`);
+			}
+			if (performance.now() + captureRetryDelayMs > retryEndMs) {
+				return this.#blank(
+					`the page did not paint within ${this.#source.paintWaitMs}ms`,
+				);
 			}
 			await sleep(captureRetryDelayMs);
 			if (this.#held !== null) {
-				return this.#held;
+				return { type: "page", frame: this.#held };
 			}
 		}
+	}
+
+	/** A white frame of the viewport's size, held for `reason`. */
+	#blank(reason: string): LastFrame {
+		return {
+			type: "blank",
+			frame: whiteFrame(this.#width, this.#height),
+			reason,
+		};
 	}
 
 	/**
 	 * Finalizes the recording at `finalPath`. When no screencast frame has
 	 * arrived, the page is captured instead, or a white frame fills the
-	 * recording. When ffmpeg fails or stalls, the recording is skipped: a
-	 * recording is evidence, not a result (SPEC section 13).
+	 * recording, and the outcome says why it is blank. When ffmpeg fails
+	 * or stalls, the recording is skipped: a recording is evidence, not a
+	 * result (SPEC section 13).
 	 */
 	async stop(finalPath: string): Promise<RecordingOutcome> {
 		// The source stays open, and frames still arrive, until a frame is
 		// chosen.
-		const last = this.#held ?? (await this.#firstFrame());
+		const last: LastFrame =
+			this.#held === null
+				? await this.#firstFrame()
+				: { type: "page", frame: this.#held };
 		this.#stopped = true;
 		await this.#source.stop();
 		// Hold the last frame up to now, and never end on an empty stream.
@@ -551,7 +582,7 @@ export class ScreencastRecorder {
 		const copies =
 			this.#clock.written === 0 ? Math.max(1, remaining) : remaining;
 		for (let index = 0; index < copies; index += 1) {
-			this.#stdin.write(last);
+			this.#stdin.write(last.frame);
 		}
 		this.#clock.advance(copies);
 		this.#stdin.end();
@@ -579,7 +610,9 @@ export class ScreencastRecorder {
 		}
 		await mkdir(dirname(finalPath), { recursive: true });
 		await rename(this.#output, finalPath);
-		return { type: "saved" };
+		return last.type === "blank"
+			? { type: "blank", reason: last.reason }
+			: { type: "saved" };
 	}
 
 	/** Stops recording and discards the output. Never throws. */

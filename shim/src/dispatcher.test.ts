@@ -49,6 +49,7 @@ class FakeDriver implements ShimDriver {
 			blockedHosts: ["a.example.com"],
 			videoPath: null,
 			videoSkipped: null,
+			videoBlank: null,
 		};
 	}
 
@@ -185,6 +186,7 @@ test("startFlow and endFlow round-trip through the driver", async (t) => {
 			blockedHosts: ["a.example.com"],
 			videoPath: null,
 			videoSkipped: null,
+			videoBlank: null,
 		},
 	});
 });
