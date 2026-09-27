@@ -29,6 +29,19 @@ interrupted session, and it does nothing once every target is met.
 `models.txt` lists the default models. `-m` replaces the list for one
 session.
 
+A model name that starts with `jev:` runs Whirl with `--jev` (SPEC section
+7.4): Jev plans first, and the rest of the name is the fallback model. Set
+`TYPESAFE_API_KEY` as well. `jev:` runs keep their own results, so one
+session can compare both planners:
+
+```console
+$ mise run eval:act -- -m gemini/gemini-3.1-flash-lite -m jev:gemini/gemini-3.1-flash-lite -n 3
+```
+
+The leaderboard's "by Jev" column is the share of actions Jev chose without
+the model. Calls and tokens count the model only; costs include Jev's
+requests, which `lithos-llm` prices from its catalog.
+
 ## Sets
 
 - **local** (default): flows in `local/flows/` against the pages in

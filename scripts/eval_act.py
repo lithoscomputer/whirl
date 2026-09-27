@@ -29,6 +29,9 @@ NO_MATCH_SUFFIX = ".no-match.whirl"
 # The value the login task fills through {{env.EVAL_PASSWORD}}. It is not a
 # secret; it only has to reach the page without reaching the model.
 EVAL_PASSWORD = "eval-password-5d1c"
+# A model name with this prefix runs with --jev: Jev plans first, and the
+# rest of the name is the fallback model (SPEC 7.4).
+JEV_PREFIX = "jev:"
 
 
 @dataclass(frozen=True)
@@ -58,6 +61,13 @@ def load_models(requested):
     return [line.strip() for line in lines if line.strip() and not line.startswith("#")]
 
 
+def whirl_model(model):
+    """The model option and the extra flags for a model name."""
+    if model.startswith(JEV_PREFIX):
+        return model[len(JEV_PREFIX):], ["--jev"]
+    return model, []
+
+
 def slug(model):
     return re.sub(r"[^a-z0-9.]+", "-", model.lower()).strip("-")
 
@@ -77,6 +87,9 @@ class Result:
     output_tokens: int | None = None
     cost_usd_micros: int | None = None
     priced: bool = False
+    # Actions that ran, and how many of them Jev chose.
+    actions: int = 0
+    jev_actions: int = 0
 
     @property
     def good(self):
@@ -106,9 +119,14 @@ def classify(file_report, model):
         result.model_calls = sum(usage["modelCalls"] for usage in usages)
         result.input_tokens = sum(usage["inputTokens"] for usage in usages)
         result.output_tokens = sum(usage["outputTokens"] for usage in usages)
-        costs = [usage.get("costUsdMicros") for usage in usages]
+        # A step with no model call cost nothing; older reports leave its
+        # cost out.
+        costs = [usage.get("costUsdMicros", 0 if usage["modelCalls"] == 0 else None) for usage in usages]
         result.priced = all(cost is not None for cost in costs)
         result.cost_usd_micros = sum(costs) if result.priced else None
+        actions = [action for step in act_steps for action in step["act"]["actions"]]
+        result.actions = len(actions)
+        result.jev_actions = len([action for action in actions if action.get("plannedBy") == "jev"])
 
     failed = next((step for step in steps if step["status"] in ("failed", "error")), None)
     result.code = failed["error"]["code"] if failed and failed.get("error") else None
@@ -188,9 +206,11 @@ def run_pass(set_name, model, tasks, env):
     run_dir = EVALS / "runs" / set_name / slug(model) / stamp
     run_dir.mkdir(parents=True)
     (run_dir / "meta.json").write_text(json.dumps({"model": model, "set": set_name}, indent=2) + "\n")
+    option, flags = whirl_model(model)
     command = [
         whirl_binary(),
-        "--var", f"model={model}",
+        *flags,
+        "--var", f"model={option}",
         "--report-json", str(run_dir / "report.json"),
         "--artifacts", str(run_dir / "artifacts"),
         *[str(task.path) for task in tasks],
@@ -264,6 +284,11 @@ class ModelSummary:
             durations = [result.duration_ms for result in measured]
             cells += [seconds(statistics.median(durations)), seconds(percentile(durations, 0.9))]
             cells.append(f"{statistics.mean(result.model_calls for result in measured):.2f}")
+            actions = sum(result.actions for result in measured)
+            if self.model.startswith(JEV_PREFIX) and actions:
+                cells.append(f"{sum(result.jev_actions for result in measured) / actions:.2f}")
+            else:
+                cells.append("-")
             cells.append(tokens(statistics.mean(result.input_tokens for result in measured)))
             cells.append(tokens(statistics.mean(result.output_tokens for result in measured)))
             if all(result.priced for result in measured):
@@ -272,7 +297,7 @@ class ModelSummary:
             else:
                 cells += ["n/a", "n/a"]
         else:
-            cells += ["n/a"] * 7
+            cells += ["n/a"] * 8
         return "| " + " | ".join(cells) + " |"
 
 
@@ -308,11 +333,14 @@ def render_summary(set_name, tasks, models, results, n, date, version, commit):
         "precheck failed) and errors (exit 3: network, credentials, shim) are",
         "left out. Times are the task's ACT steps: snapshots, model calls, and actions.",
         "Costs use catalog prices and show n/a when any run was unpriced.",
+        f"A `{JEV_PREFIX}` model runs with `--jev`: Jev plans first, and the named model",
+        "plans when Jev is unsure. \"by Jev\" is the share of actions Jev chose. Calls",
+        "and tokens count the model only; costs include Jev's requests.",
         "",
         "## Leaderboard",
         "",
-        "| model | pass | good runs | drift | errors | p50 ACT | p90 ACT | calls | in tok | out tok | $/task | $ total |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| model | pass | good runs | drift | errors | p50 ACT | p90 ACT | calls | by Jev | in tok | out tok | $/task | $ total |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     lines += [by_model[model].row() for model in models]
     lines += ["", "## Per task", "", "Passes over good runs.", ""]
