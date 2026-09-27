@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Senior Backend Engineer - Hiring pipeline - Crewbase</title>
+<style>
+  body { margin: 0; font-family: system-ui, sans-serif; color: #1c1f26; background: #f4f5f7; }
+  header { display: flex; gap: 24px; padding: 12px 32px; background: #fff; border-bottom: 1px solid #dfe1e6; }
+  main { padding: 16px 32px; }
+  .board { display: flex; gap: 16px; }
+  .column { width: 240px; min-height: 360px; padding: 8px; background: #ebecf0; border-radius: 8px; }
+  .column h2 { margin: 4px 8px 12px; font-size: 15px; }
+  .card { margin: 0 0 8px; padding: 10px; background: #fff; border-radius: 6px; box-shadow: 0 1px 2px #0003; cursor: grab; touch-action: none; user-select: none; }
+  .card span { display: block; color: #5e6c84; font-size: 13px; }
+  .card.dragging { box-shadow: 0 8px 16px #0004; cursor: grabbing; }
+</style>
+</head>
+<body>
+<header>
+  <strong>Crewbase</strong>
+  <nav aria-label="Main"><a href="#">Jobs</a> <a href="#">Candidates</a> <a href="#">Interviews</a></nav>
+</header>
+<main>
+  <h1>Senior Backend Engineer</h1>
+  <p>Remote, United States · Hiring manager: Omar Haddad</p>
+  <div class="board">
+    <section class="column" aria-label="Applied">
+      <h2>Applied</h2>
+      <div class="card" role="button" tabindex="0" aria-roledescription="draggable"><strong>Jordan Ellis</strong><span>Applied 2 days ago</span></div>
+      <div class="card" role="button" tabindex="0" aria-roledescription="draggable"><strong>Mei Tanaka</strong><span>Referred by Sam Lee</span></div>
+      <div class="card" role="button" tabindex="0" aria-roledescription="draggable"><strong>Carlos Mendes</strong><span>Applied 5 days ago</span></div>
+    </section>
+    <section class="column" aria-label="Phone screen">
+      <h2>Phone screen</h2>
+      <div class="card" role="button" tabindex="0" aria-roledescription="draggable"><strong>Priya Patel</strong><span>Screened by Omar Haddad</span></div>
+      <div class="card" role="button" tabindex="0" aria-roledescription="draggable"><strong>Liam O'Brien</strong><span>Call on Thursday</span></div>
+    </section>
+    <section class="column" aria-label="Onsite">
+      <h2>Onsite</h2>
+      <div class="card" role="button" tabindex="0" aria-roledescription="draggable"><strong>Fatima Noor</strong><span>Onsite on Friday</span></div>
+    </section>
+    <section class="column" aria-label="Offer">
+      <h2>Offer</h2>
+    </section>
+  </div>
+  <p role="status" data-testid="status"></p>
+</main>
+<script>
+  // The board's own drag code, with pointer events and no native drag and
+  // drop. A drag starts once the pointer moves 8px, so a click stays a
+  // click.
+  const status = document.querySelector("[role=status]");
+  for (const card of document.querySelectorAll(".card")) {
+    card.addEventListener("pointerdown", (event) => {
+      const start = { x: event.clientX, y: event.clientY };
+      let active = false;
+      const move = (moveEvent) => {
+        const dx = moveEvent.clientX - start.x;
+        const dy = moveEvent.clientY - start.y;
+        if (!active && Math.hypot(dx, dy) > 8) {
+          active = true;
+          card.classList.add("dragging");
+          // Let elementFromPoint see the column under the card.
+          card.style.pointerEvents = "none";
+        }
+        if (active) card.style.transform = `translate(${dx}px, ${dy}px)`;
+      };
+      const up = (upEvent) => {
+        if (active) {
+          const column = document.elementFromPoint(upEvent.clientX, upEvent.clientY)?.closest(".column");
+          if (column && column !== card.parentElement) {
+            column.append(card);
+            status.textContent = `Moved ${card.querySelector("strong").textContent} to ${column.getAttribute("aria-label")}`;
+          }
+        }
+        card.classList.remove("dragging");
+        card.style.pointerEvents = "";
+        card.style.transform = "";
+        document.removeEventListener("pointermove", move);
+        document.removeEventListener("pointerup", up);
+      };
+      document.addEventListener("pointermove", move);
+      document.addEventListener("pointerup", up);
+    });
+  }
+</script>
+</body>
+</html>

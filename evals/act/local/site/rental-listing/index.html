@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Lakeside cabin with sauna - Hemlock Stays</title>
+<style>
+  body { margin: 0; font-family: system-ui, sans-serif; color: #222; }
+  header { display: flex; gap: 24px; padding: 16px 40px; border-bottom: 1px solid #ddd; }
+  header nav { display: flex; gap: 20px; margin-left: auto; }
+  main { max-width: 960px; margin: 0 auto; padding: 0 16px 64px; }
+  .photos { display: flex; gap: 8px; overflow-x: auto; border-radius: 12px; }
+  .photos img { flex: none; width: 300px; height: 200px; border-radius: 8px; }
+  .details { display: grid; grid-template-columns: 2fr 1fr; gap: 40px; }
+  .booking { align-self: start; padding: 24px; border: 1px solid #ddd; border-radius: 12px; }
+  section { margin: 32px 0; }
+</style>
+</head>
+<body>
+<header>
+  <strong>Hemlock Stays</strong>
+  <nav aria-label="Account">
+    <a href="#">Explore</a>
+    <a href="#">Wishlists</a>
+    <a href="#">Sign in</a>
+  </nav>
+</header>
+<main>
+  <h1>Lakeside cabin with sauna</h1>
+  <p>Entire cabin in Ely, Minnesota · 4 guests · 2 bedrooms · 1 bath</p>
+  <div class="photos" role="region" aria-label="Photos" tabindex="0"></div>
+  <div class="details">
+    <div>
+      <section>
+        <h2>About this place</h2>
+        <p>A quiet cedar cabin on a private bay of Shagawa Lake. Paddle from the dock at sunrise, warm up in the wood-fired sauna, and end the day by the fire pit.</p>
+        <p>The cabin sits at the end of a gravel road, 10 minutes from town. The road is plowed in winter.</p>
+      </section>
+      <section>
+        <h2>What this place offers</h2>
+        <ul>
+          <li>Wood-fired sauna</li>
+          <li>Two kayaks and a canoe</li>
+          <li>Wood stove</li>
+          <li>Full kitchen</li>
+          <li>Wifi</li>
+          <li>Free parking</li>
+        </ul>
+      </section>
+      <section>
+        <h2>Where you'll sleep</h2>
+        <p>Main bedroom: 1 queen bed. Bunk room: 2 twin beds.</p>
+      </section>
+      <section>
+        <h2>Reviews</h2>
+        <p>4.96 out of 5 from 128 reviews.</p>
+        <blockquote>"The sauna by the lake was the best part of our trip." Dana, March</blockquote>
+        <blockquote>"Clean, cozy, and so quiet at night." Luis, January</blockquote>
+      </section>
+    </div>
+    <aside class="booking" aria-label="Booking">
+      <p><strong>$189</strong> night</p>
+      <label>Check-in <input type="date"></label>
+      <label>Checkout <input type="date"></label>
+      <p><button>Check availability</button></p>
+    </aside>
+  </div>
+</main>
+<script>
+  const photos = [
+    ["Living room with wood stove", "#b08968"],
+    ["Kitchen", "#ddb892"],
+    ["Main bedroom", "#7f5539"],
+    ["Bunk room", "#9c6644"],
+    ["Sauna", "#6f1d1b"],
+    ["Dock at sunrise", "#468faf"],
+    ["Lake view from the deck", "#2a6f97"],
+    ["Fire pit", "#bb3e03"],
+  ];
+  const strip = document.querySelector(".photos");
+  for (const [alt, color] of photos) {
+    const image = document.createElement("img");
+    image.alt = alt;
+    image.src = `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="300" height="200"><rect width="300" height="200" fill="${color}"/></svg>`)}`;
+    strip.append(image);
+  }
+</script>
+</body>
+</html>
