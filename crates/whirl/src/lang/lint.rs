@@ -615,7 +615,8 @@ fn collect_action_refs<'a>(action: &'a Action, refs: &mut Vec<VarRef<'a>>) {
         | ActionKind::Dblclick { target }
         | ActionKind::Check { target }
         | ActionKind::Uncheck { target }
-        | ActionKind::Hover { target } => collect_locator_refs(target, line, refs),
+        | ActionKind::Hover { target }
+        | ActionKind::ScrollIntoView { target } => collect_locator_refs(target, line, refs),
         ActionKind::Fill { target, value }
         | ActionKind::Type {
             target,
@@ -641,6 +642,11 @@ fn collect_action_refs<'a>(action: &'a Action, refs: &mut Vec<VarRef<'a>>) {
         ActionKind::Drag { source, target } => {
             collect_locator_refs(source, line, refs);
             collect_locator_refs(target, line, refs);
+        }
+        ActionKind::Scroll { target, .. } => {
+            if let Some(target) = target {
+                collect_locator_refs(target, line, refs);
+            }
         }
         ActionKind::Eval { script } => collect_value_refs(script, line, refs),
         ActionKind::Act { scope, instruction } => {

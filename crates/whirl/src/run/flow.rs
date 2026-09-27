@@ -735,6 +735,17 @@ impl FlowExec<'_> {
                 locator: self.locator(source, engine)?,
                 target:  self.locator(target, engine)?,
             },
+            K::ScrollIntoView { target } => StepCommand::Scroll {
+                locator: Some(self.locator(target, engine)?),
+                motion:  wire::scroll_motion_wire(None),
+            },
+            K::Scroll { target, motion } => StepCommand::Scroll {
+                locator: target
+                    .as_ref()
+                    .map(|target| self.locator(target, engine))
+                    .transpose()?,
+                motion:  wire::scroll_motion_wire(Some(motion)),
+            },
             K::Upload { target, path } => {
                 let resolved = self.resolve(path)?;
                 let path = resolve_beside_file(self.run.canonical, &resolved);

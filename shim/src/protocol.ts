@@ -299,6 +299,14 @@ export interface HttpParams {
 	readonly body: string | null;
 }
 
+export type ScrollDirection = "down" | "up" | "left" | "right";
+
+/** How a `scroll` command moves (SPEC section 7). */
+export type ScrollMotion =
+	| { readonly type: "intoView" }
+	| { readonly type: "chunk"; readonly direction: ScrollDirection }
+	| { readonly type: "position"; readonly percent: number };
+
 export type StepCommand =
 	| "http"
 	| "response"
@@ -315,6 +323,7 @@ export type StepCommand =
 	| "selectOption"
 	| "hover"
 	| "drag"
+	| "scroll"
 	| "upload"
 	| "screenshot"
 	| "snapshot"
@@ -344,6 +353,7 @@ const stepCommandList: readonly StepCommand[] = [
 	"selectOption",
 	"hover",
 	"drag",
+	"scroll",
 	"upload",
 	"screenshot",
 	"snapshot",

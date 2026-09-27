@@ -6,10 +6,10 @@ use std::ops::RangeInclusive;
 use serde::Deserialize;
 use serde_json::{Value as Json, json};
 
-use crate::lang::ast::MouseButton;
+use crate::lang::ast::{MouseButton, Percent, ScrollDirection, ScrollMotion};
 use crate::run::act::instruction::{Instruction, UnboundPlaceholder, same_text};
 use crate::run::act::snapshot::{PageSnapshot, Target, quote};
-use crate::run::shim::StepCommand;
+use crate::run::shim::{StepCommand, wire};
 
 /// The raw structured answer that [`inference_schema`] describes.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -67,6 +67,12 @@ pub(crate) enum ActMethod {
     Hover,
     SelectOptionFromDropdown,
     DragAndDrop,
+    ScrollIntoView,
+    ScrollTo,
+    NextChunk,
+    PrevChunk,
+    ScrollLeft,
+    ScrollRight,
 }
 
 impl ActMethod {
@@ -79,6 +85,12 @@ impl ActMethod {
         Self::Hover,
         Self::SelectOptionFromDropdown,
         Self::DragAndDrop,
+        Self::ScrollIntoView,
+        Self::ScrollTo,
+        Self::NextChunk,
+        Self::PrevChunk,
+        Self::ScrollLeft,
+        Self::ScrollRight,
     ];
 
     pub(crate) fn wire_name(self) -> &'static str {
@@ -91,6 +103,12 @@ impl ActMethod {
             Self::Hover => "hover",
             Self::SelectOptionFromDropdown => "selectOptionFromDropdown",
             Self::DragAndDrop => "dragAndDrop",
+            Self::ScrollIntoView => "scrollIntoView",
+            Self::ScrollTo => "scrollTo",
+            Self::NextChunk => "nextChunk",
+            Self::PrevChunk => "prevChunk",
+            Self::ScrollLeft => "scrollLeft",
+            Self::ScrollRight => "scrollRight",
         }
     }
 
@@ -99,12 +117,19 @@ impl ActMethod {
     fn arity(self) -> RangeInclusive<usize> {
         match self {
             Self::Click => 0..=1,
-            Self::DoubleClick | Self::Hover => 0..=0,
+            Self::DoubleClick
+            | Self::Hover
+            | Self::ScrollIntoView
+            | Self::NextChunk
+            | Self::PrevChunk
+            | Self::ScrollLeft
+            | Self::ScrollRight => 0..=0,
             Self::Fill
             | Self::Type
             | Self::Press
             | Self::SelectOptionFromDropdown
-            | Self::DragAndDrop => 1..=1,
+            | Self::DragAndDrop
+            | Self::ScrollTo => 1..=1,
         }
     }
 }
@@ -187,14 +212,38 @@ pub(crate) struct ArgText(String);
 /// element.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum PlannedAction {
-    Click { target: Target, button: MouseButton },
+    Click {
+        target: Target,
+        button: MouseButton,
+    },
     Dblclick(Target),
     Hover(Target),
-    Drag { source: Target, target: Target },
-    Fill { target: Target, text: ArgText },
-    Type { target: Target, text: ArgText },
-    Press { target: Target, key: ArgText },
-    Select { target: Target, option: ArgText },
+    Drag {
+        source: Target,
+        target: Target,
+    },
+    ScrollIntoView(Target),
+    /// Scrolls the target's scroll box, or the page without a target.
+    Scroll {
+        target: Option<Target>,
+        motion: ScrollMotion,
+    },
+    Fill {
+        target: Target,
+        text:   ArgText,
+    },
+    Type {
+        target: Target,
+        text:   ArgText,
+    },
+    Press {
+        target: Target,
+        key:    ArgText,
+    },
+    Select {
+        target: Target,
+        option: ArgText,
+    },
 }
 
 impl PlannedAction {
@@ -248,7 +297,32 @@ impl PlannedAction {
                     target: drop,
                 }
             }
+            ActMethod::ScrollIntoView => Self::ScrollIntoView(target),
+            ActMethod::ScrollTo => {
+                let ArgText(given) = argument();
+                let percent = Percent::parse(&given).ok_or(DecisionError::Percent { given })?;
+                Self::scroll(target, ScrollMotion::To(percent))
+            }
+            ActMethod::NextChunk => {
+                Self::scroll(target, ScrollMotion::Chunk(ScrollDirection::Down))
+            }
+            ActMethod::PrevChunk => Self::scroll(target, ScrollMotion::Chunk(ScrollDirection::Up)),
+            ActMethod::ScrollLeft => {
+                Self::scroll(target, ScrollMotion::Chunk(ScrollDirection::Left))
+            }
+            ActMethod::ScrollRight => {
+                Self::scroll(target, ScrollMotion::Chunk(ScrollDirection::Right))
+            }
         })
+    }
+
+    /// A scroll of the target's box; the page's `<body>` stands for the
+    /// page, which scrolls without a locator.
+    fn scroll(target: Target, motion: ScrollMotion) -> Self {
+        Self::Scroll {
+            target: (!target.is_page()).then_some(target),
+            motion,
+        }
     }
 
     /// The shim command for this action, with placeholders filled in.
@@ -273,6 +347,14 @@ impl PlannedAction {
             Self::Drag { source, target } => StepCommand::Drag {
                 locator: source.locator_wire(),
                 target:  target.locator_wire(),
+            },
+            Self::ScrollIntoView(target) => StepCommand::Scroll {
+                locator: Some(target.locator_wire()),
+                motion:  wire::scroll_motion_wire(None),
+            },
+            Self::Scroll { target, motion } => StepCommand::Scroll {
+                locator: target.as_ref().map(Target::locator_wire),
+                motion:  wire::scroll_motion_wire(Some(motion)),
             },
             Self::Fill { target, text } => StepCommand::Fill {
                 locator: target.locator_wire(),
@@ -328,6 +410,17 @@ impl PlannedAction {
                 source.locator_text(),
                 target.locator_text()
             ),
+            Self::ScrollIntoView(target) => format!("SCROLL {}", target.locator_text()),
+            Self::Scroll { target, motion } => {
+                let motion = match motion {
+                    ScrollMotion::Chunk(direction) => direction.keyword().to_owned(),
+                    ScrollMotion::To(percent) => format!("to {percent}"),
+                };
+                match target {
+                    Some(target) => format!("SCROLL {} {motion}", target.locator_text()),
+                    None => format!("SCROLL {motion}"),
+                }
+            }
             Self::Fill { target, text } => with("FILL", target, text),
             Self::Type { target, text } => with("TYPE", target, text),
             Self::Press { target, key } => with("PRESS", target, key),
@@ -341,15 +434,27 @@ impl PlannedAction {
             Self::Click {
                 button: MouseButton::Left,
                 ..
-            } => (ActMethod::Click, ""),
-            Self::Click { button, .. } => (ActMethod::Click, button.name()),
-            Self::Dblclick(_) => (ActMethod::DoubleClick, ""),
-            Self::Hover(_) => (ActMethod::Hover, ""),
-            Self::Drag { target, .. } => (ActMethod::DragAndDrop, target.element_ref()),
-            Self::Fill { text, .. } => (ActMethod::Fill, text.0.as_str()),
-            Self::Type { text, .. } => (ActMethod::Type, text.0.as_str()),
-            Self::Press { key, .. } => (ActMethod::Press, key.0.as_str()),
-            Self::Select { option, .. } => (ActMethod::SelectOptionFromDropdown, option.0.as_str()),
+            } => (ActMethod::Click, String::new()),
+            Self::Click { button, .. } => (ActMethod::Click, button.name().to_owned()),
+            Self::Dblclick(_) => (ActMethod::DoubleClick, String::new()),
+            Self::Hover(_) => (ActMethod::Hover, String::new()),
+            Self::Drag { target, .. } => (ActMethod::DragAndDrop, target.element_ref().to_owned()),
+            Self::ScrollIntoView(_) => (ActMethod::ScrollIntoView, String::new()),
+            Self::Scroll { motion, .. } => match motion {
+                ScrollMotion::To(percent) => (ActMethod::ScrollTo, percent.to_string()),
+                ScrollMotion::Chunk(ScrollDirection::Down) => (ActMethod::NextChunk, String::new()),
+                ScrollMotion::Chunk(ScrollDirection::Up) => (ActMethod::PrevChunk, String::new()),
+                ScrollMotion::Chunk(ScrollDirection::Left) => {
+                    (ActMethod::ScrollLeft, String::new())
+                }
+                ScrollMotion::Chunk(ScrollDirection::Right) => {
+                    (ActMethod::ScrollRight, String::new())
+                }
+            },
+            Self::Fill { text, .. } => (ActMethod::Fill, text.0.clone()),
+            Self::Type { text, .. } => (ActMethod::Type, text.0.clone()),
+            Self::Press { key, .. } => (ActMethod::Press, key.0.clone()),
+            Self::Select { option, .. } => (ActMethod::SelectOptionFromDropdown, option.0.clone()),
         };
         format!(
             "method: {}, description: {description}, arguments: {argument}",
@@ -408,6 +513,8 @@ pub(crate) enum DecisionError {
     Button { given: String },
     #[error("the answer drags element {element_id} onto itself")]
     DropOnItself { element_id: String },
+    #[error("scrollTo takes a percent from 0% to 100%, but the answer gave {given:?}")]
+    Percent { given: String },
     #[error(transparent)]
     Placeholder(#[from] UnboundPlaceholder),
 }
@@ -737,6 +844,109 @@ mod tests {
         );
     }
 
+    fn scroll(method: &str, arguments: &[&str]) -> ActInference {
+        inference(json!({
+            "action": {"elementId": "e2", "description": "the feed", "method": method, "arguments": arguments},
+            "twoStep": false
+        }))
+    }
+
+    /// A whole-page snapshot, where `e1` is the page's `<body>`.
+    fn page_snapshot() -> PageSnapshot {
+        PageSnapshot::parse("- generic [ref=e1]:\n  - list \"Feed\" [ref=e2]\n").of_page()
+    }
+
+    fn scroll_action(answer: ActInference) -> PlannedAction {
+        match page_snapshot().decide(answer, &instruction("x")) {
+            Ok(ActDecision::Perform { action, .. }) => action,
+            other => panic!("expected an action, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn scroll_methods_run_as_scroll_lines() {
+        for (method, arguments, line, motion) in [
+            (
+                "scrollIntoView",
+                &[][..],
+                r#"SCROLL role:list "Feed""#,
+                json!({"type": "intoView"}),
+            ),
+            (
+                "scrollTo",
+                &["50%"][..],
+                r#"SCROLL role:list "Feed" to 50%"#,
+                json!({"type": "position", "percent": 50.0}),
+            ),
+            (
+                "nextChunk",
+                &[][..],
+                r#"SCROLL role:list "Feed" down"#,
+                json!({"type": "chunk", "direction": "down"}),
+            ),
+            (
+                "prevChunk",
+                &[][..],
+                r#"SCROLL role:list "Feed" up"#,
+                json!({"type": "chunk", "direction": "up"}),
+            ),
+            (
+                "scrollLeft",
+                &[][..],
+                r#"SCROLL role:list "Feed" left"#,
+                json!({"type": "chunk", "direction": "left"}),
+            ),
+            (
+                "scrollRight",
+                &[][..],
+                r#"SCROLL role:list "Feed" right"#,
+                json!({"type": "chunk", "direction": "right"}),
+            ),
+        ] {
+            let action = scroll_action(scroll(method, arguments));
+            assert_eq!(action.line(), line, "{method}");
+            assert_eq!(
+                action.command(&instruction("x")),
+                StepCommand::Scroll {
+                    locator: Some(json!([{"type": "ref", "ref": "e2"}])),
+                    motion,
+                },
+                "{method}"
+            );
+        }
+        assert_eq!(
+            scroll_action(scroll("scrollTo", &["75%"])).describe_for_model("the feed"),
+            "method: scrollTo, description: the feed, arguments: 75%"
+        );
+    }
+
+    #[test]
+    fn the_pages_body_scrolls_the_page() {
+        let answer = inference(json!({
+            "action": {"elementId": "e1", "description": "the page", "method": "nextChunk", "arguments": []},
+            "twoStep": false
+        }));
+        let action = scroll_action(answer);
+        assert_eq!(action.line(), "SCROLL down");
+        assert_eq!(action.command(&instruction("x")), StepCommand::Scroll {
+            locator: None,
+            motion:  json!({"type": "chunk", "direction": "down"}),
+        });
+    }
+
+    #[test]
+    fn scroll_to_needs_a_percent_from_0_to_100() {
+        for given in ["150%", "0.5", "halfway"] {
+            assert_eq!(
+                page_snapshot().decide(scroll("scrollTo", &[given]), &instruction("x")),
+                Err(DecisionError::Percent {
+                    given: given.to_owned(),
+                }),
+                "{given}"
+            );
+        }
+    }
+
     #[test]
     fn an_unknown_mouse_button_is_rejected() {
         assert_eq!(
@@ -782,7 +992,7 @@ mod tests {
 
     #[test]
     fn methods_outside_whirls_subset_do_not_parse() {
-        for method in ["scrollTo", "nextChunk"] {
+        for method in ["scroll", "mouse.wheel"] {
             let answer = json!({
                 "action": {"elementId": "e5", "description": "", "method": method, "arguments": []},
                 "twoStep": false

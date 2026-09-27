@@ -24,6 +24,7 @@ import { buildLocator, describeLocator } from "./locators.js";
 import type { Params } from "./params.js";
 import {
 	decodeHttpParams,
+	decodeScrollMotion,
 	fieldArray,
 	fieldArrayOrNull,
 	fieldBoolean,
@@ -43,6 +44,7 @@ import type {
 	MouseButton,
 	PageExpectation,
 	ReadSubject,
+	ScrollMotion,
 	StartFlowParams,
 	StepCommand,
 } from "./protocol.js";
@@ -370,6 +372,88 @@ async function dropPoint(
 		}
 		throw error;
 	}
+}
+
+/**
+ * SCROLL's chunk and position motions (SPEC section 7), run in the page.
+ * The scroll box is the element when it can scroll on the motion's axis,
+ * else its nearest such ancestor, else its document; `html` and `body` are
+ * the document. It scrolls at once, whatever the page's `scroll-behavior`,
+ * and resolves when the position holds for two frames. A hidden page runs
+ * no frames, so a timer also drives the check there.
+ */
+function scrollBox(
+	element: Element,
+	motion: Exclude<ScrollMotion, { readonly type: "intoView" }>,
+): Promise<void> {
+	const doc = element.ownerDocument;
+	const view = doc.defaultView ?? window;
+	const vertical =
+		motion.type === "position" ||
+		motion.direction === "down" ||
+		motion.direction === "up";
+	const isDocument = (node: Element): boolean =>
+		node === doc.documentElement || node === doc.body;
+	const canScroll = (node: Element): boolean => {
+		const style = view.getComputedStyle(node);
+		const overflow = vertical ? style.overflowY : style.overflowX;
+		const room = vertical
+			? node.scrollHeight > node.clientHeight
+			: node.scrollWidth > node.clientWidth;
+		return room && ["auto", "scroll", "overlay"].includes(overflow);
+	};
+	let box: Element | null = element;
+	while (box !== null && !isDocument(box) && !canScroll(box)) {
+		const root = box.getRootNode();
+		box = box.parentElement ?? (root instanceof ShadowRoot ? root.host : null);
+	}
+	const scroller =
+		box === null || isDocument(box)
+			? (doc.scrollingElement ?? doc.documentElement)
+			: box;
+	let top = scroller.scrollTop;
+	let left = scroller.scrollLeft;
+	if (motion.type === "position") {
+		top =
+			((scroller.scrollHeight - scroller.clientHeight) * motion.percent) / 100;
+	} else {
+		const sign =
+			motion.direction === "down" || motion.direction === "right" ? 1 : -1;
+		if (vertical) {
+			top += sign * scroller.clientHeight;
+		} else {
+			left += sign * scroller.clientWidth;
+		}
+	}
+	scroller.scrollTo({ top, left, behavior: "instant" });
+	return new Promise((resolve) => {
+		const position = (): string =>
+			`${scroller.scrollTop},${scroller.scrollLeft}`;
+		let last = position();
+		let steady = 0;
+		const check = (): void => {
+			const now = position();
+			steady = now === last ? steady + 1 : 0;
+			last = now;
+			if (steady >= 2) {
+				resolve();
+			} else {
+				next();
+			}
+		};
+		const next = (): void => {
+			let ran = false;
+			const once = (): void => {
+				if (!ran) {
+					ran = true;
+					check();
+				}
+			};
+			requestAnimationFrame(once);
+			setTimeout(once, 50);
+		};
+		next();
+	});
 }
 
 /**
@@ -910,6 +994,27 @@ export class PlaywrightDriver implements ShimDriver {
 				);
 				return {};
 			}
+			case "scroll": {
+				const motion = decodeScrollMotion(params);
+				if (motion.type === "intoView") {
+					await this.#locatorAction(page, params, (locator) =>
+						locator.scrollIntoViewIfNeeded({ timeout: timeoutMs }),
+					);
+					return {};
+				}
+				// Without a locator the page scrolls, which `scrollBox` reads
+				// from the document element.
+				if (fieldArrayOrNull(params, "locator") === null) {
+					await page
+						.locator(":root")
+						.evaluate(scrollBox, motion, { timeout: timeoutMs });
+					return {};
+				}
+				await this.#locatorAction(page, params, (locator) =>
+					locator.evaluate(scrollBox, motion, { timeout: timeoutMs }),
+				);
+				return {};
+			}
 			case "upload": {
 				const path = fieldString(params, "path");
 				await this.#locatorAction(page, params, (locator) =>
@@ -1325,6 +1430,7 @@ function defaultErrorKind(cmd: StepCommand): ErrorKind {
 		case "selectOption":
 		case "hover":
 		case "drag":
+		case "scroll":
 		case "upload":
 		case "screenshot":
 			return "action";

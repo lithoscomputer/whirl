@@ -478,6 +478,62 @@ fn a_drop_target_the_snapshot_never_showed_fails_the_entry() {
     assert!(stdout.contains("e99"), "stdout:\n{stdout}");
 }
 
+/// A page taller than the viewport; `ref=e1` is its `<body>`.
+const TALL: &str = "<h1>Feed</h1><div style=\"height: 3000px\">Posts</div>";
+
+fn scroll_answer(method: &str, arguments: &[&str]) -> Json {
+    json!({
+        "action": {"elementId": "e1", "description": "the page", "method": method, "arguments": arguments},
+        "twoStep": false
+    })
+}
+
+#[test]
+fn act_scrolls_the_page_when_the_model_names_its_body() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.answer(&[scroll_answer("scrollTo", &["100%"])]);
+    let flow = dir.file(
+        "scroll.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{}ACT \"scroll to the bottom\"\n\
+             [Asserts]\neval \"window.scrollY > 2000\" == true\n",
+            visit_html(TALL)
+        ),
+    );
+    let output = twin.run(&dir, &flow, &[]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+    assert_eq!(
+        act_step(&dir)["act"]["actions"][0]["line"],
+        "SCROLL to 100%"
+    );
+    let log = twin.request_log();
+    assert!(
+        log.contains("choose the root element of the tree"),
+        "log:\n{log}"
+    );
+}
+
+#[test]
+fn a_scroll_position_that_is_not_a_percent_fails_the_entry() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.answer(&[scroll_answer("scrollTo", &["halfway"])]);
+    let flow = dir.file(
+        "scroll-bad.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{}ACT \"scroll halfway down\"\n",
+            visit_html(TALL)
+        ),
+    );
+    let output = twin.run(&dir, &flow, &[]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 1, "stdout:\n{stdout}");
+    assert_eq!(act_step(&dir)["error"]["code"], "act-invalid-decision");
+    assert!(stdout.contains("halfway"), "stdout:\n{stdout}");
+}
+
 #[test]
 fn a_rejected_credential_is_a_runtime_error() {
     let dir = TestDir::new();
@@ -946,6 +1002,28 @@ fn jev_right_clicks_without_a_model_call() {
         "RIGHTCLICK role:button \"report.pdf\""
     );
     assert_eq!(step["act"]["usage"]["modelCalls"], 0);
+}
+
+#[test]
+fn jev_leaves_a_scroll_to_the_model() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.jev(&[jev_intent("scroll", 0.95)]);
+    twin.answer(&[scroll_answer("nextChunk", &[])]);
+    let flow = dir.file(
+        "jev-scroll.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{}ACT \"scroll down a page\"\n\
+             [Asserts]\neval \"window.scrollY > 0\" == true\n",
+            visit_html(TALL)
+        ),
+    );
+    let output = twin.run_jev(&dir, &flow, &[]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+    let step = act_step(&dir);
+    assert_eq!(step["act"]["actions"][0]["line"], "SCROLL down");
+    assert_eq!(step["act"]["actions"][0]["plannedBy"], "llm");
 }
 
 #[test]

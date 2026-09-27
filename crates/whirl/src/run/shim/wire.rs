@@ -13,14 +13,26 @@
 use serde_json::{Value as Json, json};
 
 use crate::lang::ast::{
-    DefaultEngine, Extractor, Ident, Locator, PageCheck, Regex, SegmentKind, StateCheck, Subject,
-    TextPrefix, Value,
+    DefaultEngine, Extractor, Ident, Locator, PageCheck, Regex, ScrollMotion, SegmentKind,
+    StateCheck, Subject, TextPrefix, Value,
 };
 
 /// Shim-only response key for an independent HTTP entry. `$` and `:` cannot
 /// occur in a public `RESPONSE` name.
 pub(crate) fn independent_http_response(line: u32) -> String {
     format!("$whirl:http:{line}")
+}
+
+/// A `scroll` command's motion (protocol section 4): into view without a
+/// motion, else one chunk or a vertical position.
+pub(crate) fn scroll_motion_wire(motion: Option<&ScrollMotion>) -> Json {
+    match motion {
+        None => json!({"type": "intoView"}),
+        Some(ScrollMotion::Chunk(direction)) => {
+            json!({"type": "chunk", "direction": direction.keyword()})
+        }
+        Some(ScrollMotion::To(percent)) => json!({"type": "position", "percent": percent.value()}),
+    }
 }
 
 /// Resolves a value to its final string; `E` is the runner's error.

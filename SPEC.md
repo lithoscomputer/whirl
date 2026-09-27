@@ -77,7 +77,7 @@ A **value** is written in one of two forms:
   - A line's final bare token of the form `@duration` always parses as the step timeout (section 12), so that value must stay quoted (`"@60s"`).
   - In a typed comparison (section 9.6), a bare typed literal and its quoted form differ: `42` is a number and `"42"` is a string.
   - In `[Asserts]` and `[Captures]`, a bare role name cannot be a subject, state, or predicate keyword such as `text` or `visible`, because that word ends the locator. Quote it: `role:button "visible" visible`.
-  - In `DRAG`, a bare `to` separates the two locators. Quote it to match the text: `DRAG "to" to testid:done`.
+  - In `DRAG` and `SCROLL`, a bare `to` is a keyword, and in `SCROLL` so is a bare `down`, `up`, `left`, or `right` at the end of the line. Quote them to match the text: `DRAG "to" to testid:done`, `SCROLL "down"`.
 
 A token can join bare and quoted parts, as in `label:"First name"`; the parts form one value.
 
@@ -95,6 +95,7 @@ Other literal forms:
 - **JSON literal**: in the expected-value position of a check, a value that starts with `[` or `{` is a JSON array or object. It must end on the same line, and it may contain spaces. `{{name}}` works inside it as in HTTP JSON bodies (sections 7.3 and 11).
 - **Duration**: an integer with unit `ms` or `s` (for example `500ms`, `10s`).
 - **Viewport**: `WIDTHxHEIGHT` in CSS pixels (for example `1280x800`).
+- **Percent**: a number from 0 to 100 with a `%` suffix, such as `50%` or `33.5%`, for `SCROLL`.
 
 ## 4. File structure
 
@@ -204,7 +205,7 @@ Text matching is exact (after whitespace normalization). For partial or pattern 
 
 Every text-matching prefix has a substring variant marked with `~` — `role~:`, `label~:`, `placeholder~:`, `text~:`, `alt~:`, `title~:` — which matches by case-insensitive substring, Playwright's default matching. So `text~:"Added"` matches "Added to cart". `testid:` and `css:` have no `~` form, and the unprefixed default engine stays exact.
 
-An unprefixed value in locator position selects a default engine: `label:` for form actions (`FILL`, `SELECT`, `CHECK`, `UNCHECK`, `UPLOAD`, and `PRESS` with a target), and `text:` for pointer actions (`CLICK`, `RIGHTCLICK`, `MIDDLECLICK`, `DBLCLICK`, `HOVER`, `DRAG`) — buttons and links have no label; their accessible name is their text. So `FILL "Email" alice@example.com` fills the input labeled Email, and `CLICK "Add to cart"` clicks the element with that exact text. Prefixes stay available everywhere for precision. Default engines exist only in actions: in `[Asserts]` and `[Captures]` every segment must carry a prefix (or be `nth:`), and an unprefixed value there is a parse error. The scope of `ACT` (section 7.4) follows the same rule.
+An unprefixed value in locator position selects a default engine: `label:` for form actions (`FILL`, `SELECT`, `CHECK`, `UNCHECK`, `UPLOAD`, and `PRESS` with a target), and `text:` for pointer actions (`CLICK`, `RIGHTCLICK`, `MIDDLECLICK`, `DBLCLICK`, `HOVER`, `DRAG`, `SCROLL`) — buttons and links have no label; their accessible name is their text. So `FILL "Email" alice@example.com` fills the input labeled Email, and `CLICK "Add to cart"` clicks the element with that exact text. Prefixes stay available everywhere for precision. Default engines exist only in actions: in `[Asserts]` and `[Captures]` every segment must carry a prefix (or be `nth:`), and an unprefixed value there is a parse error. The scope of `ACT` (section 7.4) follows the same rule.
 
 `frame:` works in actions, asserts, and captures. It may follow an element scope or another frame. An immediately following `nth:N` selects the iframe before entering it. A frame must be followed by an element segment; use `css:` to check the iframe element itself. Nested and cross-origin frames use the same syntax. Frames are resolved lazily, so normal actionability and assertion timeouts also cover frames that load or are replaced later. Multiple matching frames fail strictly unless narrowed explicitly.
 
@@ -243,6 +244,9 @@ An action is a verb, an optional locator, and an optional value. Element-targeti
 | `SELECT locator "Label"` | Choose the `<select>` option with visible text `Label`. |
 | `HOVER locator` | Move the pointer over the element. |
 | `DRAG locator to locator` | Drag the first element and drop it on the second. |
+| `SCROLL locator` | Bring the element into view. |
+| `SCROLL [locator] down` | Scroll down one visible height. `up`, `left`, and `right` scroll the same way. Without a locator, the page scrolls. |
+| `SCROLL [locator] to N%` | Scroll to a vertical position, from `0%` at the top to `100%` at the bottom. Without a locator, the page scrolls. |
 | `UPLOAD locator file:path` | Set the file input to `path`, resolved relative to the `.whirl` file. |
 | `SCREENSHOT name` | Save a full-page screenshot as artifact `name.png`. The name is an identifier that may also contain hyphens. Never fails the entry (see below). |
 | `SNAPSHOT name` | Compare a full-page screenshot against the stored baseline; fails the entry on visual difference. |
@@ -256,6 +260,8 @@ An action is a verb, an optional locator, and an optional value. Element-targeti
 `RIGHTCLICK` and `MIDDLECLICK` test what the page does with those buttons. A right click fires the page's `contextmenu` event, and a middle click fires `auxclick`; neither fires `click`. A page that shows its own menu on a right click, such as a file list, can be tested this way. The browser's own context menu is not part of the page, and no step can check it. What a middle click on a link does depends on the engine: Firefox opens a popup that `POPUP` can name, Chromium opens a tab without an opener that `POPUP` cannot name, and WebKit follows the link in the same tab. To test a link that opens a new tab, click it with `CLICK`.
 
 `DRAG` moves the pointer to the first element, presses the left button, and holds it for 500 ms. It then waits until the second element is visible and stable, moves to its center in 10 steps, waits two animation frames, and releases. The hold serves drag code that starts only after a press delay, commonly 100 to 300 ms, and cancels a drag when the pointer moves sooner; drag code with a longer delay does not start. The steps serve drag code that starts after the pointer moves a few pixels. Native HTML5 drag and drop works in every engine, including from one frame into another. `DRAG` does not check the result: assert where the element landed. In WebKit, a page that took a native HTML5 drag gets no `pointerdown` for later presses until it loads again, so put a `VISIT` between such a drag and drag code that uses pointer events.
+
+Every action already scrolls its element into view, so a flow needs `SCROLL` only for what scrolling itself does: content that loads as it comes into view, controls that react to the scroll position, and boxes that scroll on their own, such as a panel in a dialog. `SCROLL locator` brings the element into view, and passes when it already is. `down`, `up`, `left`, `right`, and `to N%` scroll a scroll box: the element when it can scroll in that direction, else its nearest ancestor that can, else its document. So `SCROLL text:"Filter 3" down` scrolls the panel that holds the text, and `html` or `body` stands for the page. A frame's elements scroll within that frame. A chunk is the box's visible height or width. A position is a share of the vertical scroll range, so `to 50%` centers the middle of the content. `SCROLL` scrolls at once, even when the page asks for smooth scrolling, and the step ends when the position holds for two animation frames. A box already at the requested position stays where it is, and the step passes. `SCROLL` fires the page's `scroll` events and intersection observers, but no `wheel` events. `SCROLL` cannot reach an element that the page has not rendered yet, such as a row far down a virtualized list; write as many `SCROLL locator down` lines as the list needs before the line that uses the row.
 
 `PRESS` with a single argument treats it as the key: `PRESS Enter` presses Enter on the focused element, even though `Enter` could also parse as a locator. Only when two arguments are present is the first a locator.
 
@@ -470,10 +476,19 @@ matching Whirl action, with that action's actionability and strictness rules:
 | `press` | `PRESS` with a target |
 | `selectOptionFromDropdown` | `SELECT` |
 | `dragAndDrop` | `DRAG` |
+| `scrollIntoView` | `SCROLL locator` |
+| `scrollTo` | `SCROLL locator to N%` |
+| `nextChunk` | `SCROLL locator down` |
+| `prevChunk` | `SCROLL locator up` |
+| `scrollLeft` | `SCROLL locator left` |
+| `scrollRight` | `SCROLL locator right` |
 
 For `dragAndDrop`, the element is the one to drag, and the one argument is the
 ref of the element to drop it on, such as `e12`. That ref must be in the
-snapshot and name another element.
+snapshot and name another element. For `scrollTo`, the one argument is a
+percent such as `50%`. In a snapshot of the whole page, the first element is
+the page's `<body>`; a scroll method on it scrolls the page, and the line has
+no locator, as in `SCROLL down`.
 
 A long page can make the snapshot costly or larger than the model's context. A
 locator before the instruction limits the snapshot to one element and what it
@@ -529,8 +544,8 @@ says as whole words, or else such a list item or clickable element, and Jev
 confirms it. When no named option shows, Jev picks the control that opens the
 list as the first of two steps, and step two clicks the named option on the
 new snapshot. A suggestion to choose after typing, a click that would undo a
-checkbox already in the asked state, and a drag go to the model. Each element
-is described by its role, name, and value, the text of its
+checkbox already in the asked state, a drag, and a scroll go to the model.
+Each element is described by its role, name, and value, the text of its
 table row or list item, the caption or name of its table and the header of its
 column, the named sections around it, the nearest heading, and its place among
 elements that look the same. When no element in that list fits, Jev looks at
@@ -580,7 +595,8 @@ An `ACT` line fails the entry when:
 - the model names no element (`act-no-match`); Whirl does not ask again,
 - the answer does not match the schema, names an element that is not in the
   snapshot, gives the wrong number of arguments, drags an element onto
-  itself, or uses an unknown placeholder (`act-invalid-decision`),
+  itself, gives a scroll position that is not a percent from 0% to 100%, or
+  uses an unknown placeholder (`act-invalid-decision`),
 - the chosen element is replaced again after Whirl asked once more
   (`stale-ref`),
 - a filled field does not hold the value (`act-fill-mismatch`); the message
@@ -1104,6 +1120,8 @@ action-body = "VISIT" , value
            | "SELECT" , locator , value
            | "HOVER" , locator
            | "DRAG" , locator , "to" , locator
+           | "SCROLL" , locator
+           | "SCROLL" , [ locator ] , scroll-motion
            | "UPLOAD" , locator , "file:" , value
            | "SCREENSHOT" , artifact-name
            | "SNAPSHOT" , artifact-name
@@ -1175,6 +1193,8 @@ segment    = ( "role:" | "role~:" ) , name , [ value ]
            | value ;             (* default engine; actions only — see 6.1 *)
 
 step-timeout = "@" , duration ;
+scroll-motion = "down" | "up" | "left" | "right" | "to" , percent ;
+percent    = digit , { digit } , [ "." , digit , { digit } ] , "%" ;   (* 0% to 100% *)
 value      = quoted-string | bare-token ;
 name       = letter-or-underscore , { letter-digit-underscore } ;
 artifact-name = letter-or-underscore , { letter-digit-underscore | "-" } ;
@@ -1205,5 +1225,4 @@ Deferred beyond V1 (candidate V2 features, not promised):
 - The Hurl features that the check vocabulary does not adopt: the `sha256`, `md5`, `cookie`, `certificate`, `redirects`, `duration`, `ip`, `version`, `variable`, and `rawbytes` queries; `file,…;` values; and following redirects in HTTP entries.
 - Per-entry `[Options]` overrides and mobile device emulation.
 - An LLM-as-judge assertion (a `JUDGE` keyword with an explicit model option and advisory rather than hard-failing verdicts).
-- More `ACT` methods, each waiting for a matching Whirl action: scrolling (`scrollTo`, `nextChunk`, and `prevChunk`).
 - An `ACT` cache that replays a successful action without a model call, self-healing that plans again when a chosen action fails, and a step-two prompt that sends only the part of the snapshot that changed.
