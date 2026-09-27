@@ -408,6 +408,12 @@ pub(crate) enum ActionKind {
         target: Locator,
         path:   Value,
     },
+    /// `DROP locator file:path` drops the file on the element. The value
+    /// is the path after the `file:` prefix.
+    Drop {
+        target: Locator,
+        path:   Value,
+    },
     Screenshot {
         name: Ident,
     },
@@ -577,7 +583,8 @@ impl ActionKind {
             | Self::Hover { .. }
             | Self::Drag { .. }
             | Self::ScrollIntoView { .. }
-            | Self::Scroll { .. } => Some(DefaultEngine::Text),
+            | Self::Scroll { .. }
+            | Self::Drop { .. } => Some(DefaultEngine::Text),
             Self::Http { .. }
             | Self::Response { .. }
             | Self::Popup { .. }

@@ -880,7 +880,7 @@ fn split_timeout(tokens: &mut Vec<RawToken>) -> Option<DurationLit> {
     Some(duration)
 }
 
-const ACTION_KEYWORDS: [&str; 25] = [
+const ACTION_KEYWORDS: [&str; 26] = [
     "HTTP",
     "RESPONSE",
     "POPUP",
@@ -901,6 +901,7 @@ const ACTION_KEYWORDS: [&str; 25] = [
     "DRAG",
     "SCROLL",
     "UPLOAD",
+    "DROP",
     "SCREENSHOT",
     "SNAPSHOT",
     "EVAL",
@@ -1235,7 +1236,14 @@ fn parse_action_body(
         "PRESS" => parse_press(tokens, keyword_span)?,
         "DRAG" => parse_drag(tokens, keyword_span)?,
         "SCROLL" => parse_scroll(tokens, keyword_span)?,
-        "UPLOAD" => parse_upload(tokens, keyword_span)?,
+        "UPLOAD" => {
+            let (target, path) = locator_and_file(tokens, keyword_span)?;
+            ActionKind::Upload { target, path }
+        }
+        "DROP" => {
+            let (target, path) = locator_and_file(tokens, keyword_span)?;
+            ActionKind::Drop { target, path }
+        }
         "SCREENSHOT" => ActionKind::Screenshot {
             name: parse_name(tokens, keyword_span)?,
         },
@@ -1392,9 +1400,13 @@ fn parse_scroll(mut tokens: Vec<RawToken>, keyword_span: Span) -> Result<ActionK
     }
 }
 
-/// `UPLOAD locator file:path` — the final value carries the `file:`
-/// prefix (SPEC 7). A quoted `"file:..."` is a value, not the prefix.
-fn parse_upload(mut tokens: Vec<RawToken>, keyword_span: Span) -> Result<ActionKind, LineError> {
+/// `UPLOAD locator file:path` and `DROP locator file:path` — the final
+/// value carries the `file:` prefix (SPEC 7). A quoted `"file:..."` is a
+/// value, not the prefix.
+fn locator_and_file(
+    mut tokens: Vec<RawToken>,
+    keyword_span: Span,
+) -> Result<(Locator, Value), LineError> {
     let Some(file_token) = tokens.pop() else {
         return Err(
             LineError::new(keyword_span, "expected a locator and a `file:` path")
@@ -1420,7 +1432,7 @@ fn parse_upload(mut tokens: Vec<RawToken>, keyword_span: Span) -> Result<ActionK
         );
     }
     let target = build_locator(tokens, true, keyword_span)?;
-    Ok(ActionKind::Upload { target, path })
+    Ok((target, path))
 }
 
 /// The position just after a span, for "expected more here" diagnostics.
@@ -4366,6 +4378,54 @@ status == 202
             "message: {}",
             error.message
         );
+    }
+
+    #[test]
+    fn drop_takes_a_text_locator_and_strips_the_file_prefix() {
+        let kind = action_kind("DROP \"Drop files here\" file:reports/q3.csv");
+        let ActionKind::Drop { target, path } = &kind else {
+            panic!("expected DROP");
+        };
+        assert_eq!(default_segment_text(target), "Drop files here");
+        assert_eq!(lit(path), "reports/q3.csv");
+        assert_eq!(kind.default_engine(), Some(DefaultEngine::Text));
+
+        // A quoted path takes spaces; a prefixed locator keeps its engine.
+        let ActionKind::Drop { target, path } =
+            action_kind("DROP testid:dropzone file:\"my report.csv\"")
+        else {
+            panic!("expected DROP");
+        };
+        assert!(matches!(target.segments[0].kind, SegmentKind::TestId(_)));
+        assert_eq!(lit(&path), "my report.csv");
+    }
+
+    #[test]
+    fn drop_reads_a_quoted_file_prefix_as_a_value() {
+        // A quoted "file:..." before the path is the zone's text.
+        let ActionKind::Drop { target, path } = action_kind("DROP \"file:zone\" file:a.csv") else {
+            panic!("expected DROP");
+        };
+        assert_eq!(default_segment_text(&target), "file:zone");
+        assert_eq!(lit(&path), "a.csv");
+
+        // A quoted "file:..." at the end is not the path.
+        for (line, message) in [
+            (
+                "DROP \"Drop files here\" \"file:a.csv\"",
+                "expected a `file:` path",
+            ),
+            ("DROP \"Drop files here\" a.csv", "expected a `file:` path"),
+            ("DROP file:a.csv", "expected a locator before"),
+            (
+                "DROP \"Drop files here\" file:",
+                "expected a path after `file:`",
+            ),
+            ("DROP", "expected a locator and a `file:` path"),
+        ] {
+            let error = parse_err(&format!("VISIT /\n{line}\n"));
+            assert!(error.message.contains(message), "{line}: {}", error.message);
+        }
     }
 
     #[test]

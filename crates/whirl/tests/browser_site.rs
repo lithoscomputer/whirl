@@ -873,6 +873,142 @@ eval "window.scrollY" == 0
 }
 
 #[test]
+fn drop_hands_files_to_zones_on_the_page_and_in_frames() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    // DROP paths resolve relative to the .whirl file, which sits next to
+    // these files in the temp directory. The page lists each file's name,
+    // size, and type.
+    dir.file("report.csv", "name,plan\nAda,pro\n");
+    dir.file("notes.txt", "hello\n");
+    dir.file("scan.whirlblob", "x");
+    dir.file(
+        "drop.whirl",
+        r##"VISIT /drop.html
+DROP "Drop files here" file:report.csv
+[Asserts]
+css:"#dropped li" text == "report.csv, 18 bytes, text/csv"
+
+# Each line drops one file. An extension with no known type falls back.
+DROP "Drop files here" file:scan.whirlblob
+[Asserts]
+css:"#dropped li" count == 2
+css:"#dropped li" >> nth:1 text == "scan.whirlblob, 1 bytes, application/octet-stream"
+
+DROP frame:"#inner" >> text:"Drop files here" file:notes.txt
+[Asserts]
+frame:"#inner" >> css:"#dropped li" text == "notes.txt, 6 bytes, text/plain"
+
+DROP frame:"#remote" >> text:"Drop files here" file:report.csv
+[Asserts]
+frame:"#remote" >> css:"#dropped li" text == "report.csv, 18 bytes, text/csv"
+"##,
+    );
+    for engine in engines() {
+        let output = run_whirl(&dir, &[
+            "--base",
+            &server.base(),
+            "--browser",
+            engine,
+            "drop.whirl",
+        ]);
+        let stdout = stdout_text(&output);
+        assert_eq!(exit_code(&output), 0, "{engine} stdout:\n{stdout}");
+    }
+}
+
+#[test]
+fn a_drop_zone_that_rejects_the_drop_fails_the_step() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    // The zone's dragover does not call preventDefault, so the page does
+    // not take the file. The step fails at once, not at its timeout.
+    dir.file("report.csv", "name,plan\nAda,pro\n");
+    dir.file(
+        "closed.whirl",
+        "VISIT /drop.html\nDROP \"Uploads are closed\" file:report.csv @60s\n",
+    );
+    for engine in engines() {
+        let output = run_whirl(&dir, &[
+            "--base",
+            &server.base(),
+            "--browser",
+            engine,
+            "closed.whirl",
+        ]);
+        let stdout = stdout_text(&output);
+        assert_eq!(exit_code(&output), 1, "{engine} stdout:\n{stdout}");
+        assert!(
+            stdout.contains(
+                "error: action: the drop target getByText(\"Uploads are closed\", { exact: true \
+                 }) did not accept the drop (its dragover did not call preventDefault)"
+            ),
+            "{engine} stdout:\n{stdout}"
+        );
+    }
+}
+
+#[test]
+fn a_drop_of_a_missing_file_fails_with_its_path() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    let flow = dir.file(
+        "missing.whirl",
+        "VISIT /drop.html\nDROP \"Drop files here\" file:missing.csv\n",
+    );
+    // The path resolves beside the flow's canonical path, which can differ
+    // from the temp path, as on macOS.
+    let missing = fs::canonicalize(&flow)
+        .expect("the flow file exists")
+        .with_file_name("missing.csv");
+    for engine in engines() {
+        let output = run_whirl(&dir, &[
+            "--base",
+            &server.base(),
+            "--browser",
+            engine,
+            "missing.whirl",
+        ]);
+        let stdout = stdout_text(&output);
+        assert_eq!(exit_code(&output), 1, "{engine} stdout:\n{stdout}");
+        assert!(
+            stdout.contains(&format!(
+                "error: action: the file {} does not exist",
+                missing.display()
+            )),
+            "{engine} stdout:\n{stdout}"
+        );
+    }
+}
+
+#[test]
+fn an_ambiguous_drop_zone_fails_with_its_candidates() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file("report.csv", "name,plan\nAda,pro\n");
+    dir.file(
+        "ambiguous.whirl",
+        "VISIT /drop.html\nDROP css:.zone file:report.csv\n",
+    );
+    for engine in engines() {
+        let output = run_whirl(&dir, &[
+            "--base",
+            &server.base(),
+            "--browser",
+            engine,
+            "ambiguous.whirl",
+        ]);
+        let stdout = stdout_text(&output);
+        assert_eq!(exit_code(&output), 1, "{engine} stdout:\n{stdout}");
+        assert!(stdout.contains("strictness"), "{engine} stdout:\n{stdout}");
+        assert!(
+            stdout.contains("candidate: <div#files-zone.zone>"),
+            "{engine} stdout:\n{stdout}"
+        );
+    }
+}
+
+#[test]
 fn a_middle_click_on_a_link_follows_each_engines_own_rule() {
     let server = SiteServer::start();
     let dir = TestDir::new();

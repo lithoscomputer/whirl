@@ -329,6 +329,7 @@ export type StepCommand =
 	| "drag"
 	| "scroll"
 	| "upload"
+	| "drop"
 	| "screenshot"
 	| "snapshot"
 	| "evalAction"
@@ -359,6 +360,7 @@ const stepCommandList: readonly StepCommand[] = [
 	"drag",
 	"scroll",
 	"upload",
+	"drop",
 	"screenshot",
 	"snapshot",
 	"evalAction",

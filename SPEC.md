@@ -205,7 +205,7 @@ Text matching is exact (after whitespace normalization). For partial or pattern 
 
 Every text-matching prefix has a substring variant marked with `~` — `role~:`, `label~:`, `placeholder~:`, `text~:`, `alt~:`, `title~:` — which matches by case-insensitive substring, Playwright's default matching. So `text~:"Added"` matches "Added to cart". `testid:` and `css:` have no `~` form, and the unprefixed default engine stays exact.
 
-An unprefixed value in locator position selects a default engine: `label:` for form actions (`FILL`, `SELECT`, `CHECK`, `UNCHECK`, `UPLOAD`, and `PRESS` with a target), and `text:` for pointer actions (`CLICK`, `RIGHTCLICK`, `MIDDLECLICK`, `DBLCLICK`, `HOVER`, `DRAG`, `SCROLL`) — buttons and links have no label; their accessible name is their text. So `FILL "Email" alice@example.com` fills the input labeled Email, and `CLICK "Add to cart"` clicks the element with that exact text. Prefixes stay available everywhere for precision. Default engines exist only in actions: in `[Asserts]` and `[Captures]` every segment must carry a prefix (or be `nth:`), and an unprefixed value there is a parse error. The scope of `ACT` (section 7.4) follows the same rule.
+An unprefixed value in locator position selects a default engine: `label:` for form actions (`FILL`, `SELECT`, `CHECK`, `UNCHECK`, `UPLOAD`, and `PRESS` with a target), and `text:` for pointer actions (`CLICK`, `RIGHTCLICK`, `MIDDLECLICK`, `DBLCLICK`, `HOVER`, `DRAG`, `SCROLL`) and `DROP` — buttons and links have no label; their accessible name is their text, and a drop zone says what it takes, such as "Drop files here". So `FILL "Email" alice@example.com` fills the input labeled Email, and `CLICK "Add to cart"` clicks the element with that exact text. Prefixes stay available everywhere for precision. Default engines exist only in actions: in `[Asserts]` and `[Captures]` every segment must carry a prefix (or be `nth:`), and an unprefixed value there is a parse error. The scope of `ACT` (section 7.4) follows the same rule.
 
 `frame:` works in actions, asserts, and captures. It may follow an element scope or another frame. An immediately following `nth:N` selects the iframe before entering it. A frame must be followed by an element segment; use `css:` to check the iframe element itself. Nested and cross-origin frames use the same syntax. Frames are resolved lazily, so normal actionability and assertion timeouts also cover frames that load or are replaced later. Multiple matching frames fail strictly unless narrowed explicitly.
 
@@ -248,6 +248,7 @@ An action is a verb, an optional locator, and an optional value. Element-targeti
 | `SCROLL [locator] down` | Scroll down one visible height. `up`, `left`, and `right` scroll the same way. Without a locator, the page scrolls. |
 | `SCROLL [locator] to N%` | Scroll to a vertical position, from `0%` at the top to `100%` at the bottom. Without a locator, the page scrolls. |
 | `UPLOAD locator file:path` | Set the file input to `path`, resolved relative to the `.whirl` file. |
+| `DROP locator file:path` | Drop the file at `path` on the element, as a user drops a file from the desktop. `path` resolves relative to the `.whirl` file. |
 | `SCREENSHOT name` | Save a full-page screenshot as artifact `name.png`. The name is an identifier that may also contain hyphens. Never fails the entry (see below). |
 | `SNAPSHOT name` | Compare a full-page screenshot against the stored baseline; fails the entry on visual difference. |
 | `EVAL "script"` | Run a JavaScript script in the page. The escape hatch; rules below. |
@@ -262,6 +263,8 @@ An action is a verb, an optional locator, and an optional value. Element-targeti
 `DRAG` moves the pointer to the first element, presses the left button, and holds it for 500 ms. It then waits until the second element is visible and stable, moves to its center in 10 steps, waits two animation frames, and releases. The hold serves drag code that starts only after a press delay, commonly 100 to 300 ms, and cancels a drag when the pointer moves sooner; drag code with a longer delay does not start. The steps serve drag code that starts after the pointer moves a few pixels. Native HTML5 drag and drop works in every engine, including from one frame into another. `DRAG` does not check the result: assert where the element landed. In WebKit, a page that took a native HTML5 drag gets no `pointerdown` for later presses until it loads again, so put a `VISIT` between such a drag and drag code that uses pointer events.
 
 Every action already scrolls its element into view, so a flow needs `SCROLL` only for what scrolling itself does: content that loads as it comes into view, controls that react to the scroll position, and boxes that scroll on their own, such as a panel in a dialog. `SCROLL locator` brings the element into view, and passes when it already is. `down`, `up`, `left`, `right`, and `to N%` scroll a scroll box: the element when it can scroll in that direction, else the largest box inside it that can, else its nearest ancestor that can, else its document. An `iframe` element scrolls the page inside it, across origins too. So `SCROLL text:"Filter 3" down` and `SCROLL role:dialog Filters down` both scroll the dialog's list, and `html` or `body` stands for the page. A frame's elements scroll within that frame. A chunk is the box's visible height or width. A position is a share of the vertical scroll range, so `to 50%` centers the middle of the content. `SCROLL` scrolls at once, even when the page asks for smooth scrolling, and the step ends when the position holds for two animation frames. A box already at the requested position stays where it is, and the step passes. `SCROLL` fires the page's `scroll` events and intersection observers, but no `wheel` events. `SCROLL` cannot reach an element that the page has not rendered yet, such as a row far down a virtualized list; write as many `SCROLL locator down` lines as the list needs before the line that uses the row.
+
+`UPLOAD` sets the files of an `<input type=file>`. Many upload widgets are drop zones with no file input, so `UPLOAD` cannot reach them; use `DROP`. `DROP` fires `dragenter`, `dragover`, and `drop` at the element's center with one file, as when a user drops the file from the desktop. The page sees the file's own name and size, and a type from its extension, such as `text/csv` for `report.csv`; an extension with no known type gives `application/octet-stream`. A page takes a drop only when a `dragover` handler calls `preventDefault()`. When none does, the element rejects the drop: Whirl fires `dragleave` instead of `drop` and fails the step at once. A missing file also fails the step. The element must be visible, so a zone that appears only while a drag is over the page cannot be the target. The events are synthetic, so a page that ignores events whose `isTrusted` is false rejects the drop. `DROP` does not check what the page did with the file: assert it.
 
 `PRESS` with a single argument treats it as the key: `PRESS Enter` presses Enter on the focused element, even though `Enter` could also parse as a locator. Only when two arguments are present is the first a locator.
 
@@ -491,6 +494,9 @@ snapshot and name another element. For `scrollTo`, the one argument is a
 percent such as `50%`. In a snapshot of the whole page, the first element is
 the page's `<body>`; a scroll method on it scrolls the page, and the line has
 no locator, as in `SCROLL down`.
+
+No method uploads or drops a file, so `ACT` cannot do either. Write an
+`UPLOAD` or `DROP` line for that.
 
 A long page can make the snapshot costly or larger than the model's context. A
 locator before the instruction limits the snapshot to one element and what it
@@ -1132,6 +1138,7 @@ action-body = "VISIT" , value
            | "SCROLL" , locator
            | "SCROLL" , [ locator ] , scroll-motion
            | "UPLOAD" , locator , "file:" , value
+           | "DROP" , locator , "file:" , value
            | "SCREENSHOT" , artifact-name
            | "SNAPSHOT" , artifact-name
            | "EVAL" , value

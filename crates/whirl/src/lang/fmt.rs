@@ -446,6 +446,11 @@ fn render_action(action: &Action) -> String {
             render_locator(target, LocatorCtx::Action, false),
             render_value(path, ValueCtx::Prefixed, false)
         ),
+        ActionKind::Drop { target, path } => format!(
+            "DROP {} file:{}",
+            render_locator(target, LocatorCtx::Action, false),
+            render_value(path, ValueCtx::Prefixed, false)
+        ),
         ActionKind::Screenshot { name } => format!("SCREENSHOT {}", name.text),
         ActionKind::Snapshot { name } => format!("SNAPSHOT {}", name.text),
         ActionKind::Eval { script } => {
@@ -1079,6 +1084,10 @@ mod tests {
             | ActionKind::Upload {
                 target,
                 path: value,
+            }
+            | ActionKind::Drop {
+                target,
+                path: value,
             } => {
                 scrub_locator(target);
                 scrub_value(value);
@@ -1232,7 +1241,7 @@ mod tests {
         "[Options]\nbase: https://example.com\nbrowser: webkit\nviewport: 800x600\nstep-timeout: 5s\nentry-timeout: 90s\nnav-timeout: 45s\nallow-hosts: example.com *.example.com\ndialogs: accept\nreduced-motion: reduce\nstorage: auth/state.json\nuser-agent: \"Mozilla/5.0 (Whirl)\"\nsetup: sign-in.whirl\nVISIT /\n",
         "[Options]\nbrowser: {{engine}}\nviewport: {{size}}\nstep-timeout: {{t}}\nVISIT /\n",
         // Every action form.
-        "VISIT /a\nCLICK \"Add to cart\"\nRIGHTCLICK \"report.pdf\"\nMIDDLECLICK role:link Docs\nDBLCLICK text~:\"added\"\nFILL \"Email\" alice@example.com\nTYPE \"Code\" 424242\nPRESS Enter\nPRESS label:Search \"Control+A\"\nCHECK \"Remember me\"\nUNCHECK role:checkbox \"Spam\"\nSELECT \"Country\" \"United States\"\nHOVER testid:menu\nDRAG \"Write spec\" to testid:done\nDRAG \"to\" to role:listitem \"to\"\nSCROLL testid:feed\nSCROLL down\nSCROLL role:dialog Filters up\nSCROLL to 50%\nSCROLL testid:board to 33.5%\nSCROLL \"down\"\nSCROLL \"to\" left\nUPLOAD \"Avatar\" file:images/cat.png\nSCREENSHOT overview\nSNAPSHOT header\nEVAL \"window.scrollTo(0, 0)\"\nSTORE local onboarding:done yes\nSTORE local \"welcome seen\" {{env.SEEN}}\nSTORE session draft hi\nSTORE cookie chat_version v1\nVISIT /u/{{setup.user_id}}\n",
+        "VISIT /a\nCLICK \"Add to cart\"\nRIGHTCLICK \"report.pdf\"\nMIDDLECLICK role:link Docs\nDBLCLICK text~:\"added\"\nFILL \"Email\" alice@example.com\nTYPE \"Code\" 424242\nPRESS Enter\nPRESS label:Search \"Control+A\"\nCHECK \"Remember me\"\nUNCHECK role:checkbox \"Spam\"\nSELECT \"Country\" \"United States\"\nHOVER testid:menu\nDRAG \"Write spec\" to testid:done\nDRAG \"to\" to role:listitem \"to\"\nSCROLL testid:feed\nSCROLL down\nSCROLL role:dialog Filters up\nSCROLL to 50%\nSCROLL testid:board to 33.5%\nSCROLL \"down\"\nSCROLL \"to\" left\nUPLOAD \"Avatar\" file:images/cat.png\nDROP \"Drop files here\" file:reports/q3.csv\nDROP testid:dropzone file:{{report}}\nSCREENSHOT overview\nSNAPSHOT header\nEVAL \"window.scrollTo(0, 0)\"\nSTORE local onboarding:done yes\nSTORE local \"welcome seen\" {{env.SEEN}}\nSTORE session draft hi\nSTORE cookie chat_version v1\nVISIT /u/{{setup.user_id}}\n",
         // Timeout suffixes on every step kind.
         "VISIT / @45s\nCLICK go @60s\nPAGE /done @2s\n[Asserts]\ntestid:x visible @2500ms\nurl == / @1s\n[Captures]\nn: testid:x text @3s\nm: testid:x text regex /x(y)?/ @3s\n",
         // Every assert form and operator.
@@ -1260,9 +1269,9 @@ mod tests {
         // PRESS one-argument vs two-argument forms.
         "VISIT /\nPRESS Enter\nPRESS \"Control+A\"\nPRESS label:Search Enter\nPRESS role:textbox \"Query\" Enter\n",
         // Default-engine values that stay bare.
-        "VISIT /\nCLICK Save\nFILL Email alice\nUPLOAD Avatar file:cat.png\nSELECT Country France\n",
+        "VISIT /\nCLICK Save\nFILL Email alice\nUPLOAD Avatar file:cat.png\nDROP Dropzone file:cat.png\nDROP file:zone file:cat.png\nSELECT Country France\n",
         // Attached prefix values that need quotes.
-        "VISIT /\nCLICK css:\".a .b\" >> text:\"Add to cart\"\nCLICK label:\"First name\"\nUPLOAD \"Avatar\" file:\"my cat.png\"\n",
+        "VISIT /\nCLICK css:\".a .b\" >> text:\"Add to cart\"\nCLICK label:\"First name\"\nUPLOAD \"Avatar\" file:\"my cat.png\"\nDROP \"Drop files here\" file:\"my cat.png\"\nDROP \"css:.zone\" file:\"@5s\"\n",
         // Capture names and eval edge spellings.
         "VISIT /\n[Captures]\na_1: eval \"1 + 1\"\nb: eval regex\nc: eval \"@5s\"\nd: eval x regex /y/\n",
     ];
@@ -1355,6 +1364,16 @@ HTTP GET "@10s"
                 "VISIT /\nDRAG \"Card\" to \"Done\"\nDRAG \"to\" to role:region \"to\"\nCLICK \"to\"\n"
             ),
             "VISIT /\nDRAG Card to Done\nDRAG \"to\" to role:region \"to\"\nCLICK to\n"
+        );
+    }
+
+    #[test]
+    fn drop_renders_like_upload() {
+        assert_eq!(
+            fmt(
+                "VISIT /\nDROP   \"Drop files here\"   file:\"q3.csv\"   @5s\nDROP \"css:.zone\" file:\"my q3.csv\"\n"
+            ),
+            "VISIT /\nDROP \"Drop files here\" file:q3.csv @5s\nDROP \"css:.zone\" file:\"my q3.csv\"\n"
         );
     }
 

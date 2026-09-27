@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Drop zones</title>
+    <style>
+      .zone { width: 320px; padding: 16px; margin: 12px 0; border: 2px dashed #888; }
+    </style>
+  </head>
+  <body>
+    <h1>Drop zones</h1>
+
+    <!-- Accepts files: its dragover calls preventDefault. The text is in a
+         child, so the drop events bubble up to the zone. -->
+    <div class="zone" id="files-zone">
+      <p>Drop files here</p>
+    </div>
+    <ul id="dropped"></ul>
+
+    <!-- Rejects every drop: its dragover never calls preventDefault. -->
+    <div class="zone" id="closed-zone">Uploads are closed</div>
+
+    <!-- The same zone in a same-origin frame and in a cross-origin frame. -->
+    <iframe id="inner" src="/drop-inner.html" width="400" height="200"></iframe>
+    <iframe id="remote" width="400" height="200"></iframe>
+
+    <script>
+      const zone = document.getElementById("files-zone");
+      const dropped = document.getElementById("dropped");
+      zone.addEventListener("dragover", (event) => event.preventDefault());
+      zone.addEventListener("drop", (event) => {
+        event.preventDefault();
+        for (const file of event.dataTransfer.files) {
+          const item = document.createElement("li");
+          item.textContent = `${file.name}, ${file.size} bytes, ${file.type || "no type"}`;
+          dropped.append(item);
+        }
+      });
+
+      // This zone sees the drag but never accepts it.
+      const closed = document.getElementById("closed-zone");
+      closed.addEventListener("dragover", () => {
+        closed.dataset.seen = "dragover";
+      });
+
+      // The inner page on another origin: `localhost` instead of 127.0.0.1.
+      const remote = new URL("/drop-inner.html", location.href);
+      remote.hostname = "localhost";
+      document.getElementById("remote").src = remote;
+    </script>
+  </body>
+</html>
