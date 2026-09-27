@@ -20,6 +20,7 @@ import { buildEvalExpression } from "./eval-support.js";
 import { FlowNetwork } from "./flow-network.js";
 import { FlowTabs } from "./flow-tabs.js";
 import { createHostAllowlist } from "./host-glob.js";
+import { nameIframes } from "./iframe-names.js";
 import { buildLocator, describeLocator } from "./locators.js";
 import type { Params } from "./params.js";
 import {
@@ -53,6 +54,7 @@ import { runRead } from "./reads.js";
 import { runSnapshot } from "./snapshots.js";
 import {
 	actionErrorMessage,
+	Deadline,
 	isStrictModeViolation,
 	isTargetClosedError,
 	isTimeoutError,
@@ -1106,23 +1108,24 @@ export class PlaywrightDriver implements ShimDriver {
 			case "ariaSnapshot": {
 				// ACT's view of the page (SPEC 7.4): element refs such as
 				// [ref=e12] that a later `ref` locator segment resolves.
-				if (fieldArrayOrNull(params, "locator") === null) {
-					const snapshot = await page.ariaSnapshot({
-						mode: "ai",
-						timeout: timeoutMs,
-					});
-					return { snapshot };
-				}
-				// ACT limited to one element (SPEC 7.4): the scope waits like
-				// any locator and must match exactly one element.
+				const deadline = new Deadline(timeoutMs);
 				let snapshot = "";
-				await this.#locatorAction(page, params, async (locator) => {
-					snapshot = await locator.ariaSnapshot({
+				if (fieldArrayOrNull(params, "locator") === null) {
+					snapshot = await page.ariaSnapshot({
 						mode: "ai",
 						timeout: timeoutMs,
 					});
-				});
-				return { snapshot };
+				} else {
+					// ACT limited to one element (SPEC 7.4): the scope waits
+					// like any locator and must match exactly one element.
+					await this.#locatorAction(page, params, async (locator) => {
+						snapshot = await locator.ariaSnapshot({
+							mode: "ai",
+							timeout: timeoutMs,
+						});
+					});
+				}
+				return { snapshot: await nameIframes(page, snapshot, deadline) };
 			}
 			case "page": {
 				const expectation = fieldObject(

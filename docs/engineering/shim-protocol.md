@@ -199,6 +199,16 @@ Semantics the shim owns (per SPEC sections 7, 9, 15):
   `"snapshot-missing-baseline"` (Rust reports it as a runtime error). With
   `update: true`, write the settled frame to `baselinePath` and reply
   `{"updated": true}`.
+- `ariaSnapshot` names each iframe, which Playwright writes without a name.
+  Right after the snapshot, the shim resolves each iframe line's ref with
+  `aria-ref=`, in any frame and across origins, and puts the iframe's
+  `aria-label`, or else its `title`, after the role in double quotes with
+  JSON escapes: `- iframe "Incident history" [ref=e4]:`. The shim does not
+  wrap such a line in YAML single quotes, as Playwright does for a name that
+  holds `: `, because Rust's line parsers read the role from the start of
+  the line. An iframe without a name, a ref that no longer resolves, a failed
+  read, or a spent `timeoutMs` leaves the line as it was; the names never
+  fail the step.
 - `evalAction` and an `eval` read: run the script as the body of an
   async function in the page main world via `page.evaluate`. If the script
   parses as a single expression, run `return (script);`; otherwise run it as

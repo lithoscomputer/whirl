@@ -459,7 +459,9 @@ Whirl takes a Playwright AI snapshot of the selected tab. The snapshot is an
 outline of the page's accessibility tree, and each element in it has a ref such
 as `e12`. Elements inside iframes are included, with refs such as `f1e3`. Whirl
 leaves out each link's URL and the cursor hints, which the model does not need
-and which make up about a third of a link-heavy page's snapshot. Whirl sends
+and which make up about a third of a link-heavy page's snapshot. Playwright
+shows every iframe without a name, so Whirl adds the iframe's `aria-label`, or
+else its `title`, as its name, as in `iframe "Incident history"`. Whirl sends
 the instruction and the snapshot to the model in one structured-output call. The model answers with one element ref, one method, and the method's
 arguments, or with no element. Whirl checks the answer and runs it as the
 matching Whirl action, with that action's actionability and strictness rules:
