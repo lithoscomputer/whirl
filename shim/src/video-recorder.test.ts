@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { access, mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
+import {
+	access,
+	mkdir,
+	mkdtemp,
+	readdir,
+	rm,
+	writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
@@ -308,4 +315,37 @@ test("a page that sends a frame is not captured", async (t) => {
 	assert.deepEqual(outcome, { type: "saved" });
 	assert.deepEqual(source.calls, ["start", "stop"]);
 	assert.ok((await frameCount(options.ffmpegPath, video)) >= 1);
+});
+
+test("an ffmpeg that fails while it finishes skips the recording", async (t) => {
+	const dir = await testDir(t);
+	// It writes part of its output, as ffmpeg does, then fails.
+	const ffmpegPath = join(dir, "ffmpeg");
+	await writeFile(
+		ffmpegPath,
+		[
+			"#!/bin/sh",
+			'for output; do :; done; echo partial > "$output"',
+			"echo 'pipe:0: Invalid data found when processing input' >&2",
+			"exit 1",
+		].join("\n"),
+		{ mode: 0o755 },
+	);
+	const options = { ...(await recordingOptions(dir)), ffmpegPath };
+	const source = fakeSource([frameJpeg], async () => {
+		throw new Error("capture should not run");
+	});
+	const recorder = await ScreencastRecorder.start(source, options);
+	const video = join(dir, "video.webm");
+
+	const outcome = await recorder.stop(video);
+
+	assert.deepEqual(outcome, {
+		type: "skipped",
+		reason:
+			"ffmpeg exited with status 1: pipe:0: Invalid data found when processing input",
+	});
+	assert.deepEqual(source.calls, ["start", "stop"]);
+	await assert.rejects(access(video));
+	assert.deepEqual(await readdir(options.tempDir), []);
 });

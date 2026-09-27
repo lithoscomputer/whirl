@@ -375,8 +375,10 @@ export class ScreencastRecorder {
 		this.#clock = new FrameClock(options.fps);
 		this.#output = output;
 		this.#startMs = performance.now();
+		// "close" comes after ffmpeg's stderr ends, so the tail holds its
+		// last error when a skipped recording reports it.
 		this.#exit = new Promise<ExitStatus>((resolveExit) => {
-			process.once("exit", (code, signal) => resolveExit({ code, signal }));
+			process.once("close", (code, signal) => resolveExit({ code, signal }));
 		});
 		// A crashed ffmpeg closes the pipe; the exit status reports it.
 		stdin.on("error", () => {});
@@ -463,9 +465,9 @@ export class ScreencastRecorder {
 
 	/**
 	 * Finalizes the recording at `finalPath`. When no screencast frame has
-	 * arrived, it captures the page once; when that fails too, as for a
-	 * crashed page, it skips the recording. Throws an `internal` error when
-	 * ffmpeg fails or stalls.
+	 * arrived, it captures the page once. When that fails too, as for a
+	 * crashed page, or when ffmpeg fails or stalls, the recording is
+	 * skipped: a recording is evidence, not a result (SPEC section 13).
 	 */
 	async stop(finalPath: string): Promise<RecordingOutcome> {
 		// Later frames are dropped; the source stays open for a capture.
@@ -496,22 +498,22 @@ export class ScreencastRecorder {
 			this.#process.kill("SIGKILL");
 			await withinMs(this.#exit, ffmpegAbortTimeoutMs);
 			await this.#discard();
-			throw new ShimError(
-				"internal",
-				`video recording failed: ffmpeg did not finish within ${ffmpegStopTimeoutMs}ms`,
-			);
+			return {
+				type: "skipped",
+				reason: `ffmpeg did not finish within ${ffmpegStopTimeoutMs}ms`,
+			};
 		}
 		if (status.code !== 0) {
 			await this.#discard();
 			const detail = this.#stderrTail.trim();
-			throw new ShimError(
-				"internal",
-				`video recording failed: ffmpeg exited with ${
+			return {
+				type: "skipped",
+				reason: `ffmpeg exited with ${
 					status.code === null
 						? `signal ${status.signal}`
 						: `status ${status.code}`
 				}${detail === "" ? "" : `: ${detail}`}`,
-			);
+			};
 		}
 		await mkdir(dirname(finalPath), { recursive: true });
 		await rename(this.#output, finalPath);
