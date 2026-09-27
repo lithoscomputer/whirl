@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Ledgerly: invoicing for small teams</title>
+<style>
+  body { margin: 0; font-family: system-ui, sans-serif; color: #1d2433; }
+  header { display: flex; align-items: center; gap: 24px; padding: 16px 40px; border-bottom: 1px solid #e3e6ec; }
+  header nav { display: flex; gap: 20px; flex: 1; }
+  header a { color: inherit; text-decoration: none; }
+  main > section { min-height: 640px; padding: 48px 40px; border-bottom: 1px solid #e3e6ec; }
+  .hero h1 { font-size: 48px; max-width: 640px; }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; }
+  .plan { padding: 24px; border: 1px solid #c9ced8; border-radius: 12px; }
+  .price { font-size: 28px; font-weight: 600; }
+  .loading { color: #6b7385; }
+  footer { padding: 40px; min-height: 240px; background: #1d2433; color: #fff; }
+</style>
+</head>
+<body>
+<header>
+  <strong>Ledgerly</strong>
+  <nav aria-label="Main">
+    <a href="#features">Product</a>
+    <a href="#customers">Customers</a>
+    <a href="#integrations">Integrations</a>
+  </nav>
+  <a href="#">Sign in</a>
+  <a href="#">Start free trial</a>
+</header>
+<main>
+  <section class="hero">
+    <h1>Send invoices. Get paid faster.</h1>
+    <p>Ledgerly turns hours of billing into minutes. Create an invoice, send it, and watch the money arrive.</p>
+    <a href="#">Start free trial</a>
+  </section>
+
+  <section id="features" aria-labelledby="features-heading">
+    <h2 id="features-heading">Everything you need to bill clients</h2>
+    <div class="grid">
+      <div><h3>Recurring invoices</h3><p>Bill retainers on a schedule, and never forget a month.</p></div>
+      <div><h3>Online payments</h3><p>Clients pay by card or bank transfer from the invoice itself.</p></div>
+      <div><h3>Automatic reminders</h3><p>Polite follow-ups go out when an invoice is overdue.</p></div>
+    </div>
+  </section>
+
+  <section id="customers" aria-labelledby="customers-heading">
+    <h2 id="customers-heading">Trusted by 4,000 small businesses</h2>
+    <blockquote>"We cut our billing time in half in the first month." Maria Chen, Northside Design</blockquote>
+    <blockquote>"Our clients pay a week sooner than before." Tom Okafor, Okafor Plumbing</blockquote>
+  </section>
+
+  <section id="integrations" aria-labelledby="integrations-heading">
+    <h2 id="integrations-heading">Works with the tools you use</h2>
+    <p>Sync payments to your accounting software, and send invoices from your CRM.</p>
+    <ul>
+      <li>QuickBooks</li>
+      <li>Xero</li>
+      <li>HubSpot</li>
+      <li>Stripe</li>
+    </ul>
+  </section>
+
+  <section id="pricing" aria-labelledby="pricing-heading">
+    <h2 id="pricing-heading">Pricing</h2>
+    <p>Every plan includes unlimited invoices and clients.</p>
+    <div class="grid" data-testid="plans"><p class="loading">Loading plans…</p></div>
+  </section>
+
+  <section id="faq" aria-labelledby="faq-heading">
+    <h2 id="faq-heading">Frequently asked questions</h2>
+    <details><summary>Can I cancel at any time?</summary><p>Yes. Your plan ends at the close of the billing period.</p></details>
+    <details><summary>Do you charge payment fees?</summary><p>Card payments cost 2.9% plus 30 cents. Bank transfers are free.</p></details>
+    <details><summary>Can I import my clients?</summary><p>Yes, from a CSV file or from your accounting software.</p></details>
+  </section>
+</main>
+<footer>
+  <p>Ledgerly, 120 Market Street, Portland, Oregon</p>
+  <p><a href="#" style="color: inherit">Privacy</a> · <a href="#" style="color: inherit">Terms</a></p>
+</footer>
+<script>
+  // The plans load only when the Pricing section comes into view.
+  const pricing = document.getElementById("pricing");
+  const plans = document.querySelector("[data-testid=plans]");
+  const observer = new IntersectionObserver(async (entries) => {
+    if (!entries.some((entry) => entry.isIntersecting)) return;
+    observer.disconnect();
+    const response = await fetch("plans.json");
+    const list = await response.json();
+    plans.replaceChildren(...list.map((plan) => {
+      const card = document.createElement("article");
+      card.className = "plan";
+      card.innerHTML = `<h3></h3><p class="price"></p><p></p><a href="#">Choose ${plan.name}</a>`;
+      card.querySelector("h3").textContent = plan.name;
+      card.querySelector(".price").textContent = plan.price;
+      card.querySelector("p:not(.price)").textContent = plan.summary;
+      return card;
+    }));
+  });
+  observer.observe(pricing);
+</script>
+</body>
+</html>

@@ -1,0 +1,5 @@
+[
+  { "name": "Starter", "price": "$0 per month", "summary": "For freelancers with up to 5 clients." },
+  { "name": "Team", "price": "$24 per user per month", "summary": "For studios and agencies." },
+  { "name": "Business", "price": "$49 per user per month", "summary": "For firms that need approvals and audit logs." }
+]
