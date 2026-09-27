@@ -4,7 +4,7 @@
 use serde::Deserialize;
 use serde_json::{Value as Json, json};
 
-use crate::run::act::instruction::{Instruction, UnboundPlaceholder};
+use crate::run::act::instruction::{Instruction, UnboundPlaceholder, same_text};
 use crate::run::act::snapshot::{PageSnapshot, Target, quote};
 use crate::run::shim::StepCommand;
 
@@ -297,7 +297,7 @@ impl FillReadBack {
     /// punctuation do not count, so a field that formats its value, such as
     /// a phone number, still matches.
     pub(crate) fn matches(&self, held: &str) -> bool {
-        significant(held).eq(significant(&self.expected))
+        same_text(held, &self.expected)
     }
 
     /// Why the line fails when the field holds `held` instead.
@@ -311,13 +311,6 @@ impl FillReadBack {
             )
         }
     }
-}
-
-/// The letters and digits of `text`, in lowercase.
-fn significant(text: &str) -> impl Iterator<Item = char> + '_ {
-    text.chars()
-        .filter(|ch| ch.is_alphanumeric())
-        .flat_map(char::to_lowercase)
 }
 
 /// Why an answer cannot become an action.
@@ -359,7 +352,16 @@ impl PageSnapshot {
                 actual: action.arguments.len(),
             });
         }
-        let argument = action.arguments.into_iter().next().map(ArgText);
+        let argument = action
+            .arguments
+            .into_iter()
+            .next()
+            .map(|text| match action.method {
+                // Typed text keeps the author's characters; an option must
+                // keep the page's.
+                ActMethod::Fill | ActMethod::Type => ArgText(instruction.ground(&text).to_owned()),
+                _ => ArgText(text),
+            });
         if let Some(argument) = &argument {
             instruction.bindings().fill(&argument.0)?;
         }
@@ -497,6 +499,21 @@ mod tests {
             "action": {"elementId": element_id, "description": "", "method": "click", "arguments": []},
             "twoStep": false
         })
+    }
+
+    #[test]
+    fn typed_text_copied_from_a_quoted_string_keeps_the_authors_characters() {
+        let instruction = instruction("type \"AbC 123\" into the \"Search\" box");
+        let action = perform(fill("abc 123"), &instruction);
+        assert_eq!(action.line(), r#"FILL role:textbox "Email" "AbC 123""#);
+        let select = json!({
+            "action": {"elementId": "e4", "description": "", "method": "selectOptionFromDropdown", "arguments": ["abc 123"]},
+            "twoStep": false
+        });
+        assert_eq!(
+            perform(select, &instruction).line(),
+            r#"SELECT role:textbox "Email" "abc 123""#
+        );
     }
 
     #[test]

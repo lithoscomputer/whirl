@@ -634,3 +634,26 @@ fn a_fill_that_the_field_formats_passes() {
     let stdout = stdout_text(&output);
     assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
 }
+
+#[test]
+fn typed_text_keeps_the_characters_the_instruction_quotes() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.answer(&[fill("e3", "abc 123")]);
+    let page = "<h1>Search</h1><input aria-label=Search>";
+    let flow = dir.file(
+        "grounded.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{}ACT \"type \\\"AbC 123\\\" into the search field\"\n\
+             [Asserts]\nlabel:Search value == \"AbC 123\"\n",
+            visit_html(page)
+        ),
+    );
+    let output = twin.run(&dir, &flow, &[]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+    assert_eq!(
+        act_step(&dir)["act"]["actions"][0]["line"],
+        "FILL role:textbox \"Search\" \"AbC 123\""
+    );
+}

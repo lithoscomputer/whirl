@@ -482,6 +482,15 @@ Other locators in that file can then reach inside them too. A page can notice
 the change: a host's `shadowRoot` is no longer `null`. Closed shadow roots that
 the HTML itself declares stay closed.
 
+A model can change the case, spacing, or punctuation of text it copies. When
+the text for `fill` or `type` matches a string that the instruction quotes,
+ignoring case, spaces, and punctuation, Whirl types the instruction's
+characters instead: for `ACT "type \"AbC 123\" into Search"`, an answer of
+`abc 123` types `AbC 123`. A string counts as quoted in double quotes, in
+curly quotes, or in single quotes at word boundaries, as in `'AbC 123'` but not
+in `user's`. Text that matches no quoted string, and the option for
+`selectOptionFromDropdown`, stay as the model wrote them.
+
 After a `fill`, Whirl reads the field's value back. The line fails when the
 field does not hold the value, as when a `maxlength` cuts it short or a script
 clears it. Case, spaces, and punctuation do not count, so a field that formats
