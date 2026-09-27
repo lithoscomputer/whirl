@@ -3,6 +3,7 @@
 //! chooses, a key name, an option the page shows, or text a small model
 //! call copies from the instruction.
 
+use crate::lang::ast::Percent;
 use crate::run::act::instruction::{Instruction, quoted_strings, same_text};
 
 /// The texts a fill could type: the placeholders and quoted strings in the
@@ -106,6 +107,62 @@ pub(crate) fn option<'a>(
     }
 }
 
+/// The scroll position an instruction names: `50%` or `50 percent`, a
+/// fraction such as `0.75`, halfway, the top, or the bottom. `None` when it
+/// names none, or several that differ.
+pub(crate) fn percent(instruction: &str) -> Option<Percent> {
+    let tokens: Vec<String> = instruction
+        .split_whitespace()
+        .map(|token| {
+            token
+                .trim_matches(|ch: char| !ch.is_alphanumeric() && ch != '%' && ch != '.')
+                .trim_end_matches('.')
+                .to_lowercase()
+        })
+        .collect();
+    let mut found: Vec<Percent> = Vec::new();
+    for (index, token) in tokens.iter().enumerate() {
+        let next = tokens.get(index + 1).map(String::as_str);
+        let named = match token.as_str() {
+            "halfway" | "half" | "middle" => Percent::parse("50%"),
+            "top" | "beginning" => Percent::parse("0%"),
+            "bottom" | "end" => Percent::parse("100%"),
+            text if text.ends_with('%') => Percent::parse(text),
+            text if next == Some("percent") => Percent::parse(&format!("{text}%")),
+            text => fraction(text),
+        };
+        if let Some(percent) = named
+            && !found.contains(&percent)
+        {
+            found.push(percent);
+        }
+    }
+    match found.as_slice() {
+        [percent] => Some(percent.clone()),
+        _ => None,
+    }
+}
+
+/// A fraction such as `0.75`, as the percent `75%`.
+fn fraction(text: &str) -> Option<Percent> {
+    let digits = text.strip_prefix("0.")?;
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let (whole, rest) = digits.split_at(digits.len().min(2));
+    let whole = format!("{whole:0<2}").trim_start_matches('0').to_owned();
+    let whole = if whole.is_empty() {
+        "0".to_owned()
+    } else {
+        whole
+    };
+    if rest.is_empty() {
+        Percent::parse(&format!("{whole}%"))
+    } else {
+        Percent::parse(&format!("{whole}.{rest}%"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -170,6 +227,29 @@ mod tests {
         assert_eq!(key("press k"), Some("k".to_owned()));
         assert_eq!(key("press the big button"), None);
         assert_eq!(key("submit the form"), None);
+    }
+
+    #[test]
+    fn a_scroll_position_is_read_from_the_instruction() {
+        let read = |text: &str| percent(text).map(|percent| percent.to_string());
+        assert_eq!(read("scroll 50% down the page"), Some("50%".to_owned()));
+        assert_eq!(read("scroll to 75 percent"), Some("75%".to_owned()));
+        assert_eq!(read("scroll to 0.75 of the page"), Some("75%".to_owned()));
+        assert_eq!(read("scroll to 0.5"), Some("50%".to_owned()));
+        assert_eq!(read("scroll to 0.125"), Some("12.5%".to_owned()));
+        assert_eq!(read("scroll halfway down"), Some("50%".to_owned()));
+        assert_eq!(read("scroll to the top."), Some("0%".to_owned()));
+        assert_eq!(
+            read("go to the bottom of the feed"),
+            Some("100%".to_owned())
+        );
+        assert_eq!(
+            read("scroll down 50% inside the frame"),
+            Some("50%".to_owned())
+        );
+        assert_eq!(read("scroll down a bit"), None);
+        assert_eq!(read("scroll from the top to the bottom"), None);
+        assert_eq!(read("scroll to 150%"), None);
     }
 
     #[test]
