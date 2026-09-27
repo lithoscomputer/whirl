@@ -785,6 +785,94 @@ fn an_ambiguous_drop_target_fails_with_its_candidates() {
 }
 
 #[test]
+fn scroll_moves_the_page_its_boxes_and_frames() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    // A chunk is one visible height or width. The page's smooth
+    // scroll-behavior does not slow SCROLL down.
+    dir.file(
+        "scroll.whirl",
+        r##"VISIT /scroll.html
+SCROLL down
+[Captures]
+y: eval "window.scrollY"
+
+VISIT /scroll.html
+[Asserts]
+eval "{{y}} === document.documentElement.clientHeight" == true
+
+SCROLL to 100%
+[Asserts]
+role:button "Back to top" visible
+css:"#feed li" count == 25
+
+SCROLL down
+SCROLL to 0%
+[Asserts]
+eval "window.scrollY" == 0
+role:button "Back to top" hidden
+
+VISIT /scroll.html
+SCROLL testid:load-more
+[Asserts]
+css:"#feed li" count == 25
+
+SCROLL text:"Filter 3" down
+[Asserts]
+eval "document.querySelector('#filters-body').scrollTop === document.querySelector('#filters-body').clientHeight" == true
+
+# A dialog cannot scroll, so the list inside it does.
+SCROLL role:dialog Filters to 0%
+[Asserts]
+eval "document.querySelector('#filters-body').scrollTop" == 0
+
+SCROLL role:region Terms to 100%
+[Asserts]
+role:button "I agree" enabled
+
+# Already at the end: the step passes and nothing moves.
+SCROLL role:region Terms down
+
+SCROLL testid:board right
+[Asserts]
+eval "document.querySelector('[data-testid=board]').scrollLeft" == 400
+SCROLL testid:board left
+[Asserts]
+eval "document.querySelector('[data-testid=board]').scrollLeft" == 0
+
+SCROLL "down"
+[Asserts]
+eval "(() => { const r = document.getElementById('word-down').getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight; })()" == true
+
+VISIT /scroll-frame.html
+SCROLL frame:"#feed" >> css:body down
+[Asserts]
+eval "(() => { const doc = document.querySelector('#feed').contentDocument; return doc.defaultView.scrollY === doc.documentElement.clientHeight; })()" == true
+eval "window.scrollY" == 0
+
+# An iframe element scrolls the page inside it, across origins too.
+SCROLL css:"#feed" to 0%
+SCROLL css:"#remote" to 100%
+[Asserts]
+eval "document.querySelector('#feed').contentWindow.scrollY" == 0
+eval "Number(document.body.dataset.remoteScroll) > 0" == true
+eval "window.scrollY" == 0
+"##,
+    );
+    for engine in engines() {
+        let output = run_whirl(&dir, &[
+            "--base",
+            &server.base(),
+            "--browser",
+            engine,
+            "scroll.whirl",
+        ]);
+        let stdout = stdout_text(&output);
+        assert_eq!(exit_code(&output), 0, "{engine} stdout:\n{stdout}");
+    }
+}
+
+#[test]
 fn a_middle_click_on_a_link_follows_each_engines_own_rule() {
     let server = SiteServer::start();
     let dir = TestDir::new();

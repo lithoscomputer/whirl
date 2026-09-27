@@ -315,6 +315,11 @@ pub(crate) enum StepCommand {
         locator: Json,
         target:  Json,
     },
+    /// `SCROLL`: `locator` is null for the page.
+    Scroll {
+        locator: Option<Json>,
+        motion:  Json,
+    },
     Upload {
         locator: Json,
         path:    String,
@@ -1075,6 +1080,14 @@ mod tests {
                 },
                 "drag",
                 serde_json::json!({"locator": locator, "target": [{"type": "testid", "id": "done"}]}),
+            ),
+            (
+                StepCommand::Scroll {
+                    locator: None,
+                    motion:  serde_json::json!({"type": "chunk", "direction": "down"}),
+                },
+                "scroll",
+                serde_json::json!({"locator": null, "motion": {"type": "chunk", "direction": "down"}}),
             ),
             (
                 StepCommand::Upload {

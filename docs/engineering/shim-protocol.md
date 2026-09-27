@@ -170,6 +170,7 @@ Commands and their extra params (result `{}` unless noted):
 | `selectOption` | `locator`, `label` |
 | `hover` | `locator` |
 | `drag` | `locator` (the element to drag), `target` (the element to drop it on); press, hold 500 ms, move in 10 steps, release (SPEC 7) |
+| `scroll` | `locator` (or `null` for the page), `motion`: `{"type": "intoView"}`, `{"type": "chunk", "direction": "down"}` (or `up`, `left`, `right`), or `{"type": "position", "percent": 50}`; SPEC 7 says which box scrolls |
 | `upload` | `locator`, `path` (absolute; Rust resolved it) |
 | `screenshot` | `path` (absolute .png; full page) |
 | `snapshot` | `baselinePath`, `actualPath`, `diffPath`, `update` (bool) |

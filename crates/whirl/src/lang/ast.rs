@@ -5,6 +5,7 @@
 //! formatter. Values stay unresolved: interpolation segments are split at
 //! parse time and resolved by the runner.
 
+use std::fmt;
 use std::path::PathBuf;
 
 use crate::check::{FilterKind, PredicateKind, StaticType};
@@ -392,6 +393,16 @@ pub(crate) enum ActionKind {
         source: Locator,
         target: Locator,
     },
+    /// `SCROLL locator` brings the element into view.
+    ScrollIntoView {
+        target: Locator,
+    },
+    /// `SCROLL [locator] down` or `SCROLL [locator] to 50%` scrolls the
+    /// element's scroll box, or the page without a locator.
+    Scroll {
+        target: Option<Locator>,
+        motion: ScrollMotion,
+    },
     /// The value is the path after the `file:` prefix.
     Upload {
         target: Locator,
@@ -435,6 +446,80 @@ impl StoreScope {
             Self::Session => "session",
             Self::Cookie => "cookie",
         }
+    }
+}
+
+/// How `SCROLL` moves its scroll box (SPEC 7).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ScrollMotion {
+    /// One visible height or width.
+    Chunk(ScrollDirection),
+    /// A vertical position within the scroll range.
+    To(Percent),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ScrollDirection {
+    Down,
+    Up,
+    Left,
+    Right,
+}
+
+impl ScrollDirection {
+    pub(crate) fn keyword(self) -> &'static str {
+        match self {
+            Self::Down => "down",
+            Self::Up => "up",
+            Self::Left => "left",
+            Self::Right => "right",
+        }
+    }
+
+    pub(crate) fn from_keyword(text: &str) -> Option<Self> {
+        match text {
+            "down" => Some(Self::Down),
+            "up" => Some(Self::Up),
+            "left" => Some(Self::Left),
+            "right" => Some(Self::Right),
+            _ => None,
+        }
+    }
+}
+
+/// A percent literal from `0%` to `100%`, such as `50%` or `33.5%` (SPEC
+/// 3.1). It keeps its digits, so `whirl fmt` writes it as authored.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Percent {
+    digits: String,
+}
+
+impl Percent {
+    /// Accepts digits with an optional fraction and a `%` suffix, from 0 to
+    /// 100.
+    pub(crate) fn parse(text: &str) -> Option<Self> {
+        let digits = text.strip_suffix('%')?;
+        let (whole, fraction) = digits.split_once('.').unwrap_or((digits, "0"));
+        let all_digits = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
+        if !all_digits(whole) || !all_digits(fraction) {
+            return None;
+        }
+        let value: f64 = digits.parse().ok()?;
+        (value <= 100.0).then(|| Self {
+            digits: digits.to_owned(),
+        })
+    }
+
+    pub(crate) fn value(&self) -> f64 {
+        self.digits
+            .parse()
+            .expect("the constructor checked the digits")
+    }
+}
+
+impl fmt::Display for Percent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}%", self.digits)
     }
 }
 
@@ -487,9 +572,12 @@ impl ActionKind {
             | Self::Uncheck { .. }
             | Self::Upload { .. }
             | Self::Press { .. } => Some(DefaultEngine::Label),
-            Self::Click { .. } | Self::Dblclick { .. } | Self::Hover { .. } | Self::Drag { .. } => {
-                Some(DefaultEngine::Text)
-            }
+            Self::Click { .. }
+            | Self::Dblclick { .. }
+            | Self::Hover { .. }
+            | Self::Drag { .. }
+            | Self::ScrollIntoView { .. }
+            | Self::Scroll { .. } => Some(DefaultEngine::Text),
             Self::Http { .. }
             | Self::Response { .. }
             | Self::Popup { .. }

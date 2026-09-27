@@ -20,8 +20,8 @@ use crate::check::{Number, is_bytes_literal_shape};
 use crate::lang::ast::{
     Action, ActionKind, Assert, AssertBody, Capture, CheckLine, Comment, DurationLit, DurationUnit,
     Entry, Extractor, File, FileOption, FilterArg, FilterSpec, HttpBodyKind, Locator, Operand,
-    OptionValue, Page, PageCheck, PredicateSpec, Regex, ResponseField, SegmentKind, StateCheck,
-    Subject, TextPrefix, Value, ValueSegment, Viewport,
+    OptionValue, Page, PageCheck, PredicateSpec, Regex, ResponseField, ScrollDirection,
+    ScrollMotion, SegmentKind, StateCheck, Subject, TextPrefix, Value, ValueSegment, Viewport,
 };
 
 /// Where a rendered value sits in its line. The context decides which
@@ -43,6 +43,11 @@ enum ValueCtx {
     DragDefault,
     /// A role's accessible name in a `DRAG` locator.
     DragRoleName,
+    /// An unprefixed default-engine segment in a `SCROLL` locator, where a
+    /// bare `to` or direction word would read as the motion.
+    ScrollDefault,
+    /// A role's accessible name in a `SCROLL` locator.
+    ScrollRoleName,
     /// A role's accessible name in an `[Asserts]` locator; a bare check
     /// keyword would end the locator instead (SPEC 3.1).
     AssertRoleName,
@@ -94,6 +99,12 @@ fn is_assert_stop(text: &str) -> bool {
 
 fn is_extractor_stop(text: &str) -> bool {
     matches!(text, "text" | "value" | "count") || text.starts_with("attr:")
+}
+
+/// The words `SCROLL` reads as its motion. Quoting them in every segment
+/// is simpler than tracking which one ends the locator.
+fn is_scroll_keyword(text: &str) -> bool {
+    text == "to" || ScrollDirection::from_keyword(text).is_some()
 }
 
 fn is_prefix_shaped(text: &str) -> bool {
@@ -156,6 +167,10 @@ fn bare_changes_parse(text: &str, ctx: ValueCtx, is_final: bool) -> bool {
         ValueCtx::ActionRoleName => text == ">>",
         ValueCtx::DragDefault => is_prefix_shaped(text) || text == ">>" || text == "to",
         ValueCtx::DragRoleName => text == ">>" || text == "to",
+        ValueCtx::ScrollDefault => {
+            is_prefix_shaped(text) || text == ">>" || is_scroll_keyword(text)
+        }
+        ValueCtx::ScrollRoleName => text == ">>" || is_scroll_keyword(text),
         ValueCtx::AssertRoleName => text == ">>" || is_assert_stop(text),
         ValueCtx::CaptureRoleName => text == ">>" || is_extractor_stop(text),
     }
@@ -236,6 +251,8 @@ enum LocatorCtx {
     Action,
     /// A `DRAG` locator, where a bare `to` is the separator.
     Drag,
+    /// A `SCROLL` locator, where a bare `to` or direction word is the motion.
+    Scroll,
     Assert,
     Capture,
 }
@@ -245,6 +262,7 @@ impl LocatorCtx {
         match self {
             Self::Action => ValueCtx::ActionRoleName,
             Self::Drag => ValueCtx::DragRoleName,
+            Self::Scroll => ValueCtx::ScrollRoleName,
             Self::Assert => ValueCtx::AssertRoleName,
             Self::Capture => ValueCtx::CaptureRoleName,
         }
@@ -253,6 +271,7 @@ impl LocatorCtx {
     fn default_ctx(self) -> ValueCtx {
         match self {
             Self::Drag => ValueCtx::DragDefault,
+            Self::Scroll => ValueCtx::ScrollDefault,
             Self::Action | Self::Assert | Self::Capture => ValueCtx::ActionDefault,
         }
     }
@@ -405,6 +424,23 @@ fn render_action(action: &Action) -> String {
             render_locator(source, LocatorCtx::Drag, false),
             render_locator(target, LocatorCtx::Drag, is_final)
         ),
+        ActionKind::ScrollIntoView { target } => format!(
+            "SCROLL {}",
+            render_locator(target, LocatorCtx::Scroll, is_final)
+        ),
+        ActionKind::Scroll { target, motion } => {
+            let motion = match motion {
+                ScrollMotion::Chunk(direction) => direction.keyword().to_owned(),
+                ScrollMotion::To(percent) => format!("to {percent}"),
+            };
+            match target {
+                Some(target) => format!(
+                    "SCROLL {} {motion}",
+                    render_locator(target, LocatorCtx::Scroll, false)
+                ),
+                None => format!("SCROLL {motion}"),
+            }
+        }
         ActionKind::Upload { target, path } => format!(
             "UPLOAD {} file:{}",
             render_locator(target, LocatorCtx::Action, false),
@@ -1029,7 +1065,8 @@ mod tests {
             | ActionKind::Dblclick { target }
             | ActionKind::Check { target }
             | ActionKind::Uncheck { target }
-            | ActionKind::Hover { target } => scrub_locator(target),
+            | ActionKind::Hover { target }
+            | ActionKind::ScrollIntoView { target } => scrub_locator(target),
             ActionKind::Fill { target, value }
             | ActionKind::Type {
                 target,
@@ -1049,6 +1086,11 @@ mod tests {
             ActionKind::Drag { source, target } => {
                 scrub_locator(source);
                 scrub_locator(target);
+            }
+            ActionKind::Scroll { target, .. } => {
+                if let Some(target) = target {
+                    scrub_locator(target);
+                }
             }
             ActionKind::Press { target, key } => {
                 if let Some(target) = target {
@@ -1190,7 +1232,7 @@ mod tests {
         "[Options]\nbase: https://example.com\nbrowser: webkit\nviewport: 800x600\nstep-timeout: 5s\nentry-timeout: 90s\nnav-timeout: 45s\nallow-hosts: example.com *.example.com\ndialogs: accept\nreduced-motion: reduce\nstorage: auth/state.json\nuser-agent: \"Mozilla/5.0 (Whirl)\"\nsetup: sign-in.whirl\nVISIT /\n",
         "[Options]\nbrowser: {{engine}}\nviewport: {{size}}\nstep-timeout: {{t}}\nVISIT /\n",
         // Every action form.
-        "VISIT /a\nCLICK \"Add to cart\"\nRIGHTCLICK \"report.pdf\"\nMIDDLECLICK role:link Docs\nDBLCLICK text~:\"added\"\nFILL \"Email\" alice@example.com\nTYPE \"Code\" 424242\nPRESS Enter\nPRESS label:Search \"Control+A\"\nCHECK \"Remember me\"\nUNCHECK role:checkbox \"Spam\"\nSELECT \"Country\" \"United States\"\nHOVER testid:menu\nDRAG \"Write spec\" to testid:done\nDRAG \"to\" to role:listitem \"to\"\nUPLOAD \"Avatar\" file:images/cat.png\nSCREENSHOT overview\nSNAPSHOT header\nEVAL \"window.scrollTo(0, 0)\"\nSTORE local onboarding:done yes\nSTORE local \"welcome seen\" {{env.SEEN}}\nSTORE session draft hi\nSTORE cookie chat_version v1\nVISIT /u/{{setup.user_id}}\n",
+        "VISIT /a\nCLICK \"Add to cart\"\nRIGHTCLICK \"report.pdf\"\nMIDDLECLICK role:link Docs\nDBLCLICK text~:\"added\"\nFILL \"Email\" alice@example.com\nTYPE \"Code\" 424242\nPRESS Enter\nPRESS label:Search \"Control+A\"\nCHECK \"Remember me\"\nUNCHECK role:checkbox \"Spam\"\nSELECT \"Country\" \"United States\"\nHOVER testid:menu\nDRAG \"Write spec\" to testid:done\nDRAG \"to\" to role:listitem \"to\"\nSCROLL testid:feed\nSCROLL down\nSCROLL role:dialog Filters up\nSCROLL to 50%\nSCROLL testid:board to 33.5%\nSCROLL \"down\"\nSCROLL \"to\" left\nUPLOAD \"Avatar\" file:images/cat.png\nSCREENSHOT overview\nSNAPSHOT header\nEVAL \"window.scrollTo(0, 0)\"\nSTORE local onboarding:done yes\nSTORE local \"welcome seen\" {{env.SEEN}}\nSTORE session draft hi\nSTORE cookie chat_version v1\nVISIT /u/{{setup.user_id}}\n",
         // Timeout suffixes on every step kind.
         "VISIT / @45s\nCLICK go @60s\nPAGE /done @2s\n[Asserts]\ntestid:x visible @2500ms\nurl == / @1s\n[Captures]\nn: testid:x text @3s\nm: testid:x text regex /x(y)?/ @3s\n",
         // Every assert form and operator.
@@ -1293,6 +1335,16 @@ HTTP GET "@10s"
         assert_eq!(
             fmt("VISIT /\nCLICK \"Add   to cart\"\nFILL Email \"a\\\"b\"\n"),
             "VISIT /\nCLICK \"Add   to cart\"\nFILL Email \"a\\\"b\"\n"
+        );
+    }
+
+    #[test]
+    fn scroll_keeps_quotes_on_words_it_reads_as_its_motion() {
+        assert_eq!(
+            fmt(
+                "VISIT /\nSCROLL \"feed\" down\nSCROLL \"right\"\nSCROLL role:region \"up\" to 100%\n"
+            ),
+            "VISIT /\nSCROLL feed down\nSCROLL \"right\"\nSCROLL role:region \"up\" to 100%\n"
         );
     }
 

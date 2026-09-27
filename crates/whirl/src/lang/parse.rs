@@ -18,9 +18,9 @@ use crate::lang::ast::{
     Action, ActionKind, Assert, AssertBody, BrowserKind, Capture, CheckLine, Comment, DialogPolicy,
     DurationLit, Entry, Extractor, File, FileOption, FilterArg, FilterSpec, HttpBody, HttpBodyKind,
     HttpHeader, Ident, JsonLiteral, Locator, LocatorSegment, MouseButton, Operand, OptionLine,
-    OptionValue, Page, PageCheck, PredicateSpec, ReducedMotion, Regex, RegexFlags, ResponseField,
-    SegmentKind, Span, StateCheck, StoreScope, Subject, TextPrefix, Value, ValueSegment, Viewport,
-    chain_type,
+    OptionValue, Page, PageCheck, Percent, PredicateSpec, ReducedMotion, Regex, RegexFlags,
+    ResponseField, ScrollDirection, ScrollMotion, SegmentKind, Span, StateCheck, StoreScope,
+    Subject, TextPrefix, Value, ValueSegment, Viewport, chain_type,
 };
 
 /// A parse diagnostic (SPEC 16): file, line, column, the source line, a
@@ -880,7 +880,7 @@ fn split_timeout(tokens: &mut Vec<RawToken>) -> Option<DurationLit> {
     Some(duration)
 }
 
-const ACTION_KEYWORDS: [&str; 24] = [
+const ACTION_KEYWORDS: [&str; 25] = [
     "HTTP",
     "RESPONSE",
     "POPUP",
@@ -899,6 +899,7 @@ const ACTION_KEYWORDS: [&str; 24] = [
     "SELECT",
     "HOVER",
     "DRAG",
+    "SCROLL",
     "UPLOAD",
     "SCREENSHOT",
     "SNAPSHOT",
@@ -1233,6 +1234,7 @@ fn parse_action_body(
         }
         "PRESS" => parse_press(tokens, keyword_span)?,
         "DRAG" => parse_drag(tokens, keyword_span)?,
+        "SCROLL" => parse_scroll(tokens, keyword_span)?,
         "UPLOAD" => parse_upload(tokens, keyword_span)?,
         "SCREENSHOT" => ActionKind::Screenshot {
             name: parse_name(tokens, keyword_span)?,
@@ -1336,6 +1338,58 @@ fn parse_drag(mut tokens: Vec<RawToken>, keyword_span: Span) -> Result<ActionKin
         source: build_locator(tokens, true, keyword_span)?,
         target: build_locator(target, true, to.span)?,
     })
+}
+
+/// `SCROLL locator`, `SCROLL [locator] down|up|left|right`, or `SCROLL
+/// [locator] to N%` (SPEC 7). The motion is read from the end of the line;
+/// a bare `to` anywhere else is an error, since only a quoted `"to"` is
+/// text (SPEC 3.1).
+fn parse_scroll(mut tokens: Vec<RawToken>, keyword_span: Span) -> Result<ActionKind, LineError> {
+    let expected = ["a locator", "down", "up", "left", "right", "to"];
+    let Some(last) = tokens.last() else {
+        return Err(LineError::new(keyword_span, "expected what to scroll").expecting(expected));
+    };
+    let motion = if let Some(direction) = last.bare_single().and_then(ScrollDirection::from_keyword)
+    {
+        tokens.pop();
+        Some(ScrollMotion::Chunk(direction))
+    } else if tokens.len() >= 2 && tokens[tokens.len() - 2].bare_single() == Some("to") {
+        let percent = tokens.pop().expect("two tokens are present");
+        let Some(percent) = percent.bare_single().and_then(Percent::parse) else {
+            return Err(LineError::new(
+                percent.span,
+                "expected a percent from 0% to 100% after `to`",
+            )
+            .expecting(["a percent such as 50%"]));
+        };
+        tokens.pop();
+        Some(ScrollMotion::To(percent))
+    } else {
+        None
+    };
+    if let Some(to) = tokens
+        .iter()
+        .find(|token| token.bare_single() == Some("to"))
+    {
+        return Err(LineError::new(
+            to.span,
+            "expected a percent after `to`; quote \"to\" to match the text",
+        )
+        .expecting(["a percent such as 50%"]));
+    }
+    match motion {
+        Some(motion) if tokens.is_empty() => Ok(ActionKind::Scroll {
+            target: None,
+            motion,
+        }),
+        Some(motion) => Ok(ActionKind::Scroll {
+            target: Some(build_locator(tokens, true, keyword_span)?),
+            motion,
+        }),
+        None => Ok(ActionKind::ScrollIntoView {
+            target: build_locator(tokens, true, keyword_span)?,
+        }),
+    }
 }
 
 /// `UPLOAD locator file:path` — the final value carries the `file:`
@@ -4357,6 +4411,70 @@ status == 202
         ] {
             let error = parse_err(&format!("VISIT /\n{line}\n"));
             assert!(error.message.contains(message), "{line}: {}", error.message);
+        }
+    }
+
+    #[test]
+    fn scroll_reads_its_motion_from_the_end_of_the_line() {
+        let ActionKind::ScrollIntoView { target } = action_kind("SCROLL testid:load-more") else {
+            panic!("expected SCROLL into view");
+        };
+        assert!(matches!(target.segments[0].kind, SegmentKind::TestId(_)));
+        assert_eq!(action_kind("SCROLL down"), ActionKind::Scroll {
+            target: None,
+            motion: ScrollMotion::Chunk(ScrollDirection::Down),
+        });
+        let ActionKind::Scroll {
+            target: Some(target),
+            motion,
+        } = action_kind("SCROLL role:dialog Filters left")
+        else {
+            panic!("expected SCROLL with a locator");
+        };
+        assert!(matches!(target.segments[0].kind, SegmentKind::Role {
+            name: Some(_),
+            ..
+        }));
+        assert_eq!(motion, ScrollMotion::Chunk(ScrollDirection::Left));
+        let ActionKind::Scroll { target, motion } = action_kind("SCROLL to 33.5%") else {
+            panic!("expected SCROLL to a position");
+        };
+        assert!(target.is_none());
+        let ScrollMotion::To(percent) = motion else {
+            panic!("expected a position");
+        };
+        assert_eq!(percent.to_string(), "33.5%");
+        let ActionKind::ScrollIntoView { target } = action_kind("SCROLL \"down\"") else {
+            panic!("expected a quoted direction to be text");
+        };
+        assert_eq!(default_segment_text(&target), "down");
+        assert_eq!(
+            action_kind("SCROLL \"to\" up").default_engine(),
+            Some(DefaultEngine::Text)
+        );
+    }
+
+    #[test]
+    fn scroll_rejects_a_bad_percent_or_a_stray_to() {
+        for (line, message) in [
+            ("SCROLL", "expected what to scroll"),
+            ("SCROLL to 150%", "from 0% to 100%"),
+            ("SCROLL to fifty", "from 0% to 100%"),
+            ("SCROLL to", "quote \"to\""),
+            ("SCROLL a to b down", "quote \"to\""),
+        ] {
+            let error = parse_err(&format!("VISIT /\n{line}\n"));
+            assert!(error.message.contains(message), "{line}: {}", error.message);
+        }
+    }
+
+    #[test]
+    fn a_percent_is_digits_from_0_to_100() {
+        for text in ["0%", "50%", "100%", "33.5%", "100.0%"] {
+            assert!(Percent::parse(text).is_some(), "{text}");
+        }
+        for text in ["100.5%", "-1%", "50", ".5%", "5.%", "1e2%", "%"] {
+            assert!(Percent::parse(text).is_none(), "{text}");
         }
     }
 
