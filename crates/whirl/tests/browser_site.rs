@@ -3013,6 +3013,15 @@ fn a_skipped_recording_is_a_warning_and_the_file_still_passes() {
     .expect("valid JSON");
     assert_eq!(report["files"][0]["status"], "passed");
     assert_eq!(report["files"][0]["warnings"][0], warning.as_str());
+    // No recording, so no frame rate, though the shim started one at 60.
+    assert!(
+        report["files"][0]["runtime"].is_object(),
+        "report:\n{report}"
+    );
+    assert!(
+        report["files"][0]["runtime"].get("videoFps").is_none(),
+        "report:\n{report}"
+    );
     let html = fs::read_to_string(dir.path.join("report.html")).expect("HTML report");
     assert!(html.contains("data-status=\"passed\""));
     assert!(html.contains("Recording unavailable."));
