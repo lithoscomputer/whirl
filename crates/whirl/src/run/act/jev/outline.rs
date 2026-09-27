@@ -11,6 +11,8 @@ use std::iter;
 
 use serde_json::{Map, Value as Json, json};
 
+use crate::run::act::snapshot::unquote_line;
+
 /// One line of an AI snapshot.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct OutlineNode {
@@ -111,6 +113,7 @@ impl Outline {
         let mut nodes: Vec<OutlineNode> = Vec::new();
         let mut open: Vec<usize> = Vec::new();
         for line in snapshot.lines() {
+            let line = unquote_line(line);
             let indent = line.len() - line.trim_start().len();
             let Some(content) = line.trim_start().strip_prefix("- ") else {
                 continue;
@@ -441,7 +444,8 @@ fn truncate(text: &str, max: usize) -> String {
 }
 
 /// Parses a line's content such as `button "Sign in" [ref=e5]` or
-/// `textbox "Search" [ref=e5]: widgets`.
+/// `textbox "Search" [ref=e5]: widgets`, after [`unquote_line`] has removed
+/// any YAML quotes.
 fn parse_node(content: &str) -> OutlineNode {
     let mut node = OutlineNode::default();
     let role_len = content.find([' ', ':', '[']).unwrap_or(content.len());
@@ -640,6 +644,55 @@ mod tests {
         assert_eq!(
             outline.describe(buttons[0], &HashMap::new())["within"],
             json!("Incident history")
+        );
+    }
+
+    #[test]
+    fn a_quoted_line_reads_as_the_unquoted_line_does() {
+        // Lines as Playwright 1.62.1 writes them for names that hold `: `
+        // or ` #`, and the same lines without the quotes.
+        let quoted = Outline::parse(
+            r##"- generic [active] [ref=e1]:
+  - 'region "Q3: plan" [ref=e2]':
+    - 'button "It''s: live" [ref=e3] [cursor=pointer]'
+    - 'textbox "Note: x" [active] [ref=e4]': "Status: live"
+    - 'link "x #y" [ref=e5]':
+      - /url: "#top"
+  - 'combobox "Pick: one" [ref=e6]':
+    - 'option "It''s: x" [selected]'
+    - option "plain"
+"##,
+        );
+        let unquoted = Outline::parse(
+            r##"- generic [active] [ref=e1]:
+  - region "Q3: plan" [ref=e2]:
+    - button "It's: live" [ref=e3] [cursor=pointer]
+    - textbox "Note: x" [active] [ref=e4]: "Status: live"
+    - link "x #y" [ref=e5]:
+      - /url: "#top"
+  - combobox "Pick: one" [ref=e6]:
+    - option "It's: x" [selected]
+    - option "plain"
+"##,
+        );
+        assert_eq!(quoted.nodes, unquoted.nodes);
+
+        let refs = |view| {
+            quoted
+                .view(view)
+                .into_iter()
+                .map(|index| quoted.node(index).element.clone().unwrap_or_default())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(refs(View::Pointer), ["e3", "e5", "e6"]);
+        assert_eq!(refs(View::Input), ["e4", "e6"]);
+        assert_eq!(refs(View::Container), ["e2"]);
+        let selects = quoted.view(View::Select);
+        assert_eq!(quoted.options(selects[0]), ["It's: x", "plain"]);
+        let textbox = quoted.focused().expect("the textbox has focus");
+        assert_eq!(
+            quoted.describe(textbox, &HashMap::new()),
+            json!({"role": "textbox", "name": "Note: x", "value": "Status: live", "within": "Q3: plan"})
         );
     }
 
