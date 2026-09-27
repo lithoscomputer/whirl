@@ -948,3 +948,34 @@ fn jev_reads_unquoted_text_to_type_with_a_small_model_call() {
         "the text call must not send the page; log:\n{log}"
     );
 }
+
+#[test]
+fn jev_looks_at_every_named_element_when_no_control_fits() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    // The page has no button or link, so the pointer view is empty and the
+    // broad tier offers the heading and the plain div.
+    twin.jev(&[
+        jev_intent("click", 0.95),
+        jev_answer(&json!({
+            "strict": jev_choice(&["e2", "e3", "none_match"], "e3", 0.9),
+            "best": jev_choice(&["e2", "e3"], "e3", 0.92),
+        })),
+    ]);
+    let page = "<h1>Menu</h1>\
+        <div onclick=\"document.querySelector('h1').textContent='Opened'\">Open the menu</div>";
+    let flow = dir.file(
+        "jev-broad.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{}ACT \"open the menu\"\n\
+             [Asserts]\nrole:heading \"Opened\" visible\n",
+            visit_html(page)
+        ),
+    );
+    let output = twin.run_jev(&dir, &flow, &[]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+    let step = act_step(&dir);
+    assert_eq!(step["act"]["actions"][0]["plannedBy"], "jev");
+    assert_eq!(step["act"]["usage"]["modelCalls"], 0);
+}

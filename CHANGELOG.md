@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- With `--jev`, try every named element when no control fits, ask the full list in parallel parts when Jev rejects the shortened one, and confirm an exact quoted name with one small request, as Stagehand does.
 - With `--jev`, let Jev say which quoted string or placeholder is the text to type, and read unquoted text with a small model call that sees only the instruction and must copy its words, as Stagehand does.
 - With `--jev`, ask Jev Stagehand's fuller intent question: richer action kinds, a merged vote when a click competes with a select, a double-click, or a key press, and the key, mouse button, checkbox end state, and suggestion step in the same request.
 - Add `--jev`, which plans `ACT` with TypeSafe's Jev first and falls back to the `model` option when Jev is unsure, cannot supply an argument, or fails. `TYPESAFE_API_KEY` holds Jev's key, and `WHIRL_JEV_ENDPOINT` sends its requests to another server. Whirl asks Jev through `lithos-llm`, which prices its requests. JSON reports record the planner of each action and Jev's requests, tokens, and cost, which the step's cost includes.

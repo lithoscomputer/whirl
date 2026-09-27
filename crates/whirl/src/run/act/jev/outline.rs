@@ -48,6 +48,9 @@ pub(crate) enum View {
     Select,
     /// Press a key: inputs and pointer targets.
     Keyboard,
+    /// Every element with a name or text: the last look, for custom
+    /// widgets built from plain elements.
+    Broad,
 }
 
 const POINTER_ROLES: &[&str] = &[
@@ -120,6 +123,7 @@ impl Outline {
             View::Input => INPUT_ROLES.contains(&role),
             View::Select => role == "combobox" && !self.options(index).is_empty(),
             View::Keyboard => self.fits(index, View::Pointer) || self.fits(index, View::Input),
+            View::Broad => node.name.is_some() || node.text.is_some() || node.pointer,
         }
     }
 
@@ -462,6 +466,22 @@ mod tests {
             json!({"role": "button", "name": "Delete", "row": "1037 · Stark", "heading": "Invoices", "position": "2 of 2"})
         );
         assert!(outline.node(buttons[1]).pointer);
+    }
+
+    #[test]
+    fn the_broad_view_adds_named_plain_elements() {
+        let outline = Outline::parse(
+            "- generic [ref=e1]:\n  - generic [ref=f1e3]: Select a country\n  - paragraph [ref=e4]\n  - button \"Go\" [ref=e5]\n",
+        );
+        let refs = |view| {
+            outline
+                .view(view)
+                .into_iter()
+                .map(|index| outline.node(index).element.clone().unwrap_or_default())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(refs(View::Pointer), ["e5"]);
+        assert_eq!(refs(View::Broad), ["f1e3", "e5"]);
     }
 
     #[test]

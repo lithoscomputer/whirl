@@ -511,25 +511,29 @@ select is then a click. A right or middle click, a suggestion to choose after
 typing, and a click that would undo a checkbox already in the asked state go
 to the model. Each element is described by its role, name, and value, the text
 of its table row or list item, the named sections around it, the nearest
-heading, and its place among elements that look the same. When there are more
-than 40 such elements, Jev sees the 30 whose descriptions share the most words
-with the instruction. For `press`, a focused control is the target without a
-question. Arguments come from the instruction itself. For `fill`, a lone
-placeholder is the text to type. Otherwise Jev says which quoted string or
-placeholder is the text, since another may name the field. When none is, a
-small model call reads the text from the instruction alone, without the page,
-and Whirl types it only when the instruction contains those words, in the
-instruction's own characters. That call is one more model call for the line.
-For `press` the key is the one Jev or the instruction names, and for `select`
-the one option of a native select that the instruction names. Jev's choice is
-checked like a model answer. When Jev is not confident, when it cannot supply
-an argument, for step two of a two-step action, and when a Jev request fails,
-the model plans the step instead, and its prompt lists Jev's likely matches
-when Jev has some. Jev receives the instruction, with masked values as
-placeholders, and the element descriptions. Whirl asks Jev through
-`lithos-llm` as `typesafe/jev-latest` and prices its requests from the
-catalog. Jev's usage is reported apart from the model's, and the step's cost
-includes both.
+heading, and its place among elements that look the same. When no element in
+that list fits, Jev looks at every element with a name or text, which catches
+custom controls built from plain elements. A list of more than 40 elements is
+first cut to the 30 whose descriptions share the most words with the
+instruction; when Jev rejects the cut list, it sees the whole list, split into
+parts of at most 254 elements that it reads in parallel. When exactly one
+element has the name the instruction quotes, one small request confirms it.
+For `press`, a focused control is the target without a question. Arguments
+come from the instruction itself. For `fill`, a lone placeholder is the text
+to type. Otherwise Jev says which quoted string or placeholder is the text,
+since another may name the field. When none is, a small model call reads the
+text from the instruction alone, without the page, and Whirl types it only
+when the instruction contains those words, in the instruction's own
+characters. That call is one more model call for the line. For `press` the key
+is the one Jev or the instruction names, and for `select` the one option of a
+native select that the instruction names. Jev's choice is checked like a model
+answer. When Jev is not confident, when it cannot supply an argument, for step
+two of a two-step action, and when a Jev request fails, the model plans the
+step instead, and its prompt lists Jev's likely matches when Jev has some. Jev
+receives the instruction, with masked values as placeholders, and the element
+descriptions. Whirl asks Jev through `lithos-llm` as `typesafe/jev-latest` and
+prices its requests from the catalog. Jev's usage is reported apart from the
+model's, and the step's cost includes both.
 
 A custom dropdown that must open before an option can be chosen is a two-step
 action. The model marks its first answer as two-step. Whirl runs that action,
