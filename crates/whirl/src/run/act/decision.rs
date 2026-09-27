@@ -1,9 +1,12 @@
 //! The model's answer (SPEC 7.4): Stagehand's act schema on the wire, and
 //! the checked decision Whirl acts on.
 
+use std::ops::RangeInclusive;
+
 use serde::Deserialize;
 use serde_json::{Value as Json, json};
 
+use crate::lang::ast::MouseButton;
 use crate::run::act::instruction::{Instruction, UnboundPlaceholder, same_text};
 use crate::run::act::snapshot::{PageSnapshot, Target, quote};
 use crate::run::shim::StepCommand;
@@ -89,11 +92,13 @@ impl ActMethod {
         }
     }
 
-    /// How many arguments the method takes.
-    fn arity(self) -> usize {
+    /// How many arguments the method takes. `click` takes an optional mouse
+    /// button.
+    fn arity(self) -> RangeInclusive<usize> {
         match self {
-            Self::Click | Self::DoubleClick | Self::Hover => 0,
-            Self::Fill | Self::Type | Self::Press | Self::SelectOptionFromDropdown => 1,
+            Self::Click => 0..=1,
+            Self::DoubleClick | Self::Hover => 0..=0,
+            Self::Fill | Self::Type | Self::Press | Self::SelectOptionFromDropdown => 1..=1,
         }
     }
 }
@@ -176,7 +181,7 @@ pub(crate) struct ArgText(String);
 /// element.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum PlannedAction {
-    Click(Target),
+    Click { target: Target, button: MouseButton },
     Dblclick(Target),
     Hover(Target),
     Fill { target: Target, text: ArgText },
@@ -186,10 +191,22 @@ pub(crate) enum PlannedAction {
 }
 
 impl PlannedAction {
-    fn new(method: ActMethod, target: Target, argument: Option<ArgText>) -> Self {
+    fn new(
+        method: ActMethod,
+        target: Target,
+        argument: Option<ArgText>,
+    ) -> Result<Self, DecisionError> {
+        let button = match (method, &argument) {
+            (ActMethod::Click, Some(ArgText(name))) => {
+                MouseButton::from_name(name).ok_or_else(|| DecisionError::Button {
+                    given: name.clone(),
+                })?
+            }
+            _ => MouseButton::Left,
+        };
         let argument = || argument.expect("the arity check guarantees one argument");
-        match method {
-            ActMethod::Click => Self::Click(target),
+        Ok(match method {
+            ActMethod::Click => Self::Click { target, button },
             ActMethod::DoubleClick => Self::Dblclick(target),
             ActMethod::Hover => Self::Hover(target),
             ActMethod::Fill => Self::Fill {
@@ -208,12 +225,12 @@ impl PlannedAction {
                 target,
                 option: argument(),
             },
-        }
+        })
     }
 
     fn parts(&self) -> (&'static str, &Target, Option<&ArgText>) {
         match self {
-            Self::Click(target) => ("CLICK", target, None),
+            Self::Click { target, button } => (button.keyword(), target, None),
             Self::Dblclick(target) => ("DBLCLICK", target, None),
             Self::Hover(target) => ("HOVER", target, None),
             Self::Fill { target, text } => ("FILL", target, Some(text)),
@@ -232,8 +249,9 @@ impl PlannedAction {
                 .expect("the decision checked every placeholder is bound")
         };
         match self {
-            Self::Click(target) => StepCommand::Click {
+            Self::Click { target, button } => StepCommand::Click {
                 locator: target.locator_wire(),
+                button:  button.name().to_owned(),
             },
             Self::Dblclick(target) => StepCommand::Dblclick {
                 locator: target.locator_wire(),
@@ -290,20 +308,22 @@ impl PlannedAction {
 
     /// How the step-two prompt describes the first action.
     pub(crate) fn describe_for_model(&self, description: &str) -> String {
-        let (_, _, argument) = self.parts();
-        let method = match self {
-            Self::Click(_) => ActMethod::Click,
-            Self::Dblclick(_) => ActMethod::DoubleClick,
-            Self::Hover(_) => ActMethod::Hover,
-            Self::Fill { .. } => ActMethod::Fill,
-            Self::Type { .. } => ActMethod::Type,
-            Self::Press { .. } => ActMethod::Press,
-            Self::Select { .. } => ActMethod::SelectOptionFromDropdown,
+        let (method, argument) = match self {
+            Self::Click {
+                button: MouseButton::Left,
+                ..
+            } => (ActMethod::Click, ""),
+            Self::Click { button, .. } => (ActMethod::Click, button.name()),
+            Self::Dblclick(_) => (ActMethod::DoubleClick, ""),
+            Self::Hover(_) => (ActMethod::Hover, ""),
+            Self::Fill { text, .. } => (ActMethod::Fill, text.0.as_str()),
+            Self::Type { text, .. } => (ActMethod::Type, text.0.as_str()),
+            Self::Press { key, .. } => (ActMethod::Press, key.0.as_str()),
+            Self::Select { option, .. } => (ActMethod::SelectOptionFromDropdown, option.0.as_str()),
         };
         format!(
-            "method: {}, description: {description}, arguments: {}",
+            "method: {}, description: {description}, arguments: {argument}",
             method.wire_name(),
-            argument.map_or("", |argument| argument.0.as_str())
         )
     }
 }
@@ -345,14 +365,27 @@ impl FillReadBack {
 pub(crate) enum DecisionError {
     #[error("the answer names element {element_id}, which is not in the page snapshot")]
     UnknownElement { element_id: String },
-    #[error("{method} takes {expected} argument(s), but the answer gave {actual}")]
+    #[error(
+        "{method} takes {} argument(s), but the answer gave {actual}",
+        arity_text(expected)
+    )]
     Arguments {
         method:   &'static str,
-        expected: usize,
+        expected: RangeInclusive<usize>,
         actual:   usize,
     },
+    #[error("click takes the button left, right, or middle, but the answer gave {given:?}")]
+    Button { given: String },
     #[error(transparent)]
     Placeholder(#[from] UnboundPlaceholder),
+}
+
+fn arity_text(arity: &RangeInclusive<usize>) -> String {
+    if arity.start() == arity.end() {
+        arity.start().to_string()
+    } else {
+        format!("{} or {}", arity.start(), arity.end())
+    }
 }
 
 impl PageSnapshot {
@@ -372,7 +405,7 @@ impl PageSnapshot {
                     element_id: action.element_id.clone(),
                 })?;
         let expected = action.method.arity();
-        if action.arguments.len() != expected {
+        if !expected.contains(&action.arguments.len()) {
             return Err(DecisionError::Arguments {
                 method: action.method.wire_name(),
                 expected,
@@ -393,7 +426,7 @@ impl PageSnapshot {
             instruction.bindings().fill(&argument.0)?;
         }
         Ok(ActDecision::Perform {
-            action:      PlannedAction::new(action.method, target, argument),
+            action:      PlannedAction::new(action.method, target, argument)?,
             description: action.description,
             then:        if inference.two_step {
                 FollowUp::Replan
@@ -579,19 +612,78 @@ mod tests {
         );
     }
 
+    fn click_with(arguments: &[&str]) -> ActInference {
+        inference(json!({
+            "action": {"elementId": "e5", "description": "Sign in", "method": "click", "arguments": arguments},
+            "twoStep": false
+        }))
+    }
+
+    #[test]
+    fn a_click_argument_names_the_mouse_button() {
+        for (arguments, line, button) in [
+            (&[][..], r#"CLICK role:button "Sign in""#, "left"),
+            (&["left"][..], r#"CLICK role:button "Sign in""#, "left"),
+            (
+                &["right"][..],
+                r#"RIGHTCLICK role:button "Sign in""#,
+                "right",
+            ),
+            (
+                &["middle"][..],
+                r#"MIDDLECLICK role:button "Sign in""#,
+                "middle",
+            ),
+        ] {
+            let Ok(ActDecision::Perform { action, .. }) =
+                snapshot().decide(click_with(arguments), &instruction("x"))
+            else {
+                panic!("expected an action for {arguments:?}");
+            };
+            assert_eq!(action.line(), line);
+            assert_eq!(action.command(&instruction("x")), StepCommand::Click {
+                locator: json!([{"type": "ref", "ref": "e5"}]),
+                button:  button.to_owned(),
+            });
+        }
+    }
+
+    #[test]
+    fn step_two_hears_the_button_of_a_first_click() {
+        let Ok(ActDecision::Perform { action, .. }) =
+            snapshot().decide(click_with(&["right"]), &instruction("x"))
+        else {
+            panic!("expected an action");
+        };
+        assert_eq!(
+            action.describe_for_model("the file"),
+            "method: click, description: the file, arguments: right"
+        );
+    }
+
+    #[test]
+    fn an_unknown_mouse_button_is_rejected() {
+        assert_eq!(
+            snapshot().decide(click_with(&["sideways"]), &instruction("x")),
+            Err(DecisionError::Button {
+                given: "sideways".to_owned(),
+            })
+        );
+    }
+
     #[test]
     fn arguments_must_fit_the_method() {
-        let answer = inference(json!({
-            "action": {"elementId": "e5", "description": "", "method": "click", "arguments": ["right"]},
-            "twoStep": false
-        }));
+        let error = snapshot()
+            .decide(click_with(&["right", "twice"]), &instruction("x"))
+            .expect_err("two arguments");
+        assert_eq!(error, DecisionError::Arguments {
+            method:   "click",
+            expected: 0..=1,
+            actual:   2,
+        });
         assert_eq!(
-            snapshot().decide(answer, &instruction("x")),
-            Err(DecisionError::Arguments {
-                method:   "click",
-                expected: 0,
-                actual:   1,
-            })
+            error.to_string(),
+            "click takes 0 or 1 argument(s), but the answer gave 2"
         );
         let answer = inference(json!({
             "action": {"elementId": "e4", "description": "", "method": "fill", "arguments": []},

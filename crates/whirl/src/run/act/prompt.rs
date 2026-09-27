@@ -4,8 +4,7 @@
 //!
 //! Whirl's changes: element IDs are Playwright AI-snapshot refs rather than
 //! Stagehand's frame-and-node IDs, the method list is Whirl's subset, and
-//! the scroll, chunk, and right/middle-click rules are gone until Whirl has
-//! those actions.
+//! the scroll and chunk rules are gone until Whirl has those actions.
 //!
 //! Stagehand is distributed under this license:
 //!
@@ -104,6 +103,7 @@ pub(crate) fn act_prompt(action: &str, placeholders: &[String]) -> String {
   General Instructions:
     Provide an action for this element such as {methods}. Remember that to users, buttons and \
          links look the same in most cases.
+    When choosing non-left click actions, provide right or middle as the argument
     If the action is completely unrelated to a potential action to be taken on the page, or \
          no matching element exists, set `action` to null. Do not fabricate or guess an element.
     ONLY return one action. If multiple actions are relevant, return the most relevant one.
@@ -212,11 +212,13 @@ mod tests {
         assert!(
             prompt.contains("the following variables to be used in the action: %env.PASSWORD%")
         );
+        assert!(prompt.contains(
+            "When choosing non-left click actions, provide right or middle as the argument"
+        ));
         assert!(
             !prompt.contains("scroll"),
             "no scroll rules until Whirl has scroll"
         );
-        assert!(!prompt.contains("middle"), "no right or middle clicks yet");
     }
 
     #[test]

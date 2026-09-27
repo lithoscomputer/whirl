@@ -280,6 +280,8 @@ pub(crate) enum StepCommand {
     },
     Click {
         locator: Json,
+        /// `left`, `right`, or `middle`.
+        button:  String,
     },
     Dblclick {
         locator: Json,
@@ -1002,9 +1004,10 @@ mod tests {
             (
                 StepCommand::Click {
                     locator: locator.clone(),
+                    button:  "right".to_owned(),
                 },
                 "click",
-                serde_json::json!({"locator": locator}),
+                serde_json::json!({"locator": locator, "button": "right"}),
             ),
             (
                 StepCommand::Dblclick {

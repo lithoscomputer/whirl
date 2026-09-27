@@ -17,9 +17,10 @@ use crate::check::{
 use crate::lang::ast::{
     Action, ActionKind, Assert, AssertBody, BrowserKind, Capture, CheckLine, Comment, DialogPolicy,
     DurationLit, Entry, Extractor, File, FileOption, FilterArg, FilterSpec, HttpBody, HttpBodyKind,
-    HttpHeader, Ident, JsonLiteral, Locator, LocatorSegment, Operand, OptionLine, OptionValue,
-    Page, PageCheck, PredicateSpec, ReducedMotion, Regex, RegexFlags, ResponseField, SegmentKind,
-    Span, StateCheck, StoreScope, Subject, TextPrefix, Value, ValueSegment, Viewport, chain_type,
+    HttpHeader, Ident, JsonLiteral, Locator, LocatorSegment, MouseButton, Operand, OptionLine,
+    OptionValue, Page, PageCheck, PredicateSpec, ReducedMotion, Regex, RegexFlags, ResponseField,
+    SegmentKind, Span, StateCheck, StoreScope, Subject, TextPrefix, Value, ValueSegment, Viewport,
+    chain_type,
 };
 
 /// A parse diagnostic (SPEC 16): file, line, column, the source line, a
@@ -879,7 +880,7 @@ fn split_timeout(tokens: &mut Vec<RawToken>) -> Option<DurationLit> {
     Some(duration)
 }
 
-const ACTION_KEYWORDS: [&str; 21] = [
+const ACTION_KEYWORDS: [&str; 23] = [
     "HTTP",
     "RESPONSE",
     "POPUP",
@@ -887,6 +888,8 @@ const ACTION_KEYWORDS: [&str; 21] = [
     "CLOSE",
     "VISIT",
     "CLICK",
+    "RIGHTCLICK",
+    "MIDDLECLICK",
     "DBLCLICK",
     "FILL",
     "TYPE",
@@ -1193,6 +1196,15 @@ fn parse_action_body(
         },
         "CLICK" => ActionKind::Click {
             target: locator_only(tokens)?,
+            button: MouseButton::Left,
+        },
+        "RIGHTCLICK" => ActionKind::Click {
+            target: locator_only(tokens)?,
+            button: MouseButton::Right,
+        },
+        "MIDDLECLICK" => ActionKind::Click {
+            target: locator_only(tokens)?,
+            button: MouseButton::Middle,
         },
         "DBLCLICK" => ActionKind::Dblclick {
             target: locator_only(tokens)?,
@@ -3890,7 +3902,7 @@ status == 202
 
     #[test]
     fn role_takes_an_optional_accessible_name() {
-        let ActionKind::Click { target } = action_kind("CLICK role:button \"Sign in\"") else {
+        let ActionKind::Click { target, .. } = action_kind("CLICK role:button \"Sign in\"") else {
             panic!("expected CLICK");
         };
         let SegmentKind::Role {
@@ -3908,7 +3920,7 @@ status == 202
             "Sign in"
         );
 
-        let ActionKind::Click { target } = action_kind("CLICK role:button") else {
+        let ActionKind::Click { target, .. } = action_kind("CLICK role:button") else {
             panic!("expected CLICK");
         };
         assert!(matches!(&target.segments[0].kind, SegmentKind::Role {
@@ -3919,7 +3931,7 @@ status == 202
 
     #[test]
     fn substring_prefix_variants_parse() {
-        let ActionKind::Click { target } = action_kind("CLICK text~:\"Added\"") else {
+        let ActionKind::Click { target, .. } = action_kind("CLICK text~:\"Added\"") else {
             panic!("expected CLICK");
         };
         let SegmentKind::TextEngine {
@@ -3937,7 +3949,7 @@ status == 202
 
     #[test]
     fn quoted_css_prefix_is_a_plain_value() {
-        let ActionKind::Click { target } = action_kind("CLICK \"css:foo\"") else {
+        let ActionKind::Click { target, .. } = action_kind("CLICK \"css:foo\"") else {
             panic!("expected CLICK");
         };
         assert_eq!(default_segment_text(&target), "css:foo");
@@ -3945,7 +3957,7 @@ status == 202
 
     #[test]
     fn bare_css_prefix_is_a_css_segment() {
-        let ActionKind::Click { target } = action_kind("CLICK css:\"ul > li\"") else {
+        let ActionKind::Click { target, .. } = action_kind("CLICK css:\"ul > li\"") else {
             panic!("expected CLICK");
         };
         let SegmentKind::Css(value) = &target.segments[0].kind else {
@@ -3960,7 +3972,7 @@ status == 202
         assert_eq!(error.message, "expected an index after `nth:`");
         assert_eq!(error.line, 2);
         let file = parse("VISIT /\nCLICK testid:card >> nth:0\n");
-        let ActionKind::Click { target } = &only_entry(&file).actions[1].kind else {
+        let ActionKind::Click { target, .. } = &only_entry(&file).actions[1].kind else {
             panic!("expected CLICK");
         };
         assert!(matches!(target.segments[1].kind, SegmentKind::Nth(0)));
@@ -4074,11 +4086,27 @@ status == 202
     #[test]
     fn click_uses_the_text_default_engine() {
         let kind = action_kind("CLICK \"Add to cart\"");
-        let ActionKind::Click { target } = &kind else {
+        let ActionKind::Click { target, .. } = &kind else {
             panic!("expected CLICK");
         };
         assert_eq!(default_segment_text(target), "Add to cart");
         assert_eq!(kind.default_engine(), Some(DefaultEngine::Text));
+    }
+
+    #[test]
+    fn right_and_middle_click_press_their_buttons_with_the_text_engine() {
+        for (line, expected) in [
+            ("RIGHTCLICK \"report.pdf\"", MouseButton::Right),
+            ("MIDDLECLICK role:link Docs", MouseButton::Middle),
+            ("CLICK Save", MouseButton::Left),
+        ] {
+            let kind = action_kind(line);
+            let ActionKind::Click { button, .. } = &kind else {
+                panic!("expected a click for {line}");
+            };
+            assert_eq!(*button, expected, "{line}");
+            assert_eq!(kind.default_engine(), Some(DefaultEngine::Text));
+        }
     }
 
     #[test]

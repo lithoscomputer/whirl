@@ -28,6 +28,7 @@ use tokio::task::JoinSet;
 use self::client::{JevAnswer, JevError, JevQuestion, JevResponse, choice, noul};
 use self::intent::{FillValue, Intent};
 use self::outline::{Outline, View, shortlist};
+use crate::lang::ast::MouseButton;
 use crate::run::act::decision::{ActInference, ActMethod};
 use crate::run::act::instruction::quoted_strings;
 use crate::run::act::model::ModelClient;
@@ -183,9 +184,8 @@ impl JevPlanner {
         else {
             return Outcome::Unsure(None);
         };
-        // Whirl clicks with the left button only, and choosing a suggestion
-        // after typing is a second step.
-        if intent.other_button || (intent.family == "fill" && intent.pick_suggestion) {
+        // Choosing a suggestion after typing is a second step.
+        if intent.family == "fill" && intent.pick_suggestion {
             return Outcome::Unsure(None);
         }
         let outline = Outline::parse(request.snapshot.raw());
@@ -267,6 +267,7 @@ impl JevPlanner {
         // A click toggles; when the control is already in the state the
         // instruction asks for, a click would undo it.
         if method == ActMethod::Click
+            && intent.button == MouseButton::Left
             && CHECKABLE_ROLES.contains(&node.role.as_str())
             && intent.toggle == Some(node.checked)
         {
@@ -285,6 +286,12 @@ impl JevPlanner {
                     .map(str::to_owned)
             }
             ActMethod::Press => key,
+            ActMethod::Click => match intent.button {
+                MouseButton::Left => None,
+                button @ (MouseButton::Right | MouseButton::Middle) => {
+                    Some(button.name().to_owned())
+                }
+            },
             _ => None,
         };
         let needs_argument = !matches!(

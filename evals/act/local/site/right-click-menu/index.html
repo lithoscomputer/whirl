@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Files</title>
+</head>
+<body>
+<h1>Shared files</h1>
+<ul aria-label="Files">
+  <li>notes.txt</li>
+  <li>budget.xlsx</li>
+  <li>photo.png</li>
+</ul>
+<div role="menu" aria-label="File actions" hidden>
+  <div role="menuitem">Rename</div>
+  <div role="menuitem">Download</div>
+  <div role="menuitem">Delete</div>
+</div>
+<p>Selected: <span data-testid="selected">none</span></p>
+<p>Menu for: <span data-testid="menu-for">none</span></p>
+<script>
+  const menu = document.querySelector("[role=menu]");
+  const show = (id, text) => { document.querySelector(`[data-testid=${id}]`).textContent = text; };
+  for (const row of document.querySelectorAll("li")) {
+    row.addEventListener("click", () => show("selected", row.textContent));
+    row.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      menu.hidden = false;
+      show("menu-for", row.textContent);
+    });
+  }
+</script>
+</body>
+</html>

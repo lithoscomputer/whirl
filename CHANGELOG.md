@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add `RIGHTCLICK` and `MIDDLECLICK`, which click an element with the right or middle mouse button, to test a page's own context menu or `auxclick` handling. `ACT` runs them when the model answers `click` with `right` or `middle`, and with `--jev`, Jev plans them without the model.
 - With `--jev`, choose from lists and dropdowns built without a native select: click the option the instruction names, or open the control and click the option in step two.
 - With `--jev`, describe an element in a table by its table's caption or name and its column's header, so Jev tells apart two calendar months that both show a 14.
 - With `--jev`, accept a clear leader when Jev is nearly certain something matches, hold an uneasy pick while the next list tries, and let copies of one control in one item share Jev's vote, as Stagehand does.

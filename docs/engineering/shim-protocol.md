@@ -161,7 +161,7 @@ Commands and their extra params (result `{}` unless noted):
 | `popup` | `name` — name an unnamed popup from the selected tab in the current entry, without selecting it |
 | `tab` | `name` — select a named open tab |
 | `close` | `name` — close a named tab without changing selection |
-| `click` | `locator` |
+| `click` | `locator`, `button` (`left`, `right`, or `middle`); `CLICK`, `RIGHTCLICK`, and `MIDDLECLICK` |
 | `dblclick` | `locator` |
 | `fill` | `locator`, `value` |
 | `type` | `locator`, `text` (one key event per character via `pressSequentially`) |

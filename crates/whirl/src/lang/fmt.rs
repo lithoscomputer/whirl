@@ -332,12 +332,11 @@ fn render_action(action: &Action) -> String {
         ActionKind::Visit { url } => {
             format!("VISIT {}", render_value(url, ValueCtx::Plain, is_final))
         }
-        ActionKind::Click { target } => {
-            format!(
-                "CLICK {}",
-                render_locator(target, LocatorCtx::Action, is_final)
-            )
-        }
+        ActionKind::Click { target, button } => format!(
+            "{} {}",
+            button.keyword(),
+            render_locator(target, LocatorCtx::Action, is_final)
+        ),
         ActionKind::Dblclick { target } => format!(
             "DBLCLICK {}",
             render_locator(target, LocatorCtx::Action, is_final)
@@ -1004,7 +1003,7 @@ mod tests {
                 scrub_value(url);
             }
             ActionKind::Visit { url } => scrub_value(url),
-            ActionKind::Click { target }
+            ActionKind::Click { target, .. }
             | ActionKind::Dblclick { target }
             | ActionKind::Check { target }
             | ActionKind::Uncheck { target }
@@ -1165,7 +1164,7 @@ mod tests {
         "[Options]\nbase: https://example.com\nbrowser: webkit\nviewport: 800x600\nstep-timeout: 5s\nentry-timeout: 90s\nnav-timeout: 45s\nallow-hosts: example.com *.example.com\ndialogs: accept\nreduced-motion: reduce\nstorage: auth/state.json\nuser-agent: \"Mozilla/5.0 (Whirl)\"\nsetup: sign-in.whirl\nVISIT /\n",
         "[Options]\nbrowser: {{engine}}\nviewport: {{size}}\nstep-timeout: {{t}}\nVISIT /\n",
         // Every action form.
-        "VISIT /a\nCLICK \"Add to cart\"\nDBLCLICK text~:\"added\"\nFILL \"Email\" alice@example.com\nTYPE \"Code\" 424242\nPRESS Enter\nPRESS label:Search \"Control+A\"\nCHECK \"Remember me\"\nUNCHECK role:checkbox \"Spam\"\nSELECT \"Country\" \"United States\"\nHOVER testid:menu\nUPLOAD \"Avatar\" file:images/cat.png\nSCREENSHOT overview\nSNAPSHOT header\nEVAL \"window.scrollTo(0, 0)\"\nSTORE local onboarding:done yes\nSTORE local \"welcome seen\" {{env.SEEN}}\nSTORE session draft hi\nSTORE cookie chat_version v1\nVISIT /u/{{setup.user_id}}\n",
+        "VISIT /a\nCLICK \"Add to cart\"\nRIGHTCLICK \"report.pdf\"\nMIDDLECLICK role:link Docs\nDBLCLICK text~:\"added\"\nFILL \"Email\" alice@example.com\nTYPE \"Code\" 424242\nPRESS Enter\nPRESS label:Search \"Control+A\"\nCHECK \"Remember me\"\nUNCHECK role:checkbox \"Spam\"\nSELECT \"Country\" \"United States\"\nHOVER testid:menu\nUPLOAD \"Avatar\" file:images/cat.png\nSCREENSHOT overview\nSNAPSHOT header\nEVAL \"window.scrollTo(0, 0)\"\nSTORE local onboarding:done yes\nSTORE local \"welcome seen\" {{env.SEEN}}\nSTORE session draft hi\nSTORE cookie chat_version v1\nVISIT /u/{{setup.user_id}}\n",
         // Timeout suffixes on every step kind.
         "VISIT / @45s\nCLICK go @60s\nPAGE /done @2s\n[Asserts]\ntestid:x visible @2500ms\nurl == / @1s\n[Captures]\nn: testid:x text @3s\nm: testid:x text regex /x(y)?/ @3s\n",
         // Every assert form and operator.

@@ -203,7 +203,7 @@ Text matching is exact (after whitespace normalization). For partial or pattern 
 
 Every text-matching prefix has a substring variant marked with `~` — `role~:`, `label~:`, `placeholder~:`, `text~:`, `alt~:`, `title~:` — which matches by case-insensitive substring, Playwright's default matching. So `text~:"Added"` matches "Added to cart". `testid:` and `css:` have no `~` form, and the unprefixed default engine stays exact.
 
-An unprefixed value in locator position selects a default engine: `label:` for form actions (`FILL`, `SELECT`, `CHECK`, `UNCHECK`, `UPLOAD`, and `PRESS` with a target), and `text:` for pointer actions (`CLICK`, `DBLCLICK`, `HOVER`) — buttons and links have no label; their accessible name is their text. So `FILL "Email" alice@example.com` fills the input labeled Email, and `CLICK "Add to cart"` clicks the element with that exact text. Prefixes stay available everywhere for precision. Default engines exist only in actions: in `[Asserts]` and `[Captures]` every segment must carry a prefix (or be `nth:`), and an unprefixed value there is a parse error. The scope of `ACT` (section 7.4) follows the same rule.
+An unprefixed value in locator position selects a default engine: `label:` for form actions (`FILL`, `SELECT`, `CHECK`, `UNCHECK`, `UPLOAD`, and `PRESS` with a target), and `text:` for pointer actions (`CLICK`, `RIGHTCLICK`, `MIDDLECLICK`, `DBLCLICK`, `HOVER`) — buttons and links have no label; their accessible name is their text. So `FILL "Email" alice@example.com` fills the input labeled Email, and `CLICK "Add to cart"` clicks the element with that exact text. Prefixes stay available everywhere for precision. Default engines exist only in actions: in `[Asserts]` and `[Captures]` every segment must carry a prefix (or be `nth:`), and an unprefixed value there is a parse error. The scope of `ACT` (section 7.4) follows the same rule.
 
 `frame:` works in actions, asserts, and captures. It may follow an element scope or another frame. An immediately following `nth:N` selects the iframe before entering it. A frame must be followed by an element segment; use `css:` to check the iframe element itself. Nested and cross-origin frames use the same syntax. Frames are resolved lazily, so normal actionability and assertion timeouts also cover frames that load or are replaced later. Multiple matching frames fail strictly unless narrowed explicitly.
 
@@ -230,6 +230,8 @@ An action is a verb, an optional locator, and an optional value. Element-targeti
 | `TAB name` | Select an open named tab for subsequent commands. The original tab is `main`. |
 | `CLOSE name` | Close a named tab; selection stays unchanged. Already closed tabs succeed. |
 | `CLICK locator` | Click the element. |
+| `RIGHTCLICK locator` | Click the element with the right mouse button. |
+| `MIDDLECLICK locator` | Click the element with the middle mouse button. |
 | `DBLCLICK locator` | Double-click the element. |
 | `FILL locator "text"` | Replace the input's content with `text`. |
 | `TYPE locator "text"` | Focus the element, then send one key event per character of `text`. |
@@ -248,6 +250,8 @@ An action is a verb, an optional locator, and an optional value. Element-targeti
 | `STORE local "key" "value"` | Write one `localStorage` entry on the current page's origin. |
 | `STORE session "key" "value"` | Write one `sessionStorage` entry on the current page's origin. |
 | `STORE cookie "name" "value"` | Set one cookie for the current page's host, with path `/`. |
+
+`RIGHTCLICK` and `MIDDLECLICK` test what the page does with those buttons. A right click fires the page's `contextmenu` event, and a middle click fires `auxclick`; neither fires `click`. A page that shows its own menu on a right click, such as a file list, can be tested this way. The browser's own context menu is not part of the page, and no step can check it. What a middle click on a link does depends on the engine: Firefox opens a popup that `POPUP` can name, Chromium opens a tab without an opener that `POPUP` cannot name, and WebKit follows the link in the same tab. To test a link that opens a new tab, click it with `CLICK`.
 
 `PRESS` with a single argument treats it as the key: `PRESS Enter` presses Enter on the focused element, even though `Enter` could also parse as a locator. Only when two arguments are present is the first a locator.
 
@@ -453,6 +457,8 @@ matching Whirl action, with that action's actionability and strictness rules:
 | Method | Runs as |
 | --- | --- |
 | `click` | `CLICK` |
+| `click` with `right` | `RIGHTCLICK` |
+| `click` with `middle` | `MIDDLECLICK` |
 | `doubleClick` | `DBLCLICK` |
 | `hover` | `HOVER` |
 | `fill` | `FILL` |
@@ -466,7 +472,7 @@ contains: `ACT css:form "click Buy"` shows the model only the form. The scope
 waits for its element and must match exactly one (section 6.2), and every
 segment carries a prefix (section 6.1).
 
-To click a native checkbox or radio input, Whirl focuses it and presses Space,
+To left-click a native checkbox or radio input, Whirl focuses it and presses Space,
 as `CHECK` does, because a styled control often covers the input. The effect is
 the same as a click: a checkbox toggles, and a radio is selected.
 
@@ -513,9 +519,8 @@ instruction names: an element with an option role whose label the instruction
 says as whole words, or else such a list item or clickable element, and Jev
 confirms it. When no named option shows, Jev picks the control that opens the
 list as the first of two steps, and step two clicks the named option on the
-new snapshot. A right or middle click, a suggestion to choose after typing,
-and a click that would undo a checkbox already in the asked state go to the
-model. Each element is described by its role, name, and value, the text of its
+new snapshot. A suggestion to choose after typing and a click that would undo
+a checkbox already in the asked state go to the model. Each element is described by its role, name, and value, the text of its
 table row or list item, the caption or name of its table and the header of its
 column, the named sections around it, the nearest heading, and its place among
 elements that look the same. When no element in that list fits, Jev looks at
@@ -1079,7 +1084,7 @@ action     = action-body , [ step-timeout ] ;
 action-body = "VISIT" , value
            | "RESPONSE" , artifact-name , http-method , value
            | ( "POPUP" | "TAB" | "CLOSE" ) , artifact-name
-           | "CLICK" , locator
+           | ( "CLICK" | "RIGHTCLICK" | "MIDDLECLICK" ) , locator
            | "DBLCLICK" , locator
            | "FILL" , locator , value
            | "TYPE" , locator , value
@@ -1189,5 +1194,5 @@ Deferred beyond V1 (candidate V2 features, not promised):
 - The Hurl features that the check vocabulary does not adopt: the `sha256`, `md5`, `cookie`, `certificate`, `redirects`, `duration`, `ip`, `version`, `variable`, and `rawbytes` queries; `file,…;` values; and following redirects in HTTP entries.
 - Per-entry `[Options]` overrides and mobile device emulation.
 - An LLM-as-judge assertion (a `JUDGE` keyword with an explicit model option and advisory rather than hard-failing verdicts).
-- More `ACT` methods, each waiting for a matching Whirl action: scrolling (Stagehand's `scrollTo`, `nextChunk`, and `prevChunk`), drag and drop, and right-click and middle-click.
+- More `ACT` methods, each waiting for a matching Whirl action: scrolling (`scrollTo`, `nextChunk`, and `prevChunk`) and drag and drop.
 - An `ACT` cache that replays a successful action without a model call, self-healing that plans again when a chosen action fails, and a step-two prompt that sends only the part of the snapshot that changed.

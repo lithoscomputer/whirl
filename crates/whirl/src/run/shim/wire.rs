@@ -260,7 +260,7 @@ mod tests {
     fn click_locator(locator: &str) -> Json {
         let file = parse(&format!("VISIT /\nCLICK {locator}\n"));
         let action = &file.entries[0].actions[1];
-        let ActionKind::Click { target } = &action.kind else {
+        let ActionKind::Click { target, .. } = &action.kind else {
             panic!("expected CLICK");
         };
         locator_wire(target, action.kind.default_engine(), &mut resolve).unwrap()
@@ -355,7 +355,7 @@ mod tests {
     #[test]
     fn a_resolver_error_aborts_the_conversion() {
         let file = parse("VISIT /\nCLICK testid:{{missing}}\n");
-        let ActionKind::Click { target } = &file.entries[0].actions[1].kind else {
+        let ActionKind::Click { target, .. } = &file.entries[0].actions[1].kind else {
             panic!("expected CLICK");
         };
         let mut failing = |_: &Value| Err("undefined variable".to_owned());

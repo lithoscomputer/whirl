@@ -611,7 +611,7 @@ fn collect_action_refs<'a>(action: &'a Action, refs: &mut Vec<VarRef<'a>>) {
         ActionKind::Response { url, .. } | ActionKind::Visit { url } => {
             collect_value_refs(url, line, refs);
         }
-        ActionKind::Click { target }
+        ActionKind::Click { target, .. }
         | ActionKind::Dblclick { target }
         | ActionKind::Check { target }
         | ActionKind::Uncheck { target }

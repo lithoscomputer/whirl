@@ -363,6 +363,61 @@ fn an_element_the_snapshot_never_showed_fails_the_entry() {
     assert!(stdout.contains("e99"), "stdout:\n{stdout}");
 }
 
+/// A file row whose own menu opens on a right click, as `ref=e3`.
+const FILES: &str = "VISIT \"data:text/html,<h1>Files</h1>\
+    <button oncontextmenu=\\\"event.preventDefault();document.querySelector('h1').textContent='Menu'\\\">report.pdf</button>\"\n";
+
+fn click_with_button(element_id: &str, button: &str) -> Json {
+    json!({
+        "action": {"elementId": element_id, "description": "the file", "method": "click", "arguments": [button]},
+        "twoStep": false
+    })
+}
+
+#[test]
+fn act_right_clicks_when_the_model_names_the_right_button() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.answer(&[click_with_button("e3", "right")]);
+    let flow = dir.file(
+        "right-click.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{FILES}ACT \"right-click report.pdf\"\n\
+             [Asserts]\nrole:heading \"Menu\" visible\n"
+        ),
+    );
+    let output = twin.run(&dir, &flow, &[]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+    assert_eq!(
+        act_step(&dir)["act"]["actions"][0]["line"],
+        "RIGHTCLICK role:button \"report.pdf\""
+    );
+    let log = twin.request_log();
+    assert!(
+        log.contains(
+            "When choosing non-left click actions, provide right or middle as the argument"
+        ),
+        "log:\n{log}"
+    );
+}
+
+#[test]
+fn an_unknown_mouse_button_fails_the_entry() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.answer(&[click_with_button("e3", "sideways")]);
+    let flow = dir.file(
+        "sideways.whirl",
+        &format!("[Options]\nmodel: gpt-test\n{FILES}ACT \"right-click report.pdf\"\n"),
+    );
+    let output = twin.run(&dir, &flow, &[]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 1, "stdout:\n{stdout}");
+    assert_eq!(act_step(&dir)["error"]["code"], "act-invalid-decision");
+    assert!(stdout.contains("sideways"), "stdout:\n{stdout}");
+}
+
 #[test]
 fn a_rejected_credential_is_a_runtime_error() {
     let dir = TestDir::new();
@@ -715,6 +770,11 @@ fn jev_choice(options: &[&str], chosen: &str, p: f64) -> Json {
 /// Jev's answers to the intent request: the family, and no key, special
 /// mouse button, end state, or suggestion.
 fn jev_intent(family: &str, confidence: f64) -> Json {
+    jev_intent_with_button(family, confidence, "left")
+}
+
+/// The same, with the mouse button Jev names.
+fn jev_intent_with_button(family: &str, confidence: f64, button: &str) -> Json {
     const FAMILIES: [&str; 10] = [
         "click",
         "double_click",
@@ -746,7 +806,7 @@ fn jev_intent(family: &str, confidence: f64) -> Json {
     ];
     jev_answer(&json!({
         "family": jev_choice(&FAMILIES, family, confidence),
-        "mouse_button": jev_choice(&["left", "right", "middle"], "left", 0.98),
+        "mouse_button": jev_choice(&["left", "right", "middle"], button, 0.98),
         "toggle_state": jev_choice(&["on", "off", "unspecified"], "unspecified", 0.96),
         "after_typing": jev_choice(&["nothing", "pick_suggestion"], "nothing", 0.97),
         "key": jev_choice(&KEYS, "other", 0.93),
@@ -799,6 +859,33 @@ fn jev_acts_without_a_model_call_when_it_is_sure() {
     let log = twin.request_log();
     assert!(!log.contains("chat.completions"), "log:\n{log}");
     assert!(log.contains("add the item to the cart"), "log:\n{log}");
+}
+
+#[test]
+fn jev_right_clicks_without_a_model_call() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.jev(&[
+        jev_intent_with_button("click", 0.95, "right"),
+        jev_only("e3", 0.95),
+    ]);
+    let flow = dir.file(
+        "jev-right-click.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{FILES}ACT \"right-click report.pdf\"\n\
+             [Asserts]\nrole:heading \"Menu\" visible\n"
+        ),
+    );
+    let output = twin.run_jev(&dir, &flow, &[]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+    let step = act_step(&dir);
+    assert_eq!(step["act"]["actions"][0]["plannedBy"], "jev");
+    assert_eq!(
+        step["act"]["actions"][0]["line"],
+        "RIGHTCLICK role:button \"report.pdf\""
+    );
+    assert_eq!(step["act"]["usage"]["modelCalls"], 0);
 }
 
 #[test]
