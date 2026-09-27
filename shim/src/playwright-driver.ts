@@ -55,6 +55,7 @@ import {
 	isTargetClosedError,
 	isTimeoutError,
 	shortErrorMessage,
+	sleep,
 	strictnessError,
 } from "./step-util.js";
 import {
@@ -155,6 +156,16 @@ const redirectStatuses = new Set([301, 302, 303, 307, 308]);
 const maxRedirectHops = 20;
 
 const mouseButtons: readonly MouseButton[] = ["left", "right", "middle"];
+
+/**
+ * How long DRAG holds the button before it moves (SPEC section 7). Some
+ * drag libraries start a drag only after a press delay, commonly 100 to
+ * 300 ms, and cancel it when the pointer moves sooner.
+ */
+const dragHoldMs = 500;
+
+/** DRAG's pointer moves; libraries that start after a distance need several. */
+const dragSteps = 10;
 
 /**
  * The trusted event that shows a click reached its target. Only the left
@@ -316,6 +327,68 @@ function openShadowRoots(): void {
 	): ShadowRoot {
 		return attachShadow.call(this, { ...init, mode: "open" });
 	};
+}
+
+/** A step's locator as the shim reads it from the command's params. */
+interface ReadLocator {
+	readonly locator: Locator;
+	readonly description: string;
+	readonly fromSnapshot: boolean;
+}
+
+/**
+ * The page point DRAG releases at: the target's center, or for an `ACT`
+ * snapshot ref the point `textTargetPosition` picks. Scrolling the target
+ * into view waits until it is visible and stable. A trial hover would also
+ * check that nothing covers it, but in Chromium it stops a native HTML5
+ * drag that is under way.
+ */
+async function dropPoint(
+	target: ReadLocator,
+	remaining: () => number,
+): Promise<Point> {
+	const { locator, description, fromSnapshot } = target;
+	try {
+		await locator.scrollIntoViewIfNeeded({ timeout: remaining() });
+		const position = fromSnapshot
+			? await textTargetPosition(locator, remaining())
+			: undefined;
+		const box = await locator.boundingBox({ timeout: remaining() });
+		if (box === null) {
+			throw new ShimError(
+				"action",
+				`the drop target ${description} is not visible`,
+			);
+		}
+		return {
+			x: box.x + (position?.x ?? box.width / 2),
+			y: box.y + (position?.y ?? box.height / 2),
+		};
+	} catch (error) {
+		if (isStrictModeViolation(error)) {
+			throw await strictnessError(locator, description, await locator.count());
+		}
+		throw error;
+	}
+}
+
+/**
+ * Waits two animation frames, so a page that handles pointer moves once per
+ * frame sees the last one before the release. A hidden page runs no frames,
+ * so a short timer ends the wait there.
+ */
+async function nextFrames(page: Page): Promise<void> {
+	await page
+		.evaluate(
+			() =>
+				new Promise<void>((resolve) => {
+					requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+					setTimeout(resolve, 100);
+				}),
+		)
+		.catch(() => {
+			// A drop that navigates destroys the context; nothing to wait for.
+		});
 }
 
 /**
@@ -820,6 +893,23 @@ export class PlaywrightDriver implements ShimDriver {
 					},
 				);
 				return {};
+			case "drag": {
+				const target = this.#readLocator(page, params, "target");
+				await this.#locatorAction(
+					page,
+					params,
+					async (source, fromSnapshot) => {
+						if (target.fromSnapshot && (await target.locator.count()) === 0) {
+							throw new ShimError(
+								"stale-ref",
+								`the snapshot element ${target.description} is no longer on the page`,
+							);
+						}
+						await this.#drag(page, source, fromSnapshot, target, timeoutMs);
+					},
+				);
+				return {};
+			}
 			case "upload": {
 				const path = fieldString(params, "path");
 				await this.#locatorAction(page, params, (locator) =>
@@ -965,15 +1055,8 @@ export class PlaywrightDriver implements ShimDriver {
 		}
 	}
 
-	#readLocator(
-		page: Page,
-		params: Params,
-	): {
-		readonly locator: Locator;
-		readonly description: string;
-		readonly fromSnapshot: boolean;
-	} {
-		const segments = fieldArray(params, "locator") as readonly LocatorSegment[];
+	#readLocator(page: Page, params: Params, key = "locator"): ReadLocator {
+		const segments = fieldArray(params, key) as readonly LocatorSegment[];
 		return {
 			locator: buildLocator(page, segments),
 			description: describeLocator(segments),
@@ -1117,6 +1200,46 @@ export class PlaywrightDriver implements ShimDriver {
 		}
 	}
 
+	/**
+	 * DRAG (SPEC section 7): press on the source, hold, wait for the target,
+	 * move to it in steps, let the page see the last move, and release.
+	 * Playwright's `dragTo` cannot hold. The button is released even when a
+	 * step fails, so no later screenshot runs with it pressed.
+	 */
+	async #drag(
+		page: Page,
+		source: Locator,
+		fromSnapshot: boolean,
+		target: ReadLocator,
+		timeoutMs: number,
+	): Promise<void> {
+		const deadline = performance.now() + timeoutMs;
+		const remaining = (): number => Math.max(1, deadline - performance.now());
+		const sourcePosition = fromSnapshot
+			? await textTargetPosition(source, remaining())
+			: undefined;
+		await source.hover({
+			timeout: remaining(),
+			...(sourcePosition === undefined ? {} : { position: sourcePosition }),
+		});
+		await page.mouse.down();
+		let released = false;
+		try {
+			await sleep(Math.min(dragHoldMs, remaining()));
+			const point = await dropPoint(target, remaining);
+			await page.mouse.move(point.x, point.y, { steps: dragSteps });
+			await nextFrames(page);
+			released = true;
+			await page.mouse.up();
+		} finally {
+			if (!released) {
+				await page.mouse.up().catch(() => {
+					// The page can be gone after a failed step.
+				});
+			}
+		}
+	}
+
 	async #locatorAction(
 		page: Page,
 		params: Params,
@@ -1201,6 +1324,7 @@ function defaultErrorKind(cmd: StepCommand): ErrorKind {
 		case "checkbox":
 		case "selectOption":
 		case "hover":
+		case "drag":
 		case "upload":
 		case "screenshot":
 			return "action";

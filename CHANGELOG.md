@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add `DRAG source to target`, which drags one element onto another. It presses, holds 500 ms, moves in 10 steps, and releases, so drag code that starts after a press delay or a short move works as well as native HTML5 drag and drop, including into another frame. A bare `to` separates the locators; quote `"to"` to match the text. `ACT` runs it when the model answers `dragAndDrop` with the ref of the element to drop on; with `--jev`, drags go to the model.
 - Add `RIGHTCLICK` and `MIDDLECLICK`, which click an element with the right or middle mouse button, to test a page's own context menu or `auxclick` handling. `ACT` runs them when the model answers `click` with `right` or `middle`, and with `--jev`, Jev plans them without the model.
 - With `--jev`, choose from lists and dropdowns built without a native select: click the option the instruction names, or open the control and click the option in step two.
 - With `--jev`, describe an element in a table by its table's caption or name and its column's header, so Jev tells apart two calendar months that both show a 14.

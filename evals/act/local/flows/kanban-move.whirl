@@ -1,0 +1,9 @@
+[Options]
+base: {{env.EVAL_BASE}}
+model: {{model}}
+
+# A native drag and drop board; the card and the column are named in words.
+VISIT /kanban/
+ACT "move the login timeout card to the Done column" @60s
+[Asserts]
+testid:last-move text == "Fix login timeout to Done"

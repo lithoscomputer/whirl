@@ -418,6 +418,66 @@ fn an_unknown_mouse_button_fails_the_entry() {
     assert!(stdout.contains("sideways"), "stdout:\n{stdout}");
 }
 
+/// A native drag source and drop zone, as `ref=e3` and `ref=e4`.
+const BOARD: &str = "<h1>Board</h1>\
+    <button id=\"card\" draggable=\"true\">Card</button>\
+    <button id=\"done\">Done</button>\
+    <script>\
+    card.ondragstart = (e) => e.dataTransfer.setData('text/plain', 'Card');\
+    done.ondragover = (e) => e.preventDefault();\
+    done.ondrop = (e) => { e.preventDefault(); document.querySelector('h1').textContent = 'Dropped'; };\
+    </script>";
+
+fn drag(source: &str, target: &str) -> Json {
+    json!({
+        "action": {"elementId": source, "description": "the card", "method": "dragAndDrop", "arguments": [target]},
+        "twoStep": false
+    })
+}
+
+#[test]
+fn act_drags_an_element_onto_the_target_the_model_names() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.answer(&[drag("e3", "e4")]);
+    let flow = dir.file(
+        "drag.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{}ACT \"drag the card to Done\"\n\
+             [Asserts]\nrole:heading \"Dropped\" visible\n",
+            visit_html(BOARD)
+        ),
+    );
+    let output = twin.run(&dir, &flow, &[]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+    assert_eq!(
+        act_step(&dir)["act"]["actions"][0]["line"],
+        "DRAG role:button \"Card\" to role:button \"Done\""
+    );
+    let log = twin.request_log();
+    assert!(log.contains("choose the dragAndDrop method"), "log:\n{log}");
+}
+
+#[test]
+fn a_drop_target_the_snapshot_never_showed_fails_the_entry() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.answer(&[drag("e3", "e99")]);
+    let flow = dir.file(
+        "drag-unknown.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{}ACT \"drag the card to Done\"\n",
+            visit_html(BOARD)
+        ),
+    );
+    let output = twin.run(&dir, &flow, &[]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 1, "stdout:\n{stdout}");
+    assert_eq!(act_step(&dir)["error"]["code"], "act-invalid-decision");
+    assert!(stdout.contains("e99"), "stdout:\n{stdout}");
+}
+
 #[test]
 fn a_rejected_credential_is_a_runtime_error() {
     let dir = TestDir::new();
@@ -886,6 +946,28 @@ fn jev_right_clicks_without_a_model_call() {
         "RIGHTCLICK role:button \"report.pdf\""
     );
     assert_eq!(step["act"]["usage"]["modelCalls"], 0);
+}
+
+#[test]
+fn jev_leaves_a_drag_to_the_model() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.jev(&[jev_intent("drag", 0.95)]);
+    twin.answer(&[drag("e3", "e4")]);
+    let flow = dir.file(
+        "jev-drag.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{}ACT \"drag the card to Done\"\n\
+             [Asserts]\nrole:heading \"Dropped\" visible\n",
+            visit_html(BOARD)
+        ),
+    );
+    let output = twin.run_jev(&dir, &flow, &[]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+    let step = act_step(&dir);
+    assert_eq!(step["act"]["actions"][0]["plannedBy"], "llm");
+    assert_eq!(step["act"]["usage"]["jev"]["requests"], 1);
 }
 
 #[test]

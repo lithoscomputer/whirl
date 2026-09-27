@@ -38,6 +38,11 @@ enum ValueCtx {
     ActionDefault,
     /// A role's accessible name in an action locator.
     ActionRoleName,
+    /// An unprefixed default-engine segment in a `DRAG` locator, where a
+    /// bare `to` also separates the two locators.
+    DragDefault,
+    /// A role's accessible name in a `DRAG` locator.
+    DragRoleName,
     /// A role's accessible name in an `[Asserts]` locator; a bare check
     /// keyword would end the locator instead (SPEC 3.1).
     AssertRoleName,
@@ -149,6 +154,8 @@ fn bare_changes_parse(text: &str, ctx: ValueCtx, is_final: bool) -> bool {
         ValueCtx::Page => text == "matches",
         ValueCtx::ActionDefault => is_prefix_shaped(text) || text == ">>",
         ValueCtx::ActionRoleName => text == ">>",
+        ValueCtx::DragDefault => is_prefix_shaped(text) || text == ">>" || text == "to",
+        ValueCtx::DragRoleName => text == ">>" || text == "to",
         ValueCtx::AssertRoleName => text == ">>" || is_assert_stop(text),
         ValueCtx::CaptureRoleName => text == ">>" || is_extractor_stop(text),
     }
@@ -227,6 +234,8 @@ fn render_regex(regex: &Regex) -> String {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum LocatorCtx {
     Action,
+    /// A `DRAG` locator, where a bare `to` is the separator.
+    Drag,
     Assert,
     Capture,
 }
@@ -235,8 +244,16 @@ impl LocatorCtx {
     fn role_name_ctx(self) -> ValueCtx {
         match self {
             Self::Action => ValueCtx::ActionRoleName,
+            Self::Drag => ValueCtx::DragRoleName,
             Self::Assert => ValueCtx::AssertRoleName,
             Self::Capture => ValueCtx::CaptureRoleName,
+        }
+    }
+
+    fn default_ctx(self) -> ValueCtx {
+        match self {
+            Self::Drag => ValueCtx::DragDefault,
+            Self::Action | Self::Assert | Self::Capture => ValueCtx::ActionDefault,
         }
     }
 }
@@ -286,7 +303,7 @@ fn render_segment(kind: &SegmentKind, ctx: LocatorCtx, is_final: bool) -> String
             format!("frame:{}", render_value(value, ValueCtx::Prefixed, false))
         }
         SegmentKind::Nth(index) => format!("nth:{index}"),
-        SegmentKind::Default(value) => render_value(value, ValueCtx::ActionDefault, is_final),
+        SegmentKind::Default(value) => render_value(value, ctx.default_ctx(), is_final),
     }
 }
 
@@ -383,6 +400,11 @@ fn render_action(action: &Action) -> String {
                 render_locator(target, LocatorCtx::Action, is_final)
             )
         }
+        ActionKind::Drag { source, target } => format!(
+            "DRAG {} to {}",
+            render_locator(source, LocatorCtx::Drag, false),
+            render_locator(target, LocatorCtx::Drag, is_final)
+        ),
         ActionKind::Upload { target, path } => format!(
             "UPLOAD {} file:{}",
             render_locator(target, LocatorCtx::Action, false),
@@ -1024,6 +1046,10 @@ mod tests {
                 scrub_locator(target);
                 scrub_value(value);
             }
+            ActionKind::Drag { source, target } => {
+                scrub_locator(source);
+                scrub_locator(target);
+            }
             ActionKind::Press { target, key } => {
                 if let Some(target) = target {
                     scrub_locator(target);
@@ -1164,7 +1190,7 @@ mod tests {
         "[Options]\nbase: https://example.com\nbrowser: webkit\nviewport: 800x600\nstep-timeout: 5s\nentry-timeout: 90s\nnav-timeout: 45s\nallow-hosts: example.com *.example.com\ndialogs: accept\nreduced-motion: reduce\nstorage: auth/state.json\nuser-agent: \"Mozilla/5.0 (Whirl)\"\nsetup: sign-in.whirl\nVISIT /\n",
         "[Options]\nbrowser: {{engine}}\nviewport: {{size}}\nstep-timeout: {{t}}\nVISIT /\n",
         // Every action form.
-        "VISIT /a\nCLICK \"Add to cart\"\nRIGHTCLICK \"report.pdf\"\nMIDDLECLICK role:link Docs\nDBLCLICK text~:\"added\"\nFILL \"Email\" alice@example.com\nTYPE \"Code\" 424242\nPRESS Enter\nPRESS label:Search \"Control+A\"\nCHECK \"Remember me\"\nUNCHECK role:checkbox \"Spam\"\nSELECT \"Country\" \"United States\"\nHOVER testid:menu\nUPLOAD \"Avatar\" file:images/cat.png\nSCREENSHOT overview\nSNAPSHOT header\nEVAL \"window.scrollTo(0, 0)\"\nSTORE local onboarding:done yes\nSTORE local \"welcome seen\" {{env.SEEN}}\nSTORE session draft hi\nSTORE cookie chat_version v1\nVISIT /u/{{setup.user_id}}\n",
+        "VISIT /a\nCLICK \"Add to cart\"\nRIGHTCLICK \"report.pdf\"\nMIDDLECLICK role:link Docs\nDBLCLICK text~:\"added\"\nFILL \"Email\" alice@example.com\nTYPE \"Code\" 424242\nPRESS Enter\nPRESS label:Search \"Control+A\"\nCHECK \"Remember me\"\nUNCHECK role:checkbox \"Spam\"\nSELECT \"Country\" \"United States\"\nHOVER testid:menu\nDRAG \"Write spec\" to testid:done\nDRAG \"to\" to role:listitem \"to\"\nUPLOAD \"Avatar\" file:images/cat.png\nSCREENSHOT overview\nSNAPSHOT header\nEVAL \"window.scrollTo(0, 0)\"\nSTORE local onboarding:done yes\nSTORE local \"welcome seen\" {{env.SEEN}}\nSTORE session draft hi\nSTORE cookie chat_version v1\nVISIT /u/{{setup.user_id}}\n",
         // Timeout suffixes on every step kind.
         "VISIT / @45s\nCLICK go @60s\nPAGE /done @2s\n[Asserts]\ntestid:x visible @2500ms\nurl == / @1s\n[Captures]\nn: testid:x text @3s\nm: testid:x text regex /x(y)?/ @3s\n",
         // Every assert form and operator.
@@ -1267,6 +1293,16 @@ HTTP GET "@10s"
         assert_eq!(
             fmt("VISIT /\nCLICK \"Add   to cart\"\nFILL Email \"a\\\"b\"\n"),
             "VISIT /\nCLICK \"Add   to cart\"\nFILL Email \"a\\\"b\"\n"
+        );
+    }
+
+    #[test]
+    fn drag_keeps_quotes_on_a_to_that_is_text() {
+        assert_eq!(
+            fmt(
+                "VISIT /\nDRAG \"Card\" to \"Done\"\nDRAG \"to\" to role:region \"to\"\nCLICK \"to\"\n"
+            ),
+            "VISIT /\nDRAG Card to Done\nDRAG \"to\" to role:region \"to\"\nCLICK to\n"
         );
     }
 

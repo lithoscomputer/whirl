@@ -173,6 +173,11 @@ impl Target {
     pub(crate) fn locator_text(&self) -> String {
         self.node.locator_text()
     }
+
+    /// The snapshot ref, such as `e12`.
+    pub(crate) fn element_ref(&self) -> &str {
+        self.element.as_str()
+    }
 }
 
 #[cfg(test)]

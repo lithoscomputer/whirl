@@ -880,7 +880,7 @@ fn split_timeout(tokens: &mut Vec<RawToken>) -> Option<DurationLit> {
     Some(duration)
 }
 
-const ACTION_KEYWORDS: [&str; 23] = [
+const ACTION_KEYWORDS: [&str; 24] = [
     "HTTP",
     "RESPONSE",
     "POPUP",
@@ -898,6 +898,7 @@ const ACTION_KEYWORDS: [&str; 23] = [
     "UNCHECK",
     "SELECT",
     "HOVER",
+    "DRAG",
     "UPLOAD",
     "SCREENSHOT",
     "SNAPSHOT",
@@ -1231,6 +1232,7 @@ fn parse_action_body(
             ActionKind::Select { target, option }
         }
         "PRESS" => parse_press(tokens, keyword_span)?,
+        "DRAG" => parse_drag(tokens, keyword_span)?,
         "UPLOAD" => parse_upload(tokens, keyword_span)?,
         "SCREENSHOT" => ActionKind::Screenshot {
             name: parse_name(tokens, keyword_span)?,
@@ -1288,6 +1290,52 @@ fn parse_press(tokens: Vec<RawToken>, keyword_span: Span) -> Result<ActionKind, 
             })
         }
     }
+}
+
+/// `DRAG source to target` (SPEC 7). A bare `to` separates the two
+/// locators; a quoted `"to"` is text (SPEC 3.1).
+fn parse_drag(mut tokens: Vec<RawToken>, keyword_span: Span) -> Result<ActionKind, LineError> {
+    let separators: Vec<usize> = tokens
+        .iter()
+        .enumerate()
+        .filter(|(_, token)| token.bare_single() == Some("to"))
+        .map(|(index, _)| index)
+        .collect();
+    let at = match separators.as_slice() {
+        [at] => *at,
+        [] => {
+            return Err(LineError::new(
+                tokens.last().map_or(keyword_span, |token| token.span),
+                "expected `to` between the element to drag and its target",
+            )
+            .expecting(["to"]));
+        }
+        [_, second, ..] => {
+            return Err(LineError::new(
+                tokens[*second].span,
+                "expected one `to`; quote \"to\" to match the text",
+            )
+            .expecting(["a locator"]));
+        }
+    };
+    let target = tokens.split_off(at + 1);
+    let to = tokens.pop().expect("the separator is present");
+    if tokens.is_empty() {
+        return Err(
+            LineError::new(to.span, "expected the element to drag before `to`")
+                .expecting(["a locator"]),
+        );
+    }
+    if target.is_empty() {
+        return Err(
+            LineError::new(after_span(to.span), "expected the drop target after `to`")
+                .expecting(["a locator"]),
+        );
+    }
+    Ok(ActionKind::Drag {
+        source: build_locator(tokens, true, keyword_span)?,
+        target: build_locator(target, true, to.span)?,
+    })
 }
 
 /// `UPLOAD locator file:path` — the final value carries the `file:`
@@ -4264,6 +4312,52 @@ status == 202
             "message: {}",
             error.message
         );
+    }
+
+    #[test]
+    fn drag_splits_its_locators_at_a_bare_to() {
+        let kind = action_kind("DRAG \"Write spec\" to testid:done");
+        let ActionKind::Drag { source, target } = &kind else {
+            panic!("expected DRAG");
+        };
+        assert_eq!(default_segment_text(source), "Write spec");
+        assert!(matches!(target.segments[0].kind, SegmentKind::TestId(_)));
+        assert_eq!(kind.default_engine(), Some(DefaultEngine::Text));
+
+        // A role takes its name before `to`; a quoted "to" is text.
+        let ActionKind::Drag { source, target } =
+            action_kind("DRAG role:listitem \"to\" to role:region Done")
+        else {
+            panic!("expected DRAG");
+        };
+        let SegmentKind::Role {
+            name: Some(name), ..
+        } = &source.segments[0].kind
+        else {
+            panic!("expected a named role");
+        };
+        assert_eq!(lit(name), "to");
+        assert!(matches!(target.segments[0].kind, SegmentKind::Role {
+            name: Some(_),
+            ..
+        }));
+        let ActionKind::Drag { source, .. } = action_kind("DRAG \"to\" to Done") else {
+            panic!("expected DRAG");
+        };
+        assert_eq!(default_segment_text(&source), "to");
+    }
+
+    #[test]
+    fn drag_needs_one_bare_to_between_two_locators() {
+        for (line, message) in [
+            ("DRAG \"Write spec\" testid:done", "expected `to`"),
+            ("DRAG to testid:done", "before `to`"),
+            ("DRAG \"Write spec\" to", "after `to`"),
+            ("DRAG a to b to c", "quote \"to\""),
+        ] {
+            let error = parse_err(&format!("VISIT /\n{line}\n"));
+            assert!(error.message.contains(message), "{line}: {}", error.message);
+        }
     }
 
     #[test]

@@ -66,6 +66,7 @@ pub(crate) enum ActMethod {
     Press,
     Hover,
     SelectOptionFromDropdown,
+    DragAndDrop,
 }
 
 impl ActMethod {
@@ -77,6 +78,7 @@ impl ActMethod {
         Self::Press,
         Self::Hover,
         Self::SelectOptionFromDropdown,
+        Self::DragAndDrop,
     ];
 
     pub(crate) fn wire_name(self) -> &'static str {
@@ -88,6 +90,7 @@ impl ActMethod {
             Self::Press => "press",
             Self::Hover => "hover",
             Self::SelectOptionFromDropdown => "selectOptionFromDropdown",
+            Self::DragAndDrop => "dragAndDrop",
         }
     }
 
@@ -97,7 +100,11 @@ impl ActMethod {
         match self {
             Self::Click => 0..=1,
             Self::DoubleClick | Self::Hover => 0..=0,
-            Self::Fill | Self::Type | Self::Press | Self::SelectOptionFromDropdown => 1..=1,
+            Self::Fill
+            | Self::Type
+            | Self::Press
+            | Self::SelectOptionFromDropdown
+            | Self::DragAndDrop => 1..=1,
         }
     }
 }
@@ -183,6 +190,7 @@ pub(crate) enum PlannedAction {
     Click { target: Target, button: MouseButton },
     Dblclick(Target),
     Hover(Target),
+    Drag { source: Target, target: Target },
     Fill { target: Target, text: ArgText },
     Type { target: Target, text: ArgText },
     Press { target: Target, key: ArgText },
@@ -194,6 +202,7 @@ impl PlannedAction {
         method: ActMethod,
         target: Target,
         argument: Option<ArgText>,
+        snapshot: &PageSnapshot,
     ) -> Result<Self, DecisionError> {
         let button = match (method, &argument) {
             (ActMethod::Click, Some(ArgText(name))) => {
@@ -224,19 +233,22 @@ impl PlannedAction {
                 target,
                 option: argument(),
             },
+            ActMethod::DragAndDrop => {
+                let ArgText(element_id) = argument();
+                let drop = snapshot
+                    .target(&element_id)
+                    .ok_or(DecisionError::UnknownElement { element_id })?;
+                if drop == target {
+                    return Err(DecisionError::DropOnItself {
+                        element_id: target.element_ref().to_owned(),
+                    });
+                }
+                Self::Drag {
+                    source: target,
+                    target: drop,
+                }
+            }
         })
-    }
-
-    fn parts(&self) -> (&'static str, &Target, Option<&ArgText>) {
-        match self {
-            Self::Click { target, button } => (button.keyword(), target, None),
-            Self::Dblclick(target) => ("DBLCLICK", target, None),
-            Self::Hover(target) => ("HOVER", target, None),
-            Self::Fill { target, text } => ("FILL", target, Some(text)),
-            Self::Type { target, text } => ("TYPE", target, Some(text)),
-            Self::Press { target, key } => ("PRESS", target, Some(key)),
-            Self::Select { target, option } => ("SELECT", target, Some(option)),
-        }
     }
 
     /// The shim command for this action, with placeholders filled in.
@@ -257,6 +269,10 @@ impl PlannedAction {
             },
             Self::Hover(target) => StepCommand::Hover {
                 locator: target.locator_wire(),
+            },
+            Self::Drag { source, target } => StepCommand::Drag {
+                locator: source.locator_wire(),
+                target:  target.locator_wire(),
             },
             Self::Fill { target, text } => StepCommand::Fill {
                 locator: target.locator_wire(),
@@ -298,10 +314,24 @@ impl PlannedAction {
     /// The action as a Whirl line, such as `CLICK role:button "Sign in"`.
     /// Placeholders stay placeholders, so no secret reaches a report.
     pub(crate) fn line(&self) -> String {
-        let (verb, target, argument) = self.parts();
-        match argument {
-            Some(argument) => format!("{verb} {} {}", target.locator_text(), quote(&argument.0)),
-            None => format!("{verb} {}", target.locator_text()),
+        let with = |verb: &str, target: &Target, argument: &ArgText| {
+            format!("{verb} {} {}", target.locator_text(), quote(&argument.0))
+        };
+        match self {
+            Self::Click { target, button } => {
+                format!("{} {}", button.keyword(), target.locator_text())
+            }
+            Self::Dblclick(target) => format!("DBLCLICK {}", target.locator_text()),
+            Self::Hover(target) => format!("HOVER {}", target.locator_text()),
+            Self::Drag { source, target } => format!(
+                "DRAG {} to {}",
+                source.locator_text(),
+                target.locator_text()
+            ),
+            Self::Fill { target, text } => with("FILL", target, text),
+            Self::Type { target, text } => with("TYPE", target, text),
+            Self::Press { target, key } => with("PRESS", target, key),
+            Self::Select { target, option } => with("SELECT", target, option),
         }
     }
 
@@ -315,6 +345,7 @@ impl PlannedAction {
             Self::Click { button, .. } => (ActMethod::Click, button.name()),
             Self::Dblclick(_) => (ActMethod::DoubleClick, ""),
             Self::Hover(_) => (ActMethod::Hover, ""),
+            Self::Drag { target, .. } => (ActMethod::DragAndDrop, target.element_ref()),
             Self::Fill { text, .. } => (ActMethod::Fill, text.0.as_str()),
             Self::Type { text, .. } => (ActMethod::Type, text.0.as_str()),
             Self::Press { key, .. } => (ActMethod::Press, key.0.as_str()),
@@ -375,6 +406,8 @@ pub(crate) enum DecisionError {
     },
     #[error("click takes the button left, right, or middle, but the answer gave {given:?}")]
     Button { given: String },
+    #[error("the answer drags element {element_id} onto itself")]
+    DropOnItself { element_id: String },
     #[error(transparent)]
     Placeholder(#[from] UnboundPlaceholder),
 }
@@ -425,7 +458,7 @@ impl PageSnapshot {
             instruction.bindings().fill(&argument.0)?;
         }
         Ok(ActDecision::Perform {
-            action:      PlannedAction::new(action.method, target, argument)?,
+            action:      PlannedAction::new(action.method, target, argument, self)?,
             description: action.description,
             then:        if inference.two_step {
                 FollowUp::Replan
@@ -660,6 +693,50 @@ mod tests {
         );
     }
 
+    fn drag_to(target: &str) -> ActInference {
+        inference(json!({
+            "action": {"elementId": "e4", "description": "the email", "method": "dragAndDrop", "arguments": [target]},
+            "twoStep": false
+        }))
+    }
+
+    #[test]
+    fn a_drag_names_its_drop_target_by_ref() {
+        let Ok(ActDecision::Perform { action, .. }) =
+            snapshot().decide(drag_to("e5"), &instruction("x"))
+        else {
+            panic!("expected an action");
+        };
+        assert_eq!(
+            action.line(),
+            r#"DRAG role:textbox "Email" to role:button "Sign in""#
+        );
+        assert_eq!(action.command(&instruction("x")), StepCommand::Drag {
+            locator: json!([{"type": "ref", "ref": "e4"}]),
+            target:  json!([{"type": "ref", "ref": "e5"}]),
+        });
+        assert_eq!(
+            action.describe_for_model("the email"),
+            "method: dragAndDrop, description: the email, arguments: e5"
+        );
+    }
+
+    #[test]
+    fn a_drop_target_must_be_another_element_in_the_snapshot() {
+        assert_eq!(
+            snapshot().decide(drag_to("e99"), &instruction("x")),
+            Err(DecisionError::UnknownElement {
+                element_id: "e99".to_owned(),
+            })
+        );
+        assert_eq!(
+            snapshot().decide(drag_to("e4"), &instruction("x")),
+            Err(DecisionError::DropOnItself {
+                element_id: "e4".to_owned(),
+            })
+        );
+    }
+
     #[test]
     fn an_unknown_mouse_button_is_rejected() {
         assert_eq!(
@@ -705,7 +782,7 @@ mod tests {
 
     #[test]
     fn methods_outside_whirls_subset_do_not_parse() {
-        for method in ["scrollTo", "dragAndDrop", "nextChunk"] {
+        for method in ["scrollTo", "nextChunk"] {
             let answer = json!({
                 "action": {"elementId": "e5", "description": "", "method": method, "arguments": []},
                 "twoStep": false

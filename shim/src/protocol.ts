@@ -314,6 +314,7 @@ export type StepCommand =
 	| "checkbox"
 	| "selectOption"
 	| "hover"
+	| "drag"
 	| "upload"
 	| "screenshot"
 	| "snapshot"
@@ -342,6 +343,7 @@ const stepCommandList: readonly StepCommand[] = [
 	"checkbox",
 	"selectOption",
 	"hover",
+	"drag",
 	"upload",
 	"screenshot",
 	"snapshot",
