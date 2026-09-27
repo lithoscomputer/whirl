@@ -27,6 +27,8 @@ pub(crate) struct OutlineNode {
     active:             bool,
     /// `[cursor=pointer]`: the page styles it as clickable.
     pointer:            bool,
+    /// `[checked]`: a checkbox, radio, or switch that is on.
+    pub(crate) checked: bool,
 }
 
 /// The snapshot as a tree, in document order.
@@ -298,6 +300,7 @@ fn parse_node(content: &str) -> OutlineNode {
         match &after[..end] {
             "active" => node.active = true,
             "cursor=pointer" => node.pointer = true,
+            "checked" | "checked=true" => node.checked = true,
             attr => {
                 if let Some(element) = attr.strip_prefix("ref=") {
                     node.element = Some(element.to_owned());

@@ -12,6 +12,7 @@
 
 mod args;
 mod client;
+mod intent;
 mod outline;
 
 use std::collections::HashMap;
@@ -23,6 +24,7 @@ pub(crate) use client::{JevClient, JevSetupError};
 use serde_json::{Map, Value as Json, json};
 
 use self::client::{JevAnswer, JevQuestion, JevResponse, choice, noul};
+use self::intent::Intent;
 use self::outline::{Outline, View, shortlist};
 use crate::run::act::decision::{ActInference, ActMethod};
 use crate::run::act::planner::{
@@ -44,24 +46,13 @@ const PRUNE_KEEP: usize = 30;
 const CREDIBLE: f64 = 0.5;
 const HINT_ITEMS: usize = 5;
 
-/// The kinds of action Jev can tell apart.
-const INTENTS: &[(&str, &str)] = &[
-    (
-        "click",
-        "Click, tap, open, follow, or toggle an element such as a button, link, tab, checkbox, or radio button",
-    ),
-    ("fill", "Type or enter text into a field"),
-    ("select", "Choose an option from a dropdown list"),
-    ("press", "Press a keyboard key, such as Enter or Escape"),
-    (
-        "hover",
-        "Move the mouse over an element without clicking it",
-    ),
-    ("double_click", "Double-click an element"),
-    (
-        "other",
-        "Something else, such as scrolling, dragging, or several actions at once",
-    ),
+/// Roles whose click turns them on or off.
+const CHECKABLE_ROLES: &[&str] = &[
+    "checkbox",
+    "switch",
+    "radio",
+    "menuitemcheckbox",
+    "menuitemradio",
 ];
 
 /// Asks Jev first and the fallback planner when Jev is unsure.
@@ -132,8 +123,23 @@ impl JevPlanner {
         let Some(intent) = self.intent(instruction, request.deadline, usage).await else {
             return Outcome::Unsure(None);
         };
+        // Whirl clicks with the left button only, and choosing a suggestion
+        // after typing is a second step.
+        if intent.other_button || (intent.family == "fill" && intent.pick_suggestion) {
+            return Outcome::Unsure(None);
+        }
         let outline = Outline::parse(request.snapshot.raw());
-        let (method, view) = match intent {
+        // A merged click-or-select vote on a page with no native select is
+        // a click on a custom control.
+        let family = if intent.family == "select"
+            && intent.click_fits
+            && outline.view(View::Select).is_empty()
+        {
+            "click"
+        } else {
+            intent.family
+        };
+        let (method, view) = match family {
             "click" => (ActMethod::Click, View::Pointer),
             "double_click" => (ActMethod::DoubleClick, View::Pointer),
             "hover" => (ActMethod::Hover, View::Pointer),
@@ -143,7 +149,11 @@ impl JevPlanner {
             _ => return Outcome::Unsure(None),
         };
         let key = match method {
-            ActMethod::Press => match args::key(instruction) {
+            ActMethod::Press => match intent
+                .key
+                .map(str::to_owned)
+                .or_else(|| args::key(instruction))
+            {
                 Some(key) => Some(key),
                 None => return Outcome::Unsure(None),
             },
@@ -159,6 +169,14 @@ impl JevPlanner {
         };
         let node = outline.node(index);
         let description = describe_line(&outline.describe(index, &HashMap::new()));
+        // A click toggles; when the control is already in the state the
+        // instruction asks for, a click would undo it.
+        if method == ActMethod::Click
+            && CHECKABLE_ROLES.contains(&node.role.as_str())
+            && intent.toggle == Some(node.checked)
+        {
+            return Outcome::Unsure(Some(hint(&[(element(&outline, index), description)])));
+        }
         let argument = match method {
             ActMethod::Fill => args::fill_value(request.instruction, node.name.as_deref()),
             ActMethod::SelectOptionFromDropdown => {
@@ -184,39 +202,18 @@ impl JevPlanner {
         ))
     }
 
-    /// Which kind of action the instruction asks for, when Jev is sure.
+    /// What kind of action the instruction asks for, and its details, when
+    /// Jev is sure of the kind.
     async fn intent(
         &self,
         instruction: &str,
         deadline: Instant,
         usage: &mut JevUsage,
-    ) -> Option<&'static str> {
-        let criteria: Map<String, Json> = INTENTS
-            .iter()
-            .map(|(intent, meaning)| ((*intent).to_owned(), json!(meaning)))
-            .collect();
-        let questions = vec![(
-            "intent",
-            choice(
-                json!({
-                    "question": "Which kind of browser action does the instruction ask for?",
-                    "instruction": instruction,
-                }),
-                criteria,
-            ),
-        )];
-        let response = self.ask(instruction, questions, deadline, usage).await?;
-        let JevAnswer::Choice {
-            choice, confidence, ..
-        } = response.answers.get("intent")?
-        else {
-            return None;
-        };
-        let intent = INTENTS
-            .iter()
-            .map(|(intent, _)| *intent)
-            .find(|intent| intent == choice)?;
-        (*confidence >= ACCEPT).then_some(intent)
+    ) -> Option<Intent> {
+        let response = self
+            .ask(instruction, intent::questions(instruction), deadline, usage)
+            .await?;
+        intent::read(&response.answers, ACCEPT)
     }
 
     /// The element Jev chooses among a view's candidates.

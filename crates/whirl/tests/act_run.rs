@@ -696,29 +696,60 @@ fn jev_answer(answers: &Json) -> Json {
     })
 }
 
-/// Jev's answer to the intent question. Like the real API, it gives every
-/// option a probability; the others share what `intent` leaves.
-fn jev_intent(intent: &str, confidence: f64) -> Json {
-    const INTENTS: [&str; 7] = [
+/// A choice answer that gives `chosen` probability `p` and splits the rest
+/// evenly, as the real API gives every option a probability.
+fn jev_choice(options: &[&str], chosen: &str, p: f64) -> Json {
+    let rest = (1.0 - p) / (options.len() - 1) as f64;
+    let probabilities: serde_json::Map<String, Json> = options
+        .iter()
+        .map(|&option| {
+            (
+                option.to_owned(),
+                json!(if option == chosen { p } else { rest }),
+            )
+        })
+        .collect();
+    json!({"type": "choice", "choice": chosen, "confidence": p, "probabilities": probabilities})
+}
+
+/// Jev's answers to the intent request: the family, and no key, special
+/// mouse button, end state, or suggestion.
+fn jev_intent(family: &str, confidence: f64) -> Json {
+    const FAMILIES: [&str; 10] = [
         "click",
+        "double_click",
+        "hover",
         "fill",
         "select",
         "press",
-        "hover",
-        "double_click",
+        "scroll",
+        "drag",
+        "not_an_action",
+        "unsupported",
+    ];
+    const KEYS: [&str; 15] = [
+        "Enter",
+        "Tab",
+        "Escape",
+        "Space",
+        "Backspace",
+        "Delete",
+        "ArrowUp",
+        "ArrowDown",
+        "ArrowLeft",
+        "ArrowRight",
+        "PageUp",
+        "PageDown",
+        "Home",
+        "End",
         "other",
     ];
-    let rest = (1.0 - confidence) / 6.0;
-    let probabilities: serde_json::Map<String, Json> = INTENTS
-        .iter()
-        .map(|&option| {
-            let probability = if option == intent { confidence } else { rest };
-            (option.to_owned(), json!(probability))
-        })
-        .collect();
     jev_answer(&json!({
-        "intent": {"type": "choice", "choice": intent, "confidence": confidence,
-                   "probabilities": probabilities}
+        "family": jev_choice(&FAMILIES, family, confidence),
+        "mouse_button": jev_choice(&["left", "right", "middle"], "left", 0.98),
+        "toggle_state": jev_choice(&["on", "off", "unspecified"], "unspecified", 0.96),
+        "after_typing": jev_choice(&["nothing", "pick_suggestion"], "nothing", 0.97),
+        "key": jev_choice(&KEYS, "other", 0.93),
     }))
 }
 

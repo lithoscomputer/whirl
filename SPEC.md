@@ -502,7 +502,14 @@ With `--jev` (section 13), TypeSafe's Jev plans first, as in Stagehand's
 experimental Jev path. Jev is a classifier: it answers closed questions in a
 few hundred milliseconds but cannot write text. Whirl asks it which kind of
 action the instruction wants, then which element, from the snapshot elements
-that kind of action can target. Each element is described by its role, name,
+that kind of action can target. The first request also asks for the key to
+press, the mouse button, the end state of a checkbox or switch, and whether
+typing ends with choosing a suggestion. When Jev splits its vote between a
+click and a select, a double-click, or a key press, and the two together reach
+0.85, Whirl takes the more likely one; a select on a page without a native
+select is then a click. A right or middle click, a suggestion to choose after
+typing, and a click that would undo a checkbox already in the asked state go
+to the model. Each element is described by its role, name,
 and value, the text of its table row or list item, the named sections around
 it, the nearest heading, and its place among elements that look the same.
 When there are more than 40 such elements, Jev sees the 30 whose descriptions
