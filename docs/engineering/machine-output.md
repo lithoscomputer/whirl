@@ -50,7 +50,8 @@ the shim kinds `eval` and `eval-result`.
 `planner`, `llm` or with `--jev` `jev`; `actions`, each with a `line` in
 Whirl syntax, the `description` of the element, and `plannedBy`, the planner
 that chose it; and `usage`, with `modelCalls`, `inputTokens`, `outputTokens`,
-`costUsdMicros` when every call was priced, and with `--jev` a `jev` object of
+`costUsdMicros` when every call was priced (0 when the step made no model
+call), and with `--jev` a `jev` object of
 `requests`, `inputTokens`, and `outputTokens`. Jev has no catalog price, so
 `costUsdMicros` leaves it out. Arguments keep their `%name%` placeholders.
 `internal` covers an invalid shim result. Codes are stable; message text may

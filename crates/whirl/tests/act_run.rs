@@ -740,6 +740,7 @@ fn jev_acts_without_a_model_call_when_it_is_sure() {
         "CLICK role:button \"Add to cart\""
     );
     assert_eq!(step["act"]["usage"]["modelCalls"], 0);
+    assert_eq!(step["act"]["usage"]["costUsdMicros"], 0);
     assert_eq!(step["act"]["usage"]["jev"]["requests"], 2);
     assert_eq!(step["act"]["usage"]["jev"]["inputTokens"], 1000);
     let log = twin.request_log();

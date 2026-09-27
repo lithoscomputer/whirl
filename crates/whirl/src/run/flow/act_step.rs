@@ -103,7 +103,12 @@ fn usage_report(usage: PlanUsage, jev_planner: bool) -> ActUsage {
             .saturating_add(tokens.cache_read)
             .saturating_add(tokens.cache_write),
         output_tokens: tokens.output.saturating_add(tokens.reasoning),
-        cost_usd_micros: model.cost.map(|cost| cost.usd_micros),
+        // A step Jev planned alone made no model call, so it cost nothing.
+        cost_usd_micros: if model_calls == 0 {
+            Some(0)
+        } else {
+            model.cost.map(|cost| cost.usd_micros)
+        },
         jev: jev_planner.then_some(ActJevUsage {
             requests:      jev.requests,
             input_tokens:  jev.input_tokens,
