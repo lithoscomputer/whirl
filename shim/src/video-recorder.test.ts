@@ -5,9 +5,11 @@ import {
 	mkdir,
 	mkdtemp,
 	readdir,
+	readFile,
 	rm,
 	writeFile,
 } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
@@ -16,6 +18,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { promisify } from "node:util";
 import type {
 	FfmpegLocation,
+	FrameCapture,
 	FrameSource,
 	ScreencastOptions,
 } from "./video-recorder.js";
@@ -202,31 +205,59 @@ const frameJpeg = Buffer.from(
 	"base64",
 );
 
+/** The color of `frameJpeg`. */
+const frameColor = [31, 64, 95] as const;
+
+const white = [255, 255, 255] as const;
+
+const unpainted: FrameCapture = { type: "unpainted" };
+const failed: FrameCapture = { type: "failed" };
+const captured: FrameCapture = { type: "frame", frame: frameJpeg };
+
 interface FakeSource extends FrameSource {
 	readonly calls: readonly string[];
 }
 
-/** A page that sends `frames` when its screencast starts, and no more. */
+/**
+ * A page that sends `frames` when its screencast starts. `capture`
+ * answers each capture, and can send a screencast frame with `send`.
+ */
 function fakeSource(
 	frames: readonly Buffer[],
-	capture: () => Promise<Buffer>,
+	capture: (send: (frame: Buffer) => void) => FrameCapture,
 ): FakeSource {
 	const calls: string[] = [];
+	let send: (frame: Buffer) => void = () => {};
 	return {
 		calls,
+		// Short, so a page that never paints keeps the tests fast.
+		paintWaitMs: 200,
 		async start(onFrame) {
 			calls.push("start");
+			send = onFrame;
 			for (const frame of frames) {
 				onFrame(frame);
 			}
 		},
 		async capture() {
 			calls.push("capture");
-			return capture();
+			return capture(send);
 		},
 		async stop() {
 			calls.push("stop");
 		},
+	};
+}
+
+/** Answers each capture with the next reply, then repeats the last. */
+function answers(
+	...replies: readonly [FrameCapture, ...FrameCapture[]]
+): () => FrameCapture {
+	let next = 0;
+	return () => {
+		const reply = replies[Math.min(next, replies.length - 1)] ?? replies[0];
+		next += 1;
+		return reply;
 	};
 }
 
@@ -252,21 +283,68 @@ async function recordingOptions(dir: string): Promise<ScreencastOptions> {
 	};
 }
 
-/** Decodes a recording with ffmpeg and counts its frames. */
-async function frameCount(ffmpegPath: string, video: string): Promise<number> {
+interface PngImage {
+	readonly data: Buffer;
+}
+
+interface UtilsBundle {
+	readonly PNG: { readonly sync: { readonly read: (png: Buffer) => PngImage } };
+}
+
+const require = createRequire(import.meta.url);
+const pngReader = (require("playwright-core/lib/utilsBundle") as UtilsBundle)
+	.PNG.sync;
+
+/**
+ * Decodes a recording with ffmpeg into 160 by 90 frames, and returns the
+ * RGBA pixels of each frame.
+ */
+async function decodeFrames(
+	ffmpegPath: string,
+	video: string,
+): Promise<readonly Buffer[]> {
 	const frames = join(video, "..", "frames");
 	await mkdir(frames);
 	await promisify(execFile)(ffmpegPath, [
 		...["-hide_banner", "-loglevel", "error", "-i", video],
-		...["-f", "image2", join(frames, "f-%05d.png")],
+		...["-vf", "scale=160:90", "-f", "image2", join(frames, "f-%05d.png")],
 	]);
-	return (await readdir(frames)).length;
+	const names = (await readdir(frames)).sort();
+	return Promise.all(
+		names.map(
+			async (name) => pngReader.read(await readFile(join(frames, name))).data,
+		),
+	);
 }
 
-test("a page that sends no frame is captured once, and the frame fills the recording", async (t) => {
+/** Checks that every pixel of every frame is within `tolerance` of `rgb`. */
+function assertColor(
+	frames: readonly Buffer[],
+	rgb: readonly [number, number, number],
+	tolerance: number,
+): void {
+	assert.ok(frames.length >= 1, "no frames");
+	let distance = 0;
+	for (const pixels of frames) {
+		for (let index = 0; index < pixels.length; index += 4) {
+			for (const channel of [0, 1, 2] as const) {
+				distance = Math.max(
+					distance,
+					Math.abs((pixels[index + channel] ?? 0) - rgb[channel]),
+				);
+			}
+		}
+	}
+	assert.ok(
+		distance <= tolerance,
+		`a pixel is ${distance} from ${rgb.join(",")}`,
+	);
+}
+
+test("a page that sends no frame is captured, and the frame fills the recording", async (t) => {
 	const dir = await testDir(t);
 	const options = await recordingOptions(dir);
-	const source = fakeSource([], async () => frameJpeg);
+	const source = fakeSource([], answers(captured));
 	const recorder = await ScreencastRecorder.start(source, options);
 	await sleep(500);
 	const video = join(dir, "video.webm");
@@ -276,35 +354,92 @@ test("a page that sends no frame is captured once, and the frame fills the recor
 	assert.deepEqual(outcome, { type: "saved" });
 	assert.deepEqual(source.calls, ["start", "capture", "stop"]);
 	// At 10 fps, 500 ms or more of recording is at least 5 frames.
-	const frames = await frameCount(options.ffmpegPath, video);
-	assert.ok(frames >= 5, `expected at least 5 frames, got ${frames}`);
+	const frames = await decodeFrames(options.ffmpegPath, video);
+	assert.ok(
+		frames.length >= 5,
+		`expected at least 5 frames, got ${frames.length}`,
+	);
+	assertColor(frames, frameColor, 4);
 });
 
-test("a page that sends no frame and cannot be captured skips the recording", async (t) => {
+test("a capture of a page that has not painted is tried again", async (t) => {
 	const dir = await testDir(t);
 	const options = await recordingOptions(dir);
-	const source = fakeSource([], async () => {
-		throw new Error("Target crashed");
+	const source = fakeSource([], answers(unpainted, captured));
+	const recorder = await ScreencastRecorder.start(source, options);
+	const video = join(dir, "video.webm");
+
+	const outcome = await recorder.stop(video);
+
+	assert.deepEqual(outcome, { type: "saved" });
+	assert.deepEqual(source.calls, ["start", "capture", "capture", "stop"]);
+	const frames = await decodeFrames(options.ffmpegPath, video);
+	assert.ok(frames.length >= 1);
+	assertColor(frames, frameColor, 4);
+});
+
+test("a page that never paints is recorded as a white frame", async (t) => {
+	const dir = await testDir(t);
+	const options = await recordingOptions(dir);
+	const source = fakeSource([], answers(unpainted));
+	const recorder = await ScreencastRecorder.start(source, options);
+	await sleep(300);
+	const video = join(dir, "video.webm");
+
+	const outcome = await recorder.stop(video);
+
+	assert.deepEqual(outcome, { type: "saved" });
+	// The page gets a capture every 50 ms for its 200 ms paint wait.
+	const captures = source.calls.filter((call) => call === "capture").length;
+	assert.ok(captures >= 3, `expected at least 3 captures, got ${captures}`);
+	assert.equal(source.calls.at(-1), "stop");
+	// The white frame fills the 300 ms before the stop and the 200 ms wait.
+	const frames = await decodeFrames(options.ffmpegPath, video);
+	assert.ok(
+		frames.length >= 5,
+		`expected at least 5 frames, got ${frames.length}`,
+	);
+	assertColor(frames, white, 4);
+});
+
+test("a page that cannot be captured, as a crashed one, gets a white frame at once", async (t) => {
+	const dir = await testDir(t);
+	const options = await recordingOptions(dir);
+	const source = fakeSource([], answers(failed));
+	const recorder = await ScreencastRecorder.start(source, options);
+	const video = join(dir, "video.webm");
+
+	const outcome = await recorder.stop(video);
+
+	assert.deepEqual(outcome, { type: "saved" });
+	assert.deepEqual(source.calls, ["start", "capture", "stop"]);
+	const frames = await decodeFrames(options.ffmpegPath, video);
+	assertColor(frames, white, 4);
+});
+
+test("a screencast frame that arrives while the page is tried again is used", async (t) => {
+	const dir = await testDir(t);
+	const options = await recordingOptions(dir);
+	// The frame arrives 10 ms into the 50 ms wait after the first capture.
+	const source = fakeSource([], (send) => {
+		setTimeout(() => send(frameJpeg), 10);
+		return unpainted;
 	});
 	const recorder = await ScreencastRecorder.start(source, options);
 	const video = join(dir, "video.webm");
 
 	const outcome = await recorder.stop(video);
 
-	assert.deepEqual(outcome, {
-		type: "skipped",
-		reason:
-			"the page produced no frames, and capturing it failed: Target crashed",
-	});
+	assert.deepEqual(outcome, { type: "saved" });
 	assert.deepEqual(source.calls, ["start", "capture", "stop"]);
-	await assert.rejects(access(video));
-	assert.deepEqual(await readdir(options.tempDir), []);
+	const frames = await decodeFrames(options.ffmpegPath, video);
+	assertColor(frames, frameColor, 4);
 });
 
 test("a page that sends a frame is not captured", async (t) => {
 	const dir = await testDir(t);
 	const options = await recordingOptions(dir);
-	const source = fakeSource([frameJpeg], async () => {
+	const source = fakeSource([frameJpeg], () => {
 		throw new Error("capture should not run");
 	});
 	const recorder = await ScreencastRecorder.start(source, options);
@@ -314,7 +449,7 @@ test("a page that sends a frame is not captured", async (t) => {
 
 	assert.deepEqual(outcome, { type: "saved" });
 	assert.deepEqual(source.calls, ["start", "stop"]);
-	assert.ok((await frameCount(options.ffmpegPath, video)) >= 1);
+	assert.ok((await decodeFrames(options.ffmpegPath, video)).length >= 1);
 });
 
 test("an ffmpeg that fails while it finishes skips the recording", async (t) => {
@@ -332,9 +467,7 @@ test("an ffmpeg that fails while it finishes skips the recording", async (t) => 
 		{ mode: 0o755 },
 	);
 	const options = { ...(await recordingOptions(dir)), ffmpegPath };
-	const source = fakeSource([frameJpeg], async () => {
-		throw new Error("capture should not run");
-	});
+	const source = fakeSource([frameJpeg], answers(failed));
 	const recorder = await ScreencastRecorder.start(source, options);
 	const video = join(dir, "video.webm");
 
