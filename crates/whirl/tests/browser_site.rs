@@ -2979,12 +2979,12 @@ fn short_video_flows_on_still_pages_pass_with_a_recording() {
 
 #[test]
 fn a_skipped_recording_is_a_warning_and_the_file_still_passes() {
-    // A page that sends no frame and cannot be captured, such as a crashed
-    // one, cannot be made on demand, so the fake shim reports the skip.
+    // An ffmpeg that fails while it finishes the recording cannot be made
+    // on demand, so the fake shim reports the skip.
     let dir = TestDir::new();
     dir.file("flow.whirl", "VISIT https://example.test/\n");
     let shim = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake_shim.js");
-    let reason = "the page produced no frames, and capturing it failed: Target crashed";
+    let reason = "ffmpeg exited with status 1: pipe:0: Invalid data found when processing input";
     let output = run_whirl_env(
         &dir,
         &[

@@ -108,12 +108,16 @@ Result: `{"browserVersion": "...", "nodeVersion": "...", "playwrightVersion": ".
   holding the last frame while the page is still. A number for another
   engine, or a missing ffmpeg, fails `startFlow` with kind `"internal"`.
   When no screencast frame has arrived by `endFlow`, the shim captures the
-  page once with `Page.captureScreenshot` and holds that frame from the
-  start of the recording. When that capture fails or takes more than 5
-  seconds, or when ffmpeg fails, or does not finish within 10 seconds, at
-  `endFlow`, the shim discards the recording and reports why in
-  `videoSkipped`. `cancelFlow` discards an in-progress screencast
-  recording.
+  page with `Page.captureScreenshot` and holds that frame from the start
+  of the recording. For a page that has not painted yet, as right after a
+  navigation, Chrome answers "Unable to capture screenshot", so the shim
+  waits 50 ms and tries again, for up to 1 second. A screencast frame that
+  arrives meanwhile serves as well. When the shim still has no frame, when
+  the capture fails for another reason, or after 5 seconds in all, the
+  recording holds a white frame of the viewport's size. When ffmpeg fails,
+  or does not finish within 10 seconds, at `endFlow`, the shim discards
+  the recording and reports why in `videoSkipped`. `cancelFlow` discards
+  an in-progress screencast recording.
 
 ### `endFlow`
 

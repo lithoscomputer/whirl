@@ -6,8 +6,9 @@
 // This one never runs a timer: frame arrival times decide how many copies
 // of the held frame fill the constant-rate slots, so a static page holds
 // its last frame and a fast page drops frames, without clock drift. A
-// page that sends no frame before the recording stops is captured once,
-// and that frame fills the recording.
+// page that sends no frame before the recording stops is captured, and
+// that frame fills the recording. A page that cannot be captured gets a
+// white frame, as in Playwright's recorder.
 
 import type { ChildProcess } from "node:child_process";
 import { spawn } from "node:child_process";
@@ -15,10 +16,29 @@ import { access, mkdir, readFile, rename, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import type { CDPSession, Page } from "@playwright/test";
 import { ShimError } from "./protocol.js";
 
 const require = createRequire(import.meta.url);
+
+interface UtilsBundle {
+	readonly jpegjs: {
+		readonly encode: (
+			image: {
+				readonly data: Buffer;
+				readonly width: number;
+				readonly height: number;
+			},
+			quality: number,
+		) => { readonly data: Buffer };
+	};
+}
+
+// Playwright's recorder makes its white frame with the JPEG encoder in
+// playwright-core's bundled internals. The Playwright version is pinned
+// (1.62.1), so this private import is stable for the life of the pin.
+const utilsBundle = require("playwright-core/lib/utilsBundle") as UtilsBundle;
 
 /** The rate of Playwright's own recorder, used for Firefox and WebKit. */
 export const PLAYWRIGHT_VIDEO_FPS = 25;
@@ -239,15 +259,28 @@ async function withinMs<T>(
 
 // --- frame sources ---
 
+/** What one capture of the page got. */
+export type FrameCapture =
+	| { readonly type: "frame"; readonly frame: Buffer }
+	/** The page has not painted yet, so a later capture can work. */
+	| { readonly type: "unpainted" }
+	/** The capture failed for another reason, as for a crashed page. */
+	| { readonly type: "failed" };
+
 /**
  * Where a recording's JPEG frames come from. In a flow it is the page's
  * screencast (`PageScreencast`).
  */
 export interface FrameSource {
+	/**
+	 * How long a page that has not painted can take to paint. The recorder
+	 * retries an `unpainted` capture for this long.
+	 */
+	readonly paintWaitMs: number;
 	/** Starts sending frames to `onFrame`. */
 	start(onFrame: (frame: Buffer) => void): Promise<void>;
-	/** Captures what the page shows now as one frame. */
-	capture(): Promise<Buffer>;
+	/** Captures what the page shows now as one frame. Never throws. */
+	capture(): Promise<FrameCapture>;
 	/** Stops the frames and releases the source. Never throws. */
 	stop(): Promise<void>;
 }
@@ -263,6 +296,9 @@ interface ScreencastFrameEvent {
  * frame arrives some time after its paint.
  */
 export class PageScreencast implements FrameSource {
+	// On a loaded machine, a page that had not painted gave a frame on the
+	// second or third try, within 650 ms.
+	readonly paintWaitMs = 1000;
 	readonly #session: CDPSession;
 	readonly #width: number;
 	readonly #height: number;
@@ -305,14 +341,23 @@ export class PageScreencast implements FrameSource {
 		});
 	}
 
-	async capture(): Promise<Buffer> {
-		// The viewport at the context's scale factor of 1: the size of a
-		// screencast frame.
-		const { data } = await this.#session.send("Page.captureScreenshot", {
-			format: "jpeg",
-			quality: screencastQuality,
-		});
-		return Buffer.from(data, "base64");
+	async capture(): Promise<FrameCapture> {
+		try {
+			// The viewport at the context's scale factor of 1: the size of a
+			// screencast frame.
+			const { data } = await this.#session.send("Page.captureScreenshot", {
+				format: "jpeg",
+				quality: screencastQuality,
+			});
+			return { type: "frame", frame: Buffer.from(data, "base64") };
+		} catch (error: unknown) {
+			// Chrome has nothing to copy until the page paints once, as on a
+			// new tab or right after a navigation.
+			const unpainted =
+				error instanceof Error &&
+				error.message.includes("Unable to capture screenshot");
+			return { type: unpainted ? "unpainted" : "failed" };
+		}
 	}
 
 	async stop(): Promise<void> {
@@ -331,17 +376,28 @@ export class PageScreencast implements FrameSource {
 
 // --- recording ---
 
-/** How long `stop` waits to capture a page that sent no frame. */
+/** How long `stop` tries to capture a page that sent no frame, in all. */
 const frameCaptureTimeoutMs = 5000;
+
+/** How long `stop` waits before it captures an unpainted page again. */
+const captureRetryDelayMs = 50;
+
+/**
+ * One white JPEG frame of `width` by `height`, which Playwright's recorder
+ * also writes for a page that sent no frame.
+ */
+function whiteFrame(width: number, height: number): Buffer {
+	const pixels = Buffer.alloc(width * height * 4, 0xff);
+	return utilsBundle.jpegjs.encode(
+		{ data: pixels, width, height },
+		screencastQuality,
+	).data;
+}
 
 /** How a recording ended. A skipped recording leaves no file. */
 export type RecordingOutcome =
 	| { readonly type: "saved" }
 	| { readonly type: "skipped"; readonly reason: string };
-
-type Capture =
-	| { readonly type: "frame"; readonly frame: Buffer }
-	| { readonly type: "failed"; readonly reason: string };
 
 /**
  * One recording of one page. `start` opens ffmpeg and the frame source;
@@ -353,6 +409,8 @@ export class ScreencastRecorder {
 	readonly #stdin: NodeJS.WritableStream & { writableNeedDrain: boolean };
 	readonly #exit: Promise<ExitStatus>;
 	readonly #clock: FrameClock;
+	readonly #width: number;
+	readonly #height: number;
 	readonly #output: string;
 	readonly #startMs: number;
 	#stderrTail = "";
@@ -373,6 +431,8 @@ export class ScreencastRecorder {
 		}
 		this.#stdin = stdin;
 		this.#clock = new FrameClock(options.fps);
+		this.#width = options.width;
+		this.#height = options.height;
 		this.#output = output;
 		this.#startMs = performance.now();
 		// "close" comes after ffmpeg's stderr ends, so the tail holds its
@@ -440,56 +500,58 @@ export class ScreencastRecorder {
 	/**
 	 * A frame for a recording that got no screencast frame. A short flow on
 	 * a still page can end before the first frame arrives, so capture the
-	 * page now and hold that frame from the start of the recording.
+	 * page now. A page that has not painted yet is captured again for up
+	 * to the source's `paintWaitMs`, and a screencast frame that arrives
+	 * meanwhile is as good. Without a frame, the frame is white. Whatever
+	 * the frame, it fills the recording from its start.
 	 */
-	async #captureFirstFrame(): Promise<Capture> {
-		const capture = this.#source.capture().then(
-			(frame): Capture => ({ type: "frame", frame }),
-			(error: unknown): Capture => ({
-				type: "failed",
-				reason: error instanceof Error ? error.message : String(error),
-			}),
-		);
-		const captured: Capture = (await withinMs(
-			capture,
-			frameCaptureTimeoutMs,
-		)) ?? {
-			type: "failed",
-			reason: `no capture within ${frameCaptureTimeoutMs}ms`,
-		};
-		if (captured.type === "frame") {
-			this.#clock.startAt(this.#startMs);
+	async #firstFrame(): Promise<Buffer> {
+		this.#clock.startAt(this.#startMs);
+		const startedMs = performance.now();
+		const retryEndMs = startedMs + this.#source.paintWaitMs;
+		const endMs = startedMs + frameCaptureTimeoutMs;
+		for (;;) {
+			const capture: FrameCapture = (await withinMs(
+				this.#source.capture(),
+				endMs - performance.now(),
+			)) ?? { type: "failed" };
+			if (this.#held !== null) {
+				return this.#held;
+			}
+			if (capture.type === "frame") {
+				return capture.frame;
+			}
+			if (
+				capture.type === "failed" ||
+				performance.now() + captureRetryDelayMs > retryEndMs
+			) {
+				return whiteFrame(this.#width, this.#height);
+			}
+			await sleep(captureRetryDelayMs);
+			if (this.#held !== null) {
+				return this.#held;
+			}
 		}
-		return captured;
 	}
 
 	/**
 	 * Finalizes the recording at `finalPath`. When no screencast frame has
-	 * arrived, it captures the page once. When that fails too, as for a
-	 * crashed page, or when ffmpeg fails or stalls, the recording is
-	 * skipped: a recording is evidence, not a result (SPEC section 13).
+	 * arrived, the page is captured instead, or a white frame fills the
+	 * recording. When ffmpeg fails or stalls, the recording is skipped: a
+	 * recording is evidence, not a result (SPEC section 13).
 	 */
 	async stop(finalPath: string): Promise<RecordingOutcome> {
-		// Later frames are dropped; the source stays open for a capture.
+		// The source stays open, and frames still arrive, until a frame is
+		// chosen.
+		const last = this.#held ?? (await this.#firstFrame());
 		this.#stopped = true;
-		const last: Capture =
-			this.#held === null
-				? await this.#captureFirstFrame()
-				: { type: "frame", frame: this.#held };
-		if (last.type === "failed") {
-			await this.abort();
-			return {
-				type: "skipped",
-				reason: `the page produced no frames, and capturing it failed: ${last.reason}`,
-			};
-		}
 		await this.#source.stop();
 		// Hold the last frame up to now, and never end on an empty stream.
 		const remaining = this.#clock.due(performance.now());
 		const copies =
 			this.#clock.written === 0 ? Math.max(1, remaining) : remaining;
 		for (let index = 0; index < copies; index += 1) {
-			this.#stdin.write(last.frame);
+			this.#stdin.write(last);
 		}
 		this.#clock.advance(copies);
 		this.#stdin.end();
