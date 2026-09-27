@@ -14,11 +14,12 @@ def step(status="passed", code=None, act=None, duration_ms=1200):
     return step
 
 
-def act_report(calls=1, input_tokens=3000, output_tokens=150, cost=7500):
+def act_report(calls=1, input_tokens=3000, output_tokens=150, cost=7500, planned_by=()):
     usage = {"modelCalls": calls, "inputTokens": input_tokens, "outputTokens": output_tokens}
     if cost is not None:
         usage["costUsdMicros"] = cost
-    return {"model": "m", "actions": [], "usage": usage}
+    actions = [{"line": "CLICK role:button", "description": "", "plannedBy": planner} for planner in planned_by]
+    return {"model": "m", "actions": actions, "usage": usage}
 
 
 def file_report(path, status, entries):
@@ -38,6 +39,7 @@ class ClassifyTest(unittest.TestCase):
         )
         result = eval_act.classify(report, "m")
         self.assertEqual(result.task, "custom-dropdown")
+        self.assertEqual((result.actions, result.jev_actions), (0, 0))
         self.assertEqual(result.outcome, "pass")
         self.assertEqual(result.model_calls, 2)
         self.assertEqual(result.cost_usd_micros, 7500)
@@ -56,6 +58,21 @@ class ClassifyTest(unittest.TestCase):
         self.assertEqual(result.cost_usd_micros, 8000)
         unpriced = file_report("x/a.whirl", "passed", [entry("Two.", "passed", [step(act=act_report()), step(act=act_report(cost=None))])])
         self.assertIsNone(eval_act.classify(unpriced, "m").cost_usd_micros)
+
+    def test_actions_jev_chose_are_counted(self):
+        report = file_report(
+            "x/stagehand-google-search.whirl",
+            "passed",
+            [entry("Two.", "passed", [step(act=act_report(planned_by=("jev",))), step(act=act_report(planned_by=("llm",)))])],
+        )
+        result = eval_act.classify(report, "jev:m")
+        self.assertEqual((result.actions, result.jev_actions), (2, 1))
+
+    def test_a_step_without_model_calls_costs_nothing(self):
+        report = file_report("x/a.whirl", "passed", [entry("One.", "passed", [step(act=act_report(calls=0, cost=None))])])
+        result = eval_act.classify(report, "jev:m")
+        self.assertTrue(result.priced)
+        self.assertEqual(result.cost_usd_micros, 0)
 
     def test_a_failing_flow_is_a_fail_with_its_error_code(self):
         report = file_report(
@@ -105,6 +122,11 @@ class PlanTest(unittest.TestCase):
 
     def test_model_slugs_are_path_safe(self):
         self.assertEqual(eval_act.slug("gemini/gemini-3.1-flash-lite"), "gemini-gemini-3.1-flash-lite")
+        self.assertEqual(eval_act.slug("jev:gemini/gemini-3.1-flash-lite"), "jev-gemini-gemini-3.1-flash-lite")
+
+    def test_a_jev_model_runs_with_the_jev_flag(self):
+        self.assertEqual(eval_act.whirl_model("jev:gemini/gemini-3.1-flash-lite"), ("gemini/gemini-3.1-flash-lite", ["--jev"]))
+        self.assertEqual(eval_act.whirl_model("openrouter/gpt-5.6-luna"), ("openrouter/gpt-5.6-luna", []))
 
 
 class SummaryTest(unittest.TestCase):
@@ -121,7 +143,7 @@ class SummaryTest(unittest.TestCase):
 
     def test_the_leaderboard_reports_the_pass_rate_timing_tokens_and_cost(self):
         text = self.render([self.measured("a", "pass"), self.measured("b", "fail", code="assert")])
-        self.assertIn("| `m` | 0.50 ± 0.35 | 2 | 0 | 0 | 2.0s | 2.0s | 1.00 | 3.0k | 150 | $0.0075 | $0.0150 |", text)
+        self.assertIn("| `m` | 0.50 ± 0.35 | 2 | 0 | 0 | 2.0s | 2.0s | 1.00 | - | 3.0k | 150 | $0.0075 | $0.0150 |", text)
         self.assertIn("| a | 1/1 |", text)
         self.assertIn("| b | 0/1 |", text)
         self.assertIn("- `m`: `assert` 1", text)
@@ -130,6 +152,14 @@ class SummaryTest(unittest.TestCase):
     def test_cost_is_not_applicable_when_any_run_is_unpriced(self):
         text = self.render([self.measured("a", "pass"), self.measured("b", "pass", cost=None)])
         self.assertIn("| n/a | n/a |", text)
+
+    def test_the_leaderboard_shows_the_share_of_actions_jev_chose(self):
+        tasks = [eval_act.Task("local", "a", None, False)]
+        result = self.measured("a", "pass")
+        result.model = "jev:m"
+        result.actions, result.jev_actions = 4, 3
+        text = eval_act.render_summary("local", tasks, ["jev:m"], [result], 1, "2026-09-27", "whirl", "abc")
+        self.assertIn("| `jev:m` | 1.00 ± 0.00 | 1 | 0 | 0 | 2.0s | 2.0s | 1.00 | 0.75 |", text)
 
     def test_a_model_without_good_runs_shows_no_rate(self):
         text = self.render([eval_act.Result("a", "m", "error")])
