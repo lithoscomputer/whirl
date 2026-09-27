@@ -180,8 +180,8 @@ pub(crate) struct ActUsage {
     /// Present only when every call was priced.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) cost_usd_micros: Option<u64>,
-    /// Jev's requests and tokens; present only with `--jev`. Jev has no
-    /// catalog price, so `costUsdMicros` leaves it out.
+    /// Jev's requests, tokens, and cost; present only with `--jev`.
+    /// `costUsdMicros` above includes Jev's cost.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) jev:             Option<ActJevUsage>,
 }
@@ -190,9 +190,12 @@ pub(crate) struct ActUsage {
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ActJevUsage {
-    pub(crate) requests:      u32,
-    pub(crate) input_tokens:  u64,
-    pub(crate) output_tokens: u64,
+    pub(crate) requests:        u32,
+    pub(crate) input_tokens:    u64,
+    pub(crate) output_tokens:   u64,
+    /// Present only when every answered request was priced.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) cost_usd_micros: Option<u64>,
 }
 
 /// One entry's result: its steps, captures, and artifacts.

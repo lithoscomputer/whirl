@@ -263,6 +263,10 @@
                                   "outputTokens": {
                                     "type": "integer",
                                     "minimum": 0
+                                  },
+                                  "costUsdMicros": {
+                                    "type": "integer",
+                                    "minimum": 0
                                   }
                                 }
                               }

@@ -22,7 +22,7 @@ use std::time::Instant;
 pub(crate) use client::{JevClient, JevSetupError};
 use serde_json::{Map, Value as Json, json};
 
-use self::client::{JevAnswer, JevResponse, choice, noul};
+use self::client::{JevAnswer, JevQuestion, JevResponse, choice, noul};
 use self::outline::{Outline, View, shortlist};
 use crate::run::act::decision::{ActInference, ActMethod};
 use crate::run::act::planner::{
@@ -195,9 +195,8 @@ impl JevPlanner {
             .iter()
             .map(|(intent, meaning)| ((*intent).to_owned(), json!(meaning)))
             .collect();
-        let mut questions = Map::new();
-        questions.insert(
-            "intent".to_owned(),
+        let questions = vec![(
+            "intent",
             choice(
                 json!({
                     "question": "Which kind of browser action does the instruction ask for?",
@@ -205,7 +204,7 @@ impl JevPlanner {
                 }),
                 criteria,
             ),
-        );
+        )];
         let response = self.ask(instruction, questions, deadline, usage).await?;
         let JevAnswer::Choice {
             choice, confidence, ..
@@ -267,9 +266,10 @@ impl JevPlanner {
                 criteria,
             ),
         };
-        let mut questions = Map::new();
-        questions.insert("strict".to_owned(), choice(json!(instruction), strict));
-        questions.insert("best".to_owned(), best);
+        let questions = vec![
+            ("strict", choice(json!(instruction), strict)),
+            ("best", best),
+        ];
         let response = self
             .ask(instruction, questions, request.deadline, usage)
             .await
@@ -332,7 +332,7 @@ impl JevPlanner {
     async fn ask(
         &self,
         instruction: &str,
-        questions: Map<String, Json>,
+        questions: Vec<(&'static str, JevQuestion)>,
         deadline: Instant,
         usage: &mut JevUsage,
     ) -> Option<JevResponse> {
@@ -342,12 +342,13 @@ impl JevPlanner {
             .ask(json!({ "instruction": instruction }), questions, deadline)
             .await
             .ok()?;
-        usage.input_tokens = usage
-            .input_tokens
-            .saturating_add(response.usage.input_tokens);
-        usage.output_tokens = usage
-            .output_tokens
-            .saturating_add(response.usage.output_tokens);
+        let spend = response.spend;
+        usage.input_tokens = usage.input_tokens.saturating_add(spend.input_tokens);
+        usage.output_tokens = usage.output_tokens.saturating_add(spend.output_tokens);
+        match spend.cost_usd_micros {
+            Some(cost) => usage.cost_usd_micros = usage.cost_usd_micros.saturating_add(cost),
+            None => usage.unpriced = true,
+        }
         Some(response)
     }
 }
