@@ -1,33 +1,34 @@
-//! A client for TypeSafe's Jev (`POST /v1/systemone`), the classifier the
+//! TypeSafe's Jev through `lithos-llm`'s evaluation API: the classifier the
 //! `--jev` planner asks first (SPEC 7.4, 13).
 //!
-//! Jev cannot write text. It answers typed questions with probabilities: a
-//! `choice` among named options, or a `noul` probability for yes or no. A
-//! request carries a JSON `state` and a map of named questions.
+//! Jev cannot write text. It answers typed questions about a JSON state
+//! with probabilities: a choice among named options, or the probability
+//! that a statement holds. `lithos-llm` routes `typesafe/jev-latest` to
+//! TypeSafe's `/v1/systemone`, checks each verdict, retries throttled and
+//! failed calls, and prices the verdict from its catalog.
 
 use std::collections::HashMap;
 use std::env;
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use reqwest::header::CONTENT_TYPE;
-use serde::{Deserialize, Serialize};
+use lithos_llm::catalog::{Catalog, CatalogError};
+use lithos_llm::client::ClientBuildError;
+use lithos_llm::credentials::ConventionalCredentials;
+use lithos_llm::middleware::{CallContext, RetryMiddleware, RetryPolicy};
+use lithos_llm::types::ErrorKind;
+use lithos_llm::{Client, Evaluation, Verdict};
 use serde_json::{Map, Value as Json};
-use tokio::time::sleep;
 
-/// Jev's key (SPEC 13).
+/// Jev's key (SPEC 13). `lithos-llm` reads it for the `typesafe` provider.
 pub(crate) const API_KEY_ENV: &str = "TYPESAFE_API_KEY";
 /// Another Jev server, such as a twin in tests (SPEC 13).
 pub(crate) const ENDPOINT_ENV: &str = "WHIRL_JEV_ENDPOINT";
-const DEFAULT_ENDPOINT: &str = "https://api.typesafe.ai";
-const MODEL: &str = "jev-latest";
+/// The catalog row for Jev on TypeSafe's own API.
+const MODEL: &str = "typesafe/jev-latest";
 
 /// One request's cap, below any `ACT` budget.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
-/// Rate-limit and overload statuses, tried again after a short pause.
-const RETRY_STATUSES: [u16; 2] = [429, 529];
-const MAX_ATTEMPTS: u32 = 3;
-const RETRY_PAUSE: Duration = Duration::from_millis(250);
 /// A rejected key fails every request the same way, so Jev pauses.
 const AUTH_PAUSE: Duration = Duration::from_secs(60);
 /// After this many failures in a row, Jev pauses for [`OUTAGE_PAUSE`].
@@ -35,22 +36,20 @@ const FAILURES_TO_PAUSE: u32 = 3;
 const OUTAGE_PAUSE: Duration = Duration::from_secs(30);
 
 /// A question to Jev.
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum JevQuestion {
-    /// Which of the named options fits; `criteria` maps each option's key
-    /// to its description.
+    /// Which of the named options fits; `options` maps each option's key
+    /// to its description, in order.
     Choice {
         instructions: Json,
-        criteria:     Map<String, Json>,
+        options:      Map<String, Json>,
     },
-    /// How likely the answer is yes.
+    /// How likely the statement is to hold.
     Noul { instructions: Json },
 }
 
 /// Jev's answer to one question.
-#[derive(Clone, Debug, Deserialize, PartialEq)]
-#[serde(tag = "type", rename_all = "lowercase")]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum JevAnswer {
     Choice {
         choice:        String,
@@ -62,37 +61,30 @@ pub(crate) enum JevAnswer {
     },
 }
 
-/// The tokens one request used.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
-pub(crate) struct JevTokens {
-    #[serde(default)]
-    pub(crate) input_tokens:  u64,
-    #[serde(default)]
-    pub(crate) output_tokens: u64,
+/// What one request used.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct JevSpend {
+    pub(crate) input_tokens:    u64,
+    pub(crate) output_tokens:   u64,
+    /// `None` when the catalog could not price the request.
+    pub(crate) cost_usd_micros: Option<u64>,
 }
 
 /// Jev's answers, by question name.
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct JevResponse {
     pub(crate) answers: HashMap<String, JevAnswer>,
-    #[serde(default)]
-    pub(crate) usage:   JevTokens,
+    pub(crate) spend:   JevSpend,
 }
 
-/// Why a request got no answers. Messages carry a status or a cause, never
-/// the key or a response body.
-#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+/// Why a request got no answers. The planner falls back either way, so
+/// the kinds only steer the breaker.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub(crate) enum JevError {
-    #[error("Jev rejected the key (HTTP {status})")]
-    Auth { status: u16 },
-    #[error("Jev answered HTTP {status}")]
-    Status { status: u16 },
-    #[error("Jev did not answer in time")]
-    Timeout,
+    #[error("Jev rejected the key")]
+    Auth,
     #[error("the Jev request failed")]
-    Network,
-    #[error("Jev's answer is not a systemone response")]
-    Payload,
+    Failed,
     #[error("Jev is paused after repeated failures")]
     Paused,
 }
@@ -103,8 +95,10 @@ pub(crate) enum JevError {
 pub(crate) enum JevSetupError {
     #[error("--jev needs {API_KEY_ENV}")]
     MissingKey,
-    #[error("the Jev HTTP client could not be built")]
-    Client(#[source] reqwest::Error),
+    #[error("the Jev catalog could not be built")]
+    Catalog(#[source] Box<CatalogError>),
+    #[error("the Jev client could not be built")]
+    Client(#[source] Box<ClientBuildError>),
 }
 
 /// Pauses Jev after a rejected key or repeated failures, so a broken setup
@@ -115,33 +109,52 @@ struct Breaker {
     failures:     u32,
 }
 
+impl Breaker {
+    fn record(&mut self, error: Option<JevError>) {
+        match error {
+            None => self.failures = 0,
+            Some(JevError::Auth) => self.paused_until = Some(Instant::now() + AUTH_PAUSE),
+            Some(_) => {
+                self.failures += 1;
+                if self.failures >= FAILURES_TO_PAUSE {
+                    self.failures = 0;
+                    self.paused_until = Some(Instant::now() + OUTAGE_PAUSE);
+                }
+            }
+        }
+    }
+
+    fn paused(&self) -> bool {
+        self.paused_until
+            .is_some_and(|until| Instant::now() < until)
+    }
+}
+
 /// The run's Jev client, shared by every flow.
 #[derive(Debug)]
 pub(crate) struct JevClient {
-    http:    reqwest::Client,
-    url:     String,
-    key:     String,
+    client:  Client,
     breaker: Mutex<Breaker>,
 }
 
 impl JevClient {
-    /// Reads the key and the endpoint from the environment (SPEC 13).
+    /// Builds the client from the environment (SPEC 13).
     pub(crate) fn from_env() -> Result<Self, JevSetupError> {
-        let key = env::var(API_KEY_ENV)
-            .ok()
-            .filter(|key| !key.is_empty())
-            .ok_or(JevSetupError::MissingKey)?;
-        let endpoint = env::var(ENDPOINT_ENV)
-            .ok()
-            .filter(|url| !url.is_empty())
-            .unwrap_or_else(|| DEFAULT_ENDPOINT.to_owned());
-        let http = reqwest::Client::builder()
+        if env::var(API_KEY_ENV).map_or(true, |key| key.is_empty()) {
+            return Err(JevSetupError::MissingKey);
+        }
+        let endpoint = env::var(ENDPOINT_ENV).ok().filter(|url| !url.is_empty());
+        let catalog = catalog(endpoint.as_deref())
+            .map_err(|source| JevSetupError::Catalog(Box::new(source)))?;
+        let build = Client::builder()
+            .catalog(catalog)
+            .credentials(ConventionalCredentials::new())
+            .application("whirl")
+            .middleware(RetryMiddleware::new(RetryPolicy::default()))
             .build()
-            .map_err(JevSetupError::Client)?;
+            .map_err(|source| JevSetupError::Client(Box::new(source)))?;
         Ok(Self {
-            http,
-            url: format!("{}/v1/systemone", endpoint.trim_end_matches('/')),
-            key,
+            client:  build.client,
             breaker: Mutex::new(Breaker::default()),
         })
     }
@@ -151,64 +164,58 @@ impl JevClient {
     pub(crate) async fn ask(
         &self,
         state: Json,
-        questions: Map<String, Json>,
+        questions: Vec<(&'static str, JevQuestion)>,
         deadline: Instant,
     ) -> Result<JevResponse, JevError> {
-        if self
-            .breaker()
-            .paused_until
-            .is_some_and(|until| Instant::now() < until)
-        {
+        if self.breaker().paused() {
             return Err(JevError::Paused);
         }
-        let body = serde_json::to_vec(&serde_json::json!({
-            "state": state,
-            "model": MODEL,
-            "questions": questions,
-        }))
-        .expect("a JSON value always serializes");
-        let result = self.send(body, deadline).await;
-        self.record(result.as_ref().err());
+        let result = self.evaluate(state, questions, deadline).await;
+        self.breaker().record(result.as_ref().err().copied());
         result
     }
 
-    async fn send(&self, body: Vec<u8>, deadline: Instant) -> Result<JevResponse, JevError> {
-        let mut attempt = 1;
-        loop {
-            let left = deadline.saturating_duration_since(Instant::now());
-            if left.is_zero() {
-                return Err(JevError::Timeout);
-            }
-            let response = self
-                .http
-                .post(&self.url)
-                .bearer_auth(&self.key)
-                .header(CONTENT_TYPE, "application/json")
-                .timeout(left.min(REQUEST_TIMEOUT))
-                .body(body.clone())
-                .send()
-                .await
-                .map_err(|error| {
-                    if error.is_timeout() {
-                        JevError::Timeout
-                    } else {
-                        JevError::Network
-                    }
-                })?;
-            let status = response.status().as_u16();
-            if response.status().is_success() {
-                let bytes = response.bytes().await.map_err(|_| JevError::Network)?;
-                return serde_json::from_slice(&bytes).map_err(|_| JevError::Payload);
-            }
-            if matches!(status, 401 | 403) {
-                return Err(JevError::Auth { status });
-            }
-            if !RETRY_STATUSES.contains(&status) || attempt == MAX_ATTEMPTS {
-                return Err(JevError::Status { status });
-            }
-            sleep(RETRY_PAUSE * attempt).await;
-            attempt += 1;
+    async fn evaluate(
+        &self,
+        state: Json,
+        questions: Vec<(&'static str, JevQuestion)>,
+        deadline: Instant,
+    ) -> Result<JevResponse, JevError> {
+        let mut builder = Evaluation::builder()
+            .model(MODEL)
+            .state(state)
+            .timeout(REQUEST_TIMEOUT);
+        let asked: Vec<(&'static str, bool)> = questions
+            .iter()
+            .map(|(id, question)| (*id, matches!(question, JevQuestion::Choice { .. })))
+            .collect();
+        for (id, question) in questions {
+            builder = match question {
+                JevQuestion::Choice {
+                    instructions,
+                    options,
+                } => builder.choice(
+                    id,
+                    instructions,
+                    options
+                        .into_iter()
+                        .map(|(key, description)| (key, Some(description))),
+                ),
+                JevQuestion::Noul { instructions } => builder.boolean(id, instructions),
+            };
         }
+        let evaluation = builder.build().map_err(|_| JevError::Failed)?;
+        let mut context = CallContext::new();
+        context.set_deadline(deadline);
+        let verdict = self
+            .client
+            .evaluate_with_context(evaluation, context)
+            .await
+            .map_err(|error| match error.kind() {
+                ErrorKind::Authentication | ErrorKind::AccessDenied => JevError::Auth,
+                _ => JevError::Failed,
+            })?;
+        Ok(response(&verdict, &asked))
     }
 
     fn breaker(&self) -> MutexGuard<'_, Breaker> {
@@ -216,97 +223,104 @@ impl JevClient {
             .lock()
             .expect("breaker users do not panic while holding the lock")
     }
+}
 
-    fn record(&self, error: Option<&JevError>) {
-        let mut breaker = self.breaker();
-        match error {
-            None => breaker.failures = 0,
-            Some(JevError::Auth { .. }) => {
-                breaker.paused_until = Some(Instant::now() + AUTH_PAUSE);
-            }
-            Some(_) => {
-                breaker.failures += 1;
-                if breaker.failures >= FAILURES_TO_PAUSE {
-                    breaker.failures = 0;
-                    breaker.paused_until = Some(Instant::now() + OUTAGE_PAUSE);
+/// The built-in catalog, with the `typesafe` provider pointed at another
+/// server when `endpoint` is set.
+fn catalog(endpoint: Option<&str>) -> Result<Catalog, CatalogError> {
+    let builder = Catalog::builder().with_builtin();
+    let Some(url) = endpoint else {
+        return builder.build();
+    };
+    let base_url = serde_json::to_string(&format!("{}/v1", url.trim_end_matches('/')))
+        .expect("a string always serializes");
+    let overlay = format!("schema_version = 1\n\n[providers.typesafe]\nbase_url = {base_url}\n");
+    builder.toml_layer(ENDPOINT_ENV, &overlay)?.build()
+}
+
+/// A verdict in the planner's terms. `asked` names each question and
+/// whether it was a choice; `lithos-llm` checked that every one has an
+/// answer of that kind.
+fn response(verdict: &Verdict, asked: &[(&'static str, bool)]) -> JevResponse {
+    let answers = asked
+        .iter()
+        .filter_map(|&(id, is_choice)| {
+            let answer = if is_choice {
+                let choice = verdict.choice(id).ok()?;
+                JevAnswer::Choice {
+                    choice:        choice.choice.clone(),
+                    confidence:    choice.confidence.unwrap_or_default(),
+                    probabilities: choice
+                        .probabilities
+                        .iter()
+                        .flatten()
+                        .map(|(key, probability)| (key.clone(), *probability))
+                        .collect(),
                 }
-            }
-        }
+            } else {
+                JevAnswer::Noul {
+                    noul: verdict.boolean(id).ok()?.probability,
+                }
+            };
+            Some((id.to_owned(), answer))
+        })
+        .collect();
+    JevResponse {
+        answers,
+        spend: JevSpend {
+            input_tokens:    verdict.usage.input.saturating_add(verdict.usage.cache_read),
+            output_tokens:   verdict.usage.output.saturating_add(verdict.usage.reasoning),
+            cost_usd_micros: verdict.cost.map(|cost| cost.usd_micros),
+        },
     }
 }
 
-/// A `choice` question with the given options.
-pub(crate) fn choice(instructions: Json, criteria: Map<String, Json>) -> Json {
-    serde_json::to_value(JevQuestion::Choice {
+/// A choice question.
+pub(crate) fn choice(instructions: Json, options: Map<String, Json>) -> JevQuestion {
+    JevQuestion::Choice {
         instructions,
-        criteria,
-    })
-    .expect("a question always serializes")
+        options,
+    }
 }
 
-/// A `noul` question.
-pub(crate) fn noul(instructions: Json) -> Json {
-    serde_json::to_value(JevQuestion::Noul { instructions }).expect("a question always serializes")
+/// A yes-or-no question, answered as a probability.
+pub(crate) fn noul(instructions: Json) -> JevQuestion {
+    JevQuestion::Noul { instructions }
 }
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
-
     use super::*;
 
     #[test]
-    fn questions_serialize_as_systemone_expects() {
-        let mut criteria = Map::new();
-        criteria.insert("e14".to_owned(), json!({"role": "button"}));
-        assert_eq!(
-            choice(json!("delete invoice 1037"), criteria),
-            json!({"type": "choice", "instructions": "delete invoice 1037", "criteria": {"e14": {"role": "button"}}})
-        );
-        assert_eq!(
-            noul(json!({"question": "?"})),
-            json!({"type": "noul", "instructions": {"question": "?"}})
-        );
-    }
-
-    #[test]
-    fn a_live_answer_parses() {
-        let answer: JevResponse = serde_json::from_value(json!({
-            "model": "jev-1.13.0",
-            "answers": {
-                "strict": {"type": "choice", "choice": "e14", "confidence": 0.99,
-                           "probabilities": {"none_match": 0.0, "e14": 1.0}},
-                "plausible": {"type": "noul", "noul": 0.91}
-            },
-            "usage": {"input_tokens": 520, "output_tokens": 73}
-        }))
-        .expect("a live answer parses");
-        assert_eq!(answer.usage.input_tokens, 520);
-        assert_eq!(answer.answers["plausible"], JevAnswer::Noul { noul: 0.91 });
-    }
-
-    #[test]
     fn the_breaker_pauses_after_a_rejected_key_or_three_failures() {
-        let client = JevClient {
-            http:    reqwest::Client::new(),
-            url:     "http://127.0.0.1:1/v1/systemone".to_owned(),
-            key:     "k".to_owned(),
-            breaker: Mutex::new(Breaker::default()),
-        };
-        client.record(Some(&JevError::Network));
-        client.record(Some(&JevError::Network));
-        assert!(client.breaker().paused_until.is_none());
-        client.record(None);
+        let mut breaker = Breaker::default();
+        breaker.record(Some(JevError::Failed));
+        breaker.record(Some(JevError::Failed));
+        assert!(!breaker.paused());
+        breaker.record(None);
         for _ in 0..3 {
-            client.record(Some(&JevError::Timeout));
+            breaker.record(Some(JevError::Failed));
         }
-        assert!(client.breaker().paused_until.is_some());
+        assert!(breaker.paused());
 
-        let client = JevClient {
-            breaker: Mutex::new(Breaker::default()),
-            ..client
-        };
-        client.record(Some(&JevError::Auth { status: 401 }));
-        assert!(client.breaker().paused_until.is_some());
+        let mut breaker = Breaker::default();
+        breaker.record(Some(JevError::Auth));
+        assert!(breaker.paused());
+    }
+
+    #[test]
+    fn the_catalog_routes_jev_to_typesafe_or_to_the_endpoint() {
+        let builtin = catalog(None).expect("the built-in catalog is valid");
+        let local = catalog(Some("http://127.0.0.1:3000/")).expect("the overlay is valid");
+        for (catalog, base_url) in [
+            (builtin, "https://api.typesafe.ai/v1"),
+            (local, "http://127.0.0.1:3000/v1"),
+        ] {
+            let provider = catalog
+                .provider("typesafe")
+                .expect("the catalog has the typesafe provider");
+            assert_eq!(provider.base_url(), base_url);
+        }
     }
 }

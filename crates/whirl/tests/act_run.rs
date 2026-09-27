@@ -696,10 +696,29 @@ fn jev_answer(answers: &Json) -> Json {
     })
 }
 
+/// Jev's answer to the intent question. Like the real API, it gives every
+/// option a probability; the others share what `intent` leaves.
 fn jev_intent(intent: &str, confidence: f64) -> Json {
+    const INTENTS: [&str; 7] = [
+        "click",
+        "fill",
+        "select",
+        "press",
+        "hover",
+        "double_click",
+        "other",
+    ];
+    let rest = (1.0 - confidence) / 6.0;
+    let probabilities: serde_json::Map<String, Json> = INTENTS
+        .iter()
+        .map(|&option| {
+            let probability = if option == intent { confidence } else { rest };
+            (option.to_owned(), json!(probability))
+        })
+        .collect();
     jev_answer(&json!({
         "intent": {"type": "choice", "choice": intent, "confidence": confidence,
-                   "probabilities": {intent: confidence}}
+                   "probabilities": probabilities}
     }))
 }
 
@@ -740,7 +759,10 @@ fn jev_acts_without_a_model_call_when_it_is_sure() {
         "CLICK role:button \"Add to cart\""
     );
     assert_eq!(step["act"]["usage"]["modelCalls"], 0);
-    assert_eq!(step["act"]["usage"]["costUsdMicros"], 0);
+    // 1000 Jev input tokens at the catalog's $0.042 per million; no model
+    // call.
+    assert_eq!(step["act"]["usage"]["costUsdMicros"], 42);
+    assert_eq!(step["act"]["usage"]["jev"]["costUsdMicros"], 42);
     assert_eq!(step["act"]["usage"]["jev"]["requests"], 2);
     assert_eq!(step["act"]["usage"]["jev"]["inputTokens"], 1000);
     let log = twin.request_log();

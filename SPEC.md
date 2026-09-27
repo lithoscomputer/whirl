@@ -514,8 +514,10 @@ Jev's choice is checked like a model answer. When Jev is not confident, when
 it cannot supply an argument, for step two of a two-step action, and when a
 Jev request fails, the model plans the step instead, and its prompt lists
 Jev's likely matches when Jev has some. Jev receives the instruction, with
-masked values as placeholders, and the element descriptions. Its usage is
-reported apart from the model's.
+masked values as placeholders, and the element descriptions. Whirl asks Jev
+through `lithos-llm` as `typesafe/jev-latest` and prices its requests from the
+catalog. Jev's usage is reported apart from the model's, and the step's cost
+includes both.
 
 A custom dropdown that must open before an option can be chosen is a two-step
 action. The model marks its first answer as two-step. Whirl runs that action,
@@ -557,8 +559,8 @@ steps; Whirl does not mask page content.
 The step's report text is the authored line. The JSON report adds an `act`
 object to the step: the model, the planner, each action that ran as a Whirl
 line with the description of the element and the planner that chose it, and
-the token usage and cost of the model calls, and with `--jev` Jev's requests
-and tokens. A rendered line such as `CLICK role:button "Sign in"` describes the
+the token usage and cost of the model calls, and with `--jev` Jev's requests,
+tokens, and cost. A rendered line such as `CLICK role:button "Sign in"` describes the
 element; it is not guaranteed to be unique on the page.
 
 ## 8. PAGE
@@ -1019,7 +1021,7 @@ The artifact override applies to each input's relative paths. Destination protec
 
 Rust source, configuration, and project setup follow the [Brynary Rust Style Guide](https://github.com/brynary/rust-style-guide). TypeScript source and language tooling follow the [Brynary TypeScript Style Guide](https://github.com/brynary/typescript-style-guide) for language-level and authoring conventions. The shim targets the pinned private Node runtime specified here, so the TypeScript guide's Bun-specific runtime, API, package-management, and test-runner policies do not apply. This specification and accepted Whirl ADRs take precedence over both guides.
 
-- `whirl` is a single Rust binary containing the parser, the runner, the check engine, the reporters, and the shim manager. It also makes `ACT`'s language model calls itself, through the `lithos-llm` client, and with `--jev` its Jev requests; the shim only takes the page snapshot and runs the chosen action.
+- `whirl` is a single Rust binary containing the parser, the runner, the check engine, the reporters, and the shim manager. It also makes `ACT`'s language model calls and, with `--jev`, its Jev requests itself, through the `lithos-llm` client; the shim only takes the page snapshot and runs the chosen action.
 - Whirl drives browsers through a thin Node shim that Whirl owns: a small, stable JSON API over stdio pipes, shaped like Whirl's closed vocabulary and implemented on the Playwright library. The Rust binary launches the shim as a child process. Whirl does not reimplement browser automation and does not speak CDP or Playwright's internal driver protocol, so it inherits Playwright's auto-waiting, retrying assertions, locator engine, tracing, and three browser engines — and Playwright upgrades stay internal to the shim.
 - `whirl install` downloads the pinned shim bundle (a private Node runtime, the shim, and the `@playwright/test` package) and the browser builds. Users do not need Node installed. Each Whirl release pins exactly one Playwright version.
 - Rust evaluates every filter and predicate (ADR [evaluate-checks-in-rust](docs/engineering/decisions/evaluate-checks-in-rust.md)). The shim reads raw values: page strings, `eval` results, and each response's status, headers, and body bytes. Rust owns the retry loop for page checks and page captures, on Playwright's poll schedule.

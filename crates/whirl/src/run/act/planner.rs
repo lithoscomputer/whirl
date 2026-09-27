@@ -50,12 +50,22 @@ pub(crate) struct PlanUsage {
     pub(crate) jev:         JevUsage,
 }
 
-/// What Jev requests used. Jev has no catalog price.
+/// What Jev requests used.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct JevUsage {
-    pub(crate) requests:      u32,
-    pub(crate) input_tokens:  u64,
-    pub(crate) output_tokens: u64,
+    pub(crate) requests:        u32,
+    pub(crate) input_tokens:    u64,
+    pub(crate) output_tokens:   u64,
+    pub(crate) cost_usd_micros: u64,
+    /// True when the catalog could not price an answered request.
+    pub(crate) unpriced:        bool,
+}
+
+impl JevUsage {
+    /// The requests' cost, when every answered one was priced.
+    pub(crate) fn cost(self) -> Option<u64> {
+        (!self.unpriced).then_some(self.cost_usd_micros)
+    }
 }
 
 impl PlanUsage {
@@ -64,12 +74,17 @@ impl PlanUsage {
             model_calls: self.model_calls.saturating_add(other.model_calls),
             model:       self.model.saturating_add(other.model),
             jev:         JevUsage {
-                requests:      self.jev.requests.saturating_add(other.jev.requests),
-                input_tokens:  self.jev.input_tokens.saturating_add(other.jev.input_tokens),
-                output_tokens: self
+                requests:        self.jev.requests.saturating_add(other.jev.requests),
+                input_tokens:    self.jev.input_tokens.saturating_add(other.jev.input_tokens),
+                output_tokens:   self
                     .jev
                     .output_tokens
                     .saturating_add(other.jev.output_tokens),
+                cost_usd_micros: self
+                    .jev
+                    .cost_usd_micros
+                    .saturating_add(other.jev.cost_usd_micros),
+                unpriced:        self.jev.unpriced || other.jev.unpriced,
             },
         }
     }
