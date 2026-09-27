@@ -387,6 +387,11 @@ pub(crate) enum ActionKind {
     Hover {
         target: Locator,
     },
+    /// `DRAG source to target` drags one element onto another.
+    Drag {
+        source: Locator,
+        target: Locator,
+    },
     /// The value is the path after the `file:` prefix.
     Upload {
         target: Locator,
@@ -482,7 +487,7 @@ impl ActionKind {
             | Self::Uncheck { .. }
             | Self::Upload { .. }
             | Self::Press { .. } => Some(DefaultEngine::Label),
-            Self::Click { .. } | Self::Dblclick { .. } | Self::Hover { .. } => {
+            Self::Click { .. } | Self::Dblclick { .. } | Self::Hover { .. } | Self::Drag { .. } => {
                 Some(DefaultEngine::Text)
             }
             Self::Http { .. }

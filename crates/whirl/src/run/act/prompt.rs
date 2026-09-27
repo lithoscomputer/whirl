@@ -104,6 +104,7 @@ pub(crate) fn act_prompt(action: &str, placeholders: &[String]) -> String {
     Provide an action for this element such as {methods}. Remember that to users, buttons and \
          links look the same in most cases.
     When choosing non-left click actions, provide right or middle as the argument
+    {DRAG_RULE}
     If the action is completely unrelated to a potential action to be taken on the page, or \
          no matching element exists, set `action` to null. Do not fabricate or guess an element.
     ONLY return one action. If multiple actions are relevant, return the most relevant one.
@@ -159,6 +160,7 @@ pub(crate) fn step_two_prompt(
   If the action is completely unrelated to a potential action to be taken on the page, or no \
          matching element exists, set `action` to null. Do not fabricate or guess an element.
   ONLY return one action. If multiple actions are relevant, return the most relevant one.
+  {DRAG_RULE}
   If the action implies a key press, e.g., 'press enter', 'press a', 'press space', etc., \
          always choose the press method with the appropriate key as argument — e.g. 'a', \
          'Enter', 'Space'. Do not choose a click action on an on-screen keyboard. Capitalize the \
@@ -168,6 +170,11 @@ pub(crate) fn step_two_prompt(
     prompt.push_str(&variables_prompt(placeholders));
     prompt
 }
+
+/// How the model answers a drag, which names two elements.
+const DRAG_RULE: &str = "To drag an element onto another element, choose the dragAndDrop method on \
+                         the element to drag, and give the ref of the element to drop it on as \
+                         the argument, such as e12.";
 
 /// Tells the model which placeholders stand in for values it never sees.
 fn variables_prompt(placeholders: &[String]) -> String {
@@ -208,8 +215,10 @@ mod tests {
         let prompt = act_prompt("sign in", &["%env.PASSWORD%".to_owned()]);
         assert!(prompt.contains("given the following action: sign in."));
         assert!(prompt.contains(
-            "such as click, doubleClick, fill, type, press, hover, selectOptionFromDropdown."
+            "such as click, doubleClick, fill, type, press, hover, selectOptionFromDropdown, \
+             dragAndDrop."
         ));
+        assert!(prompt.contains(DRAG_RULE));
         assert!(
             prompt.contains("the following variables to be used in the action: %env.PASSWORD%")
         );
@@ -225,7 +234,10 @@ mod tests {
     #[test]
     fn step_two_leaves_out_select_and_variables_when_there_are_none() {
         let prompt = step_two_prompt("choose Large", "method: click", &[]);
-        assert!(prompt.contains("such as click, doubleClick, fill, type, press, hover."));
+        assert!(
+            prompt.contains("such as click, doubleClick, fill, type, press, hover, dragAndDrop.")
+        );
+        assert!(prompt.contains(DRAG_RULE));
         assert!(!prompt.contains("variables"));
     }
 

@@ -169,6 +169,7 @@ Commands and their extra params (result `{}` unless noted):
 | `checkbox` | `locator`, `checked` (bool; CHECK/UNCHECK) |
 | `selectOption` | `locator`, `label` |
 | `hover` | `locator` |
+| `drag` | `locator` (the element to drag), `target` (the element to drop it on); press, hold 500 ms, move in 10 steps, release (SPEC 7) |
 | `upload` | `locator`, `path` (absolute; Rust resolved it) |
 | `screenshot` | `path` (absolute .png; full page) |
 | `snapshot` | `baselinePath`, `actualPath`, `diffPath`, `update` (bool) |
@@ -238,9 +239,9 @@ The mapping to Playwright calls is SPEC section 6.1.
 inside an iframe. The shim resolves it with `page.locator("aria-ref=e12")`.
 Only Rust creates `ref` segments, as the only segment of an `ACT` action's
 locator, and only for refs in the latest snapshot. `.whirl` files have no
-syntax for them. For `click`, `dblclick`, and `hover` on a `ref` locator, the
-shim points at the deepest descendant that shows the element's text, when one
-exists, instead of the element's center (SPEC 7.4).
+syntax for them. For `click`, `dblclick`, `hover`, and both locators of `drag`
+on a `ref` locator, the shim points at the deepest descendant that shows the
+element's text, when one exists, instead of the element's center (SPEC 7.4).
 
 Popup names are local to a flow; `main` names the original page. The shim records
 popup events before actions and attaches dialog handling to every page. It keeps

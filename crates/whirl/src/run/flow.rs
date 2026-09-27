@@ -731,6 +731,10 @@ impl FlowExec<'_> {
             K::Hover { target } => StepCommand::Hover {
                 locator: self.locator(target, engine)?,
             },
+            K::Drag { source, target } => StepCommand::Drag {
+                locator: self.locator(source, engine)?,
+                target:  self.locator(target, engine)?,
+            },
             K::Upload { target, path } => {
                 let resolved = self.resolve(path)?;
                 let path = resolve_beside_file(self.run.canonical, &resolved);

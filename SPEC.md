@@ -73,10 +73,11 @@ $ whirl --report-junit report.xml flows/
 A **value** is written in one of two forms:
 
 - **Quoted**: `"..."` with backslash escapes `\"`, `\\`, `\n`, `\t`, and `\u{XXXX}`.
-- **Bare**: a single token with no whitespace, no `"`, and no `#`. Bare and quoted forms are interchangeable, with three reservations:
+- **Bare**: a single token with no whitespace, no `"`, and no `#`. Bare and quoted forms are interchangeable, with four reservations:
   - A line's final bare token of the form `@duration` always parses as the step timeout (section 12), so that value must stay quoted (`"@60s"`).
   - In a typed comparison (section 9.6), a bare typed literal and its quoted form differ: `42` is a number and `"42"` is a string.
   - In `[Asserts]` and `[Captures]`, a bare role name cannot be a subject, state, or predicate keyword such as `text` or `visible`, because that word ends the locator. Quote it: `role:button "visible" visible`.
+  - In `DRAG`, a bare `to` separates the two locators. Quote it to match the text: `DRAG "to" to testid:done`.
 
 A token can join bare and quoted parts, as in `label:"First name"`; the parts form one value.
 
@@ -203,7 +204,7 @@ Text matching is exact (after whitespace normalization). For partial or pattern 
 
 Every text-matching prefix has a substring variant marked with `~` — `role~:`, `label~:`, `placeholder~:`, `text~:`, `alt~:`, `title~:` — which matches by case-insensitive substring, Playwright's default matching. So `text~:"Added"` matches "Added to cart". `testid:` and `css:` have no `~` form, and the unprefixed default engine stays exact.
 
-An unprefixed value in locator position selects a default engine: `label:` for form actions (`FILL`, `SELECT`, `CHECK`, `UNCHECK`, `UPLOAD`, and `PRESS` with a target), and `text:` for pointer actions (`CLICK`, `RIGHTCLICK`, `MIDDLECLICK`, `DBLCLICK`, `HOVER`) — buttons and links have no label; their accessible name is their text. So `FILL "Email" alice@example.com` fills the input labeled Email, and `CLICK "Add to cart"` clicks the element with that exact text. Prefixes stay available everywhere for precision. Default engines exist only in actions: in `[Asserts]` and `[Captures]` every segment must carry a prefix (or be `nth:`), and an unprefixed value there is a parse error. The scope of `ACT` (section 7.4) follows the same rule.
+An unprefixed value in locator position selects a default engine: `label:` for form actions (`FILL`, `SELECT`, `CHECK`, `UNCHECK`, `UPLOAD`, and `PRESS` with a target), and `text:` for pointer actions (`CLICK`, `RIGHTCLICK`, `MIDDLECLICK`, `DBLCLICK`, `HOVER`, `DRAG`) — buttons and links have no label; their accessible name is their text. So `FILL "Email" alice@example.com` fills the input labeled Email, and `CLICK "Add to cart"` clicks the element with that exact text. Prefixes stay available everywhere for precision. Default engines exist only in actions: in `[Asserts]` and `[Captures]` every segment must carry a prefix (or be `nth:`), and an unprefixed value there is a parse error. The scope of `ACT` (section 7.4) follows the same rule.
 
 `frame:` works in actions, asserts, and captures. It may follow an element scope or another frame. An immediately following `nth:N` selects the iframe before entering it. A frame must be followed by an element segment; use `css:` to check the iframe element itself. Nested and cross-origin frames use the same syntax. Frames are resolved lazily, so normal actionability and assertion timeouts also cover frames that load or are replaced later. Multiple matching frames fail strictly unless narrowed explicitly.
 
@@ -215,7 +216,7 @@ frame:"#payment-element iframe" >> label:"Card number" value contains "4242"
 
 ### 6.2 Strictness
 
-When an action or a single-element check runs, the locator must resolve to exactly one element. Zero matches fails after the timeout — except the `hidden` check, which passes when nothing matches (section 9.1). More than one match fails immediately with the candidate list, for `hidden` as well. Narrow the locator or add `nth:`. Only `count` accepts any number of matches.
+When an action or a single-element check runs, the locator must resolve to exactly one element. Zero matches fails after the timeout — except the `hidden` check, which passes when nothing matches (section 9.1). More than one match fails immediately with the candidate list, for `hidden` as well. Narrow the locator or add `nth:`. Only `count` accepts any number of matches. Both locators of `DRAG` follow this rule.
 
 ## 7. Actions
 
@@ -241,6 +242,7 @@ An action is a verb, an optional locator, and an optional value. Element-targeti
 | `UNCHECK locator` | Set a checkbox or switch to unchecked. |
 | `SELECT locator "Label"` | Choose the `<select>` option with visible text `Label`. |
 | `HOVER locator` | Move the pointer over the element. |
+| `DRAG locator to locator` | Drag the first element and drop it on the second. |
 | `UPLOAD locator file:path` | Set the file input to `path`, resolved relative to the `.whirl` file. |
 | `SCREENSHOT name` | Save a full-page screenshot as artifact `name.png`. The name is an identifier that may also contain hyphens. Never fails the entry (see below). |
 | `SNAPSHOT name` | Compare a full-page screenshot against the stored baseline; fails the entry on visual difference. |
@@ -252,6 +254,8 @@ An action is a verb, an optional locator, and an optional value. Element-targeti
 | `STORE cookie "name" "value"` | Set one cookie for the current page's host, with path `/`. |
 
 `RIGHTCLICK` and `MIDDLECLICK` test what the page does with those buttons. A right click fires the page's `contextmenu` event, and a middle click fires `auxclick`; neither fires `click`. A page that shows its own menu on a right click, such as a file list, can be tested this way. The browser's own context menu is not part of the page, and no step can check it. What a middle click on a link does depends on the engine: Firefox opens a popup that `POPUP` can name, Chromium opens a tab without an opener that `POPUP` cannot name, and WebKit follows the link in the same tab. To test a link that opens a new tab, click it with `CLICK`.
+
+`DRAG` moves the pointer to the first element, presses the left button, and holds it for 500 ms. It then waits until the second element is visible and stable, moves to its center in 10 steps, waits two animation frames, and releases. The hold serves drag code that starts only after a press delay, commonly 100 to 300 ms, and cancels a drag when the pointer moves sooner; drag code with a longer delay does not start. The steps serve drag code that starts after the pointer moves a few pixels. Native HTML5 drag and drop works in every engine, including from one frame into another. `DRAG` does not check the result: assert where the element landed. In WebKit, a page that took a native HTML5 drag gets no `pointerdown` for later presses until it loads again, so put a `VISIT` between such a drag and drag code that uses pointer events.
 
 `PRESS` with a single argument treats it as the key: `PRESS Enter` presses Enter on the focused element, even though `Enter` could also parse as a locator. Only when two arguments are present is the first a locator.
 
@@ -465,6 +469,11 @@ matching Whirl action, with that action's actionability and strictness rules:
 | `type` | `TYPE` |
 | `press` | `PRESS` with a target |
 | `selectOptionFromDropdown` | `SELECT` |
+| `dragAndDrop` | `DRAG` |
+
+For `dragAndDrop`, the element is the one to drag, and the one argument is the
+ref of the element to drop it on, such as `e12`. That ref must be in the
+snapshot and name another element.
 
 A long page can make the snapshot costly or larger than the model's context. A
 locator before the instruction limits the snapshot to one element and what it
@@ -478,8 +487,8 @@ the same as a click: a checkbox toggles, and a radio is selected.
 
 The snapshot shows a wrapper that has one visible child, such as a custom
 dropdown's trigger inside a wider box, as one element. To click, double-click,
-or hover such an element, Whirl points at the deepest element inside it that
-shows the same text, instead of the element's center. The event still reaches
+hover, drag, or drop onto such an element, Whirl points at the deepest element
+inside it that shows the same text, instead of the element's center. The event still reaches
 the element the model chose.
 
 In a file that uses `ACT`, Whirl opens every shadow root that a page script
@@ -519,8 +528,9 @@ instruction names: an element with an option role whose label the instruction
 says as whole words, or else such a list item or clickable element, and Jev
 confirms it. When no named option shows, Jev picks the control that opens the
 list as the first of two steps, and step two clicks the named option on the
-new snapshot. A suggestion to choose after typing and a click that would undo
-a checkbox already in the asked state go to the model. Each element is described by its role, name, and value, the text of its
+new snapshot. A suggestion to choose after typing, a click that would undo a
+checkbox already in the asked state, and a drag go to the model. Each element
+is described by its role, name, and value, the text of its
 table row or list item, the caption or name of its table and the header of its
 column, the named sections around it, the nearest heading, and its place among
 elements that look the same. When no element in that list fits, Jev looks at
@@ -569,8 +579,8 @@ An `ACT` line fails the entry when:
 
 - the model names no element (`act-no-match`); Whirl does not ask again,
 - the answer does not match the schema, names an element that is not in the
-  snapshot, gives the wrong number of arguments, or uses an unknown
-  placeholder (`act-invalid-decision`),
+  snapshot, gives the wrong number of arguments, drags an element onto
+  itself, or uses an unknown placeholder (`act-invalid-decision`),
 - the chosen element is replaced again after Whirl asked once more
   (`stale-ref`),
 - a filled field does not hold the value (`act-fill-mismatch`); the message
@@ -1093,6 +1103,7 @@ action-body = "VISIT" , value
            | "UNCHECK" , locator
            | "SELECT" , locator , value
            | "HOVER" , locator
+           | "DRAG" , locator , "to" , locator
            | "UPLOAD" , locator , "file:" , value
            | "SCREENSHOT" , artifact-name
            | "SNAPSHOT" , artifact-name
@@ -1194,5 +1205,5 @@ Deferred beyond V1 (candidate V2 features, not promised):
 - The Hurl features that the check vocabulary does not adopt: the `sha256`, `md5`, `cookie`, `certificate`, `redirects`, `duration`, `ip`, `version`, `variable`, and `rawbytes` queries; `file,…;` values; and following redirects in HTTP entries.
 - Per-entry `[Options]` overrides and mobile device emulation.
 - An LLM-as-judge assertion (a `JUDGE` keyword with an explicit model option and advisory rather than hard-failing verdicts).
-- More `ACT` methods, each waiting for a matching Whirl action: scrolling (`scrollTo`, `nextChunk`, and `prevChunk`) and drag and drop.
+- More `ACT` methods, each waiting for a matching Whirl action: scrolling (`scrollTo`, `nextChunk`, and `prevChunk`).
 - An `ACT` cache that replays a successful action without a model call, self-healing that plans again when a chosen action fails, and a step-two prompt that sends only the part of the snapshot that changed.

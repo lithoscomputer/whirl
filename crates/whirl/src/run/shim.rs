@@ -310,6 +310,11 @@ pub(crate) enum StepCommand {
     Hover {
         locator: Json,
     },
+    /// `DRAG`: `locator` is the element to drag.
+    Drag {
+        locator: Json,
+        target:  Json,
+    },
     Upload {
         locator: Json,
         path:    String,
@@ -1062,6 +1067,14 @@ mod tests {
                 },
                 "hover",
                 serde_json::json!({"locator": locator}),
+            ),
+            (
+                StepCommand::Drag {
+                    locator: locator.clone(),
+                    target:  serde_json::json!([{"type": "testid", "id": "done"}]),
+                },
+                "drag",
+                serde_json::json!({"locator": locator, "target": [{"type": "testid", "id": "done"}]}),
             ),
             (
                 StepCommand::Upload {

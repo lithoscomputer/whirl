@@ -699,6 +699,92 @@ css:"#counter" attr:data-button == 2
 }
 
 #[test]
+fn drag_moves_cards_on_native_and_pointer_event_boards() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    // The pointer boards start a drag after an 8px move and after a 300ms
+    // press. They run first: in WebKit, a page that took a native drag
+    // gets no pointerdown until it loads again.
+    dir.file(
+        "boards.whirl",
+        r##"VISIT /drag.html
+DRAG "Pointer card" to testid:distance-done
+[Asserts]
+testid:distance-done >> text:"Pointer card" visible
+
+DRAG "Held card" to testid:delay-done
+[Asserts]
+css:"#pointer-log" text == dropped
+testid:delay-done >> text:"Held card" visible
+
+DRAG "Write spec" to testid:native-done
+[Asserts]
+testid:native-done >> text:"Write spec" visible
+
+DRAG "to" to testid:native-done
+[Asserts]
+testid:native-done >> text:to visible
+"##,
+    );
+    for engine in engines() {
+        let output = run_whirl(&dir, &[
+            "--base",
+            &server.base(),
+            "--browser",
+            engine,
+            "boards.whirl",
+        ]);
+        let stdout = stdout_text(&output);
+        assert_eq!(exit_code(&output), 0, "{engine} stdout:\n{stdout}");
+    }
+}
+
+#[test]
+fn drag_reaches_into_a_frame_and_across_frames() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file(
+        "frames.whirl",
+        r##"VISIT /drag-frame.html
+DRAG frame:"#board" >> text:"Frame card" to frame:"#board" >> testid:frame-done
+[Asserts]
+frame:"#board" >> testid:frame-done >> text:"Frame card" visible
+
+VISIT /drag-frame.html
+DRAG "Outside card" to frame:"#board" >> testid:frame-done
+[Asserts]
+frame:"#board" >> testid:frame-done >> text:"Outside card" visible
+"##,
+    );
+    for engine in engines() {
+        let output = run_whirl(&dir, &[
+            "--base",
+            &server.base(),
+            "--browser",
+            engine,
+            "frames.whirl",
+        ]);
+        let stdout = stdout_text(&output);
+        assert_eq!(exit_code(&output), 0, "{engine} stdout:\n{stdout}");
+    }
+}
+
+#[test]
+fn an_ambiguous_drop_target_fails_with_its_candidates() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file(
+        "ambiguous.whirl",
+        "VISIT /drag.html\nDRAG \"Write spec\" to css:.column\n",
+    );
+    let output = run_whirl(&dir, &["--base", &server.base(), "ambiguous.whirl"]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 1, "stdout:\n{stdout}");
+    assert!(stdout.contains("strictness"), "stdout:\n{stdout}");
+    assert!(stdout.contains("css:.column"), "stdout:\n{stdout}");
+}
+
+#[test]
 fn a_middle_click_on_a_link_follows_each_engines_own_rule() {
     let server = SiteServer::start();
     let dir = TestDir::new();

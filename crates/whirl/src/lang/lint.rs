@@ -638,6 +638,10 @@ fn collect_action_refs<'a>(action: &'a Action, refs: &mut Vec<VarRef<'a>>) {
             collect_locator_refs(target, line, refs);
             collect_value_refs(path, line, refs);
         }
+        ActionKind::Drag { source, target } => {
+            collect_locator_refs(source, line, refs);
+            collect_locator_refs(target, line, refs);
+        }
         ActionKind::Eval { script } => collect_value_refs(script, line, refs),
         ActionKind::Act { scope, instruction } => {
             if let Some(scope) = scope {
