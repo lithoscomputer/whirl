@@ -14,7 +14,8 @@
 //
 // FAKE_SHIM_IGNORE_CANCEL=1 in the environment also enables the
 // ignore-cancel mode from the start. FAKE_SHIM_VIDEO_SKIPPED=REASON makes
-// endFlow report a skipped recording with that reason.
+// startFlow start a 60 fps recording and endFlow report it skipped with
+// that reason.
 
 "use strict";
 
@@ -86,7 +87,7 @@ rl.on("line", (line) => {
       break;
     case "startFlow":
       if (ignoreLifecycle) break;
-      reply(id, {});
+      reply(id, videoSkipped === null ? {} : { videoFps: 60 });
       break;
     case "endFlow":
       if (ignoreLifecycle) break;

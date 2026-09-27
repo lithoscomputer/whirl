@@ -1564,11 +1564,16 @@ pub(crate) async fn run_flow(run: &FlowRun<'_>, client: &mut ShimClient) -> Flow
                     }
                     // A recording is evidence, not a result: a skipped one
                     // never changes the file's status (SPEC 13).
+                    // The report then has no frame rate, as for any flow
+                    // without a recording.
                     if let Some(reason) = result.video_skipped {
                         exec.warnings.push(format!(
                             "video recording skipped: {}",
                             exec.vars.mask(&reason)
                         ));
+                        if let Some(runtime) = report.runtime.as_mut() {
+                            runtime.video_fps = None;
+                        }
                     }
                     if run.flags.har {
                         report.artifacts.push(
