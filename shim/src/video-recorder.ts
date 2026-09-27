@@ -5,7 +5,9 @@
 // Playwright's own recorder is the same design with the rate fixed at 25.
 // This one never runs a timer: frame arrival times decide how many copies
 // of the held frame fill the constant-rate slots, so a static page holds
-// its last frame and a fast page drops frames, without clock drift.
+// its last frame and a fast page drops frames, without clock drift. A
+// page that sends no frame before the recording stops is captured once,
+// and that frame fills the recording.
 
 import type { ChildProcess } from "node:child_process";
 import { spawn } from "node:child_process";
@@ -140,8 +142,8 @@ export async function resolveFfmpegPath(): Promise<string | null> {
 
 /**
  * Decides how many constant-rate frame slots are due at a point in time.
- * Slots are counted from the first frame's arrival, so rounding never
- * accumulates across gaps.
+ * Slots are counted from the first frame's arrival, or from `startAt`, so
+ * rounding never accumulates across gaps.
  */
 export class FrameClock {
 	readonly #fps: number;
@@ -155,6 +157,11 @@ export class FrameClock {
 	/** Frames written so far. */
 	get written(): number {
 		return this.#written;
+	}
+
+	/** Starts the clock at `startMs`, unless a frame has started it. */
+	startAt(startMs: number): void {
+		this.#startMs ??= startMs;
 	}
 
 	/**
@@ -230,34 +237,135 @@ async function withinMs<T>(
 	}
 }
 
+// --- frame sources ---
+
+/**
+ * Where a recording's JPEG frames come from. In a flow it is the page's
+ * screencast (`PageScreencast`).
+ */
+export interface FrameSource {
+	/** Starts sending frames to `onFrame`. */
+	start(onFrame: (frame: Buffer) => void): Promise<void>;
+	/** Captures what the page shows now as one frame. */
+	capture(): Promise<Buffer>;
+	/** Stops the frames and releases the source. Never throws. */
+	stop(): Promise<void>;
+}
+
 interface ScreencastFrameEvent {
 	readonly data: string;
 	readonly sessionId: number;
 }
 
 /**
- * One recording of one page. `start` opens the screencast and ffmpeg;
+ * The page's Chrome DevTools Protocol screencast. Chrome sends a frame
+ * only when the page paints, so a still page sends few frames, and each
+ * frame arrives some time after its paint.
+ */
+export class PageScreencast implements FrameSource {
+	readonly #session: CDPSession;
+	readonly #width: number;
+	readonly #height: number;
+	#onFrame: ((event: ScreencastFrameEvent) => void) | null = null;
+
+	private constructor(session: CDPSession, width: number, height: number) {
+		this.#session = session;
+		this.#width = width;
+		this.#height = height;
+	}
+
+	/** Opens a DevTools session on `page`. Frames fit `width` by `height`. */
+	static async open(
+		page: Page,
+		width: number,
+		height: number,
+	): Promise<PageScreencast> {
+		const session = await page.context().newCDPSession(page);
+		return new PageScreencast(session, width, height);
+	}
+
+	async start(onFrame: (frame: Buffer) => void): Promise<void> {
+		const session = this.#session;
+		this.#onFrame = (event) => {
+			// Acknowledge first so Chrome keeps producing frames.
+			void session
+				.send("Page.screencastFrameAck", { sessionId: event.sessionId })
+				.catch(() => {
+					// The page may be closing; the recording still finalizes.
+				});
+			onFrame(Buffer.from(event.data, "base64"));
+		};
+		session.on("Page.screencastFrame", this.#onFrame);
+		await session.send("Page.startScreencast", {
+			format: "jpeg",
+			quality: screencastQuality,
+			maxWidth: this.#width,
+			maxHeight: this.#height,
+			everyNthFrame: 1,
+		});
+	}
+
+	async capture(): Promise<Buffer> {
+		// The viewport at the context's scale factor of 1: the size of a
+		// screencast frame.
+		const { data } = await this.#session.send("Page.captureScreenshot", {
+			format: "jpeg",
+			quality: screencastQuality,
+		});
+		return Buffer.from(data, "base64");
+	}
+
+	async stop(): Promise<void> {
+		if (this.#onFrame !== null) {
+			this.#session.off("Page.screencastFrame", this.#onFrame);
+			this.#onFrame = null;
+		}
+		await this.#session.send("Page.stopScreencast").catch(() => {
+			// The page is already gone.
+		});
+		await this.#session.detach().catch(() => {
+			// Detaching a closed session is harmless.
+		});
+	}
+}
+
+// --- recording ---
+
+/** How long `stop` waits to capture a page that sent no frame. */
+const frameCaptureTimeoutMs = 5000;
+
+/** How a recording ended. A skipped recording leaves no file. */
+export type RecordingOutcome =
+	| { readonly type: "saved" }
+	| { readonly type: "skipped"; readonly reason: string };
+
+type Capture =
+	| { readonly type: "frame"; readonly frame: Buffer }
+	| { readonly type: "failed"; readonly reason: string };
+
+/**
+ * One recording of one page. `start` opens ffmpeg and the frame source;
  * `stop` finalizes the WebM and moves it into place; `abort` discards it.
  */
 export class ScreencastRecorder {
-	readonly #session: CDPSession;
+	readonly #source: FrameSource;
 	readonly #process: ChildProcess;
 	readonly #stdin: NodeJS.WritableStream & { writableNeedDrain: boolean };
 	readonly #exit: Promise<ExitStatus>;
 	readonly #clock: FrameClock;
 	readonly #output: string;
-	readonly #onFrame: (event: ScreencastFrameEvent) => void;
+	readonly #startMs: number;
 	#stderrTail = "";
 	#held: Buffer | null = null;
 	#stopped = false;
 
 	private constructor(
-		session: CDPSession,
+		source: FrameSource,
 		process: ChildProcess,
 		options: ScreencastOptions,
 		output: string,
 	) {
-		this.#session = session;
+		this.#source = source;
 		this.#process = process;
 		const stdin = process.stdin;
 		if (stdin === null) {
@@ -266,6 +374,7 @@ export class ScreencastRecorder {
 		this.#stdin = stdin;
 		this.#clock = new FrameClock(options.fps);
 		this.#output = output;
+		this.#startMs = performance.now();
 		this.#exit = new Promise<ExitStatus>((resolveExit) => {
 			process.once("exit", (code, signal) => resolveExit({ code, signal }));
 		});
@@ -277,20 +386,10 @@ export class ScreencastRecorder {
 				-stderrTailLimit,
 			);
 		});
-		this.#onFrame = (event) => {
-			// Acknowledge first so Chrome keeps producing frames.
-			void session
-				.send("Page.screencastFrameAck", { sessionId: event.sessionId })
-				.catch(() => {
-					// The page may be closing; the recording still finalizes.
-				});
-			this.#receive(Buffer.from(event.data, "base64"));
-		};
-		session.on("Page.screencastFrame", this.#onFrame);
 	}
 
 	static async start(
-		page: Page,
+		source: FrameSource,
 		options: ScreencastOptions,
 	): Promise<ScreencastRecorder> {
 		await mkdir(options.tempDir, { recursive: true });
@@ -298,19 +397,12 @@ export class ScreencastRecorder {
 			options.tempDir,
 			`screencast-${process.pid}-${Date.now()}.webm`,
 		);
-		const session = await page.context().newCDPSession(page);
 		const child = spawn(options.ffmpegPath, ffmpegArgs(options, output), {
 			stdio: ["pipe", "ignore", "pipe"],
 		});
-		const recorder = new ScreencastRecorder(session, child, options, output);
+		const recorder = new ScreencastRecorder(source, child, options, output);
 		try {
-			await session.send("Page.startScreencast", {
-				format: "jpeg",
-				quality: screencastQuality,
-				maxWidth: options.width,
-				maxHeight: options.height,
-				everyNthFrame: 1,
-			});
+			await source.start((frame) => recorder.#receive(frame));
 		} catch (error) {
 			await recorder.abort();
 			throw error;
@@ -343,37 +435,59 @@ export class ScreencastRecorder {
 		}
 	}
 
-	async #stopScreencast(): Promise<void> {
-		this.#stopped = true;
-		this.#session.off("Page.screencastFrame", this.#onFrame);
-		await this.#session.send("Page.stopScreencast").catch(() => {
-			// The page is already gone.
-		});
-		await this.#session.detach().catch(() => {
-			// Detaching a closed session is harmless.
-		});
+	/**
+	 * A frame for a recording that got no screencast frame. A short flow on
+	 * a still page can end before the first frame arrives, so capture the
+	 * page now and hold that frame from the start of the recording.
+	 */
+	async #captureFirstFrame(): Promise<Capture> {
+		const capture = this.#source.capture().then(
+			(frame): Capture => ({ type: "frame", frame }),
+			(error: unknown): Capture => ({
+				type: "failed",
+				reason: error instanceof Error ? error.message : String(error),
+			}),
+		);
+		const captured: Capture = (await withinMs(
+			capture,
+			frameCaptureTimeoutMs,
+		)) ?? {
+			type: "failed",
+			reason: `no capture within ${frameCaptureTimeoutMs}ms`,
+		};
+		if (captured.type === "frame") {
+			this.#clock.startAt(this.#startMs);
+		}
+		return captured;
 	}
 
 	/**
-	 * Finalizes the recording at `finalPath`. Throws an `internal` error when
-	 * ffmpeg fails, stalls, or received no frames.
+	 * Finalizes the recording at `finalPath`. When no screencast frame has
+	 * arrived, it captures the page once; when that fails too, as for a
+	 * crashed page, it skips the recording. Throws an `internal` error when
+	 * ffmpeg fails or stalls.
 	 */
-	async stop(finalPath: string): Promise<void> {
-		await this.#stopScreencast();
-		const held = this.#held;
-		if (held === null) {
+	async stop(finalPath: string): Promise<RecordingOutcome> {
+		// Later frames are dropped; the source stays open for a capture.
+		this.#stopped = true;
+		const last: Capture =
+			this.#held === null
+				? await this.#captureFirstFrame()
+				: { type: "frame", frame: this.#held };
+		if (last.type === "failed") {
 			await this.abort();
-			throw new ShimError(
-				"internal",
-				"video recording failed: the page produced no frames",
-			);
+			return {
+				type: "skipped",
+				reason: `the page produced no frames, and capturing it failed: ${last.reason}`,
+			};
 		}
+		await this.#source.stop();
 		// Hold the last frame up to now, and never end on an empty stream.
 		const remaining = this.#clock.due(performance.now());
 		const copies =
 			this.#clock.written === 0 ? Math.max(1, remaining) : remaining;
 		for (let index = 0; index < copies; index += 1) {
-			this.#stdin.write(held);
+			this.#stdin.write(last.frame);
 		}
 		this.#clock.advance(copies);
 		this.#stdin.end();
@@ -401,11 +515,13 @@ export class ScreencastRecorder {
 		}
 		await mkdir(dirname(finalPath), { recursive: true });
 		await rename(this.#output, finalPath);
+		return { type: "saved" };
 	}
 
 	/** Stops recording and discards the output. Never throws. */
 	async abort(): Promise<void> {
-		await this.#stopScreencast();
+		this.#stopped = true;
+		await this.#source.stop();
 		if (this.#process.exitCode === null && this.#process.signalCode === null) {
 			this.#process.kill("SIGKILL");
 			await withinMs(this.#exit, ffmpegAbortTimeoutMs);

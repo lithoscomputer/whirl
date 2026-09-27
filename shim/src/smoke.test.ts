@@ -55,7 +55,11 @@ test("the driver runs a flow against a data: URL in chromium", {
 			saveStoragePath: null,
 			tracePath: null,
 		});
-		assert.deepEqual(result, { blockedHosts: [], videoPath: null });
+		assert.deepEqual(result, {
+			blockedHosts: [],
+			videoPath: null,
+			videoSkipped: null,
+		});
 	} finally {
 		await driver.dispose();
 	}

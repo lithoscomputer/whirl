@@ -1,11 +1,23 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { access, mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { TestContext } from "node:test";
 import { test } from "node:test";
-import type { FfmpegLocation } from "./video-recorder.js";
+import { setTimeout as sleep } from "node:timers/promises";
+import { promisify } from "node:util";
+import type {
+	FfmpegLocation,
+	FrameSource,
+	ScreencastOptions,
+} from "./video-recorder.js";
 import {
 	FrameClock,
 	ffmpegArgs,
 	ffmpegExecutablePath,
+	resolveFfmpegPath,
+	ScreencastRecorder,
 } from "./video-recorder.js";
 
 function location(overrides: Partial<FfmpegLocation>): FfmpegLocation {
@@ -130,6 +142,19 @@ test("a long static gap owes the whole gap to the held frame", () => {
 	assert.equal(clock.due(4000), 120);
 });
 
+test("a clock started at the recording's start owes the time before it", () => {
+	const clock = new FrameClock(10);
+	clock.startAt(1000);
+	assert.equal(clock.due(1500), 5);
+});
+
+test("startAt does not move a clock that a frame started", () => {
+	const clock = new FrameClock(10);
+	clock.due(1000);
+	clock.startAt(0);
+	assert.equal(clock.due(1500), 5);
+});
+
 test("ffmpeg receives a constant-rate MJPEG stream and scales the bitrate", () => {
 	const args = ffmpegArgs(
 		{
@@ -160,4 +185,127 @@ test("ffmpeg receives a constant-rate MJPEG stream and scales the bitrate", () =
 		"/tmp/v/o.webm",
 	);
 	assert.ok(slow.includes("1000k"), "the bitrate never drops below 1000k");
+});
+
+// --- recordings through Playwright's ffmpeg ---
+
+/** A 16 by 16 JPEG of one color, from Chrome's screenshot encoder. */
+const frameJpeg = Buffer.from(
+	"/9j/2wBDAAMCAgMCAgMDAwMEAwMEBQgFBQQEBQoHBwYIDAoMDAsKCwsNDhIQDQ4RDgsLEBYQERMUFRUVDA8XGBYUGBIUFRT/2wBDAQMEBAUEBQkFBQkUDQsNFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBT/wAARCAAQABADASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAj/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFAEBAAAAAAAAAAAAAAAAAAAABv/EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAMAwEAAhEDEQA/AJEAOAx//9k=",
+	"base64",
+);
+
+interface FakeSource extends FrameSource {
+	readonly calls: readonly string[];
+}
+
+/** A page that sends `frames` when its screencast starts, and no more. */
+function fakeSource(
+	frames: readonly Buffer[],
+	capture: () => Promise<Buffer>,
+): FakeSource {
+	const calls: string[] = [];
+	return {
+		calls,
+		async start(onFrame) {
+			calls.push("start");
+			for (const frame of frames) {
+				onFrame(frame);
+			}
+		},
+		async capture() {
+			calls.push("capture");
+			return capture();
+		},
+		async stop() {
+			calls.push("stop");
+		},
+	};
+}
+
+/** A temporary directory that the test removes when it ends. */
+async function testDir(t: TestContext): Promise<string> {
+	const dir = await mkdtemp(join(tmpdir(), "whirl-recorder-"));
+	t.after(() => rm(dir, { recursive: true, force: true }));
+	return dir;
+}
+
+async function recordingOptions(dir: string): Promise<ScreencastOptions> {
+	const ffmpegPath = await resolveFfmpegPath();
+	assert.ok(
+		ffmpegPath !== null,
+		"Playwright's ffmpeg is missing; run `mise run setup`",
+	);
+	return {
+		fps: 10,
+		width: 16,
+		height: 16,
+		tempDir: join(dir, "temp"),
+		ffmpegPath,
+	};
+}
+
+/** Decodes a recording with ffmpeg and counts its frames. */
+async function frameCount(ffmpegPath: string, video: string): Promise<number> {
+	const frames = join(video, "..", "frames");
+	await mkdir(frames);
+	await promisify(execFile)(ffmpegPath, [
+		...["-hide_banner", "-loglevel", "error", "-i", video],
+		...["-f", "image2", join(frames, "f-%05d.png")],
+	]);
+	return (await readdir(frames)).length;
+}
+
+test("a page that sends no frame is captured once, and the frame fills the recording", async (t) => {
+	const dir = await testDir(t);
+	const options = await recordingOptions(dir);
+	const source = fakeSource([], async () => frameJpeg);
+	const recorder = await ScreencastRecorder.start(source, options);
+	await sleep(500);
+	const video = join(dir, "video.webm");
+
+	const outcome = await recorder.stop(video);
+
+	assert.deepEqual(outcome, { type: "saved" });
+	assert.deepEqual(source.calls, ["start", "capture", "stop"]);
+	// At 10 fps, 500 ms or more of recording is at least 5 frames.
+	const frames = await frameCount(options.ffmpegPath, video);
+	assert.ok(frames >= 5, `expected at least 5 frames, got ${frames}`);
+});
+
+test("a page that sends no frame and cannot be captured skips the recording", async (t) => {
+	const dir = await testDir(t);
+	const options = await recordingOptions(dir);
+	const source = fakeSource([], async () => {
+		throw new Error("Target crashed");
+	});
+	const recorder = await ScreencastRecorder.start(source, options);
+	const video = join(dir, "video.webm");
+
+	const outcome = await recorder.stop(video);
+
+	assert.deepEqual(outcome, {
+		type: "skipped",
+		reason:
+			"the page produced no frames, and capturing it failed: Target crashed",
+	});
+	assert.deepEqual(source.calls, ["start", "capture", "stop"]);
+	await assert.rejects(access(video));
+	assert.deepEqual(await readdir(options.tempDir), []);
+});
+
+test("a page that sends a frame is not captured", async (t) => {
+	const dir = await testDir(t);
+	const options = await recordingOptions(dir);
+	const source = fakeSource([frameJpeg], async () => {
+		throw new Error("capture should not run");
+	});
+	const recorder = await ScreencastRecorder.start(source, options);
+	const video = join(dir, "video.webm");
+
+	const outcome = await recorder.stop(video);
+
+	assert.deepEqual(outcome, { type: "saved" });
+	assert.deepEqual(source.calls, ["start", "stop"]);
+	assert.ok((await frameCount(options.ffmpegPath, video)) >= 1);
 });

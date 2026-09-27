@@ -107,8 +107,12 @@ Result: `{"browserVersion": "...", "nodeVersion": "...", "playwrightVersion": ".
   page's CDP screencast through Playwright's bundled ffmpeg at that rate,
   holding the last frame while the page is still. A number for another
   engine, or a missing ffmpeg, fails `startFlow` with kind `"internal"`.
-  An ffmpeg failure at `endFlow` fails `endFlow` the same way. `cancelFlow`
-  discards an in-progress screencast recording.
+  An ffmpeg failure at `endFlow` fails `endFlow` the same way. When no
+  screencast frame has arrived by `endFlow`, the shim captures the page
+  once with `Page.captureScreenshot` and holds that frame from the start
+  of the recording. When that capture fails or takes more than 5 seconds,
+  the shim discards the recording and reports why in `videoSkipped`.
+  `cancelFlow` discards an in-progress screencast recording.
 
 ### `endFlow`
 
@@ -121,9 +125,11 @@ Ends the flow and closes the context. Params:
 - `saveStoragePath` writes the context storage state before close.
 - `tracePath` exports the trace there; `null` discards a running trace.
 
-Result: `{"blockedHosts": ["host", ...], "videoPath": "abs path" | null}`.
+Result: `{"blockedHosts": ["host", ...], "videoPath": "abs path" | null, "videoSkipped": "reason" | null}`.
 `blockedHosts` is the sorted, de-duplicated set of hostnames blocked by
-`allowHosts` during the flow.
+`allowHosts` during the flow. `videoSkipped` says why the shim skipped a
+requested recording. Rust reports it as a warning and does not change the
+flow's status. Older shims omit it.
 
 ### `cancelFlow`
 

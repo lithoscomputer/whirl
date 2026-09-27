@@ -87,6 +87,7 @@ async fn hello_start_flow_and_end_flow_round_trip() {
         .expect("endFlow should succeed");
     assert_eq!(end.blocked_hosts, vec!["a.example", "b.example"]);
     assert_eq!(end.video_path, None);
+    assert_eq!(end.video_skipped, None);
 
     client.shutdown().await.expect("shutdown should be clean");
 }
