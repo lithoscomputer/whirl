@@ -39,8 +39,8 @@ $ mise run eval:act -- -m gemini/gemini-3.1-flash-lite -m jev:gemini/gemini-3.1-
 ```
 
 The leaderboard's "by Jev" column is the share of actions Jev chose without
-the model. Calls, tokens, and costs count the model only; Jev's requests
-have no catalog price.
+the model. Calls and tokens count the model only; costs include Jev's
+requests, which `lithos-llm` prices from its catalog.
 
 ## Sets
 
