@@ -2,7 +2,7 @@
 // named pages per flow, and the step implementations (protocol sections 3-6).
 
 import { randomUUID } from "node:crypto";
-import { mkdir } from "node:fs/promises";
+import { mkdir, stat } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname } from "node:path";
 import type {
@@ -55,6 +55,7 @@ import { runSnapshot } from "./snapshots.js";
 import {
 	actionErrorMessage,
 	Deadline,
+	isDropRejected,
 	isStrictModeViolation,
 	isTargetClosedError,
 	isTimeoutError,
@@ -489,6 +490,51 @@ async function nextFrames(page: Page): Promise<void> {
 		.catch(() => {
 			// A drop that navigates destroys the context; nothing to wait for.
 		});
+}
+
+/**
+ * Fails DROP at once when its file is missing. Without this check the
+ * step fails with Node's `ENOENT ... stat` text from inside Playwright.
+ */
+async function requireFile(path: string): Promise<void> {
+	try {
+		await stat(path);
+	} catch (error) {
+		if (
+			error instanceof Error &&
+			"code" in error &&
+			(error as NodeJS.ErrnoException).code === "ENOENT"
+		) {
+			throw new ShimError("action", `the file ${path} does not exist`);
+		}
+		throw error;
+	}
+}
+
+/**
+ * DROP (SPEC section 7): drops one file on the element, with Playwright's
+ * actionability checks. Playwright reads the file and gives it its name
+ * and a type from its extension. A page accepts a drop only when its
+ * `dragover` handler calls `preventDefault()`. Otherwise Playwright fires
+ * `dragleave` and throws at once, and the step fails with that reason.
+ */
+async function dropFile(
+	locator: Locator,
+	description: string,
+	path: string,
+	timeoutMs: number,
+): Promise<void> {
+	try {
+		await locator.drop({ files: path }, { timeout: timeoutMs });
+	} catch (error) {
+		if (isDropRejected(error)) {
+			throw new ShimError(
+				"action",
+				`the drop target ${description} did not accept the drop (its dragover did not call preventDefault)`,
+			);
+		}
+		throw error;
+	}
 }
 
 /**
@@ -1062,6 +1108,17 @@ export class PlaywrightDriver implements ShimDriver {
 				);
 				return {};
 			}
+			case "drop": {
+				const path = fieldString(params, "path");
+				await requireFile(path);
+				await this.#locatorAction(
+					page,
+					params,
+					(locator, _fromSnapshot, description) =>
+						dropFile(locator, description, path, timeoutMs),
+				);
+				return {};
+			}
 			case "screenshot": {
 				const path = fieldString(params, "path");
 				await mkdir(dirname(path), { recursive: true });
@@ -1389,7 +1446,11 @@ export class PlaywrightDriver implements ShimDriver {
 	async #locatorAction(
 		page: Page,
 		params: Params,
-		action: (locator: Locator, fromSnapshot: boolean) => Promise<unknown>,
+		action: (
+			locator: Locator,
+			fromSnapshot: boolean,
+			description: string,
+		) => Promise<unknown>,
 	): Promise<void> {
 		const { locator, description, fromSnapshot } = this.#readLocator(
 			page,
@@ -1405,7 +1466,7 @@ export class PlaywrightDriver implements ShimDriver {
 			);
 		}
 		try {
-			await action(locator, fromSnapshot);
+			await action(locator, fromSnapshot, description);
 		} catch (error) {
 			if (isStrictModeViolation(error)) {
 				let count = 0;
@@ -1473,6 +1534,7 @@ function defaultErrorKind(cmd: StepCommand): ErrorKind {
 		case "drag":
 		case "scroll":
 		case "upload":
+		case "drop":
 		case "screenshot":
 			return "action";
 		case "evalAction":

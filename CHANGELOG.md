@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add `DROP locator file:path`, which drops a file on an element, for upload widgets that are drop zones with no file input. The page gets the file's own name and size and a type from its extension. The path resolves relative to the `.whirl` file, as for `UPLOAD`, and an unprefixed locator finds the zone by its text, as in `DROP "Drop files here" file:report.csv`. When the zone's `dragover` does not call `preventDefault()`, the page rejects the drop and the step fails at once. `ACT` does not drop files.
 - With `--video` on Chromium, a flow that ends before the page sends its first frame, such as a short flow on a still page, no longer fails as a runtime error. Whirl captures the page once and holds that frame for the whole recording. When that capture fails too, as for a crashed page, Whirl skips the recording with a warning, and the file's result does not change.
 - Name each iframe in the snapshot `ACT` sends with its `aria-label`, or else its `title`. Playwright shows every iframe without a name, so neither the model nor Jev could tell which frame "scroll inside the incident history" means.
 - With `--jev`, Jev plans drags and scrolls. For a drag it picks the element to drag, then where to drop it. For a scroll the first request also asks the way and whether the page or a part of it scrolls; Jev picks the part or the element to bring into view, and a position such as `50%`, `0.75`, halfway, the top, or the bottom comes from the instruction.

@@ -327,6 +327,11 @@ pub(crate) enum StepCommand {
         locator: Json,
         path:    String,
     },
+    /// `DROP`: `path` is absolute, as for `UPLOAD`.
+    Drop {
+        locator: Json,
+        path:    String,
+    },
     Screenshot {
         path: String,
     },
@@ -1099,6 +1104,14 @@ mod tests {
                 },
                 "upload",
                 serde_json::json!({"locator": locator, "path": "/abs/file.txt"}),
+            ),
+            (
+                StepCommand::Drop {
+                    locator: locator.clone(),
+                    path:    "/abs/report.csv".to_owned(),
+                },
+                "drop",
+                serde_json::json!({"locator": locator, "path": "/abs/report.csv"}),
             ),
             (
                 StepCommand::Screenshot {

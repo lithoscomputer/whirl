@@ -635,7 +635,7 @@ fn collect_action_refs<'a>(action: &'a Action, refs: &mut Vec<VarRef<'a>>) {
             }
             collect_value_refs(key, line, refs);
         }
-        ActionKind::Upload { target, path } => {
+        ActionKind::Upload { target, path } | ActionKind::Drop { target, path } => {
             collect_locator_refs(target, line, refs);
             collect_value_refs(path, line, refs);
         }
