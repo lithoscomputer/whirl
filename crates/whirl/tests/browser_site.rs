@@ -3164,6 +3164,57 @@ fn a_skipped_recording_is_a_warning_and_the_file_still_passes() {
 }
 
 #[test]
+fn a_blank_recording_is_a_warning_and_stays_listed() {
+    // A page that Chrome cannot capture, as a crashed one, cannot be made
+    // on demand, so the fake shim reports the white recording.
+    let dir = TestDir::new();
+    dir.file(
+        "flow.whirl",
+        "VISIT https://example.test/?token={{env.WHIRL_TEST_SECRET}}\n",
+    );
+    let shim = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake_shim.js");
+    // The reason holds the secret, which the warning masks.
+    let reason =
+        "capturing the page failed: Internal error at https://example.test/?token=blank-secret";
+    let output = run_whirl_env(
+        &dir,
+        &["--video", "--report-json", "report.json", "flow.whirl"],
+        &[
+            ("WHIRL_SHIM_JS", shim.to_str().expect("shim path")),
+            ("WHIRL_TEST_SECRET", "blank-secret"),
+            ("FAKE_SHIM_VIDEO_BLANK", reason),
+        ],
+    );
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+    let warning = "video recording is blank: capturing the page failed: Internal error at \
+                   https://example.test/?token=***";
+    assert!(
+        stdout.contains(&format!("warning: {warning}")),
+        "stdout:\n{stdout}"
+    );
+    assert!(!stdout.contains("blank-secret"), "stdout:\n{stdout}");
+    let text = fs::read_to_string(dir.path.join("report.json")).expect("JSON report");
+    assert!(!text.contains("blank-secret"), "report:\n{text}");
+    let report: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+    let file = &report["files"][0];
+    assert_eq!(file["status"], "passed");
+    assert_eq!(file["warnings"], serde_json::json!([warning]));
+    // Unlike a skipped recording, a blank one stays listed, with its rate.
+    assert!(
+        file["artifacts"]
+            .as_array()
+            .expect("artifacts")
+            .iter()
+            .any(|artifact| artifact
+                .as_str()
+                .is_some_and(|path| path.ends_with("video.webm"))),
+        "report:\n{report}"
+    );
+    assert_eq!(file["runtime"]["videoFps"], 60, "report:\n{report}");
+}
+
+#[test]
 fn an_explicit_video_fps_on_firefox_warns_and_records_at_the_engine_rate() {
     // Needs firefox installed, so it runs only in check:nightly.
     if env::var_os("WHIRL_TEST_ALL_BROWSERS").is_none() {
