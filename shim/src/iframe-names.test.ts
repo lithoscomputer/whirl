@@ -97,6 +97,14 @@ test("a name is quoted with JSON escapes", () => {
 	assert.equal(named, '- iframe "Say \\"hi\\" \\\\ bye" [ref=e4]');
 });
 
+test("a name that YAML would misread does not wrap the line in quotes", () => {
+	const named = withIframeNames(
+		"- iframe [ref=e4]",
+		new Map([["e4", "Status: live #1"]]),
+	);
+	assert.equal(named, '- iframe "Status: live #1" [ref=e4]');
+});
+
 test("iframes without a name and other lines stay as they are", () => {
 	assert.equal(withIframeNames(statusPage, new Map()), statusPage);
 });
