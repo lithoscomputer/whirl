@@ -211,7 +211,10 @@ const frameColor = [31, 64, 95] as const;
 const white = [255, 255, 255] as const;
 
 const unpainted: FrameCapture = { type: "unpainted" };
-const failed: FrameCapture = { type: "failed" };
+/** What Chrome answers when it captures a crashed page. */
+const crashError =
+	"cdpSession.send: Protocol error (Page.captureScreenshot): Internal error";
+const failed: FrameCapture = { type: "failed", reason: crashError };
 const captured: FrameCapture = { type: "frame", frame: frameJpeg };
 
 interface FakeSource extends FrameSource {
@@ -378,7 +381,7 @@ test("a capture of a page that has not painted is tried again", async (t) => {
 	assertColor(frames, frameColor, 4);
 });
 
-test("a page that never paints is recorded as a white frame", async (t) => {
+test("a page that never paints is recorded as a white frame, and the outcome says why", async (t) => {
 	const dir = await testDir(t);
 	const options = await recordingOptions(dir);
 	const source = fakeSource([], answers(unpainted));
@@ -388,7 +391,10 @@ test("a page that never paints is recorded as a white frame", async (t) => {
 
 	const outcome = await recorder.stop(video);
 
-	assert.deepEqual(outcome, { type: "saved" });
+	assert.deepEqual(outcome, {
+		type: "blank",
+		reason: "the page did not paint within 200ms",
+	});
 	// The page gets a capture every 50 ms for its 200 ms paint wait.
 	const captures = source.calls.filter((call) => call === "capture").length;
 	assert.ok(captures >= 3, `expected at least 3 captures, got ${captures}`);
@@ -402,7 +408,7 @@ test("a page that never paints is recorded as a white frame", async (t) => {
 	assertColor(frames, white, 4);
 });
 
-test("a page that cannot be captured, as a crashed one, gets a white frame at once", async (t) => {
+test("a page that cannot be captured, as a crashed one, gets a white frame at once, and the outcome says why", async (t) => {
 	const dir = await testDir(t);
 	const options = await recordingOptions(dir);
 	const source = fakeSource([], answers(failed));
@@ -411,7 +417,10 @@ test("a page that cannot be captured, as a crashed one, gets a white frame at on
 
 	const outcome = await recorder.stop(video);
 
-	assert.deepEqual(outcome, { type: "saved" });
+	assert.deepEqual(outcome, {
+		type: "blank",
+		reason: `capturing the page failed: ${crashError}`,
+	});
 	assert.deepEqual(source.calls, ["start", "capture", "stop"]);
 	const frames = await decodeFrames(options.ffmpegPath, video);
 	assertColor(frames, white, 4);

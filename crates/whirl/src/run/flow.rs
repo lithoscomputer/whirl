@@ -1590,6 +1590,15 @@ pub(crate) async fn run_flow(run: &FlowRun<'_>, client: &mut ShimClient) -> Flow
                             runtime.video_fps = None;
                         }
                     }
+                    // A blank recording stays listed, with its frame rate.
+                    // The warning explains its white frame, and the file's
+                    // status does not change.
+                    if let Some(reason) = result.video_blank {
+                        exec.warnings.push(format!(
+                            "video recording is blank: {}",
+                            exec.vars.mask(&reason)
+                        ));
+                    }
                     if run.flags.har {
                         report.artifacts.push(
                             run.report_dir

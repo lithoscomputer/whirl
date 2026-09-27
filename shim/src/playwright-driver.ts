@@ -808,13 +808,23 @@ export class PlaywrightDriver implements ShimDriver {
 		}
 		let videoPath: string | null = null;
 		let videoSkipped: string | null = null;
+		let videoBlank: string | null = null;
 		if (flow.video !== null && recording !== null) {
-			if (recording.type === "saved") {
-				videoPath = flow.video.finalPath;
-			} else {
-				// A recording is evidence, not a result, so Rust reports a
-				// skipped one as a warning (SPEC section 13).
-				videoSkipped = recording.reason;
+			// A recording is evidence, not a result, so Rust reports a
+			// skipped or blank one as a warning (SPEC section 13).
+			switch (recording.type) {
+				case "saved":
+					videoPath = flow.video.finalPath;
+					break;
+				case "blank":
+					videoPath = flow.video.finalPath;
+					videoBlank = recording.reason;
+					break;
+				case "skipped":
+					videoSkipped = recording.reason;
+					break;
+				default:
+					return assertNever(recording);
 			}
 		} else if (flow.video !== null && video !== null) {
 			await mkdir(dirname(flow.video.finalPath), { recursive: true });
@@ -828,6 +838,7 @@ export class PlaywrightDriver implements ShimDriver {
 			blockedHosts: [...flow.blockedHosts].sort(),
 			videoPath,
 			videoSkipped,
+			videoBlank,
 		};
 	}
 
