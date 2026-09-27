@@ -1029,6 +1029,70 @@ const TWO_BUTTONS: &str = "<h1>Shop</h1>\
     <button onclick=\"document.querySelector('h1').textContent='Saved'\">Save</button>\
     <button onclick=\"document.querySelector('h1').textContent='Shared'\">Share</button>";
 
+/// A page whose second button has a name that Playwright's snapshot wraps
+/// in YAML single quotes: `- 'button "Status: live" [ref=e4]'`.
+const LIVE_STATUS: &str = "<h1>Status</h1>\
+    <button onclick=\"document.querySelector('h1').textContent='Saved'\">Save</button>\
+    <button onclick=\"document.querySelector('h1').textContent='Live'\">Status: live</button>";
+
+#[test]
+fn act_clicks_a_button_whose_name_playwright_quotes() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.answer(&[click("e4", false)]);
+    let flow = dir.file(
+        "quoted-name.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{}ACT \"set the status to live\"\n\
+             [Asserts]\nrole:heading \"Live\" visible\n",
+            visit_html(LIVE_STATUS)
+        ),
+    );
+    let output = twin.run(&dir, &flow, &[]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+    assert_eq!(
+        act_step(&dir)["act"]["actions"][0]["line"],
+        "CLICK role:button \"Status: live\""
+    );
+    let log = twin.request_log();
+    assert!(
+        log.contains(r#"- button \"Status: live\" [ref=e4]"#),
+        "the model reads the line without its quotes; log:\n{log}"
+    );
+    assert!(!log.contains("'button"), "log:\n{log}");
+}
+
+#[test]
+fn jev_picks_a_button_whose_name_playwright_quotes() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.jev(&[jev_intent("click", 0.95), jev_pick("e4", &["e3"], 0.95)]);
+    let flow = dir.file(
+        "jev-quoted-name.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{}ACT \"set the status to live\"\n\
+             [Asserts]\nrole:heading \"Live\" visible\n",
+            visit_html(LIVE_STATUS)
+        ),
+    );
+    let output = twin.run_jev(&dir, &flow, &[]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+    let step = act_step(&dir);
+    assert_eq!(
+        step["act"]["actions"][0]["line"],
+        "CLICK role:button \"Status: live\""
+    );
+    assert_eq!(step["act"]["actions"][0]["plannedBy"], "jev");
+    assert_eq!(step["act"]["usage"]["modelCalls"], 0);
+    let log = twin.request_log();
+    assert!(
+        log.contains(r#"\"e4\":{\"role\":\"button\",\"name\":\"Status: live\""#),
+        "Jev sees the button among the buttons; log:\n{log}"
+    );
+}
+
 #[test]
 fn jev_acts_without_a_model_call_when_it_is_sure() {
     let dir = TestDir::new();

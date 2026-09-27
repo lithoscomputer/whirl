@@ -217,10 +217,10 @@ Semantics the shim owns (per SPEC sections 7, 9, 15):
   `aria-label`, or else its `title`, after the role in double quotes with
   JSON escapes: `- iframe "Incident history" [ref=e4]:`. The shim does not
   wrap such a line in YAML single quotes, as Playwright does for a name that
-  holds `: `, because Rust's line parsers read the role from the start of
-  the line. An iframe without a name, a ref that no longer resolves, a failed
-  read, or a spent `timeoutMs` leaves the line as it was; the names never
-  fail the step.
+  holds `: `. Rust reads both forms the same, and it removes the quotes
+  before the model reads the snapshot. An iframe without a name, a ref that
+  no longer resolves, a failed read, or a spent `timeoutMs` leaves the line
+  as it was; the names never fail the step.
 - `evalAction` and an `eval` read: run the script as the body of an
   async function in the page main world via `page.evaluate`. If the script
   parses as a single expression, run `return (script);`; otherwise run it as
