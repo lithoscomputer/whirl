@@ -13,7 +13,8 @@
 //                which lets tests exercise the kill path
 //
 // FAKE_SHIM_IGNORE_CANCEL=1 in the environment also enables the
-// ignore-cancel mode from the start.
+// ignore-cancel mode from the start. FAKE_SHIM_VIDEO_SKIPPED=REASON makes
+// endFlow report a skipped recording with that reason.
 
 "use strict";
 
@@ -24,6 +25,7 @@ const inFlight = [];
 let ignoreLifecycle = false;
 let ignoreShutdown = false;
 let ignoreCancel = process.env.FAKE_SHIM_IGNORE_CANCEL === "1";
+const videoSkipped = process.env.FAKE_SHIM_VIDEO_SKIPPED ?? null;
 
 function reply(id, result) {
   process.stdout.write(JSON.stringify({ id, ok: true, result }) + "\n");
@@ -88,7 +90,7 @@ rl.on("line", (line) => {
       break;
     case "endFlow":
       if (ignoreLifecycle) break;
-      reply(id, { blockedHosts: ["a.example", "b.example"], videoPath: null });
+      reply(id, { blockedHosts: ["a.example", "b.example"], videoPath: null, videoSkipped });
       break;
     case "cancelFlow":
       if (ignoreCancel) break;

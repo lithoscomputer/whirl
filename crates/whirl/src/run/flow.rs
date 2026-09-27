@@ -1562,6 +1562,14 @@ pub(crate) async fn run_flow(run: &FlowRun<'_>, client: &mut ShimClient) -> Flow
                                 .into_owned(),
                         );
                     }
+                    // A recording is evidence, not a result: a skipped one
+                    // never changes the file's status (SPEC 13).
+                    if let Some(reason) = result.video_skipped {
+                        exec.warnings.push(format!(
+                            "video recording skipped: {}",
+                            exec.vars.mask(&reason)
+                        ));
+                    }
                     if run.flags.har {
                         report.artifacts.push(
                             run.report_dir

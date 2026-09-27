@@ -62,7 +62,9 @@ import {
 	sleep,
 	strictnessError,
 } from "./step-util.js";
+import type { RecordingOutcome } from "./video-recorder.js";
 import {
+	PageScreencast,
 	PLAYWRIGHT_VIDEO_FPS,
 	resolveFfmpegPath,
 	ScreencastRecorder,
@@ -683,14 +685,18 @@ export class PlaywrightDriver implements ShimDriver {
 			screencastFps !== null &&
 			ffmpegPath !== null
 		) {
+			const { width, height } = params.viewport;
 			try {
-				recorder = await ScreencastRecorder.start(page, {
-					fps: screencastFps,
-					width: params.viewport.width,
-					height: params.viewport.height,
-					tempDir: params.video.tempDir,
-					ffmpegPath,
-				});
+				recorder = await ScreencastRecorder.start(
+					await PageScreencast.open(page, width, height),
+					{
+						fps: screencastFps,
+						width,
+						height,
+						tempDir: params.video.tempDir,
+						ffmpegPath,
+					},
+				);
 			} catch (error) {
 				await settlesWithin(context.close(), closeWatchdogMs);
 				throw error;
@@ -738,10 +744,11 @@ export class PlaywrightDriver implements ShimDriver {
 		}
 		// The screencast recorder finalizes while the page is still alive; a
 		// failure surfaces after the context is closed so nothing leaks.
+		let recording: RecordingOutcome | null = null;
 		let recorderFailure: unknown = null;
 		if (flow.recorder !== null && flow.video !== null) {
 			try {
-				await flow.recorder.stop(flow.video.finalPath);
+				recording = await flow.recorder.stop(flow.video.finalPath);
 			} catch (error) {
 				recorderFailure = error;
 			}
@@ -754,8 +761,15 @@ export class PlaywrightDriver implements ShimDriver {
 			throw recorderFailure;
 		}
 		let videoPath: string | null = null;
-		if (flow.recorder !== null && flow.video !== null) {
-			videoPath = flow.video.finalPath;
+		let videoSkipped: string | null = null;
+		if (flow.video !== null && recording !== null) {
+			if (recording.type === "saved") {
+				videoPath = flow.video.finalPath;
+			} else {
+				// A recording is evidence, not a result, so Rust reports a
+				// skipped one as a warning (SPEC section 13).
+				videoSkipped = recording.reason;
+			}
 		} else if (flow.video !== null && video !== null) {
 			await mkdir(dirname(flow.video.finalPath), { recursive: true });
 			await video.saveAs(flow.video.finalPath);
@@ -767,6 +781,7 @@ export class PlaywrightDriver implements ShimDriver {
 		return {
 			blockedHosts: [...flow.blockedHosts].sort(),
 			videoPath,
+			videoSkipped,
 		};
 	}
 
