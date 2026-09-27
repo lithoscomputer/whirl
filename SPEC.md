@@ -566,7 +566,10 @@ a click that would undo a checkbox already in the asked state go to the model.
 Each element is described by its role, name, and value, the text of its
 table row or list item, the caption or name of its table and the header of its
 column, the named sections around it, the nearest heading, and its place among
-elements that look the same. When no element in that list fits, Jev looks at
+elements that look the same. Playwright shows a region that its own heading
+names through `aria-labelledby` without a name. So an element with no name or
+text that starts with a heading is described by that heading, not by the
+heading before it. When no element in that list fits, Jev looks at
 every element with a name or text, which catches custom controls built from
 plain elements. A list of more than 40 elements is first cut to the 30 whose
 descriptions share the most words with the instruction; when Jev rejects the
