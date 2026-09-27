@@ -526,14 +526,21 @@ text from the instruction alone, without the page, and Whirl types it only
 when the instruction contains those words, in the instruction's own
 characters. That call is one more model call for the line. For `press` the key
 is the one Jev or the instruction names, and for `select` the one option of a
-native select that the instruction names. Jev's choice is checked like a model
-answer. When Jev is not confident, when it cannot supply an argument, for step
-two of a two-step action, and when a Jev request fails, the model plans the
-step instead, and its prompt lists Jev's likely matches when Jev has some. Jev
-receives the instruction, with masked values as placeholders, and the element
-descriptions. Whirl asks Jev through `lithos-llm` as `typesafe/jev-latest` and
-prices its requests from the catalog. Jev's usage is reported apart from the
-model's, and the step's cost includes both.
+native select that the instruction names. Whirl acts on Jev's pick when Jev is
+at least 0.7 confident and puts none-of-these at 0.9 or less, or when it is at
+least 0.5 confident, puts none-of-these at 0.1 or less, and has a clear
+leader: at least 0.6 and 2.5 times the runner-up. A pick with none-of-these
+above 0.5 waits while the next list tries, and is used only if none-of-these
+stays at 0.7 or less. When Jev splits its vote between copies of one control
+in one table row or list item, either copy is the answer. Jev's choice is
+checked like a model answer. When Jev is not confident, when it cannot supply
+an argument, for step two of a two-step action, and when a Jev request fails,
+the model plans the step instead, and its prompt lists Jev's likely matches
+when Jev has some. Jev receives the instruction, with masked values as
+placeholders, and the element descriptions. Whirl asks Jev through
+`lithos-llm` as `typesafe/jev-latest` and prices its requests from the
+catalog. Jev's usage is reported apart from the model's, and the step's cost
+includes both.
 
 A custom dropdown that must open before an option can be chosen is a two-step
 action. The model marks its first answer as two-step. Whirl runs that action,

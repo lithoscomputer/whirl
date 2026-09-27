@@ -246,6 +246,27 @@ impl Outline {
             .map(|text| truncate(text, 60))
     }
 
+    /// Whether two elements are copies of one control inside the same item:
+    /// the same role and name in the same table row, list item, or article,
+    /// or, outside any item, under the same parent. A product card's hover
+    /// overlay repeats its "Add to cart", and a row repeats its link for
+    /// small screens. Identical buttons in different rows are not copies.
+    pub(crate) fn copies_in_one_item(&self, first: usize, second: usize) -> bool {
+        let (left, right) = (&self.nodes[first], &self.nodes[second]);
+        if left.role != right.role || left.name != right.name {
+            return false;
+        }
+        let item = |index: usize| {
+            self.ancestors(index)
+                .find(|&ancestor| ITEM_ROLES.contains(&self.nodes[ancestor].role.as_str()))
+        };
+        match (item(first), item(second)) {
+            (Some(left_item), Some(right_item)) => left_item == right_item,
+            (None, None) => left.parent == right.parent,
+            _ => false,
+        }
+    }
+
     /// Each candidate that shares its role and name with others: its
     /// place among them and how many there are.
     pub(crate) fn twins(&self, candidates: &[usize]) -> HashMap<usize, (usize, usize)> {
@@ -482,6 +503,16 @@ mod tests {
         };
         assert_eq!(refs(View::Pointer), ["e5"]);
         assert_eq!(refs(View::Broad), ["f1e3", "e5"]);
+    }
+
+    #[test]
+    fn copies_count_only_within_one_item() {
+        let outline = Outline::parse(
+            "- generic [ref=e1]:\n  - listitem [ref=e2]:\n    - button \"Add\" [ref=e3]\n    - button \"Add\" [ref=e4]\n  - listitem [ref=e5]:\n    - button \"Add\" [ref=e6]\n",
+        );
+        let buttons = outline.view(View::Pointer);
+        assert!(outline.copies_in_one_item(buttons[0], buttons[1]));
+        assert!(!outline.copies_in_one_item(buttons[1], buttons[2]));
     }
 
     #[test]

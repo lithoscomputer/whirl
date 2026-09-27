@@ -979,3 +979,37 @@ fn jev_looks_at_every_named_element_when_no_control_fits() {
     assert_eq!(step["act"]["actions"][0]["plannedBy"], "jev");
     assert_eq!(step["act"]["usage"]["modelCalls"], 0);
 }
+
+#[test]
+fn copies_of_one_control_in_one_item_share_jevs_vote() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    // Neither copy wins alone, but together they pass and strict is sure
+    // something fits.
+    twin.jev(&[
+        jev_intent("click", 0.95),
+        jev_answer(&json!({
+            "strict": jev_choice(&["e5", "e6", "none_match"], "e5", 0.6),
+            "best": {"type": "choice", "choice": "e5", "confidence": 0.3,
+                     "probabilities": {"e5": 0.5, "e6": 0.5}},
+        })),
+    ]);
+    let page = "<h1>Shop</h1><ul><li>Blue mug \
+        <button onclick=\"document.querySelector('h1').textContent='Added'\">Add to cart</button>\
+        <button onclick=\"document.querySelector('h1').textContent='Added'\">Add to cart</button>\
+        </li></ul>";
+    let flow = dir.file(
+        "jev-copies.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{}ACT \"add the blue mug to the cart\"\n\
+             [Asserts]\nrole:heading \"Added\" visible\n",
+            visit_html(page)
+        ),
+    );
+    let output = twin.run_jev(&dir, &flow, &[]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+    let step = act_step(&dir);
+    assert_eq!(step["act"]["actions"][0]["plannedBy"], "jev");
+    assert_eq!(step["act"]["usage"]["modelCalls"], 0);
+}

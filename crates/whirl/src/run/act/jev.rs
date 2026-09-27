@@ -46,8 +46,18 @@ const NONE_VETO: f64 = 0.9;
 const PRUNE_ABOVE: usize = 40;
 const PRUNE_KEEP: usize = 30;
 /// A pick that strict's none-of-these makes this uneasy is not trusted
-/// from an exact-name match, and ends the search when not accepted.
+/// from an exact-name match, is held while the next tier tries, and ends
+/// the search when not accepted.
 const NONE_UNEASY: f64 = 0.5;
+/// A held pick is used only while none-of-these stays below this.
+const HELD_NONE_MAX: f64 = 0.7;
+/// The relaxed rule (Stagehand's eval findings): a split-but-right pick at
+/// 0.5 or more, when strict is nearly certain something matches and the
+/// leader is clear, at least 0.6 and 2.5 times the runner-up.
+const SURE_ENOUGH: f64 = 0.5;
+const NONE_CERTAIN: f64 = 0.1;
+const CLEAR_LEADER: f64 = 0.6;
+const LEADER_RATIO: f64 = 2.5;
 /// The most options one request carries, and the most description
 /// characters: about 4 characters a token against Jev's 32K-token limit
 /// for the state and the longest question, with headroom.
@@ -321,6 +331,19 @@ impl JevPlanner {
         let mut seen: Vec<Vec<usize>> = Vec::new();
         let mut ranked: Vec<(usize, f64)> = Vec::new();
         let mut described: HashMap<usize, Json> = HashMap::new();
+        // An accepted pick that strict is uneasy about: kept while the next
+        // tier tries, since the real target may be outside this view.
+        let mut held: Option<Judged> = None;
+        let found =
+            |held: Option<Judged>, ranked: &[(usize, f64)], described: &HashMap<usize, Json>| {
+                match held
+                    .filter(|held| held.none <= HELD_NONE_MAX)
+                    .and_then(|held| held.chosen)
+                {
+                    Some(chosen) => Ok(chosen),
+                    None => Err(likely(outline, ranked, described)),
+                }
+            };
         for &view in tiers {
             let candidates = outline.view(view);
             if candidates.is_empty() || seen.contains(&candidates) {
@@ -377,17 +400,29 @@ impl JevPlanner {
                     ranked.clone_from(&judged.ranked);
                 }
                 match judged.chosen {
-                    Some(chosen) if judged.accepted => return Ok(chosen),
+                    Some(chosen) if judged.accepted && judged.none <= NONE_UNEASY => {
+                        return Ok(chosen);
+                    }
+                    Some(_) if judged.accepted => {
+                        let margin = |judged: &Judged| judged.confidence - judged.none;
+                        if held
+                            .as_ref()
+                            .is_none_or(|held| margin(&judged) > margin(held))
+                        {
+                            held = Some(judged);
+                        }
+                        break;
+                    }
                     // Jev saw plausible targets and could not choose between
                     // them; a wider list will not make that easier.
                     Some(_) if judged.none < NONE_UNEASY => {
-                        return Err(likely(outline, &ranked, &described));
+                        return found(held, &ranked, &described);
                     }
                     _ => {}
                 }
             }
         }
-        Err(likely(outline, &ranked, &described))
+        found(held, &ranked, &described)
     }
 
     /// Jev's verdict on one list of candidates: `best` must choose, and
@@ -488,9 +523,24 @@ impl JevPlanner {
             }
             _ => return Judged::rejected(),
         };
+        let mut chosen = chosen;
+        let mut accepted = accepts(confidence, none, &ranked);
+        // A vote split between copies of one control in one item: either
+        // is the answer.
+        if !accepted
+            && none <= NONE_UNEASY
+            && let [(first, first_p), (second, second_p), ..] = ranked.as_slice()
+            && first_p + second_p >= ACCEPT
+            && outline.copies_in_one_item(*first, *second)
+            && without_position(&descriptions[first]) == without_position(&descriptions[second])
+        {
+            accepted = true;
+            chosen = *first;
+        }
         Judged {
             chosen: Some(chosen),
-            accepted: confidence >= ACCEPT && none <= NONE_VETO,
+            accepted,
+            confidence,
             none,
             ranked,
         }
@@ -588,24 +638,47 @@ fn record(usage: &mut PlanUsage, result: Result<JevResponse, JevError>) -> Optio
     Some(response)
 }
 
+/// Whether Jev's pick is sure enough to act on: confident with strict not
+/// vetoing it, or a clear leader when strict is nearly certain something
+/// matches.
+fn accepts(confidence: f64, none: f64, ranked: &[(usize, f64)]) -> bool {
+    let leader = ranked.first().map_or(0.0, |(_, probability)| *probability);
+    let runner_up = ranked.get(1).map_or(0.0, |(_, probability)| *probability);
+    let clear_leader = leader >= CLEAR_LEADER && leader >= LEADER_RATIO * runner_up;
+    (confidence >= ACCEPT && none <= NONE_VETO)
+        || (confidence >= SURE_ENOUGH && none <= NONE_CERTAIN && clear_leader)
+}
+
+/// A description without its place among look-alikes.
+fn without_position(description: &Json) -> Json {
+    let mut description = description.clone();
+    if let Json::Object(fields) = &mut description {
+        fields.remove("position");
+    }
+    description
+}
+
 /// Jev's verdict on one list of candidates.
 #[derive(Debug)]
 struct Judged {
-    chosen:   Option<usize>,
-    accepted: bool,
+    chosen:     Option<usize>,
+    accepted:   bool,
+    /// `best`'s confidence in the chosen candidate.
+    confidence: f64,
     /// Strict's probability that none of the candidates fits.
-    none:     f64,
+    none:       f64,
     /// Candidates by Jev's probability, likeliest first.
-    ranked:   Vec<(usize, f64)>,
+    ranked:     Vec<(usize, f64)>,
 }
 
 impl Judged {
     fn rejected() -> Self {
         Self {
-            chosen:   None,
-            accepted: false,
-            none:     1.0,
-            ranked:   Vec::new(),
+            chosen:     None,
+            accepted:   false,
+            confidence: 0.0,
+            none:       1.0,
+            ranked:     Vec::new(),
         }
     }
 }
@@ -770,6 +843,19 @@ mod tests {
             likely(&outline, &[(save, 0.6)], &descriptions)
                 .is_some_and(|hint| hint.ends_with("- e5: button \"Save\""))
         );
+    }
+
+    #[test]
+    fn a_clear_leader_is_accepted_when_strict_is_nearly_certain() {
+        // Confident and not vetoed.
+        assert!(accepts(0.75, 0.8, &[(1, 0.75), (2, 0.25)]));
+        assert!(!accepts(0.75, 0.95, &[(1, 0.75), (2, 0.25)]));
+        // Split but right: a clear leader, strict certain something fits.
+        assert!(accepts(0.55, 0.05, &[(1, 0.62), (2, 0.2)]));
+        // Not clear: 0.56 against 0.38.
+        assert!(!accepts(0.55, 0.05, &[(1, 0.56), (2, 0.38)]));
+        // Clear, but strict is not certain.
+        assert!(!accepts(0.55, 0.3, &[(1, 0.62), (2, 0.2)]));
     }
 
     #[test]
