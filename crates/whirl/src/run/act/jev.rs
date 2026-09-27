@@ -24,11 +24,12 @@ pub(crate) use client::{JevClient, JevSetupError};
 use serde_json::{Map, Value as Json, json};
 
 use self::client::{JevAnswer, JevQuestion, JevResponse, choice, noul};
-use self::intent::Intent;
+use self::intent::{FillValue, Intent};
 use self::outline::{Outline, View, shortlist};
 use crate::run::act::decision::{ActInference, ActMethod};
+use crate::run::act::model::ModelClient;
 use crate::run::act::planner::{
-    ActPlanner, JevUsage, Plan, PlanFuture, PlanRequest, PlanStep, PlanUsage, PlannedBy,
+    ActPlanner, Plan, PlanFuture, PlanRequest, PlanStep, PlanUsage, PlannedBy,
 };
 
 /// The key of the none-of-these option.
@@ -60,11 +61,21 @@ const CHECKABLE_ROLES: &[&str] = &[
 pub(crate) struct JevPlanner {
     jev:      JevClient,
     fallback: Arc<dyn ActPlanner>,
+    /// Reads unquoted text to type from the instruction.
+    model:    Arc<ModelClient>,
 }
 
 impl JevPlanner {
-    pub(crate) fn new(jev: JevClient, fallback: Arc<dyn ActPlanner>) -> Self {
-        Self { jev, fallback }
+    pub(crate) fn new(
+        jev: JevClient,
+        fallback: Arc<dyn ActPlanner>,
+        model: Arc<ModelClient>,
+    ) -> Self {
+        Self {
+            jev,
+            fallback,
+            model,
+        }
     }
 }
 
@@ -81,12 +92,8 @@ type Pick = Result<usize, Option<String>>;
 impl ActPlanner for JevPlanner {
     fn plan<'a>(&'a self, request: PlanRequest<'a>) -> PlanFuture<'a> {
         Box::pin(async move {
-            let mut jev = JevUsage::default();
-            let outcome = self.choose(request, &mut jev).await;
-            let spent = PlanUsage {
-                jev,
-                ..PlanUsage::default()
-            };
+            let mut spent = PlanUsage::default();
+            let outcome = self.choose(request, &mut spent).await;
             match outcome {
                 Outcome::Chosen(inference) => Plan {
                     answer:     Ok(inference),
@@ -114,13 +121,33 @@ impl ActPlanner for JevPlanner {
 }
 
 impl JevPlanner {
-    async fn choose(&self, request: PlanRequest<'_>, usage: &mut JevUsage) -> Outcome {
+    async fn choose(&self, request: PlanRequest<'_>, usage: &mut PlanUsage) -> Outcome {
         // Step two of a two-step action needs the model's plan of step one.
         if !matches!(request.step, PlanStep::First) {
             return Outcome::Unsure(None);
         }
         let instruction = request.instruction.prompt();
-        let Some(intent) = self.intent(instruction, request.deadline, usage).await else {
+        let fill_values: Vec<(String, bool)> = args::fill_values(request.instruction)
+            .into_iter()
+            .map(|value| {
+                let placeholder = args::is_placeholder(request.instruction, &value);
+                (value, placeholder)
+            })
+            .collect();
+        // A lone placeholder is the text to type; nothing to ask.
+        let lone_placeholder = match fill_values.as_slice() {
+            [(value, true)] => Some(value.clone()),
+            _ => None,
+        };
+        let offered: &[(String, bool)] = if lone_placeholder.is_some() {
+            &[]
+        } else {
+            &fill_values
+        };
+        let Some(intent) = self
+            .intent(instruction, offered, request.deadline, usage)
+            .await
+        else {
             return Outcome::Unsure(None);
         };
         // Whirl clicks with the left button only, and choosing a suggestion
@@ -178,7 +205,16 @@ impl JevPlanner {
             return Outcome::Unsure(Some(hint(&[(element(&outline, index), description)])));
         }
         let argument = match method {
-            ActMethod::Fill => args::fill_value(request.instruction, node.name.as_deref()),
+            ActMethod::Fill => match (lone_placeholder, intent.fill_value) {
+                (Some(value), _) => Some(value),
+                (None, FillValue::Chosen(index)) => {
+                    fill_values.get(index).map(|(value, _)| value.clone())
+                }
+                (None, FillValue::NotAsked | FillValue::NoneOfThese) => {
+                    self.text_argument(&request, usage).await
+                }
+                (None, FillValue::Unsure) => None,
+            },
             ActMethod::SelectOptionFromDropdown => {
                 args::option(instruction, &outline.options(index), node.name.as_deref())
                     .map(str::to_owned)
@@ -207,13 +243,37 @@ impl JevPlanner {
     async fn intent(
         &self,
         instruction: &str,
+        fill_values: &[(String, bool)],
         deadline: Instant,
-        usage: &mut JevUsage,
+        usage: &mut PlanUsage,
     ) -> Option<Intent> {
-        let response = self
-            .ask(instruction, intent::questions(instruction), deadline, usage)
-            .await?;
+        let questions = intent::questions(instruction, fill_values);
+        let response = self.ask(instruction, questions, deadline, usage).await?;
         intent::read(&response.answers, ACCEPT)
+    }
+
+    /// The text to type when the instruction does not quote it: a small
+    /// model call that sees only the instruction, and whose answer must be
+    /// the instruction's own words (Stagehand's argument call).
+    async fn text_argument(
+        &self,
+        request: &PlanRequest<'_>,
+        usage: &mut PlanUsage,
+    ) -> Option<String> {
+        let instruction = request.instruction;
+        let reply = self
+            .model
+            .text_argument(
+                request.model,
+                instruction.prompt(),
+                &instruction.bindings().placeholders(),
+                request.deadline,
+            )
+            .await;
+        usage.model_calls = usage.model_calls.saturating_add(1);
+        let reply = reply.ok()?;
+        usage.model = usage.model.saturating_add(reply.usage);
+        instruction.span(&reply.text?)
     }
 
     /// The element Jev chooses among a view's candidates.
@@ -222,7 +282,7 @@ impl JevPlanner {
         outline: &Outline,
         view: View,
         request: &PlanRequest<'_>,
-        usage: &mut JevUsage,
+        usage: &mut PlanUsage,
     ) -> Pick {
         let instruction = request.instruction.prompt();
         let candidates = outline.view(view);
@@ -331,8 +391,9 @@ impl JevPlanner {
         instruction: &str,
         questions: Vec<(&'static str, JevQuestion)>,
         deadline: Instant,
-        usage: &mut JevUsage,
+        usage: &mut PlanUsage,
     ) -> Option<JevResponse> {
+        let usage = &mut usage.jev;
         usage.requests = usage.requests.saturating_add(1);
         let response = self
             .jev

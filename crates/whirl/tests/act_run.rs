@@ -910,3 +910,41 @@ fn jev_without_a_key_is_a_runtime_error() {
         "stderr:\n{stderr}"
     );
 }
+
+#[test]
+fn jev_reads_unquoted_text_to_type_with_a_small_model_call() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.jev(&[jev_intent("fill", 0.95), jev_only("e3", 0.9)]);
+    // The model re-cases the text; Whirl types the instruction's own.
+    twin.answer(&[json!({"text": "lovelace"})]);
+    let page = "<h1>Profile</h1><input aria-label=\"Last name\">";
+    let flow = dir.file(
+        "jev-text.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{}ACT \"type Lovelace into the last name field\"\n\
+             [Asserts]\nlabel:\"Last name\" value == Lovelace\n",
+            visit_html(page)
+        ),
+    );
+    let output = twin.run_jev(&dir, &flow, &[]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+
+    let step = act_step(&dir);
+    assert_eq!(step["act"]["actions"][0]["plannedBy"], "jev");
+    assert_eq!(
+        step["act"]["actions"][0]["line"],
+        "FILL role:textbox \"Last name\" \"Lovelace\""
+    );
+    assert_eq!(step["act"]["usage"]["modelCalls"], 1);
+    let log = twin.request_log();
+    assert!(
+        log.contains("the literal text the user wants typed"),
+        "log:\n{log}"
+    );
+    assert!(
+        !log.contains("Accessibility Tree"),
+        "the text call must not send the page; log:\n{log}"
+    );
+}

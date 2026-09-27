@@ -56,6 +56,31 @@ pub(crate) fn system_prompt() -> String {
     )
 }
 
+/// The system prompt of the call that reads the text to type from an
+/// instruction, for the `--jev` planner. Ported from Stagehand's
+/// `actTextArgument` (browserbase/stagehand#2953).
+pub(crate) fn text_argument_system_prompt() -> String {
+    collapse_whitespace(
+        "You extract one argument from a browser-automation instruction: the literal text the \
+         user wants typed into a field. Copy it verbatim from the instruction; never paraphrase, \
+         translate, or invent. Do not return the name of the field. If a declared %placeholder% \
+         stands for the text, return it as written including the percent signs.",
+    )
+}
+
+/// The user message of that call: the instruction and its placeholders,
+/// never the page.
+pub(crate) fn text_argument_message(instruction: &str, placeholders: &[String]) -> String {
+    if placeholders.is_empty() {
+        format!("instruction: {instruction}")
+    } else {
+        format!(
+            "instruction: {instruction}\ndeclared placeholders: {}",
+            placeholders.join(", ")
+        )
+    }
+}
+
 /// The user message: the instruction prompt plus the page snapshot.
 pub(crate) fn user_message(instruction: &str, hint: Option<&str>, snapshot: &str) -> String {
     match hint {

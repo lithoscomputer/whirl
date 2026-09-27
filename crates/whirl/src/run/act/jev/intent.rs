@@ -101,6 +101,22 @@ const MERGED: &[(&str, &str, Option<&str>)] = &[
 /// The combined probability a merged pair needs.
 const MERGED_MASS: f64 = 0.85;
 
+/// What Jev said about the texts a fill could type.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum FillValue {
+    /// The instruction offered no texts to choose among.
+    NotAsked,
+    /// The text at this index.
+    Chosen(usize),
+    /// None of the offered texts is the text to type.
+    NoneOfThese,
+    /// Jev could not decide.
+    Unsure,
+}
+
+/// The key of the `fill_value` question's none-of-these option.
+const NO_VALUE: &str = "none_match";
+
 /// What the first request found.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Intent {
@@ -117,10 +133,16 @@ pub(super) struct Intent {
     pub(super) toggle:          Option<bool>,
     /// True when typing must be followed by choosing a suggestion.
     pub(super) pick_suggestion: bool,
+    pub(super) fill_value:      FillValue,
 }
 
-/// The questions of the first request.
-pub(super) fn questions(instruction: &str) -> Vec<(&'static str, JevQuestion)> {
+/// The questions of the first request. `fill_values` are the quoted
+/// strings and placeholders a fill could type, each marked when it is a
+/// placeholder; with any, Jev also says which one is the text to type.
+pub(super) fn questions(
+    instruction: &str,
+    fill_values: &[(String, bool)],
+) -> Vec<(&'static str, JevQuestion)> {
     let options = |pairs: &[(&str, &str)]| -> Map<String, Json> {
         pairs
             .iter()
@@ -135,7 +157,7 @@ pub(super) fn questions(instruction: &str) -> Vec<(&'static str, JevQuestion)> {
         "other".to_owned(),
         json!("Some other key, or the instruction is not a key press"),
     );
-    vec![
+    let mut questions = vec![
         (
             "family",
             choice(
@@ -205,7 +227,35 @@ pub(super) fn questions(instruction: &str) -> Vec<(&'static str, JevQuestion)> {
                 keys,
             ),
         ),
-    ]
+    ];
+    if !fill_values.is_empty() {
+        let mut values: Map<String, Json> = fill_values
+            .iter()
+            .enumerate()
+            .map(|(index, (value, placeholder))| {
+                let described = if *placeholder {
+                    json!({ "variable_placeholder": value })
+                } else {
+                    json!({ "quoted_text": value })
+                };
+                (format!("value_{index}"), described)
+            })
+            .collect();
+        values.insert(
+            NO_VALUE.to_owned(),
+            json!("None of these is the text to type; the text to type is not among them"),
+        );
+        questions.push((
+            "fill_value",
+            choice(
+                json!(
+                    "Which of these is the literal text the instruction wants typed into the field? A quoted field name or label is NOT the text to type. A %variable% placeholder stands for the text to type."
+                ),
+                values,
+            ),
+        ));
+    }
+    questions
 }
 
 /// Reads the first request's answers. `None` when Jev is not sure of the
@@ -235,7 +285,26 @@ pub(super) fn read(answers: &HashMap<String, JevAnswer>, accept: f64) -> Option<
             _ => None,
         },
         pick_suggestion: named("after_typing").as_deref() == Some("pick_suggestion"),
+        fill_value: fill_value(answers.get("fill_value"), accept),
     })
+}
+
+/// Reads the `fill_value` answer. "None of these" counts whatever its
+/// confidence: the text is then read another way.
+fn fill_value(answer: Option<&JevAnswer>, accept: f64) -> FillValue {
+    let Some(JevAnswer::Choice {
+        choice, confidence, ..
+    }) = answer
+    else {
+        return FillValue::NotAsked;
+    };
+    if choice == NO_VALUE {
+        return FillValue::NoneOfThese;
+    }
+    match choice.strip_prefix("value_").map(str::parse::<usize>) {
+        Some(Ok(index)) if *confidence >= accept => FillValue::Chosen(index),
+        _ => FillValue::Unsure,
+    }
 }
 
 /// A choice Jev is sure of. For the family, two families that start with
@@ -316,6 +385,7 @@ mod tests {
             other_button:    false,
             toggle:          Some(true),
             pick_suggestion: false,
+            fill_value:      FillValue::NotAsked,
         });
     }
 
@@ -351,7 +421,7 @@ mod tests {
 
     #[test]
     fn every_question_is_asked_in_one_request() {
-        let ids: Vec<&str> = questions("x").into_iter().map(|(id, _)| id).collect();
+        let ids: Vec<&str> = questions("x", &[]).into_iter().map(|(id, _)| id).collect();
         assert_eq!(ids, [
             "family",
             "mouse_button",
@@ -359,5 +429,21 @@ mod tests {
             "after_typing",
             "key"
         ]);
+        let with_values = questions("x", &[("Ada".to_owned(), false)]);
+        assert_eq!(with_values.last().map(|(id, _)| *id), Some("fill_value"));
+    }
+
+    #[test]
+    fn the_fill_value_answer_names_a_text_or_none() {
+        let pick = |choice: &str, confidence: f64| {
+            fill_value(
+                Some(&answer(choice, confidence, &[(choice, confidence)])),
+                0.7,
+            )
+        };
+        assert_eq!(pick("value_1", 0.9), FillValue::Chosen(1));
+        assert_eq!(pick("value_1", 0.5), FillValue::Unsure);
+        assert_eq!(pick("none_match", 0.4), FillValue::NoneOfThese);
+        assert_eq!(fill_value(None, 0.7), FillValue::NotAsked);
     }
 }

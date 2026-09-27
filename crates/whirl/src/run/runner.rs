@@ -196,11 +196,16 @@ pub(crate) async fn run_files(
 /// The run's `ACT` planner (SPEC 7.4): the language model, or with `--jev`
 /// Jev first and the language model as its fallback.
 fn act_planner(jev: bool) -> Result<Arc<dyn ActPlanner>, RunnerError> {
-    let llm: Arc<dyn ActPlanner> = Arc::new(LlmPlanner::new(ModelClient::from_env()?));
+    let model = Arc::new(ModelClient::from_env()?);
+    let llm: Arc<dyn ActPlanner> = Arc::new(LlmPlanner::new(model.clone()));
     if !jev {
         return Ok(llm);
     }
-    Ok(Arc::new(JevPlanner::new(JevClient::from_env()?, llm)))
+    Ok(Arc::new(JevPlanner::new(
+        JevClient::from_env()?,
+        llm,
+        model,
+    )))
 }
 
 /// Filesystem preparation runs on the blocking pool, including path
