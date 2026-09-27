@@ -624,6 +624,26 @@ mod tests {
     }
 
     #[test]
+    fn a_named_iframe_is_a_container_that_jev_reads_by_name() {
+        let outline = Outline::parse(
+            "- generic [active] [ref=e1]:\n  - iframe \"Incident history\" [ref=e4]:\n    - generic [ref=f1e1]:\n      - button \"Refresh\" [ref=f1e2]\n",
+        );
+        let containers = outline.view(View::Container);
+        let [frame] = containers.as_slice() else {
+            panic!("one container, the iframe: {containers:?}");
+        };
+        assert_eq!(
+            outline.describe(*frame, &HashMap::new()),
+            json!({"role": "iframe", "name": "Incident history"})
+        );
+        let buttons = outline.view(View::Pointer);
+        assert_eq!(
+            outline.describe(buttons[0], &HashMap::new())["within"],
+            json!("Incident history")
+        );
+    }
+
+    #[test]
     fn an_element_is_within_itself_and_its_ancestors() {
         let outline = Outline::parse(BOARD);
         let index = |element: &str| {

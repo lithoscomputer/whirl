@@ -235,6 +235,15 @@ mod tests {
     }
 
     #[test]
+    fn an_iframe_the_shim_named_keeps_its_role_and_name() {
+        let snapshot = PageSnapshot::parse(
+            "- iframe \"Incident history\" [ref=e4]:\n  - paragraph [ref=f1e2]: Resolved\n",
+        );
+        let target = snapshot.target("e4").expect("e4 is in the snapshot");
+        assert_eq!(target.locator_text(), r#"role:iframe "Incident history""#);
+    }
+
+    #[test]
     fn a_ref_the_snapshot_never_showed_is_not_a_target() {
         let snapshot = PageSnapshot::parse(SNAPSHOT);
         assert_eq!(snapshot.target("e99"), None);

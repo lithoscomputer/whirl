@@ -564,6 +564,10 @@ fn act_works_in_every_engine_when_requested() {
     if env::var_os("WHIRL_TEST_ALL_BROWSERS").is_none() {
         return;
     }
+    // A frame from another origin, which only its title names.
+    let page = "<h1>Shop</h1>\
+        <button onclick=\"document.querySelector('h1').textContent='Added'\">Add to cart</button>\
+        <iframe title=Reviews src=\"data:text/html,<p>Five stars</p>\"></iframe>";
     for engine in ["firefox", "webkit"] {
         let dir = TestDir::new();
         let twin = ModelTwin::start();
@@ -571,8 +575,9 @@ fn act_works_in_every_engine_when_requested() {
         let flow = dir.file(
             "click.whirl",
             &format!(
-                "[Options]\nmodel: gpt-test\n{SHOP}ACT \"add the item to the cart\"\n\
-                 [Asserts]\nrole:heading \"Added\" visible\n"
+                "[Options]\nmodel: gpt-test\n{}ACT \"add the item to the cart\"\n\
+                 [Asserts]\nrole:heading \"Added\" visible\n",
+                visit_html(page)
             ),
         );
         let output = twin.run_with_args(&dir, &flow, &[], &["--browser", engine]);
@@ -582,6 +587,10 @@ fn act_works_in_every_engine_when_requested() {
         assert!(
             log.contains("button \\\"Add to cart\\\" [ref=e3]"),
             "{engine} snapshot refs; log:\n{log}"
+        );
+        assert!(
+            log.contains("iframe \\\"Reviews\\\" [ref=e4]"),
+            "{engine} names the frame; log:\n{log}"
         );
     }
 }
@@ -731,6 +740,50 @@ fn a_scoped_act_shows_the_model_only_that_element() {
         !log.contains("Menu"),
         "the header is outside the scope; log:\n{log}"
     );
+}
+
+/// Frames named by a title, by an `aria-label` over a title, from inside
+/// another frame, from another origin, and not at all.
+const FRAMED_HELP: &str = "<h1>Help</h1><main>\
+    <iframe title=\"Incident history\" \
+    srcdoc=\"<p>Resolved</p><iframe title='Uptime chart' srcdoc='<p>Up</p>'></iframe>\"></iframe>\
+    <iframe aria-label=\"Live chat\" title=\"Chat widget\" srcdoc=\"<p>Hello</p>\"></iframe>\
+    <iframe title=Weather src=\"data:text/html,<p>Sunny</p>\"></iframe>\
+    <iframe srcdoc=\"<p>Advert</p>\"></iframe></main>";
+
+#[test]
+fn a_scoped_act_shows_the_model_each_iframe_by_its_name() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.answer(&[json!({
+        "action": {"elementId": "e3", "description": "the chat", "method": "scrollIntoView", "arguments": []},
+        "twoStep": false
+    })]);
+    let flow = dir.file(
+        "scoped-frames.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{}ACT css:main \"show the live chat\" @30s\n",
+            visit_html(FRAMED_HELP)
+        ),
+    );
+    let output = twin.run(&dir, &flow, &[]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+    assert_eq!(
+        act_step(&dir)["act"]["actions"][0]["line"],
+        "SCROLL role:iframe \"Live chat\""
+    );
+    let log = twin.request_log();
+    for line in [
+        r#"iframe \"Incident history\" [ref=e2]"#,
+        r#"iframe \"Uptime chart\" [ref=f1e3]"#,
+        r#"iframe \"Live chat\" [ref=e3]"#,
+        r#"iframe \"Weather\" [ref=e4]"#,
+        "iframe [ref=e5]",
+    ] {
+        assert!(log.contains(line), "the model sees {line}; log:\n{log}");
+    }
+    assert!(!log.contains("Chat widget"), "log:\n{log}");
 }
 
 #[test]
@@ -1059,6 +1112,49 @@ fn jev_scrolls_the_page_to_the_position_the_instruction_names() {
     assert_eq!(step["act"]["actions"][0]["plannedBy"], "jev");
     assert_eq!(step["act"]["usage"]["modelCalls"], 0);
     assert_eq!(step["act"]["usage"]["jev"]["requests"], 1);
+}
+
+/// A status page with two frames that only their titles name.
+const FRAMED_STATUS: &str = "<h1>Status page</h1>\
+    <iframe id=incidents title=\"Incident history\" width=400 height=120 \
+    srcdoc=\"<p>First</p><div style='height:1200px'>Posts</div><p>Last</p>\"></iframe>\
+    <iframe title=Advertisement width=400 height=120 srcdoc=\"<p>Buy now</p>\"></iframe>";
+
+#[test]
+fn jev_scrolls_inside_the_iframe_that_its_title_names() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.jev(&[
+        jev_scroll_intent("position", "part"),
+        jev_pick("e3", &["e4"], 0.95),
+    ]);
+    let flow = dir.file(
+        "jev-scroll-frame.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{}ACT \"scroll down 50% inside the incident history\"\n\
+             [Asserts]\neval \"document.querySelector('#incidents').contentWindow.scrollY > 0\" == true\n",
+            visit_html(FRAMED_STATUS)
+        ),
+    );
+    let output = twin.run_jev(&dir, &flow, &[]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+    let step = act_step(&dir);
+    assert_eq!(
+        step["act"]["actions"][0]["line"],
+        "SCROLL role:iframe \"Incident history\" to 50%"
+    );
+    assert_eq!(step["act"]["actions"][0]["plannedBy"], "jev");
+    assert_eq!(step["act"]["usage"]["modelCalls"], 0);
+    let log = twin.request_log();
+    assert!(
+        log.contains(r#"\"e3\":{\"role\":\"iframe\",\"name\":\"Incident history\""#),
+        "Jev reads each frame by its title; log:\n{log}"
+    );
+    assert!(
+        log.contains(r#"\"e4\":{\"role\":\"iframe\",\"name\":\"Advertisement\""#),
+        "log:\n{log}"
+    );
 }
 
 #[test]
