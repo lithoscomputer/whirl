@@ -8,5 +8,8 @@
     <p>First post</p>
     <div style="height: 1200px">Posts</div>
     <p>Last post</p>
+    <script>
+      window.addEventListener("scroll", () => parent.postMessage(window.scrollY, "*"));
+    </script>
   </body>
 </html>

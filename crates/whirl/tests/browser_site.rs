@@ -821,6 +821,11 @@ SCROLL text:"Filter 3" down
 [Asserts]
 eval "document.querySelector('#filters-body').scrollTop === document.querySelector('#filters-body').clientHeight" == true
 
+# A dialog cannot scroll, so the list inside it does.
+SCROLL role:dialog Filters to 0%
+[Asserts]
+eval "document.querySelector('#filters-body').scrollTop" == 0
+
 SCROLL role:region Terms to 100%
 [Asserts]
 role:button "I agree" enabled
@@ -843,6 +848,14 @@ VISIT /scroll-frame.html
 SCROLL frame:"#feed" >> css:body down
 [Asserts]
 eval "(() => { const doc = document.querySelector('#feed').contentDocument; return doc.defaultView.scrollY === doc.documentElement.clientHeight; })()" == true
+eval "window.scrollY" == 0
+
+# An iframe element scrolls the page inside it, across origins too.
+SCROLL css:"#feed" to 0%
+SCROLL css:"#remote" to 100%
+[Asserts]
+eval "document.querySelector('#feed').contentWindow.scrollY" == 0
+eval "Number(document.body.dataset.remoteScroll) > 0" == true
 eval "window.scrollY" == 0
 "##,
     );

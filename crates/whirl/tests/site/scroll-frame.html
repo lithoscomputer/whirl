@@ -7,6 +7,16 @@
   <body>
     <h1>Framed feed</h1>
     <iframe id="feed" src="/scroll-inner.html" width="400" height="120"></iframe>
+    <iframe id="remote" width="400" height="120"></iframe>
     <div style="height: 1600px">Below</div>
+    <script>
+      // The same page on another origin: `localhost` instead of 127.0.0.1.
+      const remote = new URL("/scroll-inner.html", location.href);
+      remote.hostname = "localhost";
+      document.getElementById("remote").src = remote;
+      window.addEventListener("message", (event) => {
+        document.body.dataset.remoteScroll = String(event.data);
+      });
+    </script>
   </body>
 </html>

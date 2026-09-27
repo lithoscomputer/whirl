@@ -377,10 +377,12 @@ async function dropPoint(
 /**
  * SCROLL's chunk and position motions (SPEC section 7), run in the page.
  * The scroll box is the element when it can scroll on the motion's axis,
- * else its nearest such ancestor, else its document; `html` and `body` are
- * the document. It scrolls at once, whatever the page's `scroll-behavior`,
- * and resolves when the position holds for two frames. A hidden page runs
- * no frames, so a timer also drives the check there.
+ * else the largest such box inside it, else its nearest such ancestor,
+ * else its document; `html` and `body` are the document. Looking inside
+ * serves a locator that names a container, such as a dialog whose list
+ * scrolls. It scrolls at once, whatever the page's `scroll-behavior`, and
+ * resolves when the position holds for two frames. A hidden page runs no
+ * frames, so a timer also drives the check there.
  */
 function scrollBox(
 	element: Element,
@@ -402,7 +404,17 @@ function scrollBox(
 			: node.scrollWidth > node.clientWidth;
 		return room && ["auto", "scroll", "overlay"].includes(overflow);
 	};
-	let box: Element | null = element;
+	const area = (node: Element): number => node.clientWidth * node.clientHeight;
+	const inside =
+		isDocument(element) || canScroll(element)
+			? []
+			: Array.from(element.querySelectorAll("*")).filter(canScroll);
+	let box: Element | null =
+		inside.reduce<Element | null>(
+			(largest, node) =>
+				largest === null || area(node) > area(largest) ? node : largest,
+			null,
+		) ?? element;
 	while (box !== null && !isDocument(box) && !canScroll(box)) {
 		const root = box.getRootNode();
 		box = box.parentElement ?? (root instanceof ShadowRoot ? root.host : null);
@@ -1010,9 +1022,20 @@ export class PlaywrightDriver implements ShimDriver {
 						.evaluate(scrollBox, motion, { timeout: timeoutMs });
 					return {};
 				}
-				await this.#locatorAction(page, params, (locator) =>
-					locator.evaluate(scrollBox, motion, { timeout: timeoutMs }),
-				);
+				await this.#locatorAction(page, params, async (locator) => {
+					// An iframe scrolls the page inside it. Entering the frame
+					// works across origins, where the parent's script cannot.
+					const isFrame = await locator.evaluate(
+						(element) =>
+							element.tagName === "IFRAME" || element.tagName === "FRAME",
+						undefined,
+						{ timeout: timeoutMs },
+					);
+					const box = isFrame
+						? locator.contentFrame().locator(":root")
+						: locator;
+					await box.evaluate(scrollBox, motion, { timeout: timeoutMs });
+				});
 				return {};
 			}
 			case "upload": {
