@@ -304,7 +304,7 @@ interface Point {
  * Runs in every frame before page scripts (SPEC 7.4). Playwright's AI
  * snapshot, like page scripts, cannot see inside a closed shadow root, so a
  * flow that uses ACT opens every root a page script attaches, which gives
- * ACT the view Stagehand gets from Chrome's extension API. The page can
+ * ACT the view that a browser extension's API has. The page can
  * notice: `host.shadowRoot` is no longer null. Declarative closed roots in
  * HTML are created by the parser and stay closed.
  */

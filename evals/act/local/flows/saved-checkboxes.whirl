@@ -2,8 +2,8 @@
 base: {{env.EVAL_BASE}}
 model: {{model}}
 
-# Stagehand's checkboxes: two actions on a saved form.
-VISIT /stagehand/checkboxes/
+# Two checkbox actions on a saved form.
+VISIT /saved/checkboxes/
 ACT "click the 'baseball' option" @60s
 ACT "click the 'netball' option" @60s
 [Asserts]

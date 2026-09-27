@@ -1,5 +1,5 @@
-//! The model's answer (SPEC 7.4): Stagehand's act schema on the wire, and
-//! the checked decision Whirl acts on.
+//! The model's answer (SPEC 7.4): the act schema on the wire, and the
+//! checked decision Whirl acts on.
 
 use std::ops::RangeInclusive;
 
@@ -11,7 +11,7 @@ use crate::run::act::instruction::{Instruction, UnboundPlaceholder, same_text};
 use crate::run::act::snapshot::{PageSnapshot, Target, quote};
 use crate::run::shim::StepCommand;
 
-/// The raw structured answer: Stagehand's `ActInferenceSchema`.
+/// The raw structured answer that [`inference_schema`] describes.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ActInference {
@@ -55,8 +55,7 @@ impl ActInference {
     }
 }
 
-/// The methods the model may choose. The names are Stagehand's, so its
-/// prompts carry over; each maps to one Whirl verb.
+/// The methods the model may choose. Each maps to one Whirl verb.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum ActMethod {

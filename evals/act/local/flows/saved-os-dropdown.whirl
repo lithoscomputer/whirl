@@ -2,8 +2,8 @@
 base: {{env.EVAL_BASE}}
 model: {{model}}
 
-# Stagehand's os_dropdown: a native select on a saved license-lookup page.
-VISIT /stagehand/nested-dropdown/
+# A native select on a saved license-lookup page.
+VISIT /saved/nested-dropdown/
 ACT "choose 'Smog Check Technician' from the 'License Type' dropdown" @60s
 [Asserts]
 eval "document.querySelector('#licenseType option:checked')?.textContent" == "Smog Check Technician"

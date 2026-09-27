@@ -433,7 +433,7 @@ json:$.name == Ada
 
 `ACT "instruction"` asks the language model named by the `model` option
 (section 5) to choose one element action on the selected tab. Whirl then runs
-that action. The design follows Stagehand's `act()`.
+that action.
 
 ```whirl
 [Options]
@@ -483,7 +483,7 @@ shows the same text, instead of the element's center. The event still reaches
 the element the model chose.
 
 In a file that uses `ACT`, Whirl opens every shadow root that a page script
-attaches, so `ACT` sees and acts inside closed shadow roots, as Stagehand does.
+attaches, so `ACT` sees and acts inside closed shadow roots.
 Other locators in that file can then reach inside them too. A page can notice
 the change: a host's `shadowRoot` is no longer `null`. Closed shadow roots that
 the HTML itself declares stay closed.
@@ -504,8 +504,8 @@ its value, such as a phone number, passes. Whirl skips the check when the
 element has no value to read, such as a `contenteditable` element, or when the
 page has removed it.
 
-With `--jev` (section 13), TypeSafe's Jev plans first, as in Stagehand's
-experimental Jev path. Jev is a classifier: it answers closed questions in a
+With `--jev` (section 13), TypeSafe's Jev plans first. Jev is a classifier:
+it answers closed questions in a
 few hundred milliseconds but cannot write text. Whirl asks it which kind of
 action the instruction wants, then which element, from the snapshot elements
 that kind of action can target. The first request also asks for the key to

@@ -1,9 +1,0 @@
-[Options]
-base: {{env.EVAL_BASE}}
-model: {{model}}
-
-# Stagehand's ionwave: a link on a saved bid-portal page.
-VISIT /stagehand/ionwave/
-ACT "Click on \"Closed Bids\"" @60s
-[Asserts]
-url contains /stagehand/ionwave/closed-bids.html

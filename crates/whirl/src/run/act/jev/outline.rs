@@ -4,8 +4,7 @@
 //! from a short list, so each candidate carries the context that tells
 //! twins apart: the text of its table row or card, the named sections
 //! around it, the nearest heading, and its place among elements that look
-//! the same. This follows Stagehand's Jev candidate views
-//! (browserbase/stagehand#2952).
+//! the same.
 
 use std::collections::{HashMap, HashSet};
 use std::iter;

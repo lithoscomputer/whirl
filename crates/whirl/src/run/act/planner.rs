@@ -141,8 +141,7 @@ pub(crate) trait ActPlanner: fmt::Debug + Send + Sync {
     fn name(&self) -> &'static str;
 }
 
-/// Plans with one structured call to the `model` option's language model,
-/// as Stagehand's `act()` does.
+/// Plans with one structured call to the `model` option's language model.
 #[derive(Debug)]
 pub(crate) struct LlmPlanner {
     client: Arc<ModelClient>,

@@ -111,10 +111,10 @@ impl PageSnapshot {
     }
 }
 
-/// The snapshot without the parts the model does not need, as Stagehand's
-/// outline leaves them out: the `/url:` line under every link and the
-/// `[cursor=pointer]` mark on every clickable element. On a link-heavy page
-/// such as a Wikipedia article they are about a third of the snapshot.
+/// The snapshot without the parts the model does not need: the `/url:` line
+/// under every link and the `[cursor=pointer]` mark on every clickable element.
+/// On a link-heavy page such as a Wikipedia article they are about a third of
+/// the snapshot.
 fn condense(snapshot: &str) -> String {
     let mut text = String::with_capacity(snapshot.len());
     for line in snapshot.lines() {

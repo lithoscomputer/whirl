@@ -1,9 +1,10 @@
 //! The `ACT` prompts (SPEC 7.4), ported from Stagehand's
 //! `packages/extension/prompt.ts` (`buildActSystemPrompt`,
-//! `buildActPrompt`, `buildStepTwoPrompt`, and `buildObserveUserMessage`).
+//! `buildActPrompt`, `buildStepTwoPrompt`, and `buildObserveUserMessage`),
+//! and the text-argument prompt of its Jev path (browserbase/stagehand#2953).
 //!
 //! Whirl's changes: element IDs are Playwright AI-snapshot refs rather than
-//! Stagehand's frame-and-node IDs, the method list is Whirl's subset, and
+//! frame-and-node IDs, the method list is Whirl's subset, and
 //! the scroll and chunk rules are gone until Whirl has those actions.
 //!
 //! Stagehand is distributed under this license:
@@ -56,8 +57,7 @@ pub(crate) fn system_prompt() -> String {
 }
 
 /// The system prompt of the call that reads the text to type from an
-/// instruction, for the `--jev` planner. Ported from Stagehand's
-/// `actTextArgument` (browserbase/stagehand#2953).
+/// instruction, for the `--jev` planner.
 pub(crate) fn text_argument_system_prompt() -> String {
     collapse_whitespace(
         "You extract one argument from a browser-automation instruction: the literal text the \
@@ -193,7 +193,8 @@ fn method_list(methods: &[ActMethod]) -> String {
         .join(", ")
 }
 
-/// Stagehand collapses its system prompt's whitespace to single spaces.
+/// The system prompts are sent with their whitespace collapsed to single
+/// spaces.
 fn collapse_whitespace(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }

@@ -223,7 +223,7 @@ pub(crate) fn same_text(left: &str, right: &str) -> bool {
 /// The strings quoted in `text`: in straight or curly double quotes, in
 /// curly single quotes, or in straight single quotes that stand at word
 /// boundaries, so the apostrophe in "user's" opens no quote. A quote does
-/// not cross a line. The rules are those of Stagehand's `quotedStrings`.
+/// not cross a line.
 pub(crate) fn quoted_strings(text: &str) -> Vec<&str> {
     let is_word = |ch: Option<char>| ch.is_some_and(|ch| ch.is_alphanumeric() || ch == '_');
     let mut found = Vec::new();
@@ -363,7 +363,7 @@ mod tests {
     }
 
     #[test]
-    fn quoted_strings_follow_stagehands_rules() {
+    fn quoted_strings_find_every_quote_style_but_not_apostrophes() {
         assert_eq!(
             quoted_strings(
                 "type \"Ada\" into 'Name', then \u{201C}x\u{201D} and \u{2018}y\u{2019}"
