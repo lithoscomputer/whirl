@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- With `--jev`, describe an element in a table by its table's caption or name and its column's header, so Jev tells apart two calendar months that both show a 14.
 - With `--jev`, accept a clear leader when Jev is nearly certain something matches, hold an uneasy pick while the next list tries, and let copies of one control in one item share Jev's vote, as Stagehand does.
 - With `--jev`, try every named element when no control fits, ask the full list in parallel parts when Jev rejects the shortened one, and confirm an exact quoted name with one small request, as Stagehand does.
 - With `--jev`, let Jev say which quoted string or placeholder is the text to type, and read unquoted text with a small model call that sees only the instruction and must copy its words, as Stagehand does.

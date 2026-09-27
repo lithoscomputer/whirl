@@ -70,6 +70,9 @@ const POINTER_ROLES: &[&str] = &[
 const INPUT_ROLES: &[&str] = &["textbox", "searchbox", "combobox", "spinbutton", "slider"];
 /// Ancestors whose text tells repeated elements apart.
 const ITEM_ROLES: &[&str] = &["row", "listitem", "article"];
+const TABLE_ROLES: &[&str] = &["table", "grid", "treegrid"];
+/// Cells of a row, headers included.
+const CELL_ROLES: &[&str] = &["cell", "gridcell", "columnheader", "rowheader"];
 /// Longest context text sent per candidate, in characters.
 const CONTEXT_CHARS: usize = 160;
 
@@ -198,6 +201,14 @@ impl Outline {
         {
             description.insert("label".to_owned(), json!(before));
         }
+        if let Some((table, column)) = self.table_place(index) {
+            if let Some(table) = table {
+                description.insert("table".to_owned(), json!(table));
+            }
+            if let Some(column) = column {
+                description.insert("column".to_owned(), json!(column));
+            }
+        }
         if let Some(item) = self
             .ancestors(index)
             .find(|&ancestor| ITEM_ROLES.contains(&self.nodes[ancestor].role.as_str()))
@@ -230,6 +241,51 @@ impl Outline {
             );
         }
         Json::Object(description)
+    }
+
+    /// Where an element inside a table is: the table's name or caption, and
+    /// the header of the element's column. Two months of a calendar, or two
+    /// price columns, otherwise look the same. `None` outside a table.
+    fn table_place(&self, index: usize) -> Option<(Option<String>, Option<String>)> {
+        let table = self
+            .ancestors(index)
+            .find(|&ancestor| TABLE_ROLES.contains(&self.nodes[ancestor].role.as_str()))?;
+        let title = self.nodes[table].name.clone().or_else(|| {
+            self.children(table)
+                .find(|&child| self.nodes[child].role == "caption")
+                .and_then(|caption| {
+                    let caption = &self.nodes[caption];
+                    caption.text.clone().or_else(|| caption.name.clone())
+                })
+        });
+        let column = self.column_header(index, table);
+        Some((title, column))
+    }
+
+    /// The header of the column that holds `index`, from the first row of
+    /// `table` that has column headers.
+    fn column_header(&self, index: usize, table: usize) -> Option<String> {
+        let is_cell = |node: usize| CELL_ROLES.contains(&self.nodes[node].role.as_str());
+        let cell = iter::once(index)
+            .chain(self.ancestors(index))
+            .take_while(|&node| node != table)
+            .find(|&node| is_cell(node))?;
+        let row = self.nodes[cell].parent?;
+        let column = self
+            .children(row)
+            .filter(|&child| is_cell(child))
+            .position(|child| child == cell)?;
+        let header_row = self.subtree(table).find(|&node| {
+            self.nodes[node].role == "row"
+                && self
+                    .children(node)
+                    .any(|child| self.nodes[child].role == "columnheader")
+        })?;
+        let header = self
+            .children(header_row)
+            .filter(|&child| is_cell(child))
+            .nth(column)?;
+        self.nodes[header].name.clone()
     }
 
     /// The text of the sibling just before an unnamed element, which a
@@ -513,6 +569,17 @@ mod tests {
         let buttons = outline.view(View::Pointer);
         assert!(outline.copies_in_one_item(buttons[0], buttons[1]));
         assert!(!outline.copies_in_one_item(buttons[1], buttons[2]));
+    }
+
+    #[test]
+    fn a_table_cell_names_its_caption_and_column() {
+        let outline = Outline::parse(
+            "- generic [ref=e1]:\n  - table [ref=e2]:\n    - caption [ref=e3]: March 2027\n    - rowgroup [ref=e4]:\n      - row [ref=e5]:\n        - columnheader \"Su\" [ref=e6]\n        - columnheader \"Mo\" [ref=e7]\n    - rowgroup [ref=e8]:\n      - row [ref=e9]:\n        - cell \"13\" [ref=e10]:\n          - button \"13\" [ref=e11]\n        - cell \"14\" [ref=e12]:\n          - button \"14\" [ref=e13]\n",
+        );
+        let buttons = outline.view(View::Pointer);
+        let description = outline.describe(buttons[1], &HashMap::new());
+        assert_eq!(description["table"], json!("March 2027"));
+        assert_eq!(description["column"], json!("Mo"));
     }
 
     #[test]
