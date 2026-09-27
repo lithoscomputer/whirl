@@ -16,7 +16,7 @@ use tracing::{Instrument as _, debug, info, info_span, warn};
 
 use crate::lang::ast::File;
 use crate::report::model::{FileReport, FlowRoles, RunReport, SETUP_ENTRY, Status, Timing};
-use crate::run::act::{ModelClient, ModelSetupError};
+use crate::run::act::{ActPlanner, LlmPlanner, ModelClient, ModelSetupError};
 use crate::run::artifacts::{self, ArtifactsError, Flow};
 use crate::run::flow::{
     FlowFlags, FlowOutcome, FlowRun, Overrides, SetupHandoff, run_flow, setup_path_for,
@@ -107,7 +107,7 @@ pub(crate) async fn run_files(
             main_jobs,
             state_dir,
             launch,
-            model,
+            planner,
             workers,
             settings,
         } = spawn_blocking(move || PreparedRun::try_new(&files, &setups, settings))
@@ -131,7 +131,7 @@ pub(crate) async fn run_files(
                 Arc::new(HashMap::new()),
                 settings.clone(),
                 &launch,
-                model.clone(),
+                planner.clone(),
                 stop.clone(),
             )
             .run(workers)
@@ -163,7 +163,7 @@ pub(crate) async fn run_files(
             Arc::new(handoffs),
             settings,
             &launch,
-            model,
+            planner,
             stop,
         )
         .run(workers)
@@ -193,7 +193,7 @@ struct PreparedRun {
     state_dir:  PathBuf,
     launch:     ShimLaunch,
     /// Built only when a flow uses `ACT` (SPEC 7.4).
-    model:      Option<Arc<ModelClient>>,
+    planner:    Option<Arc<dyn ActPlanner>>,
     workers:    usize,
     settings:   RunSettings,
 }
@@ -234,8 +234,8 @@ impl PreparedRun {
         let launch = resolve_launch()?;
 
         let all_files: Vec<&File> = files.iter().chain(setups.iter()).collect();
-        let model = if all_files.iter().any(|file| file.uses_act()) {
-            Some(Arc::new(ModelClient::from_env()?))
+        let planner: Option<Arc<dyn ActPlanner>> = if all_files.iter().any(|file| file.uses_act()) {
+            Some(Arc::new(LlmPlanner::new(ModelClient::from_env()?)))
         } else {
             None
         };
@@ -274,7 +274,7 @@ impl PreparedRun {
             main_jobs,
             state_dir,
             launch,
-            model,
+            planner,
             workers,
             settings,
         })
@@ -347,7 +347,7 @@ struct WorkQueue {
     handoffs: Arc<HashMap<PathBuf, SetupResult>>,
     settings: Arc<RunSettings>,
     launch:   ShimLaunch,
-    model:    Option<Arc<ModelClient>>,
+    planner:  Option<Arc<dyn ActPlanner>>,
     pending:  Mutex<VecDeque<usize>>,
     stop:     Arc<AtomicBool>,
 }
@@ -384,7 +384,7 @@ impl WorkerSet {
         handoffs: Arc<HashMap<PathBuf, SetupResult>>,
         settings: Arc<RunSettings>,
         launch: &ShimLaunch,
-        model: Option<Arc<ModelClient>>,
+        planner: Option<Arc<dyn ActPlanner>>,
         stop: Arc<AtomicBool>,
     ) -> Self {
         let pending = Mutex::new((0..jobs.len()).collect());
@@ -394,7 +394,7 @@ impl WorkerSet {
                 handoffs,
                 settings,
                 launch: launch.clone(),
-                model,
+                planner,
                 pending,
                 stop,
             }),
@@ -526,7 +526,7 @@ impl Worker {
             base_vars: &settings.base_vars,
             setup,
             state_out: job.state_out.as_deref(),
-            model: queue.model.as_deref(),
+            planner: queue.planner.as_deref(),
         };
         run_flow(&run, client).await
     }

@@ -18,7 +18,7 @@ use crate::report::model::{
     ActReport, CaptureValue, EntryReport, FileReport, ReportViewport, RuntimeMetadata, SETUP_ENTRY,
     Status, StepError, StepKind, StepReport, Timing,
 };
-use crate::run::act::{Instruction, ModelClient};
+use crate::run::act::{ActPlanner, Instruction};
 use crate::run::artifacts;
 use crate::run::shim::{
     EndFlowParams, ErrorObject, ShimClient, ShimError, StartFlowParams, StepCommand, StepOutcome,
@@ -379,8 +379,8 @@ pub(crate) struct FlowRun<'a> {
     /// Where to save the final storage state when this file is itself a
     /// `setup` flow; only a passed run writes it.
     pub(crate) state_out:  Option<&'a Path>,
-    /// The run's model client; present when any input uses `ACT`.
-    pub(crate) model:      Option<&'a ModelClient>,
+    /// The run's `ACT` planner; present when any input uses `ACT`.
+    pub(crate) planner:    Option<&'a dyn ActPlanner>,
 }
 
 /// One step line of an entry, in execution order (SPEC 12).
