@@ -27,6 +27,8 @@ pub(crate) struct OutlineNode {
     active:             bool,
     /// `[cursor=pointer]`: the page styles it as clickable.
     pointer:            bool,
+    /// `[checked]`: a checkbox, radio, or switch that is on.
+    pub(crate) checked: bool,
 }
 
 /// The snapshot as a tree, in document order.
@@ -46,6 +48,9 @@ pub(crate) enum View {
     Select,
     /// Press a key: inputs and pointer targets.
     Keyboard,
+    /// Every element with a name or text: the last look, for custom
+    /// widgets built from plain elements.
+    Broad,
 }
 
 const POINTER_ROLES: &[&str] = &[
@@ -65,6 +70,17 @@ const POINTER_ROLES: &[&str] = &[
 const INPUT_ROLES: &[&str] = &["textbox", "searchbox", "combobox", "spinbutton", "slider"];
 /// Ancestors whose text tells repeated elements apart.
 const ITEM_ROLES: &[&str] = &["row", "listitem", "article"];
+const TABLE_ROLES: &[&str] = &["table", "grid", "treegrid"];
+/// Roles of the choices in a list or menu.
+const OPTION_ROLES: &[&str] = &[
+    "option",
+    "menuitem",
+    "menuitemradio",
+    "menuitemcheckbox",
+    "treeitem",
+];
+/// Cells of a row, headers included.
+const CELL_ROLES: &[&str] = &["cell", "gridcell", "columnheader", "rowheader"];
 /// Longest context text sent per candidate, in characters.
 const CONTEXT_CHARS: usize = 160;
 
@@ -118,7 +134,39 @@ impl Outline {
             View::Input => INPUT_ROLES.contains(&role),
             View::Select => role == "combobox" && !self.options(index).is_empty(),
             View::Keyboard => self.fits(index, View::Pointer) || self.fits(index, View::Input),
+            View::Broad => node.name.is_some() || node.text.is_some() || node.pointer,
         }
+    }
+
+    /// The elements that may be a list's options, in two tiers: elements
+    /// with an option role, then list items and elements the page styles as
+    /// clickable. Custom dropdowns often build their options from plain
+    /// elements. Each element has a label: a name or text.
+    pub(crate) fn option_tiers(&self) -> [Vec<usize>; 2] {
+        let labelled = |index: usize| {
+            let node = &self.nodes[index];
+            node.element.is_some() && !is_root(node) && self.label(index).is_some()
+        };
+        let roles: Vec<usize> = (0..self.nodes.len())
+            .filter(|&index| {
+                labelled(index) && OPTION_ROLES.contains(&self.nodes[index].role.as_str())
+            })
+            .collect();
+        let plain: Vec<usize> = (0..self.nodes.len())
+            .filter(|&index| {
+                let node = &self.nodes[index];
+                labelled(index)
+                    && !OPTION_ROLES.contains(&node.role.as_str())
+                    && (node.pointer || node.role == "listitem")
+            })
+            .collect();
+        [roles, plain]
+    }
+
+    /// What an element says: its name, or else its text.
+    pub(crate) fn label(&self, index: usize) -> Option<&str> {
+        let node = &self.nodes[index];
+        node.name.as_deref().or(node.text.as_deref())
     }
 
     /// The focused element, when it is one a key press can target.
@@ -187,10 +235,22 @@ impl Outline {
         if let Some(text) = &node.text {
             description.insert("value".to_owned(), json!(text));
         }
+        // An element with neither name nor text, such as an unlabeled
+        // input, takes the text beside it; an element with its own text
+        // would take its neighbour's, as a list item would its sibling's.
         if node.name.is_none()
+            && node.text.is_none()
             && let Some(before) = self.label_before(index)
         {
             description.insert("label".to_owned(), json!(before));
+        }
+        if let Some((table, column)) = self.table_place(index) {
+            if let Some(table) = table {
+                description.insert("table".to_owned(), json!(table));
+            }
+            if let Some(column) = column {
+                description.insert("column".to_owned(), json!(column));
+            }
         }
         if let Some(item) = self
             .ancestors(index)
@@ -226,6 +286,51 @@ impl Outline {
         Json::Object(description)
     }
 
+    /// Where an element inside a table is: the table's name or caption, and
+    /// the header of the element's column. Two months of a calendar, or two
+    /// price columns, otherwise look the same. `None` outside a table.
+    fn table_place(&self, index: usize) -> Option<(Option<String>, Option<String>)> {
+        let table = self
+            .ancestors(index)
+            .find(|&ancestor| TABLE_ROLES.contains(&self.nodes[ancestor].role.as_str()))?;
+        let title = self.nodes[table].name.clone().or_else(|| {
+            self.children(table)
+                .find(|&child| self.nodes[child].role == "caption")
+                .and_then(|caption| {
+                    let caption = &self.nodes[caption];
+                    caption.text.clone().or_else(|| caption.name.clone())
+                })
+        });
+        let column = self.column_header(index, table);
+        Some((title, column))
+    }
+
+    /// The header of the column that holds `index`, from the first row of
+    /// `table` that has column headers.
+    fn column_header(&self, index: usize, table: usize) -> Option<String> {
+        let is_cell = |node: usize| CELL_ROLES.contains(&self.nodes[node].role.as_str());
+        let cell = iter::once(index)
+            .chain(self.ancestors(index))
+            .take_while(|&node| node != table)
+            .find(|&node| is_cell(node))?;
+        let row = self.nodes[cell].parent?;
+        let column = self
+            .children(row)
+            .filter(|&child| is_cell(child))
+            .position(|child| child == cell)?;
+        let header_row = self.subtree(table).find(|&node| {
+            self.nodes[node].role == "row"
+                && self
+                    .children(node)
+                    .any(|child| self.nodes[child].role == "columnheader")
+        })?;
+        let header = self
+            .children(header_row)
+            .filter(|&child| is_cell(child))
+            .nth(column)?;
+        self.nodes[header].name.clone()
+    }
+
     /// The text of the sibling just before an unnamed element, which a
     /// page often uses as its label.
     fn label_before(&self, index: usize) -> Option<String> {
@@ -238,6 +343,27 @@ impl Outline {
             .as_deref()
             .or(node.text.as_deref())
             .map(|text| truncate(text, 60))
+    }
+
+    /// Whether two elements are copies of one control inside the same item:
+    /// the same role and name in the same table row, list item, or article,
+    /// or, outside any item, under the same parent. A product card's hover
+    /// overlay repeats its "Add to cart", and a row repeats its link for
+    /// small screens. Identical buttons in different rows are not copies.
+    pub(crate) fn copies_in_one_item(&self, first: usize, second: usize) -> bool {
+        let (left, right) = (&self.nodes[first], &self.nodes[second]);
+        if left.role != right.role || left.name != right.name {
+            return false;
+        }
+        let item = |index: usize| {
+            self.ancestors(index)
+                .find(|&ancestor| ITEM_ROLES.contains(&self.nodes[ancestor].role.as_str()))
+        };
+        match (item(first), item(second)) {
+            (Some(left_item), Some(right_item)) => left_item == right_item,
+            (None, None) => left.parent == right.parent,
+            _ => false,
+        }
     }
 
     /// Each candidate that shares its role and name with others: its
@@ -298,6 +424,7 @@ fn parse_node(content: &str) -> OutlineNode {
         match &after[..end] {
             "active" => node.active = true,
             "cursor=pointer" => node.pointer = true,
+            "checked" | "checked=true" => node.checked = true,
             attr => {
                 if let Some(element) = attr.strip_prefix("ref=") {
                     node.element = Some(element.to_owned());
@@ -462,6 +589,58 @@ mod tests {
     }
 
     #[test]
+    fn the_broad_view_adds_named_plain_elements() {
+        let outline = Outline::parse(
+            "- generic [ref=e1]:\n  - generic [ref=f1e3]: Select a country\n  - paragraph [ref=e4]\n  - button \"Go\" [ref=e5]\n",
+        );
+        let refs = |view| {
+            outline
+                .view(view)
+                .into_iter()
+                .map(|index| outline.node(index).element.clone().unwrap_or_default())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(refs(View::Pointer), ["e5"]);
+        assert_eq!(refs(View::Broad), ["f1e3", "e5"]);
+    }
+
+    #[test]
+    fn copies_count_only_within_one_item() {
+        let outline = Outline::parse(
+            "- generic [ref=e1]:\n  - listitem [ref=e2]:\n    - button \"Add\" [ref=e3]\n    - button \"Add\" [ref=e4]\n  - listitem [ref=e5]:\n    - button \"Add\" [ref=e6]\n",
+        );
+        let buttons = outline.view(View::Pointer);
+        assert!(outline.copies_in_one_item(buttons[0], buttons[1]));
+        assert!(!outline.copies_in_one_item(buttons[1], buttons[2]));
+    }
+
+    #[test]
+    fn a_table_cell_names_its_caption_and_column() {
+        let outline = Outline::parse(
+            "- generic [ref=e1]:\n  - table [ref=e2]:\n    - caption [ref=e3]: March 2027\n    - rowgroup [ref=e4]:\n      - row [ref=e5]:\n        - columnheader \"Su\" [ref=e6]\n        - columnheader \"Mo\" [ref=e7]\n    - rowgroup [ref=e8]:\n      - row [ref=e9]:\n        - cell \"13\" [ref=e10]:\n          - button \"13\" [ref=e11]\n        - cell \"14\" [ref=e12]:\n          - button \"14\" [ref=e13]\n",
+        );
+        let buttons = outline.view(View::Pointer);
+        let description = outline.describe(buttons[1], &HashMap::new());
+        assert_eq!(description["table"], json!("March 2027"));
+        assert_eq!(description["column"], json!("Mo"));
+    }
+
+    #[test]
+    fn options_come_from_option_roles_then_clickable_plain_elements() {
+        let outline = Outline::parse(
+            "- generic [ref=e1]:\n  - listbox \"Country\" [ref=e2]:\n    - option \"Portugal\" [ref=e3]\n  - generic [ref=e4] [cursor=pointer]: Canada\n  - list [ref=e5]:\n    - listitem [ref=e6]: Red\n  - generic [ref=e7]: Country\n",
+        );
+        let refs = |tier: &Vec<usize>| {
+            tier.iter()
+                .map(|&index| outline.node(index).element.clone().unwrap_or_default())
+                .collect::<Vec<_>>()
+        };
+        let [roles, plain] = outline.option_tiers();
+        assert_eq!(refs(&roles), ["e3"]);
+        assert_eq!(refs(&plain), ["e4", "e6"]);
+    }
+
+    #[test]
     fn a_native_select_lists_its_options() {
         let outline = Outline::parse(
             "- generic [ref=e1]:\n  - combobox \"Size\" [ref=e3]:\n    - option \"Small\" [selected]\n    - option \"Large\"\n",
@@ -481,6 +660,17 @@ mod tests {
             outline.describe(inputs[0], &HashMap::new()),
             json!({"role": "textbox", "label": "Last name"})
         );
+    }
+
+    #[test]
+    fn an_element_with_text_takes_no_label_from_its_neighbour() {
+        let outline = Outline::parse(
+            "- generic [ref=e1]:\n  - list [ref=e2]:\n    - listitem [ref=e3]: Red\n    - listitem [ref=e4]: Blue\n",
+        );
+        let [_, items] = outline.option_tiers();
+        let blue = outline.describe(items[1], &HashMap::new());
+        assert_eq!(blue.get("label"), None);
+        assert_eq!(blue["value"], json!("Blue"));
     }
 
     #[test]

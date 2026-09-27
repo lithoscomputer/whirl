@@ -1,14 +1,14 @@
 //! Arguments the Jev planner reads from the instruction itself. Jev cannot
-//! write text, so an argument must be a quoted string, a placeholder, a key
-//! name, or an option the page shows. Anything else goes to the language
-//! model.
+//! write text, so an argument is a quoted string or a placeholder Jev
+//! chooses, a key name, an option the page shows, or text a small model
+//! call copies from the instruction.
 
 use crate::run::act::instruction::{Instruction, quoted_strings, same_text};
 
-/// The text to fill: the one quoted string or placeholder in the
-/// instruction that is not the field's own name, which an instruction
-/// such as `type "Ada" into "Name"` also quotes.
-pub(crate) fn fill_value(instruction: &Instruction, field_name: Option<&str>) -> Option<String> {
+/// The texts a fill could type: the placeholders and quoted strings in the
+/// instruction, in order. One of them may name the field instead, as in
+/// `type "Ada" into "Name"`; Jev's `fill_value` question tells them apart.
+pub(crate) fn fill_values(instruction: &Instruction) -> Vec<String> {
     let prompt = instruction.prompt();
     let mut values: Vec<String> = instruction
         .bindings()
@@ -17,16 +17,20 @@ pub(crate) fn fill_value(instruction: &Instruction, field_name: Option<&str>) ->
         .filter(|placeholder| prompt.contains(placeholder.as_str()))
         .collect();
     for quoted in quoted_strings(prompt) {
-        let is_field = field_name.is_some_and(|name| same_text(name, quoted));
-        let in_placeholder = values.iter().any(|value| value.contains(quoted));
-        if !is_field && !in_placeholder && !values.iter().any(|value| value == quoted) {
+        if !values.iter().any(|value| value.contains(quoted)) {
             values.push(quoted.to_owned());
         }
     }
-    match values.as_slice() {
-        [value] => Some(value.clone()),
-        _ => None,
-    }
+    values
+}
+
+/// True for a value that is a placeholder, such as `%env.PASSWORD%`.
+pub(crate) fn is_placeholder(instruction: &Instruction, value: &str) -> bool {
+    instruction
+        .bindings()
+        .placeholders()
+        .iter()
+        .any(|placeholder| placeholder == value)
 }
 
 /// The key a `press` instruction names, as Playwright spells it: `press
@@ -66,6 +70,23 @@ pub(crate) fn key(instruction: &str) -> Option<String> {
     }
 }
 
+/// Whether the instruction says `label` as a run of whole words, ignoring
+/// case and punctuation.
+pub(crate) fn says(instruction: &str, label: &str) -> bool {
+    let label = words(label);
+    !label.is_empty()
+        && words(instruction)
+            .windows(label.len())
+            .any(|window| window == label)
+}
+
+fn words(text: &str) -> Vec<String> {
+    text.split(|ch: char| !ch.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_lowercase)
+        .collect()
+}
+
 /// The one option of a native select that the instruction names, spelled
 /// as the page spells it. The select's own name does not count.
 pub(crate) fn option<'a>(
@@ -73,21 +94,11 @@ pub(crate) fn option<'a>(
     options: &[&'a str],
     select_name: Option<&str>,
 ) -> Option<&'a str> {
-    let words = |text: &str| -> Vec<String> {
-        text.split(|ch: char| !ch.is_alphanumeric())
-            .filter(|word| !word.is_empty())
-            .map(str::to_lowercase)
-            .collect()
-    };
-    let said = words(instruction);
     let named: Vec<&str> = options
         .iter()
         .copied()
         .filter(|option| !select_name.is_some_and(|name| same_text(name, option)))
-        .filter(|option| {
-            let option = words(option);
-            !option.is_empty() && said.windows(option.len()).any(|window| window == option)
-        })
+        .filter(|option| says(instruction, option))
         .collect();
     match named.as_slice() {
         [option] => Some(option),
@@ -122,14 +133,10 @@ mod tests {
     }
 
     #[test]
-    fn the_fill_value_is_the_quoted_text_that_is_not_the_field() {
+    fn fill_values_are_the_quoted_strings() {
         let typed = literal("type \"Ada\" into the \"Name\" field");
-        assert_eq!(fill_value(&typed, Some("Name")), Some("Ada".to_owned()));
-        assert_eq!(fill_value(&typed, Some("First name")), None);
-        assert_eq!(
-            fill_value(&literal("type Ada into Name"), Some("Name")),
-            None
-        );
+        assert_eq!(fill_values(&typed), vec!["Ada", "Name"]);
+        assert!(fill_values(&literal("type Ada into Name")).is_empty());
     }
 
     #[test]
@@ -145,10 +152,15 @@ mod tests {
             ],
             &mut vars,
         );
-        assert_eq!(
-            fill_value(&typed, Some("Password")),
-            Some("%secret1%".to_owned())
-        );
+        assert_eq!(fill_values(&typed), vec!["%secret1%"]);
+        assert!(is_placeholder(&typed, "%secret1%"));
+    }
+
+    #[test]
+    fn a_label_is_said_as_whole_words() {
+        assert!(says("choose United Kingdom, please", "united kingdom"));
+        assert!(!says("choose Portugal", "Port"));
+        assert!(!says("choose Canada", ""));
     }
 
     #[test]

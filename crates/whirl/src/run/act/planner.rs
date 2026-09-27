@@ -6,6 +6,7 @@
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Instant;
 
 use lithos_llm::types::Usage;
@@ -144,11 +145,11 @@ pub(crate) trait ActPlanner: fmt::Debug + Send + Sync {
 /// as Stagehand's `act()` does.
 #[derive(Debug)]
 pub(crate) struct LlmPlanner {
-    client: ModelClient,
+    client: Arc<ModelClient>,
 }
 
 impl LlmPlanner {
-    pub(crate) fn new(client: ModelClient) -> Self {
+    pub(crate) fn new(client: Arc<ModelClient>) -> Self {
         Self { client }
     }
 }

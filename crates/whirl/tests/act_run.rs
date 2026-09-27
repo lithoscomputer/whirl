@@ -696,29 +696,60 @@ fn jev_answer(answers: &Json) -> Json {
     })
 }
 
-/// Jev's answer to the intent question. Like the real API, it gives every
-/// option a probability; the others share what `intent` leaves.
-fn jev_intent(intent: &str, confidence: f64) -> Json {
-    const INTENTS: [&str; 7] = [
+/// A choice answer that gives `chosen` probability `p` and splits the rest
+/// evenly, as the real API gives every option a probability.
+fn jev_choice(options: &[&str], chosen: &str, p: f64) -> Json {
+    let rest = (1.0 - p) / (options.len() - 1) as f64;
+    let probabilities: serde_json::Map<String, Json> = options
+        .iter()
+        .map(|&option| {
+            (
+                option.to_owned(),
+                json!(if option == chosen { p } else { rest }),
+            )
+        })
+        .collect();
+    json!({"type": "choice", "choice": chosen, "confidence": p, "probabilities": probabilities})
+}
+
+/// Jev's answers to the intent request: the family, and no key, special
+/// mouse button, end state, or suggestion.
+fn jev_intent(family: &str, confidence: f64) -> Json {
+    const FAMILIES: [&str; 10] = [
         "click",
+        "double_click",
+        "hover",
         "fill",
         "select",
         "press",
-        "hover",
-        "double_click",
+        "scroll",
+        "drag",
+        "not_an_action",
+        "unsupported",
+    ];
+    const KEYS: [&str; 15] = [
+        "Enter",
+        "Tab",
+        "Escape",
+        "Space",
+        "Backspace",
+        "Delete",
+        "ArrowUp",
+        "ArrowDown",
+        "ArrowLeft",
+        "ArrowRight",
+        "PageUp",
+        "PageDown",
+        "Home",
+        "End",
         "other",
     ];
-    let rest = (1.0 - confidence) / 6.0;
-    let probabilities: serde_json::Map<String, Json> = INTENTS
-        .iter()
-        .map(|&option| {
-            let probability = if option == intent { confidence } else { rest };
-            (option.to_owned(), json!(probability))
-        })
-        .collect();
     jev_answer(&json!({
-        "intent": {"type": "choice", "choice": intent, "confidence": confidence,
-                   "probabilities": probabilities}
+        "family": jev_choice(&FAMILIES, family, confidence),
+        "mouse_button": jev_choice(&["left", "right", "middle"], "left", 0.98),
+        "toggle_state": jev_choice(&["on", "off", "unspecified"], "unspecified", 0.96),
+        "after_typing": jev_choice(&["nothing", "pick_suggestion"], "nothing", 0.97),
+        "key": jev_choice(&KEYS, "other", 0.93),
     }))
 }
 
@@ -878,4 +909,175 @@ fn jev_without_a_key_is_a_runtime_error() {
         stderr.contains("--jev needs TYPESAFE_API_KEY"),
         "stderr:\n{stderr}"
     );
+}
+
+#[test]
+fn jev_reads_unquoted_text_to_type_with_a_small_model_call() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.jev(&[jev_intent("fill", 0.95), jev_only("e3", 0.9)]);
+    // The model re-cases the text; Whirl types the instruction's own.
+    twin.answer(&[json!({"text": "lovelace"})]);
+    let page = "<h1>Profile</h1><input aria-label=\"Last name\">";
+    let flow = dir.file(
+        "jev-text.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{}ACT \"type Lovelace into the last name field\"\n\
+             [Asserts]\nlabel:\"Last name\" value == Lovelace\n",
+            visit_html(page)
+        ),
+    );
+    let output = twin.run_jev(&dir, &flow, &[]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+
+    let step = act_step(&dir);
+    assert_eq!(step["act"]["actions"][0]["plannedBy"], "jev");
+    assert_eq!(
+        step["act"]["actions"][0]["line"],
+        "FILL role:textbox \"Last name\" \"Lovelace\""
+    );
+    assert_eq!(step["act"]["usage"]["modelCalls"], 1);
+    let log = twin.request_log();
+    assert!(
+        log.contains("the literal text the user wants typed"),
+        "log:\n{log}"
+    );
+    assert!(
+        !log.contains("Accessibility Tree"),
+        "the text call must not send the page; log:\n{log}"
+    );
+}
+
+#[test]
+fn jev_looks_at_every_named_element_when_no_control_fits() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    // The page has no button or link, so the pointer view is empty and the
+    // broad tier offers the heading and the plain div.
+    twin.jev(&[
+        jev_intent("click", 0.95),
+        jev_answer(&json!({
+            "strict": jev_choice(&["e2", "e3", "none_match"], "e3", 0.9),
+            "best": jev_choice(&["e2", "e3"], "e3", 0.92),
+        })),
+    ]);
+    let page = "<h1>Menu</h1>\
+        <div onclick=\"document.querySelector('h1').textContent='Opened'\">Open the menu</div>";
+    let flow = dir.file(
+        "jev-broad.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{}ACT \"open the menu\"\n\
+             [Asserts]\nrole:heading \"Opened\" visible\n",
+            visit_html(page)
+        ),
+    );
+    let output = twin.run_jev(&dir, &flow, &[]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+    let step = act_step(&dir);
+    assert_eq!(step["act"]["actions"][0]["plannedBy"], "jev");
+    assert_eq!(step["act"]["usage"]["modelCalls"], 0);
+}
+
+#[test]
+fn copies_of_one_control_in_one_item_share_jevs_vote() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    // Neither copy wins alone, but together they pass and strict is sure
+    // something fits.
+    twin.jev(&[
+        jev_intent("click", 0.95),
+        jev_answer(&json!({
+            "strict": jev_choice(&["e5", "e6", "none_match"], "e5", 0.6),
+            "best": {"type": "choice", "choice": "e5", "confidence": 0.3,
+                     "probabilities": {"e5": 0.5, "e6": 0.5}},
+        })),
+    ]);
+    let page = "<h1>Shop</h1><ul><li>Blue mug \
+        <button onclick=\"document.querySelector('h1').textContent='Added'\">Add to cart</button>\
+        <button onclick=\"document.querySelector('h1').textContent='Added'\">Add to cart</button>\
+        </li></ul>";
+    let flow = dir.file(
+        "jev-copies.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{}ACT \"add the blue mug to the cart\"\n\
+             [Asserts]\nrole:heading \"Added\" visible\n",
+            visit_html(page)
+        ),
+    );
+    let output = twin.run_jev(&dir, &flow, &[]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+    let step = act_step(&dir);
+    assert_eq!(step["act"]["actions"][0]["plannedBy"], "jev");
+    assert_eq!(step["act"]["usage"]["modelCalls"], 0);
+}
+
+#[test]
+fn jev_clicks_the_named_option_of_a_custom_listbox() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    // Sure it is a select, but the page has no native select: the option
+    // the instruction names is clicked, after Jev confirms it.
+    twin.jev(&[jev_intent("select", 0.98), jev_only("e5", 0.95)]);
+    let page = "<h1>Country</h1><ul role=listbox aria-label=Country>\
+        <li role=option onclick=\"document.querySelector('h1').textContent='Poland chosen'\">Poland</li>\
+        <li role=option onclick=\"document.querySelector('h1').textContent='Portugal chosen'\">Portugal</li></ul>";
+    let flow = dir.file(
+        "jev-listbox.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{}ACT \"choose Portugal from the country list\"\n\
+             [Asserts]\nrole:heading \"Portugal chosen\" visible\n",
+            visit_html(page)
+        ),
+    );
+    let output = twin.run_jev(&dir, &flow, &[]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+    let step = act_step(&dir);
+    assert_eq!(
+        step["act"]["actions"][0]["line"],
+        "CLICK role:option \"Portugal\""
+    );
+    assert_eq!(step["act"]["actions"][0]["plannedBy"], "jev");
+    assert_eq!(step["act"]["usage"]["modelCalls"], 0);
+    assert_eq!(step["act"]["usage"]["jev"]["requests"], 2);
+}
+
+#[test]
+fn jev_opens_a_custom_dropdown_and_chooses_the_named_option() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    // No option shows until the button opens the list: Jev picks the
+    // button as step one, then the named option on the fresh snapshot.
+    twin.jev(&[
+        jev_intent("select", 0.98),
+        jev_only("e3", 0.9),
+        jev_only("e6", 0.95),
+    ]);
+    let page = "<h1>Mug</h1>\
+        <button onclick=\"document.getElementById('colors').hidden=false\">Choose a color</button>\
+        <ul id=colors hidden>\
+        <li style=\"cursor:pointer\" onclick=\"document.querySelector('h1').textContent='Red chosen'\">Red</li>\
+        <li style=\"cursor:pointer\" onclick=\"document.querySelector('h1').textContent='Blue chosen'\">Blue</li></ul>";
+    let flow = dir.file(
+        "jev-dropdown.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{}ACT \"choose Blue from the color dropdown\"\n\
+             [Asserts]\nrole:heading \"Blue chosen\" visible\n",
+            visit_html(page)
+        ),
+    );
+    let output = twin.run_jev(&dir, &flow, &[]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+    let step = act_step(&dir);
+    let actions = step["act"]["actions"].as_array().expect("actions");
+    assert_eq!(actions.len(), 2);
+    assert_eq!(actions[0]["line"], "CLICK role:button \"Choose a color\"");
+    assert_eq!(actions[1]["line"], "CLICK role:listitem");
+    assert!(actions.iter().all(|action| action["plannedBy"] == "jev"));
+    assert_eq!(step["act"]["usage"]["modelCalls"], 0);
+    assert_eq!(step["act"]["usage"]["jev"]["requests"], 3);
 }
