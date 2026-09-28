@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.18.0 (2026-09-28)
+
 - Add `GOAL "goal"`, which asks the model option's language model to reach a goal with several actions, one at a time, as in `GOAL "add two blue mugs to the cart and open the cart"`. Each call sees the goal, the lines that already ran, and a new snapshot of the page, and answers with one action in the form `ACT` uses, `done`, or `impossible`. An action that fails goes back to the model, which plans again. `impossible` fails with `goal-impossible` and the model's reason, and a goal that is not done after 20 actions fails with `goal-limit`. The default time is 2 minutes, and each action gets at most the step timeout. `GOAL` has no navigation by URL, back, or reload. The AI cache records the lines that ran; later runs replay them, and a line that no longer fits heals from the current page with a `healed` warning. `whirl check` reports a `GOAL` that is not the last action of an entry with an `ASSERT` (`goal-unchecked`). Reports show each action, how the goal ended, and what the model calls cost.
 - Add `goal-*` tasks to the evals, including a checkout across two views, a heal from a committed cache, and a goal that must end as `impossible`.
 
