@@ -194,6 +194,24 @@ $ whirl --cache=only flows/     # fail a miss instead of asking the model
 
 See [AI targets](SPEC.md#63-ai-targets) and [the AI cache](SPEC.md#121-the-ai-cache).
 
+`EXTRACT` reads a value from the page into a typed variable, shaped by an
+optional JSON Schema, for later checks:
+
+```whirl
+EXTRACT order testid:summary "the order total and line items"
+{
+    "type": "object",
+    "properties": {
+        "total": { "type": "number" },
+        "items": { "type": "array", "items": { "type": "string" } }
+    },
+    "required": ["total", "items"]
+}
+ASSERT extract:order json:$.total > 0
+```
+
+See [EXTRACT](SPEC.md#76-extract).
+
 More commands:
 
 ```console

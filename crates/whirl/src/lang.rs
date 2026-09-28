@@ -5,3 +5,4 @@ pub(crate) mod ast;
 pub(crate) mod fmt;
 pub(crate) mod lint;
 pub(crate) mod parse;
+pub(crate) mod schema;

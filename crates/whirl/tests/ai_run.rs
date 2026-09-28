@@ -625,3 +625,108 @@ fn the_generator_prefers_a_test_id_and_names_an_iframe_by_its_title() {
         "frame:iframe[title='Payment'] >> role:textbox Card"
     );
 }
+
+const ORDER: &str = "VISIT \"data:text/html,<h1>Order</h1><section data-testid=summary>\
+    <p>Mug $12.50</p><p>Plate $8.00</p><p>Total $20.50</p>\
+    <a href='/docs/returns'>Returns</a></section>\"\n";
+
+#[test]
+fn extract_reads_a_typed_value_that_later_checks_read() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.answer(&[json!({"total": 20.5, "items": ["Mug", "Plate"], "coupon": null})]);
+    let flow = dir.file(
+        "order.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{ORDER}\
+             EXTRACT order testid:summary \"the order total and line items\"\n\
+             {{\n\
+                 \"type\": \"object\",\n\
+                 \"properties\": {{\n\
+                     \"total\": {{ \"type\": \"number\" }},\n\
+                     \"items\": {{ \"type\": \"array\", \"items\": {{ \"type\": \"string\" }} }},\n\
+                     \"coupon\": {{ \"type\": \"string\" }}\n\
+                 }},\n\
+                 \"required\": [\"total\", \"items\"]\n\
+             }}\n\
+             ASSERT extract:order json:$.total == 20.5\n\
+             ASSERT extract:order json:$.items count == 2\n\
+             ASSERT extract:order json:$.coupon not exists\n\
+             CAPTURE first: extract:order json:$.items[0]\n\
+             ASSERT text~:{{{{first}}}} visible\n"
+        ),
+    );
+    let output = twin.run(&dir, &flow, &[]);
+    assert_eq!(
+        exit_code(&output),
+        0,
+        "{}{}",
+        stdout_text(&output),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let extract = &steps(&dir)[1]["extract"];
+    assert_eq!(extract["model"], "gpt-test");
+    assert_eq!(
+        extract["value"],
+        json!({"type": "object", "value": {"total": 20.5, "items": ["Mug", "Plate"]}})
+    );
+    assert_eq!(extract["usage"]["modelCalls"], 1);
+    let log = twin.request_log();
+    assert!(log.contains("the order total and line items"), "{log}");
+}
+
+#[test]
+fn extract_without_a_schema_reads_text_and_null_is_missing() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.answer(&[json!({"value": "Total $20.50"}), json!({"value": null})]);
+    let flow = dir.file(
+        "text.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{ORDER}\
+             EXTRACT total \"the total line\"\n\
+             EXTRACT coupon \"the coupon code\"\n\
+             ASSERT extract:total == \"Total $20.50\"\n\
+             ASSERT extract:coupon not exists\n"
+        ),
+    );
+    let output = twin.run(&dir, &flow, &[]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+}
+
+#[test]
+fn extract_turns_a_link_ref_into_an_absolute_url() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.answer(&[json!({"value": "e6"})]);
+    let flow = dir.file(
+        "link.whirl",
+        "[Options]\nmodel: gpt-test\n\
+         VISIT \"data:text/html,<h1>Order</h1><p>Mug</p><p>Plate</p><p>Total</p>\
+         <a href='https://shop.test/docs/returns'>Returns</a>\"\n\
+         EXTRACT returns \"the returns link\"\n\
+         { \"type\": \"string\", \"format\": \"uri\" }\n\
+         ASSERT extract:returns == \"https://shop.test/docs/returns\"\n",
+    );
+    let output = twin.run(&dir, &flow, &[]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "{stdout}\n{}", twin.request_log());
+}
+
+#[test]
+fn an_extract_answer_outside_its_schema_fails_the_entry() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.answer(&[json!({"value": "twenty"})]);
+    let flow = dir.file(
+        "bad.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{ORDER}\
+             EXTRACT total \"the total\"\n{{ \"type\": \"number\" }}\n"
+        ),
+    );
+    let output = twin.run(&dir, &flow, &[]);
+    assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
+    let step = &steps(&dir)[1];
+    assert_eq!(step["error"]["code"], "extract-schema");
+}

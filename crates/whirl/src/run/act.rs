@@ -17,5 +17,5 @@ pub(crate) use model::{ModelCatalog, ModelClient, ModelSetupError};
 pub(crate) use planner::{
     ActPlanner, LlmPlanner, PlanError, PlanRequest, PlanStep, PlanUsage, PlannedBy,
 };
-pub(crate) use prompt::target_message;
+pub(crate) use prompt::{extract_message, target_message};
 pub(crate) use snapshot::{Fingerprint, PageSnapshot, Target};

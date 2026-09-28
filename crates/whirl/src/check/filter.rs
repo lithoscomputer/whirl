@@ -95,6 +95,8 @@ pub(crate) enum Missing {
     NoJsonMatch(String),
     /// `urlQueryParam` with no such parameter.
     NoQueryParam(String),
+    /// An `EXTRACT` that found no value (SPEC 7.6).
+    NoExtractValue(String),
 }
 
 impl fmt::Display for Missing {
@@ -105,6 +107,7 @@ impl fmt::Display for Missing {
             Self::AbsentHeader(name) => write!(f, "header {name} is absent"),
             Self::NoJsonMatch(path) => write!(f, "JSONPath {path} selects nothing"),
             Self::NoQueryParam(name) => write!(f, "query parameter {name} is absent"),
+            Self::NoExtractValue(name) => write!(f, "EXTRACT {name} found no value"),
         }
     }
 }

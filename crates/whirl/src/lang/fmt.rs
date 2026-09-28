@@ -493,6 +493,24 @@ fn render_action(action: &Action) -> String {
                 render_value(instruction, ValueCtx::Plain, is_final)
             ),
         },
+        ActionKind::Extract {
+            name,
+            scope,
+            instruction,
+            ..
+        } => match scope {
+            Some(scope) => format!(
+                "EXTRACT {} {} {}",
+                name.text,
+                render_locator(scope, LocatorCtx::Action, false),
+                render_value(instruction, ValueCtx::Plain, is_final)
+            ),
+            None => format!(
+                "EXTRACT {} {}",
+                name.text,
+                render_value(instruction, ValueCtx::Plain, is_final)
+            ),
+        },
         ActionKind::Store { scope, key, value } => format!(
             "STORE {} {} {}",
             scope.keyword(),
@@ -632,6 +650,7 @@ fn render_subject(subject: &Subject, ctx: LocatorCtx, is_final: bool) -> String 
         Subject::Request { name, field } => {
             format!("request:{} {}", name.text, render_request_field(field))
         }
+        Subject::Extract { name, .. } => format!("extract:{}", name.text),
     }
 }
 
@@ -849,6 +868,18 @@ fn entry_region(entry: &Entry) -> Region {
             } => Some((headers, body)),
             _ => None,
         };
+        if let ActionKind::Extract {
+            schema: Some(schema),
+            ..
+        } = &action.kind
+        {
+            for (offset, text) in schema.text.split('\n').enumerate() {
+                lines.push(Line {
+                    source_line: schema.line + u32::try_from(offset).unwrap_or(u32::MAX),
+                    text:        text.to_owned(),
+                });
+            }
+        }
         if let Some((headers, body)) = request_lines {
             for header in headers {
                 lines.push(Line {
@@ -1069,6 +1100,7 @@ mod tests {
                     scrub_value(value);
                 }
             }
+            Subject::Extract { name, .. } => scrub_ident(name),
             Subject::Url | Subject::Title => {}
         }
     }
@@ -1249,6 +1281,22 @@ mod tests {
                     scrub_locator(scope);
                 }
                 scrub_value(instruction);
+            }
+            ActionKind::Extract {
+                name,
+                scope,
+                instruction,
+                schema,
+            } => {
+                scrub_ident(name);
+                if let Some(scope) = scope {
+                    scrub_locator(scope);
+                }
+                scrub_value(instruction);
+                if let Some(schema) = schema {
+                    schema.line = 0;
+                    schema.end_line = 0;
+                }
             }
             ActionKind::Store { key, value, .. } => {
                 scrub_value(key);
@@ -1434,6 +1482,17 @@ HTTP GET /
 X-Value: @10s
 HTTP GET "@10s"
 "#,
+        );
+    }
+
+    #[test]
+    fn extract_round_trips_with_its_schema_as_written() {
+        assert_round_trip(
+            "VISIT /\nEXTRACT order   css:main  \"the total\" @30s\n{\n    \"type\":  \"number\"\n}\nASSERT extract:order > 0\n",
+        );
+        assert_eq!(
+            fmt("VISIT /\nEXTRACT order   \"the total\"\n{ \"type\":  \"number\" }\n"),
+            "VISIT /\nEXTRACT order \"the total\"\n{ \"type\":  \"number\" }\n"
         );
     }
 

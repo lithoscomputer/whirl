@@ -1,0 +1,9 @@
+[Options]
+model: anthropic/claude-sonnet-5
+VISIT /
+ASSERT extract:total > 0
+CLICK Buy
+EXTRACT total "the total"
+{ "type": "number", "minimum": 0 }
+EXTRACT total "the total again"
+ASSERT extract:total > 0

@@ -15,6 +15,7 @@ use crate::lang::ast::{
     PageCheck, PredicateSpec, RequestField, ResponseField, SegmentKind, Span, StateCheck, Subject,
     Value, ValueSegment, chain_type,
 };
+use crate::lang::schema;
 
 /// How serious a lint diagnostic is: an [`Severity::Error`] fails
 /// `whirl check` and `whirl` runs with exit code 2; a
@@ -53,6 +54,7 @@ pub(crate) fn lint_file_with(file: &File, external_uses: &HashSet<String>) -> Ve
     redundant_presence_counts(file, &mut lints);
     filter_types(file, &mut lints);
     ai_counts(file, &mut lints);
+    extract_rules(file, &mut lints);
     lints.sort_by_key(|lint| (lint.line, lint.column));
     lints
 }
@@ -136,8 +138,11 @@ pub(crate) fn lint_act(file: &File, known_model: impl Fn(&str) -> bool) -> Vec<L
         .entries
         .iter()
         .flat_map(|entry| &entry.actions)
-        .find(|action| matches!(action.kind, ActionKind::Act { .. }))
-        .map(|action| (action.span, "ACT"));
+        .find_map(|action| match action.kind {
+            ActionKind::Act { .. } => Some((action.span, "ACT")),
+            ActionKind::Extract { .. } => Some((action.span, "EXTRACT")),
+            _ => None,
+        });
     let target = file.locator_uses().into_iter().find_map(|used| {
         let segment = used.locator.segments.last()?;
         used.locator
@@ -166,6 +171,105 @@ pub(crate) fn lint_act(file: &File, known_model: impl Fn(&str) -> bool) -> Vec<L
         })
         .into_iter()
         .collect()
+}
+
+/// `EXTRACT` rules (SPEC 7.6): unique names read after their line, a
+/// schema in the subset, and a warning for a line that reads the page
+/// right after an interaction.
+fn extract_rules(file: &File, lints: &mut Vec<Lint>) {
+    let mut names = HashSet::new();
+    for entry in &file.entries {
+        for (index, action) in entry.actions.iter().enumerate() {
+            let ActionKind::Extract { name, schema, .. } = &action.kind else {
+                continue;
+            };
+            if !names.insert(name.text.as_str()) {
+                lints.push(lint_at(
+                    file,
+                    Severity::Error,
+                    "duplicate-extract",
+                    name.span,
+                    format!("EXTRACT `{}` is already named", name.text),
+                ));
+            }
+            if let Some(schema) = schema
+                && let Some(problem) = schema::unsupported(&schema.json())
+            {
+                lints.push(lint_at(
+                    file,
+                    Severity::Error,
+                    "extract-schema-unsupported",
+                    Span {
+                        line:   schema.line,
+                        column: 1,
+                        len:    1,
+                    },
+                    format!("the EXTRACT schema is outside the supported subset: {problem}"),
+                ));
+            }
+            let interacts = index
+                .checked_sub(1)
+                .and_then(|previous| entry.actions.get(previous))
+                .is_some_and(|previous| interacts(&previous.kind));
+            if interacts {
+                lints.push(lint_at(
+                    file,
+                    Severity::Warning,
+                    "extract-unsettled",
+                    action.span,
+                    "EXTRACT runs once, right after an interaction; add an ASSERT that waits for the page first"
+                        .to_owned(),
+                ));
+            }
+        }
+        for check in &entry.checks {
+            let subject = match check {
+                CheckStep::Assert(Assert {
+                    body: AssertBody::Check(line),
+                    ..
+                }) => &line.subject,
+                CheckStep::Capture(capture) => &capture.subject,
+                CheckStep::Assert(_) => continue,
+            };
+            if let Subject::Extract { name, .. } = subject
+                && !names.contains(name.text.as_str())
+            {
+                lints.push(lint_at(
+                    file,
+                    Severity::Error,
+                    "unknown-extract",
+                    name.span,
+                    format!(
+                        "unknown EXTRACT `{}`; name it with EXTRACT first",
+                        name.text
+                    ),
+                ));
+            }
+        }
+    }
+}
+
+/// True for an action that changes what the page shows.
+fn interacts(kind: &ActionKind) -> bool {
+    matches!(
+        kind,
+        ActionKind::Click { .. }
+            | ActionKind::Dblclick { .. }
+            | ActionKind::Fill { .. }
+            | ActionKind::Type { .. }
+            | ActionKind::Press { .. }
+            | ActionKind::Check { .. }
+            | ActionKind::Uncheck { .. }
+            | ActionKind::Select { .. }
+            | ActionKind::Hover { .. }
+            | ActionKind::Drag { .. }
+            | ActionKind::Scroll { .. }
+            | ActionKind::ScrollIntoView { .. }
+            | ActionKind::Upload { .. }
+            | ActionKind::Drop { .. }
+            | ActionKind::Act { .. }
+            | ActionKind::Eval { .. }
+    )
 }
 
 /// `ai:` names one element, so it cannot be counted (SPEC 6.3).
@@ -714,7 +818,10 @@ fn collect_action_refs<'a>(action: &'a Action, refs: &mut Vec<VarRef<'a>>) {
             }
         }
         ActionKind::Eval { script } => collect_value_refs(script, line, refs),
-        ActionKind::Act { scope, instruction } => {
+        ActionKind::Act { scope, instruction }
+        | ActionKind::Extract {
+            scope, instruction, ..
+        } => {
             if let Some(scope) = scope {
                 collect_locator_refs(scope, line, refs);
             }
@@ -777,7 +884,7 @@ fn collect_chain_refs<'a>(
             RequestField::Method | RequestField::Url | RequestField::Body | RequestField::Bytes => {
             }
         },
-        Subject::Url | Subject::Title => {}
+        Subject::Url | Subject::Title | Subject::Extract { .. } => {}
     }
     for filter in filters {
         for arg in &filter.args {
@@ -1356,6 +1463,37 @@ mod tests {
     fn act_instructions_use_captures() {
         let source = "VISIT /\nCAPTURE item: testid:x text\n\nACT \"open {{item}}\"\n";
         assert_eq!(lint(source), Vec::new());
+    }
+
+    #[test]
+    fn extract_names_are_unique_and_read_after_their_line() {
+        let lints = lint(
+            "[Options]\nmodel: m\nVISIT /\nASSERT extract:early exists\nEXTRACT early \"x\"\nEXTRACT early \"y\"\n",
+        );
+        let codes: Vec<&str> = lints.iter().map(|lint| lint.code).collect();
+        assert_eq!(codes, ["unknown-extract", "duplicate-extract"]);
+    }
+
+    #[test]
+    fn an_extract_schema_must_stay_in_the_subset() {
+        let lints = lint(
+            "[Options]\nmodel: m\nVISIT /\nEXTRACT n \"x\"\n{\"type\": \"string\", \"pattern\": \"a\"}\n",
+        );
+        assert_eq!(lints.len(), 1);
+        assert_eq!(lints[0].code, "extract-schema-unsupported");
+        assert_eq!(lints[0].line, 5);
+    }
+
+    #[test]
+    fn an_extract_right_after_an_interaction_warns() {
+        let lints = lint(
+            "[Options]\nmodel: m\nVISIT /\nCLICK Go\nEXTRACT n \"x\"\nASSERT extract:n exists\n",
+        );
+        assert_eq!(lints.len(), 1);
+        assert_eq!(lints[0].code, "extract-unsettled");
+        assert_eq!(lints[0].severity, Severity::Warning);
+        let settled = "[Options]\nmodel: m\nVISIT /\nCLICK Go\nASSERT url == /\nEXTRACT n \"x\"\nASSERT extract:n exists\n";
+        assert_eq!(lint(settled), Vec::new());
     }
 
     #[test]

@@ -2,8 +2,9 @@
 //! `packages/extension/prompt.ts` (`buildActSystemPrompt`,
 //! `buildActPrompt`, `buildStepTwoPrompt`, and `buildObserveUserMessage`),
 //! the `ai:` target prompt (SPEC 6.3), ported from its
-//! `buildObserveSystemPrompt`, and the text-argument prompt of its Jev path
-//! (browserbase/stagehand#2953).
+//! `buildObserveSystemPrompt`, the `EXTRACT` prompts (SPEC 7.6), ported from
+//! its `buildExtractSystemPrompt` and `buildExtractUserPrompt`, and the
+//! text-argument prompt of its Jev path (browserbase/stagehand#2953).
 //!
 //! Whirl's changes: element IDs are Playwright AI-snapshot refs rather than
 //! frame-and-node IDs, the method list is Whirl's, and rules are added for
@@ -74,6 +75,44 @@ pub(crate) fn target_system_prompt() -> String {
 
          Each element in the accessibility tree has a ref in square brackets, like [ref=e12] or          [ref=f1e3]. Copy the ref value exactly into elementId, without the brackets or the          `ref=` prefix. For example, if the tree shows [ref=e12], return elementId \"e12\".",
     )
+}
+
+/// The system prompt of an `EXTRACT` call (SPEC 7.6).
+pub(crate) fn extract_system_prompt() -> String {
+    collapse_whitespace(
+        "You are extracting content on behalf of a user. If a user asks you to extract a \
+         'list' of information, or 'all' information, YOU MUST EXTRACT ALL OF THE INFORMATION \
+         THAT THE USER REQUESTS.
+
+         You will be given:
+         1. An instruction
+         2. A hierarchical accessibility tree of the page to extract from.
+
+         Print the exact text from the tree with all symbols, characters, and endlines as is. \
+         Print null if the page does not show the information.
+
+         If a user is attempting to extract links or URLs, you MUST respond with ONLY the refs \
+         of the link elements, such as e12, copied exactly from the [ref=...] marks. Do not \
+         attempt to extract links directly from the text.",
+    )
+}
+
+/// The user message of an `EXTRACT` call: the instruction, its
+/// placeholders, and the snapshot.
+pub(crate) fn extract_message(
+    instruction: &str,
+    placeholders: &[String],
+    snapshot: &str,
+) -> String {
+    let placeholders = if placeholders.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\nThe instruction uses placeholders for hidden values: {}.",
+            placeholders.join(", ")
+        )
+    };
+    format!("Instruction: {instruction}{placeholders}\nDOM: {snapshot}\n")
 }
 
 /// The user message of an `ai:` target call: the description, its

@@ -422,6 +422,85 @@
                           }
                         }
                       },
+                      "extract": {
+                        "type": "object",
+                        "description": "What an EXTRACT step read (SPEC 7.6).",
+                        "required": [
+                          "model",
+                          "usage"
+                        ],
+                        "properties": {
+                          "model": {
+                            "type": "string"
+                          },
+                          "value": {
+                            "type": "object",
+                            "required": [
+                              "type",
+                              "value"
+                            ],
+                            "description": "The value with its type, as a capture is written; absent when the model found no value. A masked value is the string ***.",
+                            "properties": {
+                              "type": {
+                                "type": "string"
+                              },
+                              "value": {}
+                            }
+                          },
+                          "usage": {
+                            "type": "object",
+                            "required": [
+                              "modelCalls",
+                              "inputTokens",
+                              "outputTokens"
+                            ],
+                            "properties": {
+                              "modelCalls": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "inputTokens": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "outputTokens": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "costUsdMicros": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "jev": {
+                                "type": "object",
+                                "required": [
+                                  "requests",
+                                  "inputTokens",
+                                  "outputTokens"
+                                ],
+                                "properties": {
+                                  "requests": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  },
+                                  "inputTokens": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  },
+                                  "outputTokens": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  },
+                                  "costUsdMicros": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      },
                       "warnings": {
                         "type": "array",
                         "description": "Notices that do not change the step's status, such as unused-mock.",

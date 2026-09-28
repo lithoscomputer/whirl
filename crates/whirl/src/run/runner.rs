@@ -620,6 +620,7 @@ fn synthetic_outcome(job: &FlowJob, status: Status, message: &str) -> FlowOutcom
                     act: None,
                     warnings: Vec::new(),
                     ai: None,
+                    extract: None,
                 }],
                 captures: Vec::new(),
                 artifacts: Vec::new(),
