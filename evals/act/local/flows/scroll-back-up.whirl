@@ -6,5 +6,4 @@ model: {{model}}
 VISIT /long-article/
 SCROLL to 100%
 ACT "scroll up one page" @60s
-[Asserts]
-eval "document.documentElement.scrollHeight - innerHeight - window.scrollY >= innerHeight - 1" == true
+ASSERT eval "document.documentElement.scrollHeight - innerHeight - window.scrollY >= innerHeight - 1" == true

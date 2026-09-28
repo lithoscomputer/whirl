@@ -1,6 +1,6 @@
-names.whirl:3:10: error: unknown response `order`; name it with RESPONSE first
-  response:order status == 200
-           ^^^^^
-names.whirl:5:10: error: response `order` is already named
+names.whirl:2:17: error: unknown response `order`; name it with RESPONSE first
+  ASSERT response:order status == 200
+                  ^^^^^
+names.whirl:4:10: error: response `order` is already named
   RESPONSE order POST /orders
            ^^^^^

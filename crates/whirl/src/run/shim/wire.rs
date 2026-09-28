@@ -280,8 +280,8 @@ mod tests {
 
     /// The wire JSON of a state or tab assert.
     fn assert_json(line: &str) -> Json {
-        let file = parse(&format!("VISIT /\n[Asserts]\n{line}\n"));
-        match &file.entries[0].asserts[0].body {
+        let file = parse(&format!("VISIT /\nASSERT {line}\n"));
+        match &file.entries[0].asserts().collect::<Vec<_>>()[0].body {
             AssertBody::ElementState { locator, state } => {
                 state_assert_wire(locator, *state, &mut resolve).unwrap()
             }
@@ -292,8 +292,8 @@ mod tests {
 
     /// The read subject of the first capture.
     fn read_json(line: &str) -> Option<Json> {
-        let file = parse(&format!("VISIT /\n[Captures]\n{line}\n"));
-        let capture = &file.entries[0].captures[0];
+        let file = parse(&format!("VISIT /\nCAPTURE {line}\n"));
+        let capture = &file.entries[0].captures().collect::<Vec<_>>()[0];
         read_subject_wire(&capture.subject, &mut resolve).unwrap()
     }
 
@@ -459,9 +459,8 @@ mod tests {
 
     #[test]
     fn response_subjects_have_no_read_subject() {
-        let file =
-            parse("VISIT /\nRESPONSE order GET /x\n[Captures]\nid: response:order json:$.id\n");
-        let capture = &file.entries[0].captures[0];
+        let file = parse("VISIT /\nRESPONSE order GET /x\nCAPTURE id: response:order json:$.id\n");
+        let capture = &file.entries[0].captures().collect::<Vec<_>>()[0];
         assert_eq!(
             read_subject_wire(&capture.subject, &mut resolve).unwrap(),
             None

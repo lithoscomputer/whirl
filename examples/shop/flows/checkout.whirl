@@ -4,18 +4,15 @@ setup: login.whirl
 
 # The setup flow supplies the signed-in session and email capture.
 VISIT /checkout
-[Asserts]
-testid:user text == {{setup.email}}
+ASSERT testid:user text == {{setup.email}}
 
 # A missing address must show a validation error.
 CLICK role:button "Place order"
-[Asserts]
-role:alert text == "Enter a shipping address"
-role:status text == ""
+ASSERT role:alert text == "Enter a shipping address"
+ASSERT role:status text == ""
 
 # Correct the address and complete the order.
 FILL "Shipping address" "123 Example Street"
 CLICK role:button "Place order"
-[Asserts]
-role:alert hidden
-role:status text == "Order confirmed. Ship to 123 Example Street"
+ASSERT role:alert hidden
+ASSERT role:status text == "Order confirmed. Ship to 123 Example Street"

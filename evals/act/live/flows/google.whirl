@@ -4,10 +4,8 @@ user-agent: chrome
 
 # precheck: the search page and its search box are present.
 VISIT https://www.google.com/
-[Asserts]
-role:combobox Search visible
+ASSERT role:combobox Search visible
 
 # Type into the search box.
 ACT "type Playwright testing into the search box" @60s
-[Asserts]
-role:combobox Search value == "Playwright testing"
+ASSERT role:combobox Search value == "Playwright testing"

@@ -28,25 +28,21 @@ FILL "Email" alice@example.com
 FILL "Password" {{env.TEST_PASSWORD}}
 CLICK role:button "Sign in"
 PAGE /dashboard
-[Asserts]
-role:heading "Welcome back" visible
-testid:user-menu text == Alice
+ASSERT role:heading "Welcome back" visible
+ASSERT testid:user-menu text == Alice
 
 # Find a product.
 FILL placeholder:"Search products" widget
 PRESS Enter
-[Asserts]
-url contains "q=widget"
-testid:result-card count >= 1
-[Captures]
-first_product: testid:result-card >> nth:0 >> role:link attr:href
+ASSERT url contains "q=widget"
+ASSERT testid:result-card count >= 1
+CAPTURE first_product: testid:result-card >> nth:0 >> role:link attr:href
 
 # Add it to the cart.
 VISIT {{first_product}}
 CLICK "Add to cart"
-[Asserts]
-testid:cart-badge text == 1
-role:alert text contains "Added to cart"
+ASSERT testid:cart-badge text == 1
+ASSERT role:alert text contains "Added to cart"
 ```
 
 Run it:
@@ -67,7 +63,7 @@ $ whirl --report-junit report.xml flows/
   quoted string, a regex literal, a JSON body, or a fenced HTTP body is literal
   text.
 - Blank lines are ignored outside HTTP bodies.
-- Keywords (`VISIT`, `PAGE`, `[Asserts]`, checks, prefixes) are case-sensitive.
+- Keywords (`VISIT`, `PAGE`, `ASSERT`, checks, prefixes) are case-sensitive.
 
 ### 3.1 Values
 
@@ -77,7 +73,7 @@ A **value** is written in one of two forms:
 - **Bare**: a single token with no whitespace, no `"`, and no `#`. Bare and quoted forms are interchangeable, with five reservations:
   - A line's final bare token of the form `@duration` always parses as the step timeout (section 12), so that value must stay quoted (`"@60s"`).
   - In a typed comparison (section 9.6), a bare typed literal and its quoted form differ: `42` is a number and `"42"` is a string.
-  - In `[Asserts]` and `[Captures]`, a bare role name cannot be a subject, state, or predicate keyword such as `text` or `visible`, because that word ends the locator. Quote it: `role:button "visible" visible`.
+  - In `ASSERT` and `CAPTURE` lines, a bare role name cannot be a subject, state, or predicate keyword such as `text` or `visible`, because that word ends the locator. Quote it: `role:button "visible" visible`.
   - In `DRAG` and `SCROLL`, a bare `to` is a keyword, and in `SCROLL` so is a bare `down`, `up`, `left`, or `right` at the end of the line. Quote them to match the text: `DRAG "to" to testid:done`, `SCROLL "down"`.
 
   - In `snapshot-mask`, only bare `none` clears the mask list.
@@ -105,27 +101,41 @@ Other literal forms:
 ```
 file          := [Options-section] entry+
 entry         := browser-entry | http-entry
-browser-entry := action+ [PAGE-line] [Asserts-section] [Captures-section]
-http-entry    := HTTP-request [Asserts-section] [Captures-section]
+browser-entry := action+ [PAGE-line] check-line*
+http-entry    := HTTP-request check-line*
+check-line    := ASSERT-line | CAPTURE-line
 ```
 
 - The optional `[Options]` section appears once, before the first entry.
 - A **browser entry** is one or more browser action lines, then an optional
-  `PAGE` line, then an optional `[Asserts]` section, then an optional
-  `[Captures]` section, in that order.
-- An **HTTP entry** is one independent `HTTP` request, then optional
-  `[Asserts]` and `[Captures]` sections for that response. It has no `PAGE`
-  line and cannot contain browser actions or a second request.
-- In a browser entry, an action line after a `PAGE` line, an `[Asserts]`
-  section, or a `[Captures]` section starts a new entry. Consecutive browser
+  `PAGE` line, then zero or more check lines, in that order. A check line is
+  an `ASSERT` line (section 9) or a `CAPTURE` line (section 10).
+- An **HTTP entry** is one independent `HTTP` request, then zero or more
+  check lines for that response. It has no `PAGE` line and cannot contain
+  browser actions or a second request.
+- In a browser entry, an action line after a `PAGE` line or a check line
+  starts a new entry. Consecutive browser
   action lines belong to one entry. An `HTTP` action always starts its own
   entry, and the next action starts another entry. An entry is Whirl's unit of
   verification, timeout scope, and reporting. Blank lines and comments never
   split an entry.
+- Check lines run in the order written. A `CAPTURE` can come before an
+  `ASSERT` that reads its value.
 - `HTTP` entries can appear before the first `VISIT`, and a file can contain
   only HTTP entries. The first browser entry must start with `VISIT`, because
   no page exists yet. After it, later browser entries can start with any
   browser action.
+
+### 4.1 Deprecated sections
+
+Earlier versions marked checks with an `[Asserts]` section and captures with
+a `[Captures]` section: a header line, then one check or capture per line
+without a keyword. Whirl still accepts these sections, with the same meaning:
+`[Asserts]` comes before `[Captures]`, and each entry has at most one of
+each. `whirl check` reports each section header as the warning
+`sections-deprecated`, and `whirl fmt` rewrites each section as `ASSERT` and
+`CAPTURE` lines. A file that uses both sections and check lines is the parse
+error `mixed-check-syntax`. A later version will reject sections.
 
 ## 5. Options
 
@@ -211,14 +221,13 @@ Text matching is exact (after whitespace normalization). For partial or pattern 
 
 Every text-matching prefix has a substring variant marked with `~` — `role~:`, `label~:`, `placeholder~:`, `text~:`, `alt~:`, `title~:` — which matches by case-insensitive substring, Playwright's default matching. So `text~:"Added"` matches "Added to cart". `testid:` and `css:` have no `~` form, and the unprefixed default engine stays exact.
 
-An unprefixed value in locator position selects a default engine: `label:` for form actions (`FILL`, `SELECT`, `CHECK`, `UNCHECK`, `UPLOAD`, and `PRESS` with a target), and `text:` for pointer actions (`CLICK`, `RIGHTCLICK`, `MIDDLECLICK`, `DBLCLICK`, `HOVER`, `DRAG`, `SCROLL`) and `DROP` — buttons and links have no label; their accessible name is their text, and a drop zone says what it takes, such as "Drop files here". So `FILL "Email" alice@example.com` fills the input labeled Email, and `CLICK "Add to cart"` clicks the element with that exact text. Prefixes stay available everywhere for precision. Default engines exist only in actions: in `[Asserts]` and `[Captures]` every segment must carry a prefix (or be `nth:`), and an unprefixed value there is a parse error. The scope of `ACT` (section 7.4), the target of `SNAPSHOT`, and `snapshot-mask` (section 7) follow the same rule.
+An unprefixed value in locator position selects a default engine: `label:` for form actions (`FILL`, `SELECT`, `CHECK`, `UNCHECK`, `UPLOAD`, and `PRESS` with a target), and `text:` for pointer actions (`CLICK`, `RIGHTCLICK`, `MIDDLECLICK`, `DBLCLICK`, `HOVER`, `DRAG`, `SCROLL`) and `DROP` — buttons and links have no label; their accessible name is their text, and a drop zone says what it takes, such as "Drop files here". So `FILL "Email" alice@example.com` fills the input labeled Email, and `CLICK "Add to cart"` clicks the element with that exact text. Prefixes stay available everywhere for precision. Default engines exist only in actions: in `ASSERT` and `CAPTURE` lines every segment must carry a prefix (or be `nth:`), and an unprefixed value there is a parse error. The scope of `ACT` (section 7.4), the target of `SNAPSHOT`, and `snapshot-mask` (section 7) follow the same rule.
 
 `frame:` works in actions, asserts, and captures. It may follow an element scope or another frame. An immediately following `nth:N` selects the iframe before entering it. A frame must be followed by an element segment; use `css:` to check the iframe element itself. Nested and cross-origin frames use the same syntax. Frames are resolved lazily, so normal actionability and assertion timeouts also cover frames that load or are replaced later. Multiple matching frames fail strictly unless narrowed explicitly.
 
 ```whirl
 FILL frame:"#payment-element iframe" >> label:"Card number" "4242424242424242"
-[Asserts]
-frame:"#payment-element iframe" >> label:"Card number" value contains "4242"
+ASSERT frame:"#payment-element iframe" >> label:"Card number" value contains "4242"
 ```
 
 ### 6.2 Strictness
@@ -347,7 +356,7 @@ Masks use explicit locator prefixes and support chaining, substring matching, `n
 
 `snapshot-pixel-threshold` accepts a finite JSON number from `0` through `1`. It controls how different a pixel's color must be before that pixel counts toward `snapshot-max-diff`. It does not accept percentages.
 
-Blank lines and comments do not end snapshot options. The next action, `PAGE`, section header, or end of file ends them. Option lines are part of the snapshot step and its report text. Only the headline may have `@duration`. Options cannot attach to `SCREENSHOT` or follow `[Asserts]` without a new `SNAPSHOT`. The formatter preserves option order, comments, and count versus percentage units.
+Blank lines and comments do not end snapshot options. The next action, `PAGE`, check line, section header, or end of file ends them. Option lines are part of the snapshot step and its report text. Only the headline may have `@duration`. Options cannot attach to `SCREENSHOT` or follow a check line without a new `SNAPSHOT`. The formatter preserves option order, comments, and count versus percentage units.
 
 Literal settings are validated before execution. File settings interpolate once at file start, including setup captures; local settings and the target interpolate when the snapshot starts, so earlier captures are available. Invalid resolved file settings fail the synthetic `[setup]` entry. Invalid resolved local settings or an undefined variable in the target fail the snapshot step. Reports include the target and effective settings, preserve count versus percentage units, and mask secret values using the normal rules in section 11.
 
@@ -380,16 +389,13 @@ tab; a closed selected tab cannot be screenshotted. Traces cover all tabs;
 CLICK role:button "Pay with provider"
 POPUP payment
 TAB payment
-[Asserts]
-role:heading "Confirm payment" visible
+ASSERT role:heading "Confirm payment" visible
 
 CLICK role:button Confirm
-[Asserts]
-tab:payment closed @30s
+ASSERT tab:payment closed @30s
 
 TAB main
-[Asserts]
-text:"Payment complete" visible
+ASSERT text:"Payment complete" visible
 ```
 
 ### 7.2 Observing network responses
@@ -429,14 +435,12 @@ to 1 MiB, with declared content length checked before reading when available.
 ```whirl
 CLICK role:button "Place order"
 RESPONSE order POST /api/orders
-[Asserts]
-response:order status == 201
-response:order header:content-type contains application/json
-response:order json:$.status == paid
-response:order json:$.items count >= 1
-text:"Order confirmed" visible
-[Captures]
-order_id: response:order json:$.id
+ASSERT response:order status == 201
+ASSERT response:order header:content-type contains application/json
+ASSERT response:order json:$.status == paid
+ASSERT response:order json:$.items count >= 1
+ASSERT text:"Order confirmed" visible
+CAPTURE order_id: response:order json:$.id
 ```
 
 ### 7.3 Independent HTTP requests
@@ -445,7 +449,7 @@ order_id: response:order json:$.id
 headline is `HTTP METHOD url`, with an optional trailing step timeout. It has no
 public name. Zero or more `NAME: value` header lines can follow. A JSON object,
 a JSON array, or one fenced text body can then follow as the request body. The
-body is last. A section header, another action, or end of file ends the request.
+body is last. A check line, another action, or end of file ends the request.
 
 ```whirl
 HTTP POST /api/tests @30s
@@ -455,11 +459,9 @@ Content-Type: application/json
     "id": "4568",
     "evaluate": true
 }
-[Asserts]
-status == 201
-json:$.status == RUNNING
-[Captures]
-test_id: json:$.id
+ASSERT status == 201
+ASSERT json:$.status == RUNNING
+CAPTURE test_id: json:$.id
 ```
 
 A JSON body starts with `{` or `[` on the line after the headers and ends when
@@ -502,8 +504,8 @@ do not apply, and these runtime requests do not appear in the browser's HAR.
 The body limit covers decoded response bytes. A response without a body, such as
 `HEAD`, can advertise a larger `Content-Length` without failing the limit.
 
-The optional `[Asserts]` and `[Captures]` sections in the same HTTP entry refer
-to its response without a `response:name` prefix. A status code never fails the
+The `ASSERT` and `CAPTURE` lines in the same HTTP entry refer to its response
+without a `response:name` prefix. A status code never fails the
 request by itself, including a 3xx, 4xx, or 5xx status. Use an explicit `status`
 check. Whirl emits the `unasserted-http-status` warning when an HTTP entry has no
 status check. There is no implicit 2xx rule.
@@ -511,9 +513,8 @@ status check. There is no implicit 2xx rule.
 ```whirl
 HTTP GET /api/account
 Authorization: "Bearer {{env.API_KEY}}"
-[Asserts]
-status == 200
-json:$.name == Ada
+ASSERT status == 200
+ASSERT json:$.name == Ada
 ```
 
 ### 7.4 ACT
@@ -528,8 +529,7 @@ model: anthropic/claude-sonnet-5
 
 VISIT /products
 ACT "add the first product to the cart"
-[Asserts]
-testid:cart-badge text == 1
+ASSERT testid:cart-badge text == 1
 ```
 
 Whirl takes a Playwright AI snapshot of the selected tab. The snapshot is an
@@ -736,10 +736,11 @@ PAGE matches /regex/
 
 ## 9. Asserts
 
-An `[Asserts]` section holds one check per line. Checks run in order. The first failing check fails the entry.
+An `ASSERT` line holds one check. Check lines run in the order written. The first failing check fails the entry.
 
 ```
-assert := subject { filter } [ "not" ] predicate
+assert := "ASSERT" check [ "@" duration ]
+check  := subject { filter } [ "not" ] predicate
         | locator state-check
         | "tab:" name "closed"
 ```
@@ -747,13 +748,12 @@ assert := subject { filter } [ "not" ] predicate
 A check reads a value from its subject, passes it through zero or more filters from left to right, and tests the result with one predicate. `not` negates the predicate. For example, `url urlQueryParam page == 2` reads the current URL, takes its `page` query parameter, and compares it with 2.
 
 ```whirl
-[Asserts]
-testid:cart-badge text == 1
-css:.result count >= 1
-testid:total text replace , "" toInt > 1000
-url urlQueryParam page == 2
-eval "window.dataLayer" json:$[?@.event=='purchase'] count == 1
-response:order json:$.items[0].sku startsWith ABC-
+ASSERT testid:cart-badge text == 1
+ASSERT css:.result count >= 1
+ASSERT testid:total text replace , "" toInt > 1000
+ASSERT url urlQueryParam page == 2
+ASSERT eval "window.dataLayer" json:$[?@.event=='purchase'] count == 1
+ASSERT response:order json:$.items[0].sku startsWith ABC-
 ```
 
 Page checks retry until they pass or the step timeout expires. Response checks read data that never changes, so they fail at once. Section 9.7 gives the rules.
@@ -928,14 +928,14 @@ Equality follows JSON meaning:
 `contains` on a list uses this equality for each item. `startsWith`, `endsWith`, and `contains` on a string compare with the expected value's text form, as in Hurl: `json:$.code startsWith 12` passes on `"123"`.
 
 ```whirl
-json:$.id == 42                     # the number 42, not the string "42"
-json:$.id == "42"                   # the string "42"
-json:$.active == true
-json:$.deleted_at == null
-json:$.tags == ["a", "b"]
-json:$.size == {"h": 20, "w": 10}   # key order does not matter
-json:$.items contains {"sku": "A-1", "qty": 1}
-testid:badge text == 1              # text, the same as "1"
+ASSERT json:$.id == 42                     # the number 42, not the string "42"
+ASSERT json:$.id == "42"                   # the string "42"
+ASSERT json:$.active == true
+ASSERT json:$.deleted_at == null
+ASSERT json:$.tags == ["a", "b"]
+ASSERT json:$.size == {"h": 20, "w": 10}   # key order does not matter
+ASSERT json:$.items contains {"sku": "A-1", "qty": 1}
+ASSERT testid:badge text == 1              # text, the same as "1"
 ```
 
 ### 9.7 Missing values, errors, and retries
@@ -952,10 +952,10 @@ Each failure has a stable report code: `assert` for a false predicate, `type-mis
 
 ## 10. Captures
 
-A `[Captures]` section extracts values into variables for later entries.
+A `CAPTURE` line extracts a value into a variable for later lines.
 
 ```
-capture := name ":" subject { filter }
+capture := "CAPTURE" name ":" subject { filter } [ "@" duration ]
 ```
 
 - `name` matches `[A-Za-z_][A-Za-z0-9_]*`.
@@ -967,10 +967,9 @@ capture := name ":" subject { filter }
 - A capture that reuses a name overwrites it.
 
 ```whirl
-[Captures]
-order_id: testid:confirmation text regex /Order #(\w+)/
-cart_url: url
-item_count: response:cart json:$.items count
+CAPTURE order_id: testid:confirmation text regex /Order #(\w+)/
+CAPTURE cart_url: url
+CAPTURE item_count: response:cart json:$.items count
 ```
 
 ## 11. Variables
@@ -1006,7 +1005,7 @@ Whirl masks every value sourced from `env.*` in the textual output it generates:
 ## 12. Execution model
 
 - **Isolation.** Each file runs in a fresh browser context with an initial page named `main` and any popups it opens. Without the `storage` option the context starts empty; with it, the context starts from the saved storage state. Files never share live state either way.
-- **Order.** Entries run top to bottom. Within a browser entry: actions, then `PAGE`, then asserts, then captures. Within an HTTP entry: the request, then response asserts, then response captures.
+- **Order.** Entries run top to bottom. Within a browser entry: actions, then `PAGE`, then check lines in the order written. Within an HTTP entry: the request, then its check lines in the order written.
 - **Failure.** The first failing step fails the entry, and a failed entry stops its file; remaining entries in that file are skipped and reported as skipped. Other files still run. On failure Whirl saves a full-page screenshot and, with `--trace`, a Playwright trace to the artifacts directory.
 - **Navigation.** `VISIT` completes when the new document reaches `DOMContentLoaded`: the HTML is parsed and its synchronous scripts have run. It does not wait for the `load` event, because images, fonts, iframes, and media hold `load` open for reasons a flow never asserted, and every later line waits for what it needs anyway: actions wait for their element to be actionable, asserts and `PAGE` retry. A page that only becomes usable after `load` needs an assert on that state before an `EVAL` or `SCREENSHOT`, which run once without waiting.
 - **Retries.** Page checks and page captures read their value again on the schedule of section 9.7 until they pass or the step timeout expires. Response checks, response captures, and `eval` captures read once.
@@ -1031,8 +1030,10 @@ whirl report <REPORT>... --html <PATH>  Generate HTML from saved results
 `whirl install chromium` provisions only Chromium; any combination of `chromium`, `firefox`, and `webkit` may be named. Without names, all three engines are provisioned. The bundle records the Whirl version that installed it; a binary of another version refuses to run that bundle and reports a runtime error naming `whirl install`, so an upgraded `whirl` never drives a stale shim. `whirl doctor` checks the selected Node runtime, the bundle's version, shim protocol, Playwright version, and a real headless browser launch (Chromium by default). It installs nothing, finishes within 30 seconds, exits 0 when ready or 3 when diagnosis fails, and prints repair commands. On Linux, a failed launch also prints the private-runtime command for installing system libraries. Unsupported browser names are usage errors.
 
 `whirl fmt` rewrites files to the canonical form: single spaces between tokens,
-quotes only where a value requires them, one HTTP header per line, and one blank
-line between entries. It keeps the quotes on a value whose bare form is a typed
+quotes only where a value requires them, one HTTP header per line, check lines
+directly after the actions of their entry, and one blank line between entries.
+It rewrites deprecated `[Asserts]` and `[Captures]` sections as `ASSERT` and
+`CAPTURE` lines (section 4.1). It keeps the quotes on a value whose bare form is a typed
 literal, such as `"42"` or `"true"` (section 3.1), and it keeps JSON literals as
 written. It preserves JSON and fenced body text, apart from the LF
 line-ending normalization defined in section 7.3. `--check` writes
@@ -1186,7 +1187,7 @@ Rust source, configuration, and project setup follow the [Brynary Rust Style Gui
 ## 16. Errors
 
 - **JSON diagnostics.** `whirl check --json` writes one version 1 JSON document to stdout, containing `exitCode` and `diagnostics`, with no diagnostic text on stderr. Each diagnostic includes a stable code, severity, path, line, column, length, message, and expected alternatives. Positions are 1-based Unicode character positions; locations unavailable for input or I/O errors are null. CLI argument syntax errors still use the ordinary usage message.
-- **Parse errors** (exit 2) are reported with file, line, column, a caret under the offending token, and the expected alternatives. `whirl check` surfaces them without launching a browser. Lint warnings do not change the exit code. Whirl warns about a capture that is never used, about an HTTP entry without a `status` check, and about a `count >= 1` assert directly followed by a check on the same locator, only when the following check requires at least one element. A `hidden` check or a count comparison that accepts zero does not make the presence check redundant. `whirl check` reports a check whose types cannot work, such as `text toHex` or `url > 3`, as the error `filter-type`. It reports an invalid literal regex, JSONPath, or XPath as a parse error.
+- **Parse errors** (exit 2) are reported with file, line, column, a caret under the offending token, and the expected alternatives. `whirl check` surfaces them without launching a browser. Lint warnings do not change the exit code. Whirl warns about a capture that is never used, about an HTTP entry without a `status` check, and about a `count >= 1` assert directly followed by a check on the same locator, only when the following check requires at least one element. A `hidden` check or a count comparison that accepts zero does not make the presence check redundant. `whirl check` reports a check whose types cannot work, such as `text toHex` or `url > 3`, as the error `filter-type`. It reports an invalid literal regex, JSONPath, or XPath as a parse error. A file that mixes deprecated sections with check lines is the parse error `mixed-check-syntax`, and each deprecated section header is the warning `sections-deprecated` (section 4.1).
 - **Test failures** (exit 1) report the failing step the same way, plus expected versus actual and the artifacts. Check failures use the codes of section 9.7.
 - **Runtime errors** (exit 3) cover shim crashes, missing browsers, and similar environmental failures.
 
@@ -1198,8 +1199,10 @@ options    = "[Options]" , { option-line } ;
 option-line= key , ":" , value , { value } ;
 
 entry      = browser-entry | http-entry ;
-browser-entry = action , { action } , [ page ] , [ asserts ] , [ captures ] ;
-http-entry = http-request , [ http-asserts ] , [ http-captures ] ;
+browser-entry = action , { action } , [ page ] , { check-line } ;
+http-entry = http-request , { http-check-line } ;
+check-line = assert | capture ;
+http-check-line = http-assert | http-capture ;
 
 action     = action-body , [ step-timeout ] | snapshot ;
 snapshot   = "SNAPSHOT" , artifact-name , [ locator ] , [ step-timeout ]
@@ -1236,13 +1239,11 @@ http-body  = json-object | json-array | fenced-text ;
 
 page       = "PAGE" , ( value | "matches" , regex ) , [ step-timeout ] ;
 
-asserts    = "[Asserts]" , { assert } ;
-assert     = assert-body , [ step-timeout ] ;
+assert     = "ASSERT" , assert-body , [ step-timeout ] ;
 assert-body = locator , state-check
            | "tab:" , artifact-name , "closed"
            | subject , { filter } , [ "not" ] , predicate ;
-http-asserts = "[Asserts]" , { http-assert } ;
-http-assert = response-field , { filter } , [ "not" ] , predicate
+http-assert = "ASSERT" , response-field , { filter } , [ "not" ] , predicate
             , [ step-timeout ] ;
 state-check= "visible" | "hidden" | "enabled" | "disabled"
            | "checked" | "unchecked" | "focused" ;
@@ -1278,10 +1279,8 @@ predicate  = ( "==" | "!=" | ">" | ">=" | "<" | "<="
            | "isObject" | "isString" | "isUuid" ;
 expected   = value | json-literal ;   (* typed reading: section 9.6 *)
 
-captures   = "[Captures]" , { capture } ;
-capture    = name , ":" , subject , { filter } , [ step-timeout ] ;
-http-captures = "[Captures]" , { http-capture } ;
-http-capture = name , ":" , response-field , { filter } , [ step-timeout ] ;
+capture    = "CAPTURE" , name , ":" , subject , { filter } , [ step-timeout ] ;
+http-capture = "CAPTURE" , name , ":" , response-field , { filter } , [ step-timeout ] ;
 http-method = uppercase-letter , { uppercase-letter } ;
 
 locator    = segment , { ">>" , segment } ;

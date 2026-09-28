@@ -7,7 +7,5 @@ FILL Email demo@example.com
 FILL Password demo-password
 CLICK role:button "Sign in"
 PAGE /checkout
-[Asserts]
-role:heading Checkout visible
-[Captures]
-email: testid:user text
+ASSERT role:heading Checkout visible
+CAPTURE email: testid:user text

@@ -4,8 +4,8 @@ status: accepted
 
 # Evaluate checks in Rust
 
-Rust evaluates every filter and predicate in Whirl's `[Asserts]` and
-`[Captures]` sections (SPEC sections 9 and 10). The browser shim only reads
+Rust evaluates every filter and predicate in Whirl's `ASSERT` and
+`CAPTURE` lines (SPEC sections 9 and 10). The browser shim only reads
 raw values from the page and from responses. This gives exact JSON numbers,
 Hurl's behavior through the same Rust libraries that Hurl uses, and one
 definition of each check that `whirl check` can also type-check.

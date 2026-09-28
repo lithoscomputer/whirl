@@ -6,5 +6,4 @@ model: {{model}}
 VISIT /saved/google/
 ACT "type \"OpenAI\" into the search bar" @60s
 ACT "press enter" @60s
-[Asserts]
-url contains /saved/google/openai.html
+ASSERT url contains /saved/google/openai.html

@@ -6,7 +6,6 @@ reduced-motion: reduce
 
 # This text-free preview makes the sample baseline portable across systems.
 VISIT /preview
-[Asserts]
-testid:widget visible
+ASSERT testid:widget visible
 
 SNAPSHOT widget

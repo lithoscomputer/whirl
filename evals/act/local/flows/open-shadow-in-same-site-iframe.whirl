@@ -5,5 +5,4 @@ model: {{model}}
 # Click a button in a open shadow root inside a same-site iframe.
 VISIT "/layers/?l=frame-same,shadow-open"
 ACT "click the Deep button" @60s
-[Asserts]
-testid:status text == clicked
+ASSERT testid:status text == clicked
