@@ -28,6 +28,7 @@ fn step(
         snapshot: None,
         act: None,
         warnings: Vec::new(),
+        ai: None,
     }
 }
 

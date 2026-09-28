@@ -54,6 +54,35 @@ pub(crate) fn render(report: &RunReport) -> String {
     out
 }
 
+/// The line after a replay run that missed or healed the AI cache (SPEC
+/// 12.1), or `None` when every AI step hit it.
+pub(crate) fn cache_summary(report: &RunReport) -> Option<String> {
+    let codes = report
+        .files
+        .iter()
+        .flat_map(|file| &file.entries)
+        .flat_map(|entry| &entry.steps)
+        .flat_map(|step| &step.warnings)
+        .map(|warning| warning.code.as_str());
+    let (mut missed, mut healed) = (0, 0);
+    for code in codes {
+        match code {
+            "cache-miss" => missed += 1,
+            "healed" => healed += 1,
+            _ => {}
+        }
+    }
+    if missed + healed == 0 {
+        return None;
+    }
+    let steps = |count: usize| if count == 1 { "step" } else { "steps" };
+    Some(format!(
+        "AI cache: {missed} {} missed and {healed} {} healed; run with --cache=update to write the cache",
+        steps(missed),
+        steps(healed)
+    ))
+}
+
 /// The failing (or errored) step of an entry, if any.
 fn failing_step(entry: &EntryReport) -> Option<&StepReport> {
     entry
@@ -120,6 +149,7 @@ mod tests {
             snapshot: None,
             act: None,
             warnings: Vec::new(),
+            ai: None,
         }
     }
 
@@ -221,6 +251,8 @@ mod tests {
                 planned_by:  "llm".to_owned(),
             }],
             usage:   ActUsage::default(),
+            cached:  None,
+            cache:   None,
         });
         let out = render(&report);
         assert!(

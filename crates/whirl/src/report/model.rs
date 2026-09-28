@@ -135,6 +135,9 @@ pub(crate) struct StepReport {
     /// What an `ACT` step asked and did (SPEC 7.4).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) act:         Option<ActReport>,
+    /// What the step's `ai:` targets resolved to (SPEC 6.3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) ai:          Option<AiReport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) snapshot:    Option<SnapshotReport>,
     /// Notices that do not fail the step, each with a stable code.
@@ -186,6 +189,42 @@ pub(crate) struct ActReport {
     pub(crate) planner: String,
     pub(crate) actions: Vec<ActActionReport>,
     pub(crate) usage:   ActUsage,
+    /// The line's AI cache status (SPEC 12.1): `hit`, `miss`, or `healed`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) cache:   Option<String>,
+    /// For a healed line, the lines the cache held.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) cached:  Option<Vec<String>>,
+}
+
+/// A step's `ai:` targets: what each resolved to, and what the model calls
+/// used (SPEC 6.3).
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AiReport {
+    pub(crate) model:   String,
+    pub(crate) targets: Vec<AiTargetReport>,
+    pub(crate) usage:   ActUsage,
+}
+
+/// One `ai:` target of a step.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AiTargetReport {
+    /// The authored locator, with its `ai:` segment; masked.
+    pub(crate) target:      String,
+    /// The locator of the element it resolved to, when it found one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) locator:     Option<String>,
+    /// The model's description of the element.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) description: Option<String>,
+    /// The AI cache status (SPEC 12.1): `hit`, `miss`, `healed`, or
+    /// `uncached`.
+    pub(crate) cache:       String,
+    /// For a healed target, the locator the cache held.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) cached:      Option<String>,
 }
 
 /// Reports written before planners existed used the language model.

@@ -158,6 +158,12 @@ pub(crate) enum SegmentKind {
     /// engine (`label:` or `text:`) depends on the action; see
     /// [`ActionKind::default_engine`].
     Default(Value),
+    /// `ai:"description"`: the one element a language model finds for the
+    /// description (SPEC 6.3). Always the last segment.
+    Ai(Value),
+    /// An element ref that an `ai:` target resolved to (SPEC 6.3). The
+    /// runner puts it in place of the target; no file can write it.
+    Ref(String),
 }
 
 /// The engine an unprefixed locator value selects (SPEC 6.1).
@@ -248,6 +254,17 @@ pub(crate) enum FileOption {
     Model(Value),
 }
 
+impl Locator {
+    /// The description of the locator's `ai:` segment, when it has one
+    /// (SPEC 6.3).
+    pub(crate) fn ai_description(&self) -> Option<&Value> {
+        match self.segments.last().map(|segment| &segment.kind) {
+            Some(SegmentKind::Ai(description)) => Some(description),
+            _ => None,
+        }
+    }
+}
+
 impl File {
     /// The `setup:` option line, when the file has one.
     pub(crate) fn setup_option(&self) -> Option<&OptionLine> {
@@ -271,6 +288,54 @@ impl File {
             .any(|action| matches!(action.kind, ActionKind::Act { .. }))
     }
 
+    /// True when any line asks a language model: `ACT`, or a locator with an
+    /// `ai:` target (SPEC 6.3, 7.4).
+    pub(crate) fn uses_ai(&self) -> bool {
+        self.uses_act()
+            || self
+                .locator_uses()
+                .iter()
+                .any(|used| used.locator.ai_description().is_some())
+    }
+
+    /// Every locator in the file's entries, in line order.
+    pub(crate) fn locator_uses(&self) -> Vec<LocatorUse<'_>> {
+        let mut uses = Vec::new();
+        for entry in &self.entries {
+            for action in &entry.actions {
+                for locator in action.kind.locators() {
+                    uses.push(LocatorUse {
+                        locator,
+                        count: false,
+                    });
+                }
+            }
+            for check in &entry.checks {
+                let (locator, count) = match check {
+                    CheckStep::Assert(Assert {
+                        body: AssertBody::ElementState { locator, .. },
+                        ..
+                    }) => (locator, false),
+                    CheckStep::Assert(Assert {
+                        body:
+                            AssertBody::Check(CheckLine {
+                                subject: Subject::Element { locator, extractor },
+                                ..
+                            }),
+                        ..
+                    })
+                    | CheckStep::Capture(Capture {
+                        subject: Subject::Element { locator, extractor },
+                        ..
+                    }) => (locator, *extractor == Extractor::Count),
+                    _ => continue,
+                };
+                uses.push(LocatorUse { locator, count });
+            }
+        }
+        uses
+    }
+
     /// True when any entry has a `MOCK` line (SPEC 7.5).
     pub(crate) fn uses_mock(&self) -> bool {
         self.entries
@@ -285,6 +350,14 @@ impl File {
             .iter()
             .find(|line| matches!(line.option, FileOption::Model(_)))
     }
+}
+
+/// One locator of a file's line, for lints (SPEC 6.3).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct LocatorUse<'a> {
+    pub(crate) locator: &'a Locator,
+    /// True when the line counts the locator's matches.
+    pub(crate) count:   bool,
 }
 
 /// An `[Options]` line with its source position.
@@ -603,6 +676,73 @@ impl MouseButton {
 }
 
 impl ActionKind {
+    /// The element locators of the action, in order: its targets, the
+    /// scope of `ACT`, and the target of `SNAPSHOT`. Snapshot masks are not
+    /// targets.
+    pub(crate) fn locators(&self) -> Vec<&Locator> {
+        match self {
+            Self::Click { target, .. }
+            | Self::Dblclick { target }
+            | Self::Fill { target, .. }
+            | Self::Type { target, .. }
+            | Self::Check { target }
+            | Self::Uncheck { target }
+            | Self::Select { target, .. }
+            | Self::Hover { target }
+            | Self::ScrollIntoView { target }
+            | Self::Upload { target, .. }
+            | Self::Drop { target, .. } => vec![target],
+            Self::Drag { source, target } => vec![source, target],
+            Self::Press { target, .. }
+            | Self::Scroll { target, .. }
+            | Self::Snapshot { target, .. }
+            | Self::Act { scope: target, .. } => target.iter().collect(),
+            Self::Http { .. }
+            | Self::Response { .. }
+            | Self::Mock { .. }
+            | Self::Popup { .. }
+            | Self::Tab { .. }
+            | Self::Close { .. }
+            | Self::Visit { .. }
+            | Self::Screenshot { .. }
+            | Self::Eval { .. }
+            | Self::Store { .. } => Vec::new(),
+        }
+    }
+
+    /// The element locators of the action, mutable, in the order of
+    /// [`Self::locators`].
+    pub(crate) fn locators_mut(&mut self) -> Vec<&mut Locator> {
+        match self {
+            Self::Click { target, .. }
+            | Self::Dblclick { target }
+            | Self::Fill { target, .. }
+            | Self::Type { target, .. }
+            | Self::Check { target }
+            | Self::Uncheck { target }
+            | Self::Select { target, .. }
+            | Self::Hover { target }
+            | Self::ScrollIntoView { target }
+            | Self::Upload { target, .. }
+            | Self::Drop { target, .. } => vec![target],
+            Self::Drag { source, target } => vec![source, target],
+            Self::Press { target, .. }
+            | Self::Scroll { target, .. }
+            | Self::Snapshot { target, .. }
+            | Self::Act { scope: target, .. } => target.iter_mut().collect(),
+            Self::Http { .. }
+            | Self::Response { .. }
+            | Self::Mock { .. }
+            | Self::Popup { .. }
+            | Self::Tab { .. }
+            | Self::Close { .. }
+            | Self::Visit { .. }
+            | Self::Screenshot { .. }
+            | Self::Eval { .. }
+            | Self::Store { .. } => Vec::new(),
+        }
+    }
+
     /// The engine an unprefixed locator value selects in this action
     /// (SPEC 6.1), if the action targets elements.
     pub(crate) fn default_engine(&self) -> Option<DefaultEngine> {

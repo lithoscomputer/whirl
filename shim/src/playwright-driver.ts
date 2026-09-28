@@ -22,6 +22,7 @@ import { FlowNetwork } from "./flow-network.js";
 import { FlowTabs } from "./flow-tabs.js";
 import { createHostAllowlist } from "./host-glob.js";
 import { nameIframes } from "./iframe-names.js";
+import { generateLocator } from "./locator-generator.js";
 import { buildLocator, describeLocator, frameOwners } from "./locators.js";
 import type { Params } from "./params.js";
 import {
@@ -945,6 +946,16 @@ export class PlaywrightDriver implements ShimDriver {
 				)),
 			};
 		}
+		if (cmd === "generateLocator") {
+			return {
+				...(await generateLocator(
+					flow.tabs.current(),
+					fieldString(params, "ref"),
+					fieldString(params, "role"),
+					fieldStringOrNull(params, "name"),
+				)),
+			};
+		}
 		if (cmd === "readResponse") {
 			return {
 				...(await flow.network.readResponse(
@@ -1611,6 +1622,7 @@ function defaultErrorKind(cmd: StepCommand): ErrorKind {
 			return "action";
 		case "ariaSnapshot":
 		case "mock":
+		case "generateLocator":
 			return "internal";
 		case "snapshot":
 		case "page":

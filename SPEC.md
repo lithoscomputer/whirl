@@ -7,7 +7,7 @@ Whirl is a command-line tool that runs web UI tests written in plain text files.
 
 ## 1. Design principles
 
-1. **Closed vocabulary.** The language has a fixed set of actions, subjects, filters, and predicates. There are no conditionals, loops, functions, or user-defined keywords. A flow that needs branching is two files. `ACT` (section 7.4) is a fixed keyword too, but the action a language model chooses for it can change from run to run, so a flow asserts the result it expects.
+1. **Closed vocabulary.** The language has a fixed set of actions, subjects, filters, and predicates. There are no conditionals, loops, functions, or user-defined keywords. A flow that needs branching is two files. `ACT` (section 7.4) and `ai:` targets (section 6.3) are fixed keywords too, but what a language model chooses for them can change from run to run, so a flow asserts the result it expects. The AI cache (section 12.1) records each choice, so later runs replay it.
 2. **No waits in the language.** Actions auto-wait for their target. Assertions retry until they pass or time out. The format has no `SLEEP` and no `WAIT`.
 3. **Semantic locators first.** The locator grammar puts `role:` and `label:` in front and makes raw CSS the visually distinct escape hatch.
 4. **One flow per file, top to bottom.** A file is a linear sequence of entries. Execution order is textual order. A failure stops the file.
@@ -216,6 +216,7 @@ segment := prefix ":" value [value]   # second value: role name only
 | `frame:"selector"` | Select an iframe by CSS and enter its document for subsequent segments. |
 | `css:"selector"` | `locator('selector')` — escape hatch |
 | `nth:N` | `.nth(N)` — 0-based position; a negative `N` counts from the end |
+| `ai:"description"` | The one element that a language model finds for the description (section 6.3) |
 
 Text matching is exact (after whitespace normalization). For partial or pattern matching, assert on the element instead (`text contains`, `text matches`, `text startsWith`).
 
@@ -233,6 +234,59 @@ ASSERT frame:"#payment-element iframe" >> label:"Card number" value contains "42
 ### 6.2 Strictness
 
 When an action or a single-element check runs, the locator must resolve to exactly one element. Zero matches fails after the timeout — except the `hidden` check, which passes when nothing matches (section 9.1). More than one match fails immediately with the candidate list, for `hidden` as well. Narrow the locator or add `nth:`. Only `count` accepts any number of matches. Both locators of `DRAG` follow this rule, and so does the target of `SNAPSHOT`. A `snapshot-mask` locator is not a target: it may match any number of elements (section 7).
+
+### 6.3 AI targets
+
+`ai:"description"` is a locator segment that a language model resolves. It
+names one element in words, where a precise locator is hard to write:
+
+```whirl
+[Options]
+model: anthropic/claude-sonnet-5
+
+CLICK ai:"the Add to cart button for the first product"
+FILL role:dialog >> ai:"the second email field" ada@example.com
+ASSERT ai:"the order total" text == "$42.00"
+```
+
+An `ai:` segment can appear wherever a locator can: in actions, in `ASSERT`
+and `CAPTURE` lines, as the target of `SNAPSHOT`, and as the scope of `ACT`,
+`EXTRACT`, and `JUDGE`. It cannot appear in `snapshot-mask`, which can match
+any number of elements. `ai:` must be the last segment: a segment after it is
+a parse error. The segments before it limit what the model sees, as the scope
+of `ACT` does: `role:dialog >> ai:"the second email field"` shows the model
+only the dialog. They follow the rules of section 6.1, and every one carries a
+prefix. The description supports interpolation.
+
+A file that uses `ai:` needs the `model` option (section 5); without it,
+`whirl check` reports the error `act-without-model`. `ai:` must resolve to
+exactly one element, so it cannot be used with `count`: that is the lint
+error `ai-count`. `--jev` (section 13) does not apply to `ai:`.
+
+To resolve a target, Whirl takes the AI snapshot of the selected tab, or of
+the element that the earlier segments select, without link URLs, as `ACT`
+does (section 7.4). It asks the model for every element that matches the
+description. The model answers with a list of refs, each with a short
+description, and never guesses. Then Whirl applies the rules of section 6.2:
+
+- One match: the line runs on that element, with the rules of its action or
+  check. A check that retries reads the same element again; it resolves the
+  target again only when the element is gone.
+- Two or more matches: the line fails at once with `strictness` and lists the
+  candidates.
+- No match: Whirl asks again with a new snapshot, at most once every 2
+  seconds, until the step timeout expires. In an `ASSERT` with the `hidden`
+  state or with `not exists`, no match passes at once.
+
+The AI cache (section 12.1) records the element that each target resolved
+to, so a later run finds it without a model call. The JSON report adds an
+`ai` object to the step: the model, each target with the locator it resolved
+to and its cache status, and the token usage and cost of the model calls.
+
+Model calls count against the step timeout, as for `ACT` (section 12). The
+description goes to a third party, with masked values as placeholders
+(section 7.4). A model error fails the line under the rules of `ACT`, with the
+code `act-model`.
 
 ## 7. Actions
 
@@ -687,9 +741,15 @@ names no element, the line passes with the first action.
 
 A page can replace the chosen element while the model answers, as a framework
 does when it renders the page again after load. A snapshot ref never matches
-the replacement, so Whirl does not wait for it. It takes a new snapshot and
-asks the same question once more. One `ACT` line makes at most three model
-calls: two for a two-step action and one after a replaced element.
+the replacement, so Whirl does not wait for it. The chosen element can also
+fail its action's actionability checks, as when a banner covers it. In both
+cases Whirl heals once: it takes a new snapshot and plans the same step once
+more. A chosen action gets at most half of the line's remaining time, so a
+heal has time to run. One `ACT` line heals at most once and makes at most
+three model calls: two for a two-step action and one for a heal.
+
+The AI cache (section 12.1) records the lines that each `ACT` line ran, so a
+later run replays them without a model call. `--jev` plans only on a miss.
 
 An `ACT` line fails the entry when:
 
@@ -698,11 +758,12 @@ An `ACT` line fails the entry when:
   snapshot, gives the wrong number of arguments, drags an element onto
   itself, gives a scroll position that is not a percent from 0% to 100%, or
   uses an unknown placeholder (`act-invalid-decision`),
-- the chosen element is replaced again after Whirl asked once more
+- the chosen element is replaced after the line already healed once
   (`stale-ref`),
 - a filled field does not hold the value (`act-fill-mismatch`); the message
   shows what the field holds unless the value is masked,
-- the chosen action fails, with that action's error, or
+- the chosen action fails after the line already healed once, with that
+  action's error, or
 - the step budget expires, like any step.
 
 A model error is `act-model`. Content filtering and an input larger than the
@@ -723,7 +784,8 @@ object to the step: the model, the planner, each action that ran as a Whirl
 line with the description of the element and the planner that chose it, and
 the token usage and cost of the model calls, and with `--jev` Jev's requests,
 tokens, and cost. A rendered line such as `CLICK role:button "Sign in"` describes the
-element; it is not guaranteed to be unique on the page.
+element; it is not guaranteed to be unique on the page. The `act` object also
+holds the line's cache status, and a heal's cached and new lines.
 
 ### 7.5 MOCK
 
@@ -1097,6 +1159,134 @@ Whirl masks every value sourced from `env.*` in the textual output it generates:
 - **Setup.** Files with a `setup` option run after their setup flows. Whirl first runs every distinct setup flow named by the inputs, once each and in parallel like any files, then runs the remaining files, each starting from its setup flow's saved state with the setup flow's captures as `{{setup.name}}`. A setup flow that is also an input runs once, as the setup. A failed setup flow reports normally, and each of its dependents reports a `[setup]` failure naming the setup flow and its first failing step, without opening a browser. Setup flows are one level deep.
 - **Parallelism.** Files run in parallel across worker slots (`--jobs`, default: logical CPU count). A single file is never parallelized.
 - **Dialogs.** `alert`, `confirm`, and `prompt` dialogs are auto-dismissed by default. The `dialogs: accept` option auto-accepts them instead.
+- **AI targets.** An `ai:` target resolves inside its line's step timeout, and its model calls count against it (section 6.3). A check that retries asks the model at most once every 2 seconds, so its cost grows with its timeout. Give such a line its own `@duration` only when the page needs it.
+
+### 12.1 The AI cache
+
+A language model makes a decision once, Whirl writes it to a file next to the
+flow, and later runs replay it without a model call. The file is ordinary
+text for the repository: commit it and review its changes like the flow.
+
+The cache of `flows/checkout.whirl` is `flows/checkout.whirl-cache.json`.
+It records what each `ai:` target (section 6.3) and each `ACT` line (section
+7.4) resolved to:
+
+```json
+{
+  "version": 1,
+  "entries": [
+    {
+      "kind": "ai-target",
+      "line": "CLICK ai:\"the Add to cart button\"",
+      "occurrence": 1,
+      "target": "ai:\"the Add to cart button\"",
+      "model": "anthropic/claude-sonnet-5",
+      "locator": "role:button \"Add to cart\"",
+      "fingerprint": {"role": "button", "name": "Add to cart"}
+    },
+    {
+      "kind": "act",
+      "line": "ACT \"sign in as {{env.USER}}\"",
+      "occurrence": 1,
+      "model": "anthropic/claude-sonnet-5",
+      "actions": [
+        {
+          "line": "FILL label:Email {{env.USER}}",
+          "fingerprints": [{"role": "textbox", "name": "Email"}]
+        },
+        {
+          "line": "CLICK role:button \"Sign in\"",
+          "fingerprints": [{"role": "button", "name": "Sign in"}]
+        }
+      ]
+    }
+  ]
+}
+```
+
+**Key.** An entry belongs to one line of the flow. Its key is the `kind`
+(`ai-target` or `act`), the authored `line` before interpolation, without its
+comment, and the `occurrence` of that text among identical lines of the file,
+from 1 in file order. An `ai-target` entry also names its `target`: the
+authored locator with the `ai:` segment, because one line can have two, as in
+`DRAG`. Variable values are not part of the key: the fingerprint check below
+finds an entry that no longer fits the page. Browser and platform are not part
+of the key either.
+
+**Values.** Every entry records the `model` that resolved it. An `ai-target`
+entry holds the `locator` of the element and its `fingerprint`: the element's
+ARIA role and accessible name, or `null` for an element without a name. An
+`act` entry holds the Whirl `line` of each action that ran, in order, with the
+fingerprint of each element in the line. Each locator comes from the locator
+generator below, not from the report text of section 7.4, which is not
+guaranteed to be unique. Entries follow the order of their lines in the flow.
+Whirl writes the file as JSON with two-space indentation, the keys in the order
+shown, and a final newline, so its diffs stay small.
+
+**Secrets.** An entry never holds a masked value (section 11). It holds the
+variable reference that the line used, such as `{{env.PASSWORD}}`: the model
+answers with placeholders (section 7.4), and Whirl maps each one back to its
+reference. Text that equals the value of another variable that the
+instruction used is also stored as that variable's reference, so a cached
+line types the current value. When Whirl cannot map a masked value back to a
+reference, as for a secret inside a larger variable, it does not write the
+entry: that line resolves with the model on every run and reports the warning
+`cache-secret`.
+
+**Locators.** The locator generator turns the element the model chose into a
+strict Whirl locator. It prefers, in order, `testid:`, `role:TYPE "Name"`,
+`label:`, `placeholder:`, and `text:`. When the best of these matches more than
+one element, it adds the nearest named landmark, dialog, or region around the
+element as a scope with `>>`, and it adds `nth:` only as a last resort. It
+never uses `css:`, except in a `frame:` segment: an element inside an iframe
+gets a `frame:` prefix whose CSS selector names the iframe by its `title`,
+`name`, or `id` attribute, as in `frame:"iframe[title='Payment']"`. Whirl
+checks that the locator finds that element and no other. When no such locator
+exists, Whirl does not write the entry: the line resolves with the model on
+every run and reports the warning `cache-unstable`.
+
+**Replay.** For an `ai:` target with an entry, Whirl waits for the cached
+locator for at most half of the step's remaining time. When it finds exactly
+one element with the same role and name as the fingerprint, the line runs on
+it with no model call: a hit. For an `ACT` line with an entry, Whirl runs each
+cached line in order, as if the flow held it, after the same fingerprint check;
+each action gets at most half of the line's remaining time. Everything else is
+a miss:
+
+- no entry for the line,
+- a cached locator that matches no element in that time, or several,
+- an element whose role or name differs from the fingerprint,
+- a cached action that fails, as when its element never becomes actionable.
+
+On a miss, Whirl resolves the target, or plans the `ACT` line, with the model,
+as if no entry existed, in the rest of the step's time. When a cached `ACT`
+line misses after an earlier cached action ran, the model plans the rest of
+the instruction from the current page, as for step two of a two-step action.
+This is a heal. The step passes or fails on its new result.
+
+**Modes.** `--cache` (section 13) selects what a run does with the file:
+
+- `replay`, the default: a hit runs with no model call. A miss resolves with
+  the model, and a step that then passes reports a warning: `cache-miss` for a
+  line with no entry, and `healed` for a stale entry, with the cached value and
+  the new value. The run never writes the file.
+- `update`: as `replay`, and after a file passes, Whirl writes its cache. It
+  adds new entries, replaces healed ones, and removes the entries the run did
+  not use. A file that fails writes nothing. A cache left with no entries is
+  deleted.
+- `only`: a miss fails the step with `cache-miss`, and `ai:` targets and
+  `ACT` make no model calls. `EXTRACT`, `JUDGE`, and absence checks are never
+  cached, so they still call the model.
+
+An `ai:` check with `hidden` or `not exists` that passes because the model
+found no element has no element to cache. It asks the model on every run, in
+every mode, and reports the warning `uncached`. After a run that healed or
+missed any step, the console says how many and names `--cache=update`.
+
+`whirl check` reads the cache of each flow it checks. A cache that is not a
+valid version 1 file is the error `cache-invalid`. An entry whose line no
+longer exists is the warning `cache-stale-entry`; `--cache=update` removes it
+on the next passing run.
 
 ## 13. Command line
 
@@ -1148,6 +1338,7 @@ nothing and exits with code 1 when any file would change.
 | `--entry-timeout DURATION` | Override the entry-timeout option |
 | `--user-agent UA` | Override the user-agent option with `chrome`, `firefox`, `safari`, or a literal string |
 | `--jev` | Plan `ACT` with TypeSafe's Jev first, and the `model` option when Jev is unsure (section 7.4) |
+| `--cache MODE` | What to do with each flow's AI cache: `replay` (default), `update`, or `only` (section 12.1) |
 
 Exit codes:
 
@@ -1272,6 +1463,7 @@ Rust source, configuration, and project setup follow the [Brynary Rust Style Gui
 - **JSON diagnostics.** `whirl check --json` writes one version 1 JSON document to stdout, containing `exitCode` and `diagnostics`, with no diagnostic text on stderr. Each diagnostic includes a stable code, severity, path, line, column, length, message, and expected alternatives. Positions are 1-based Unicode character positions; locations unavailable for input or I/O errors are null. CLI argument syntax errors still use the ordinary usage message.
 - **Parse errors** (exit 2) are reported with file, line, column, a caret under the offending token, and the expected alternatives. `whirl check` surfaces them without launching a browser. Lint warnings do not change the exit code. Whirl warns about a capture that is never used, about an HTTP entry without a `status` check, and about a `count >= 1` assert directly followed by a check on the same locator, only when the following check requires at least one element. A `hidden` check or a count comparison that accepts zero does not make the presence check redundant. `whirl check` reports a check whose types cannot work, such as `text toHex` or `url > 3`, as the error `filter-type`. It reports an invalid literal regex, JSONPath, or XPath as a parse error. A file with an `[Asserts]` or `[Captures]` section is the parse error `sections-removed`, and a file that mixes such sections with check lines is the parse error `mixed-check-syntax` (section 4.1).
 - **Test failures** (exit 1) report the failing step the same way, plus expected versus actual and the artifacts. Check failures use the codes of section 9.7.
+- **Warnings** do not change a step's status or the exit code. Each has a stable code in the JSON report: `unused-mock` (section 7.5); `cache-miss`, `healed`, `uncached`, `cache-secret`, and `cache-unstable` (section 12.1). `whirl check` reports `cache-stale-entry` as a warning and `cache-invalid` and `ai-count` as errors.
 - **Runtime errors** (exit 3) cover shim crashes, missing browsers, and similar environmental failures.
 
 ## 17. Grammar
@@ -1375,6 +1567,7 @@ http-method = uppercase-letter , { uppercase-letter } ;
 
 locator    = segment , { ">>" , segment } ;
 segment    = ( "role:" | "role~:" ) , name , [ value ]
+           | "ai:" , value     (* the last segment only; 6.3 *)
            | ( "label" | "placeholder" | "text" | "alt"
              | "title" ) , [ "~" ] , ":" , value
            | ( "testid:" | "css:" | "frame:" ) , value
@@ -1414,4 +1607,5 @@ Deferred beyond V1 (candidate V2 features, not promised):
 - The Hurl features that the check vocabulary does not adopt: the `sha256`, `md5`, `cookie`, `certificate`, `redirects`, `duration`, `ip`, `version`, `variable`, and `rawbytes` queries; `file,…;` values; and following redirects in HTTP entries.
 - Per-entry `[Options]` overrides and mobile device emulation.
 - An LLM-as-judge assertion (a `JUDGE` keyword with an explicit model option and advisory rather than hard-failing verdicts).
-- An `ACT` cache that replays a successful action without a model call, self-healing that plans again when a chosen action fails, and a step-two prompt that sends only the part of the snapshot that changed.
+- A step-two prompt for `ACT` that sends only the part of the snapshot that changed.
+- `--jev` for `ai:` targets, segments after an `ai:` segment, and `ai:` with `count`.

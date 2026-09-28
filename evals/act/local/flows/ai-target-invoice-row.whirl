@@ -1,0 +1,8 @@
+[Options]
+base: {{env.EVAL_BASE}}
+model: {{model}}
+
+# ai: the Delete button of one invoice row among twelve.
+VISIT /delete-invoice-row/
+CLICK ai:"the delete button in the row for invoice 1037" @60s
+ASSERT testid:result text == "deleted 1037"

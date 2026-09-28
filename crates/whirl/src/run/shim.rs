@@ -29,7 +29,7 @@ use crate::report::model::SnapshotReport;
 pub(super) mod wire;
 
 /// The protocol version this Whirl speaks (protocol section 3).
-pub(crate) const PROTOCOL: u64 = 5;
+pub(crate) const PROTOCOL: u64 = 6;
 
 /// Environment variable naming the built shim entry (protocol section 8).
 pub(crate) const SHIM_JS_ENV: &str = "WHIRL_SHIM_JS";
@@ -413,6 +413,14 @@ pub(crate) enum StepCommand {
     ReadRequest {
         name: String,
     },
+    /// A strict locator for a snapshot element (protocol 4.8); result
+    /// [`GeneratedLocator`].
+    GenerateLocator {
+        #[serde(rename = "ref")]
+        element: String,
+        role:    String,
+        name:    Option<String>,
+    },
     /// Opens the trace group for the reads of one check.
     TraceGroup,
     /// Closes the group [`StepCommand::TraceGroup`] opened.
@@ -472,6 +480,16 @@ pub(crate) struct RequestReadResult {
     pub(crate) headers:     Vec<(String, String)>,
     pub(crate) body_base64: Option<String>,
     pub(crate) body_error:  Option<String>,
+}
+
+/// `generateLocator` result (protocol section 4.8).
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub(crate) enum GeneratedLocator {
+    /// A strict locator, as wire segments (protocol 4.1).
+    Locator { locator: Json },
+    /// No strict locator exists, and why.
+    Unstable { reason: String },
 }
 
 /// `ariaSnapshot` result (protocol section 4).

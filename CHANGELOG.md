@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add `ai:"description"`, a locator segment that a language model resolves to one element, as in `CLICK ai:"the Add to cart button for the first product"`. It works in actions, checks, captures, `SNAPSHOT` targets, and `ACT` scopes, and it must be the last segment; the segments before it limit what the model sees. The model lists every element that matches: two or more fail with `strictness`, and none asks again every 2 seconds until the step times out, except in a `hidden` or `not exists` check, where none passes. `ai:` needs the `model` option and cannot be counted (`ai-count`). JSON and HTML reports show what each target resolved to and what its model calls cost.
+- Add the AI cache: `<flow>.whirl-cache.json`, next to the flow, records what each `ai:` target and `ACT` line resolved to, as strict Whirl locators and lines with a role-and-name fingerprint. A run replays it without a model call. A miss or a stale entry resolves with the model, and the step passes with a `cache-miss` or `healed` warning. `--cache=update` writes the cache of each passing file and removes unused entries, and `--cache=only` fails a miss instead of asking the model. A masked value is stored as its variable reference, such as `{{env.PASSWORD}}`. `whirl check` reports an invalid cache (`cache-invalid`) and entries whose line is gone (`cache-stale-entry`).
+- When an action that `ACT` chose fails, as when a banner covers its element, `ACT` takes a new snapshot and plans once more. A line heals at most once, and the chosen action gets at most half of the line's time so the heal can run.
+- Add `ai:` tasks to the ACT evals, including ambiguous descriptions that must fail with `strictness`.
+- Move the browser shim to protocol 6; `whirl install` provisions the matching bundle.
 ## 0.14.0 (2026-09-28)
 
 - **Breaking:** reject `[Asserts]` and `[Captures]` sections with the parse error `sections-removed`. `whirl fmt flows/` still rewrites them as `ASSERT` and `CAPTURE` lines.

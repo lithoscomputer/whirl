@@ -654,7 +654,7 @@ impl Cursor {
     }
 }
 
-const SEGMENT_PREFIXES: [&str; 10] = [
+const SEGMENT_PREFIXES: [&str; 11] = [
     "role:",
     "label:",
     "placeholder:",
@@ -665,6 +665,7 @@ const SEGMENT_PREFIXES: [&str; 10] = [
     "css:",
     "frame:",
     "nth:",
+    "ai:",
 ];
 
 const TEXT_PREFIXES: [(&str, TextPrefix); 5] = [
@@ -769,6 +770,13 @@ fn parse_segment(
             span,
         });
     }
+    if head.starts_with("ai:") {
+        let value = value_after("ai:")?;
+        return Ok(LocatorSegment {
+            kind: SegmentKind::Ai(value),
+            span,
+        });
+    }
     if head.starts_with("css:") {
         let value = value_after("css:")?;
         return Ok(LocatorSegment {
@@ -812,6 +820,16 @@ fn parse_segment(
 }
 
 fn finish_locator(segments: Vec<LocatorSegment>, span: Span) -> Result<Locator, LineError> {
+    if let Some(after) = segments
+        .iter()
+        .skip_while(|segment| !matches!(segment.kind, SegmentKind::Ai(_)))
+        .nth(1)
+    {
+        return Err(LineError::new(
+            after.span,
+            "`ai:` must be the last segment of a locator",
+        ));
+    }
     if segments
         .iter()
         .rev()
@@ -2219,8 +2237,18 @@ fn parse_snapshot_option(
             if tokens.len() == 1 && tokens[0].bare_single() == Some("none") {
                 Ok(SnapshotOption::Mask(None))
             } else {
-                build_locator(tokens, false, after_span(span))
-                    .map(|locator| SnapshotOption::Mask(Some(locator)))
+                let locator = build_locator(tokens, false, after_span(span))?;
+                if let Some(segment) = locator.segments.last()
+                    && matches!(segment.kind, SegmentKind::Ai(_))
+                {
+                    // A mask can match many elements; `ai:` names one
+                    // (SPEC 6.3).
+                    return Err(LineError::new(
+                        segment.span,
+                        "`ai:` cannot be a snapshot mask",
+                    ));
+                }
+                Ok(SnapshotOption::Mask(Some(locator)))
             }
         }
         "snapshot-max-diff" => Ok(SnapshotOption::MaxDiff(option_shape(
@@ -2599,6 +2627,49 @@ fn json_body_end(lines: &[&str], start: usize) -> Result<usize, LineError> {
         u32::try_from(start + 1).unwrap_or(u32::MAX),
         lines.get(start).copied().unwrap_or_default(),
     ))
+}
+
+/// Parses a locator written on its own, such as one the AI cache holds
+/// (SPEC 12.1). Every segment needs a prefix.
+pub(crate) fn parse_locator(text: &str) -> Result<Locator, String> {
+    let mut cursor = Cursor::new(text, 1);
+    let mut tokens = Vec::new();
+    while let Some(token) = cursor.next_token().map_err(|error| error.message)? {
+        tokens.push(token);
+    }
+    let end = Span {
+        line:   1,
+        column: 1,
+        len:    1,
+    };
+    build_locator(tokens, false, end).map_err(|error| error.message)
+}
+
+/// Parses one action line written on its own, such as one the AI cache
+/// holds (SPEC 12.1).
+pub(crate) fn parse_action_line(text: &str) -> Result<Action, String> {
+    let mut cursor = Cursor::new(text, 1);
+    cursor.skip_ws();
+    let start = cursor.pos;
+    let first = cursor
+        .next_token()
+        .map_err(|error| error.message)?
+        .ok_or_else(|| "an empty line".to_owned())?;
+    let keyword = first
+        .bare_single()
+        .filter(|keyword| ACTION_KEYWORDS.contains(keyword))
+        .ok_or_else(|| format!("`{text}` is not an action line"))?
+        .to_owned();
+    let (kind, timeout) =
+        parse_action_body(&keyword, first.span, &mut cursor).map_err(|error| error.message)?;
+    let (text, span) = cursor.content(start);
+    Ok(Action {
+        kind,
+        timeout,
+        line: 1,
+        span,
+        text,
+    })
 }
 
 /// Rejects a parsed file that still has an `[Asserts]` or `[Captures]`
@@ -4448,6 +4519,38 @@ ASSERT status == 202
         assert_eq!(
             parse_err("HTTP GET /a\nASSERT request:r method == GET\n").message,
             "an HTTP entry can only check its response"
+        );
+    }
+
+    #[test]
+    fn ai_segments_parse_last_in_a_locator() {
+        let file = parse(
+            "VISIT /\nCLICK role:dialog >> ai:\"the {{which}} email field\"\nASSERT ai:\"the total\" text == 1\n",
+        );
+        let locators = file.locator_uses();
+        let description = locators[0]
+            .locator
+            .ai_description()
+            .expect("the click has an ai: target");
+        assert_eq!(description.segments.len(), 3);
+        assert_eq!(locators[0].locator.segments.len(), 2);
+        assert!(locators[1].locator.ai_description().is_some());
+        assert!(file.uses_ai());
+    }
+
+    #[test]
+    fn misplaced_ai_segments_are_parse_errors() {
+        assert_eq!(
+            parse_err("VISIT /\nCLICK ai:\"a row\" >> role:button\n").message,
+            "`ai:` must be the last segment of a locator"
+        );
+        assert_eq!(
+            parse_err("VISIT /\nSNAPSHOT page\nsnapshot-mask: ai:\"the clock\"\n").message,
+            "`ai:` cannot be a snapshot mask"
+        );
+        assert_eq!(
+            parse_err("VISIT /\nCLICK ai:\n").message,
+            "`ai:` needs a value"
         );
     }
 

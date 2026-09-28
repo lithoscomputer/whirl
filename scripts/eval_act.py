@@ -1,5 +1,5 @@
-"""Compare language models on Whirl's ACT: run each model against each eval
-task, then write a dated summary. See evals/act/README.md.
+"""Compare language models on Whirl's ACT and ai: targets: run each model
+against each eval task, then write a dated summary. See evals/act/README.md.
 
 Each task is a .whirl flow. Runs are kept under evals/act/runs/ and never
 changed; the summary reads them all, so a session can stop and resume.
@@ -26,6 +26,11 @@ DEFAULT_N = {"local": 10, "live": 1}
 # A task whose file name ends with this passes only when ACT finds no
 # element (evals/act/README.md).
 NO_MATCH_SUFFIX = ".no-match.whirl"
+# A task whose file name ends with this passes only when an ai: target
+# matches several elements and fails with strictness (SPEC 6.3).
+AMBIGUOUS_SUFFIX = ".ambiguous.whirl"
+# Each special suffix and the error code that makes its task pass.
+EXPECTED_FAILURES = {NO_MATCH_SUFFIX: "act-no-match", AMBIGUOUS_SUFFIX: "strictness"}
 # The value the login task fills through {{env.EVAL_PASSWORD}}. It is not a
 # secret; it only has to reach the page without reaching the model.
 EVAL_PASSWORD = "eval-password-5d1c"
@@ -39,18 +44,25 @@ class Task:
     set: str
     name: str
     path: Path
-    expects_no_match: bool
+    # The error code the task expects, when it passes only by failing.
+    expected_failure: str | None
+
+
+def expected_failure(file_name):
+    """The error code a task file expects, from its suffix."""
+    for suffix, code in EXPECTED_FAILURES.items():
+        if file_name.endswith(suffix):
+            return code
+    return None
 
 
 def load_tasks(set_name, only=()):
     """The tasks of one set, sorted by name, limited to `only` when given."""
     tasks = []
     for path in sorted((EVALS / set_name / "flows").glob("*.whirl")):
-        expects_no_match = path.name.endswith(NO_MATCH_SUFFIX)
-        suffix = NO_MATCH_SUFFIX if expects_no_match else ".whirl"
-        name = path.name[: -len(suffix)]
+        name = task_name(path)
         if not only or name in only:
-            tasks.append(Task(set_name, name, path, expects_no_match))
+            tasks.append(Task(set_name, name, path, expected_failure(path.name)))
     return tasks
 
 
@@ -99,7 +111,7 @@ class Result:
 
 def task_name(file_path):
     name = Path(file_path).name
-    for suffix in (NO_MATCH_SUFFIX, ".whirl"):
+    for suffix in (*EXPECTED_FAILURES, ".whirl"):
         if name.endswith(suffix):
             return name[: -len(suffix)]
     return name
@@ -108,13 +120,17 @@ def task_name(file_path):
 def classify(file_report, model):
     """Classifies one flow's result from a Whirl JSON report."""
     name = task_name(file_report["path"])
-    expects_no_match = Path(file_report["path"]).name.endswith(NO_MATCH_SUFFIX)
+    expects = expected_failure(Path(file_report["path"]).name)
     steps = [step for entry in file_report["entries"] for step in entry["steps"]]
-    # A task can have several ACT lines; its measurements are their sums.
+    # A task can have several ACT lines and ai: targets; its measurements
+    # are their sums.
     act_steps = [step for step in steps if step.get("act") is not None]
+    ai_steps = [step for step in steps if step.get("ai") is not None]
     result = Result(name, model, "fail")
-    if act_steps:
+    if act_steps or ai_steps:
         usages = [step["act"]["usage"] for step in act_steps]
+        usages += [step["ai"]["usage"] for step in ai_steps]
+        act_steps = act_steps + ai_steps
         result.duration_ms = sum(step["durationMs"] for step in act_steps)
         result.model_calls = sum(usage["modelCalls"] for usage in usages)
         result.input_tokens = sum(usage["inputTokens"] for usage in usages)
@@ -124,7 +140,7 @@ def classify(file_report, model):
         costs = [usage.get("costUsdMicros", 0 if usage["modelCalls"] == 0 else None) for usage in usages]
         result.priced = all(cost is not None for cost in costs)
         result.cost_usd_micros = sum(costs) if result.priced else None
-        actions = [action for step in act_steps for action in step["act"]["actions"]]
+        actions = [action for step in act_steps for action in (step.get("act") or {}).get("actions", [])]
         result.actions = len(actions)
         result.jev_actions = len([action for action in actions if action.get("plannedBy") == "jev"])
 
@@ -136,8 +152,8 @@ def classify(file_report, model):
         result.outcome = "error"
     elif entries and entries[0]["name"].startswith("precheck") and entries[0]["status"] != "passed":
         result.outcome = "drift"
-    elif expects_no_match:
-        result.outcome = "pass" if result.code == "act-no-match" else "fail"
+    elif expects:
+        result.outcome = "pass" if result.code == expects else "fail"
     else:
         result.outcome = "pass" if file_report["status"] == "passed" else "fail"
     return result

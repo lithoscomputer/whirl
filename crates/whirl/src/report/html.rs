@@ -415,6 +415,7 @@ fn render_entry(
             duration(step.duration_ms)
         )?;
         render_act(output, step)?;
+        render_ai(output, step)?;
         render_snapshot(output, step)?;
         render_error(output, step)?;
         write!(output, "</li>")?;
@@ -500,11 +501,21 @@ fn render_act(output: &mut impl io::Write, step: &StepReport) -> io::Result<()> 
             jev.requests, jev.input_tokens, jev.output_tokens
         )?;
     }
+    if let Some(cache) = &act.cache {
+        write!(output, "<dt>AI cache</dt><dd>{}</dd>", escape(cache))?;
+    }
+    for line in act.cached.iter().flatten() {
+        write!(
+            output,
+            "<dt>Cached</dt><dd><code>{}</code></dd>",
+            escape(line)
+        )?;
+    }
     for action in &act.actions {
-        let chosen_by = if action.planned_by == "jev" {
-            " · chosen by Jev"
-        } else {
-            ""
+        let chosen_by = match action.planned_by.as_str() {
+            "jev" => " · chosen by Jev",
+            "cache" => " · from the AI cache",
+            _ => "",
         };
         write!(
             output,
@@ -512,6 +523,42 @@ fn render_act(output: &mut impl io::Write, step: &StepReport) -> io::Result<()> 
             escape(&action.line),
             escape(&action.description)
         )?;
+    }
+    write!(output, "</dl>")
+}
+
+/// A step's `ai:` targets: what each resolved to and its cache status
+/// (SPEC 6.3, 12.1).
+fn render_ai(output: &mut impl io::Write, step: &StepReport) -> io::Result<()> {
+    let Some(ai) = &step.ai else {
+        return Ok(());
+    };
+    write!(
+        output,
+        "<dl><dt>Model</dt><dd><code>{}</code> · {} call(s) · {} input and {} output tokens</dd>",
+        escape(&ai.model),
+        ai.usage.model_calls,
+        ai.usage.input_tokens,
+        ai.usage.output_tokens
+    )?;
+    for target in &ai.targets {
+        let found = target.locator.as_deref().map_or_else(
+            || "no element".to_owned(),
+            |locator| format!("<code>{}</code>", escape(locator)),
+        );
+        write!(
+            output,
+            "<dt><code>{}</code></dt><dd>{found} · AI cache: {}</dd>",
+            escape(&target.target),
+            escape(&target.cache)
+        )?;
+        if let Some(cached) = &target.cached {
+            write!(
+                output,
+                "<dt>Cached</dt><dd><code>{}</code></dd>",
+                escape(cached)
+            )?;
+        }
     }
     write!(output, "</dl>")
 }

@@ -165,7 +165,7 @@ test("hello answers protocol 1, the Playwright version, and the ffmpeg path", as
 		id: 1,
 		ok: true,
 		result: {
-			protocol: 5,
+			protocol: 6,
 			playwrightVersion: "0.0.0-test",
 			ffmpegPath: "/fake/ffmpeg",
 		},

@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "kind": "ai-target",
+      "line": "CLICK ai:\"the buy button\"",
+      "occurrence": 1,
+      "target": "ai:\"the buy button\"",
+      "model": "gpt-test",
+      "locator": "role:button Buy",
+      "fingerprint": {
+        "role": "button",
+        "name": "Buy"
+      }
+    },
+    {
+      "kind": "act",
+      "line": "ACT \"sign in\"",
+      "occurrence": 1,
+      "model": "gpt-test",
+      "actions": []
+    }
+  ]
+}

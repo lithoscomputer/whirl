@@ -10,11 +10,12 @@ mod planner;
 mod prompt;
 mod snapshot;
 
-pub(crate) use decision::{ActDecision, FollowUp};
+pub(crate) use decision::{ActDecision, FollowUp, PlannedAction};
 pub(crate) use instruction::Instruction;
 pub(crate) use jev::{JevClient, JevPlanner, JevSetupError};
 pub(crate) use model::{ModelCatalog, ModelClient, ModelSetupError};
 pub(crate) use planner::{
     ActPlanner, LlmPlanner, PlanError, PlanRequest, PlanStep, PlanUsage, PlannedBy,
 };
-pub(crate) use snapshot::PageSnapshot;
+pub(crate) use prompt::target_message;
+pub(crate) use snapshot::{Fingerprint, PageSnapshot, Target};

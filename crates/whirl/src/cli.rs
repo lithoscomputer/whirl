@@ -28,6 +28,7 @@ use crate::report::metadata::ReportMetadata;
 use crate::report::model::Status;
 use crate::report::{console, html, json, junit};
 use crate::run::act::ModelCatalog;
+use crate::run::cache::{self, CacheMode};
 use crate::run::{artifacts, flow, runner, vars};
 use crate::{doctor, install, telemetry};
 
@@ -226,6 +227,10 @@ struct RunArgs {
     /// Plan ACT with TypeSafe Jev first, falling back to the model option.
     #[arg(long)]
     jev: bool,
+
+    /// What to do with each flow's AI cache.
+    #[arg(long, value_name = "MODE", value_enum, default_value_t = CacheMode::Replay)]
+    cache: CacheMode,
 
     /// Override the `storage` option.
     #[arg(long, value_name = "PATH")]
@@ -496,6 +501,21 @@ impl Diagnostic {
         }
     }
 
+    /// A diagnostic about a flow's AI cache file, which has no line.
+    fn cache(code: &'static str, severity: &'static str, path: &Path, message: String) -> Self {
+        Self {
+            code,
+            severity,
+            path: Some(path.to_path_buf()),
+            line: None,
+            column: None,
+            length: None,
+            rendered: format!("{}: {severity}: {message}", path.display()),
+            message,
+            expected: Vec::new(),
+        }
+    }
+
     fn environment(code: &'static str, message: String) -> Self {
         Self {
             code,
@@ -639,6 +659,13 @@ fn check_inputs(
             }
         }
     }
+    for input in inputs.iter().chain(setups.iter()) {
+        let (diagnostics_of, error) = cache_diagnostics(&input.file);
+        if error {
+            exit = exit.max(Exit::ParseLint);
+        }
+        diagnostics.extend(diagnostics_of);
+    }
     for (dependent, setup_canonical) in &setup_of {
         let Some(setup) = find(setup_canonical) else {
             continue;
@@ -652,6 +679,48 @@ fn check_inputs(
         }
     }
     (CheckedInputs { inputs, setups }, exit)
+}
+
+/// The diagnostics of a flow's AI cache (SPEC 12.1): `cache-invalid` for
+/// a file that is not a version 1 cache, and `cache-stale-entry` for each
+/// entry whose line no longer exists. The flag is true for an error.
+fn cache_diagnostics(file: &ast::File) -> (Vec<Diagnostic>, bool) {
+    let path = cache::cache_path(&file.path);
+    let entries = match cache::load(&path) {
+        Ok(entries) => entries,
+        Err(error) => {
+            let message = format!("{error}");
+            return (
+                vec![Diagnostic::cache(
+                    "cache-invalid",
+                    "error",
+                    &path,
+                    format!("{message}; delete it, or fix it and run with --cache=update"),
+                )],
+                true,
+            );
+        }
+    };
+    let keys = cache::file_keys(file);
+    let stale = entries
+        .iter()
+        .filter(|entry| !keys.contains(&entry.key()))
+        .map(|entry| {
+            let key = entry.key();
+            Diagnostic::cache(
+                "cache-stale-entry",
+                "warning",
+                &path,
+                format!(
+                    "the entry for `{}` (occurrence {}) matches no line of '{}'; the next passing run with --cache=update removes it",
+                    key.line,
+                    key.occurrence,
+                    file.path.display()
+                ),
+            )
+        })
+        .collect();
+    (stale, false)
 }
 
 /// `whirl check`: parse and lint only; nothing runs (SPEC 13).
@@ -957,6 +1026,7 @@ fn run_command(args: &RunArgs) -> Exit {
             har:              args.har,
             update_snapshots: args.update_snapshots,
             save_storage:     args.save_storage.clone(),
+            cache:            args.cache,
         },
         overrides,
         base_vars,
@@ -974,6 +1044,11 @@ fn run_command(args: &RunArgs) -> Exit {
     match runtime.block_on(runner::run_files(&files, &setups, &settings)) {
         Ok(report) => {
             print_out(console::render(&report).trim_end());
+            if settings.flags.cache != CacheMode::Update
+                && let Some(summary) = console::cache_summary(&report)
+            {
+                print_out(&format!("\n{summary}"));
+            }
             let run_exit = if report.has_error() {
                 Exit::Runtime
             } else if report.has_failure() {

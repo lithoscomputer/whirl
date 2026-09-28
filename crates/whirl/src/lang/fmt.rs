@@ -325,6 +325,8 @@ fn render_segment(kind: &SegmentKind, ctx: LocatorCtx, is_final: bool) -> String
         }
         SegmentKind::Nth(index) => format!("nth:{index}"),
         SegmentKind::Default(value) => render_value(value, ctx.default_ctx(), is_final),
+        SegmentKind::Ai(value) => format!("ai:{}", render_value(value, ValueCtx::Prefixed, false)),
+        SegmentKind::Ref(element) => format!("ref:{element}"),
     }
 }
 
@@ -1042,8 +1044,9 @@ mod tests {
             | SegmentKind::TestId(value)
             | SegmentKind::Css(value)
             | SegmentKind::Frame(value)
-            | SegmentKind::Default(value) => scrub_value(value),
-            SegmentKind::Nth(_) => {}
+            | SegmentKind::Default(value)
+            | SegmentKind::Ai(value) => scrub_value(value),
+            SegmentKind::Nth(_) | SegmentKind::Ref(_) => {}
         }
     }
 
@@ -1431,6 +1434,17 @@ HTTP GET /
 X-Value: @10s
 HTTP GET "@10s"
 "#,
+        );
+    }
+
+    #[test]
+    fn ai_targets_round_trip() {
+        assert_round_trip(
+            "VISIT /\nCLICK role:dialog >> ai:\"the second email field\"\nASSERT ai:total text == 1\nCAPTURE t: ai:\"the {{x}} total\" text\n",
+        );
+        assert_eq!(
+            fmt("VISIT /\nCLICK ai:\"buy\"\n"),
+            "VISIT /\nCLICK ai:buy\n"
         );
     }
 

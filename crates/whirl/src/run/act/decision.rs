@@ -428,6 +428,57 @@ impl PlannedAction {
         }
     }
 
+    /// The elements the action targets, in line order.
+    pub(crate) fn targets(&self) -> Vec<&Target> {
+        match self {
+            Self::Click { target, .. }
+            | Self::Dblclick(target)
+            | Self::Hover(target)
+            | Self::ScrollIntoView(target)
+            | Self::Fill { target, .. }
+            | Self::Type { target, .. }
+            | Self::Press { target, .. }
+            | Self::Select { target, .. } => vec![target],
+            Self::Drag { source, target } => vec![source, target],
+            Self::Scroll { target, .. } => target.iter().collect(),
+        }
+    }
+
+    /// The action as the AI cache writes it (SPEC 12.1): `locators` are
+    /// the generated locators of [`Self::targets`], and `value` writes an
+    /// argument, or gives `None` when the cache cannot hold it.
+    pub(crate) fn cache_line(
+        &self,
+        locators: &[String],
+        value: impl Fn(&str) -> Option<String>,
+    ) -> Option<String> {
+        let first = || locators.first().cloned().unwrap_or_default();
+        let with = |verb: &str, argument: &ArgText| -> Option<String> {
+            Some(format!("{verb} {} {}", first(), value(&argument.0)?))
+        };
+        Some(match self {
+            Self::Click { button, .. } => format!("{} {}", button.keyword(), first()),
+            Self::Dblclick(_) => format!("DBLCLICK {}", first()),
+            Self::Hover(_) => format!("HOVER {}", first()),
+            Self::Drag { .. } => format!("DRAG {} to {}", first(), locators.get(1)?),
+            Self::ScrollIntoView(_) => format!("SCROLL {}", first()),
+            Self::Scroll { target, motion } => {
+                let motion = match motion {
+                    ScrollMotion::Chunk(direction) => direction.keyword().to_owned(),
+                    ScrollMotion::To(percent) => format!("to {percent}"),
+                };
+                match target {
+                    Some(_) => format!("SCROLL {} {motion}", first()),
+                    None => format!("SCROLL {motion}"),
+                }
+            }
+            Self::Fill { text, .. } => with("FILL", text)?,
+            Self::Type { text, .. } => with("TYPE", text)?,
+            Self::Press { key, .. } => with("PRESS", key)?,
+            Self::Select { option, .. } => with("SELECT", option)?,
+        })
+    }
+
     /// How the step-two prompt describes the first action.
     pub(crate) fn describe_for_model(&self, description: &str) -> String {
         let (method, argument) = match self {

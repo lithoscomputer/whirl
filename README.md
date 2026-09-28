@@ -175,6 +175,25 @@ Set the provider's key, such as `ANTHROPIC_API_KEY`. The model's choice can
 change between runs, so assert the result. `{{env.NAME}}` values in an
 instruction reach the model only as placeholders. See [ACT](SPEC.md#74-act).
 
+An `ai:` segment names one element in words, wherever a locator goes:
+
+```whirl
+CLICK ai:"the Add to cart button for the first product"
+ASSERT role:dialog >> ai:"the order total" text == "$42.00"
+```
+
+Whirl writes what each `ai:` target and `ACT` line resolved to in
+`<flow>.whirl-cache.json`, next to the flow. Commit it. Later runs replay it
+without a model call, and a step whose page changed heals with a warning:
+
+```console
+$ whirl --cache=update flows/   # resolve with the model and write the cache
+$ whirl flows/                  # replay; heal a miss with a warning
+$ whirl --cache=only flows/     # fail a miss instead of asking the model
+```
+
+See [AI targets](SPEC.md#63-ai-targets) and [the AI cache](SPEC.md#121-the-ai-cache).
+
 More commands:
 
 ```console
