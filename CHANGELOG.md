@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.20.0 (2026-09-28)
+
 - Read a plain number that a model writes as text, such as `"$1,299.00"`, as the number where an `EXTRACT` schema wants a number and does not allow a string, instead of failing with `extract-schema`. Any other text still fails. In the evals, Gemini 3.5 Flash-Lite's EXTRACT pass rate rose from 0.78 to 0.94.
 - When a model answers `click` with an argument that names no mouse button, such as an empty string or the element's text, click with the left button instead of failing with `act-invalid-decision`; ignore arguments to methods that take none, such as `hover`. In the evals, this recovered most of GLM 5.3 Flash's `act-invalid-decision` failures (ACT pass rate 0.81 to 0.88) and changed nothing beyond noise for the default models.
 ## 0.19.0 (2026-09-28)
