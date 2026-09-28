@@ -917,7 +917,8 @@ adapts the schema for providers that need strict schemas: every object gets
 property that the schema does not require may be null, and an `enum` or
 `const` without a `type` gets the type of its values. A null answer for such
 a property counts as absent. A schema whose root is not an object is sent as
-an object with one `value` property and read back from it.
+an object with one `value` property, which may be null, and read back from
+it.
 
 A string with `"format": "uri"` is a link. The model answers it with the ref
 of a link element in the snapshot, and Whirl reads that element's `href` and

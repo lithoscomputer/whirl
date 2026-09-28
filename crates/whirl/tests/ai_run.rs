@@ -714,6 +714,23 @@ fn extract_turns_a_link_ref_into_an_absolute_url() {
 }
 
 #[test]
+fn a_null_answer_for_a_non_object_schema_is_missing() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.answer(&[json!({"value": null})]);
+    let flow = dir.file(
+        "missing.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{ORDER}\
+             EXTRACT coupon \"the coupon code\"\n{{ \"type\": \"string\" }}\n\
+             ASSERT extract:coupon not exists\n"
+        ),
+    );
+    let output = twin.run(&dir, &flow, &[]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+}
+
+#[test]
 fn an_extract_answer_outside_its_schema_fails_the_entry() {
     let dir = TestDir::new();
     let twin = ModelTwin::start();

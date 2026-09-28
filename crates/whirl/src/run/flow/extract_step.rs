@@ -170,6 +170,8 @@ impl FlowExec<'_> {
         })?;
         let value = extract::unwrap_answer(answer, plan.schema.as_ref(), wrapped);
         match &plan.schema {
+            // A null answer is a missing value, whatever the schema (SPEC 7.6).
+            Some(_) if matches!(value, Value::Null) => {}
             Some(schema) => {
                 if let Some(problem) = extract::mismatch(&value, schema) {
                     return Err(failure(
