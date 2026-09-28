@@ -1248,10 +1248,7 @@ fn parse_action_body(
         "SCREENSHOT" => ActionKind::Screenshot {
             name: parse_name(tokens, keyword_span)?,
         },
-        "SNAPSHOT" => ActionKind::Snapshot {
-            options: Vec::new(),
-            name:    parse_name(tokens, keyword_span)?,
-        },
+        "SNAPSHOT" => parse_snapshot(tokens, keyword_span)?,
         "STORE" => parse_store(tokens, keyword_span)?,
         "EVAL" => ActionKind::Eval {
             script: one_value(tokens, keyword_span)?,
@@ -1281,6 +1278,27 @@ fn parse_act(tokens: Vec<RawToken>, keyword_span: Span) -> Result<ActionKind, Li
     Ok(ActionKind::Act {
         scope: Some(scope),
         instruction,
+    })
+}
+
+/// `SNAPSHOT name` or `SNAPSHOT name locator` (SPEC 7). The name comes
+/// first; the target takes prefixed segments only, like an `ACT` scope.
+fn parse_snapshot(mut tokens: Vec<RawToken>, keyword_span: Span) -> Result<ActionKind, LineError> {
+    let rest = if tokens.len() > 1 {
+        tokens.split_off(1)
+    } else {
+        Vec::new()
+    };
+    let name = parse_name(tokens, keyword_span)?;
+    let target = if rest.is_empty() {
+        None
+    } else {
+        Some(build_locator(rest, false, name.span)?)
+    };
+    Ok(ActionKind::Snapshot {
+        name,
+        target,
+        options: Vec::new(),
     })
 }
 
@@ -4751,6 +4769,67 @@ status == 202
             panic!("expected SNAPSHOT");
         };
         assert_eq!(name.text, "cart_page");
+    }
+
+    #[test]
+    fn snapshot_takes_an_optional_explicit_target_after_its_name() {
+        let file = parse(
+            "VISIT /\nSNAPSHOT page\nSNAPSHOT cart testid:cart @10s\nsnapshot-max-diff: 1\nSNAPSHOT pay frame:\"#pay iframe\" >> role:button \"Pay now\" >> nth:0\nSNAPSHOT row testid:{{row}}\n",
+        );
+        let actions = &file.entries[0].actions;
+        let ActionKind::Snapshot { name, target, .. } = &actions[1].kind else {
+            panic!("snapshot");
+        };
+        assert_eq!(name.text, "page");
+        assert!(target.is_none());
+        let ActionKind::Snapshot {
+            name,
+            target: Some(target),
+            options,
+        } = &actions[2].kind
+        else {
+            panic!("element snapshot");
+        };
+        assert_eq!(name.text, "cart");
+        assert_eq!(target.segments.len(), 1);
+        assert!(
+            matches!(&target.segments[0].kind, SegmentKind::TestId(value) if lit(value) == "cart")
+        );
+        assert_eq!(actions[2].timeout.map(DurationLit::millis), Some(10_000));
+        assert_eq!(options.len(), 1);
+        let ActionKind::Snapshot {
+            target: Some(target),
+            ..
+        } = &actions[3].kind
+        else {
+            panic!("frame snapshot");
+        };
+        assert_eq!(target.segments.len(), 3);
+        assert!(matches!(target.segments[0].kind, SegmentKind::Frame(_)));
+        assert!(matches!(target.segments[2].kind, SegmentKind::Nth(0)));
+        assert!(matches!(&actions[4].kind, ActionKind::Snapshot {
+            target: Some(_),
+            ..
+        }));
+    }
+
+    #[test]
+    fn snapshot_targets_need_a_name_and_explicit_segments() {
+        for invalid in [
+            "SNAPSHOT",
+            "SNAPSHOT testid:cart",
+            "SNAPSHOT \"cart\" testid:cart",
+            "SNAPSHOT cart cart",
+            "SNAPSHOT cart \"Add to cart\"",
+            "SNAPSHOT cart {{target}}",
+            "SNAPSHOT cart nth:0",
+            "SNAPSHOT cart testid:cart >>",
+            "SNAPSHOT cart testid:cart testid:total",
+            "SNAPSHOT cart frame:iframe",
+            "SNAPSHOT cart testid:cart >> total",
+        ] {
+            parse_err(&format!("VISIT /\n{invalid}\n"));
+        }
     }
 
     #[test]

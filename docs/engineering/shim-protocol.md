@@ -50,9 +50,11 @@ Error object:
 ### `hello`
 
 Sent once after spawn. Params: `{}`. Result:
-`{"protocol": 3, "playwrightVersion": "1.62.1", "ffmpegPath": "abs path" | null}`.
+`{"protocol": 4, "playwrightVersion": "1.62.1", "ffmpegPath": "abs path" | null}`.
 `ffmpegPath` is Playwright's bundled ffmpeg, which every video recording
 needs; `null` means it is not installed. `whirl doctor` reports it.
+Protocol 4 requires the snapshot `target`, so an older shim cannot silently
+take a full-page snapshot of an element snapshot.
 Protocol 3 requires effective snapshot masks and comparison settings. Older shims
 cannot silently ignore requested visual tolerances or masks.
 Protocol 2 replaces value checks and captures with the `read` and
@@ -191,7 +193,7 @@ Commands and their extra params (result `{}` unless noted):
 | `upload` | `locator`, `path` (absolute; Rust resolved it) |
 | `drop` | `locator`, `path` (absolute; Rust resolved it) — `locator.drop({ files: path })`; an `action` error when the file does not exist or the element's `dragover` does not call `preventDefault()` (SPEC 7) |
 | `screenshot` | `path` (absolute .png; full page) |
-| `snapshot` | `baselinePath`, `actualPath`, `diffPath`, `update` (bool), `masks` (array of locator arrays), `pixelThreshold` (number 0–1), `maxDiff` (`{"type":"pixels","value":count}` or `{"type":"percent","value":percent}`) |
+| `snapshot` | `baselinePath`, `actualPath`, `diffPath`, `update` (bool), `target` (locator array, or `null` for the full page), `masks` (array of locator arrays), `pixelThreshold` (number 0–1), `maxDiff` (`{"type":"pixels","value":count}` or `{"type":"percent","value":percent}`) |
 | `evalAction` | `script` |
 | `store` | `scope` (`"local"` \| `"session"` \| `"cookie"`), `key`, `value` — writes one `localStorage` or `sessionStorage` entry on the current origin, or one cookie for the current page's URL (host, path `/`, no attributes); `cookie` on a non-http(s) page is an `action` error |
 | `ariaSnapshot` | `locator` (or `null`); result `{"snapshot": "..."}`, the selected tab's `page.ariaSnapshot({ mode: "ai" })`, or that one element's `locator.ariaSnapshot({ mode: "ai" })` with the usual waiting and strictness, for `ACT` (SPEC 7.4) |
@@ -224,6 +226,15 @@ Semantics the shim owns (per SPEC sections 7, 9, 15):
   `"snapshot-missing-baseline"` (Rust reports it as a runtime error). With
   `update: true`, write the settled frame to `baselinePath` and reply
   `{"updated": true}`.
+- A `snapshot` with a `target` captures only that element with
+  `locator.screenshot()`, with the same masks and poll loop. The target
+  follows the strictness rule above; its frame owners must be unambiguous. It
+  resolves again for every frame. A capture that fails because the element
+  was detached, had zero width or height, or was not visible during the
+  capture is retried within `timeoutMs`; other errors end the step. When a
+  capture times out after a matching frame, the shim checks the target once
+  without waiting: a missing or hidden target fails with `"timeout"`, and a
+  visible target keeps the earlier result.
 - `ariaSnapshot` names each iframe, which Playwright writes without a name.
   Right after the snapshot, the shim resolves each iframe line's ref with
   `aria-ref=`, in any frame and across origins, and puts the iframe's

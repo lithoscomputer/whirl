@@ -1138,10 +1138,22 @@ export class PlaywrightDriver implements ShimDriver {
 				return {};
 			}
 			case "snapshot": {
+				const target = fieldArrayOrNull(params, "target") as
+					| readonly LocatorSegment[]
+					| null;
 				const result = await runSnapshot(
 					page,
 					{
 						...decodeSnapshotComparison(params),
+						capture:
+							target === null
+								? { type: "page" }
+								: {
+										type: "element",
+										locator: buildLocator(page, target),
+										description: describeLocator(target),
+										frames: frameOwners(page, target),
+									},
 						masks: fieldArray(params, "masks").map((segments) => {
 							if (!Array.isArray(segments)) {
 								throw new ShimError(

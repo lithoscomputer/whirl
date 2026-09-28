@@ -283,6 +283,10 @@
                           "pixelThreshold"
                         ],
                         "properties": {
+                          "target": {
+                            "type": "string",
+                            "description": "Explicit locator text of the element an element snapshot captured; absent for a full-page snapshot. Secret values are masked."
+                          },
                           "masks": {
                             "type": "array",
                             "items": {

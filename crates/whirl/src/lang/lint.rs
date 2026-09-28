@@ -675,7 +675,12 @@ fn collect_action_refs<'a>(action: &'a Action, refs: &mut Vec<VarRef<'a>>) {
         | ActionKind::Tab { .. }
         | ActionKind::Close { .. }
         | ActionKind::Screenshot { .. } => {}
-        ActionKind::Snapshot { options, .. } => {
+        ActionKind::Snapshot {
+            target, options, ..
+        } => {
+            if let Some(target) = target {
+                collect_locator_refs(target, line, refs);
+            }
             for option in options {
                 collect_snapshot_refs(&option.option, option.line, refs);
             }
@@ -969,6 +974,23 @@ mod tests {
                 .count(),
             4
         );
+    }
+
+    #[test]
+    fn snapshot_targets_reference_captures_and_setup_values() {
+        let lints = lint("VISIT /\n[Captures]\nrow: eval \"'a'\"\nSNAPSHOT row testid:{{row}}\n");
+        assert!(lints.is_empty(), "{lints:?}");
+        let lints = lint("VISIT /\nSNAPSHOT row testid:{{setup.row}}\n");
+        assert_eq!(lints.len(), 1, "{lints:?}");
+        assert_eq!(lints[0].code, "missing-setup");
+    }
+
+    #[test]
+    fn page_and_element_snapshots_share_one_name_space() {
+        let lints = lint("VISIT /\nSNAPSHOT cart\nSNAPSHOT cart testid:cart\n");
+        assert_eq!(lints.len(), 1, "{lints:?}");
+        assert_eq!(lints[0].severity, Severity::Error);
+        assert_eq!(lints[0].line, 3);
     }
 
     #[test]

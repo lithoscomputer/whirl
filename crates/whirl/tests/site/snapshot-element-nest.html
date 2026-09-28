@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Snapshot element nest</title>
+<style>html, body { margin: 0; } iframe { width: 100px; height: 100px; border: 0; }</style>
+<iframe id="inner" title="Inner"></iframe>
+<script>
+  const inner = new URL("/snapshot-element.html", location.href);
+  inner.hostname = "localhost";
+  inner.search = location.search;
+  document.getElementById("inner").src = inner.href;
+</script>
+</html>
