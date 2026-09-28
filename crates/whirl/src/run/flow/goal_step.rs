@@ -238,7 +238,10 @@ impl FlowExec<'_> {
             let result = match self
                 .act_shim_call(
                     line,
-                    StepCommand::AriaSnapshot { locator: None },
+                    StepCommand::AriaSnapshot {
+                        locator: None,
+                        settle:  true,
+                    },
                     client,
                     state,
                 )

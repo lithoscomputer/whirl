@@ -83,6 +83,7 @@ impl FlowExec<'_> {
                 &mut line,
                 StepCommand::AriaSnapshot {
                     locator: plan.scope.clone(),
+                    settle:  true,
                 },
                 client,
                 state,

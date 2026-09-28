@@ -50,9 +50,10 @@ Error object:
 ### `hello`
 
 Sent once after spawn. Params: `{}`. Result:
-`{"protocol": 7, "playwrightVersion": "1.62.1", "ffmpegPath": "abs path" | null}`.
+`{"protocol": 8, "playwrightVersion": "1.62.1", "ffmpegPath": "abs path" | null}`.
 `ffmpegPath` is Playwright's bundled ffmpeg, which every video recording
 needs; `null` means it is not installed. `whirl doctor` reports it.
+Protocol 8 adds `settle` to `ariaSnapshot`.
 Protocol 7 adds `judgeScreenshot` (section 4.9) for `JUDGE`.
 Protocol 6 adds `generateLocator` (section 4.8) for the AI cache.
 Protocol 5 adds `mock` and `readRequest` (sections 4.6 and 4.7) and the
@@ -208,7 +209,7 @@ Commands and their extra params (result `{}` unless noted):
 | `snapshot` | `baselinePath`, `actualPath`, `diffPath`, `update` (bool), `target` (locator array, or `null` for the full page), `masks` (array of locator arrays), `pixelThreshold` (number 0–1), `maxDiff` (`{"type":"pixels","value":count}` or `{"type":"percent","value":percent}`) |
 | `evalAction` | `script` |
 | `store` | `scope` (`"local"` \| `"session"` \| `"cookie"`), `key`, `value` — writes one `localStorage` or `sessionStorage` entry on the current origin, or one cookie for the current page's URL (host, path `/`, no attributes); `cookie` on a non-http(s) page is an `action` error |
-| `ariaSnapshot` | `locator` (or `null`); result `{"snapshot": "..."}`, the selected tab's `page.ariaSnapshot({ mode: "ai" })`, or that one element's `locator.ariaSnapshot({ mode: "ai" })` with the usual waiting and strictness, for `ACT` (SPEC 7.4) |
+| `ariaSnapshot` | `locator` (or `null`), `settle` (bool); result `{"snapshot": "..."}`, the selected tab's `page.ariaSnapshot({ mode: "ai" })`, or that one element's `locator.ariaSnapshot({ mode: "ai" })` with the usual waiting and strictness, for `ACT` (SPEC 7.4). With `settle`, the shim first waits until the network has been quiet for 500 ms (streams and requests open for 2 s do not count), for at least 100 ms and at most 5 s or half of `timeoutMs` |
 | `page` | `expect` (section 4.2) |
 | `assert` | `spec` (section 4.3) — state checks and tab closure only |
 | `read` | `subject` (section 4.4); result `{"type": "value", "value": ...}` or `{"type": "missing", "reason": "no-element" \| "absent-attribute"}` |

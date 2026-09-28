@@ -594,6 +594,16 @@ ACT "add the first product to the cart"
 ASSERT testid:cart-badge text == 1
 ```
 
+Before each snapshot that a model reads, for `ACT`, `GOAL`, `ai:` targets,
+`EXTRACT`, and `JUDGE`, Whirl waits for the page to settle: until the
+document's DOM has loaded and no request has been open for 500 ms. WebSocket
+and event-stream requests do not count, and a request open for 2 seconds stops
+counting. The wait lasts at least 100 ms, so a request that the last action
+just started is seen, and at most 5 seconds or half of the step's remaining
+time. A page that does not settle is read as it is. Many pages load their
+content after the document, so a model that read the page at once would not
+see it. A cached locator's check (section 12.1) does not wait.
+
 Whirl takes a Playwright AI snapshot of the selected tab. The snapshot is an
 outline of the page's accessibility tree, and each element in it has a ref such
 as `e12`. Elements inside iframes are included, with refs such as `f1e3`. Whirl

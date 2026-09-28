@@ -6,12 +6,17 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Duration;
 use std::{env, fs, process};
 
+use axum::Router;
+use axum::response::Html;
+use axum::routing::get;
 use reqwest::blocking::{Client as HttpClient, Response};
 use serde_json::{Value as Json, json};
 use tokio::net::TcpListener;
 use tokio::runtime::{Builder, Runtime};
+use tokio::time::sleep;
 use twin_openai::config::{Config, Mode, RecordFormat};
 
 /// A unique temporary directory for one test, removed on drop.
@@ -1177,4 +1182,78 @@ fn a_goal_that_runs_out_of_time_fails_with_timeout() {
         error["message"],
         "timeout: GOAL did not finish within 1000ms"
     );
+}
+
+/// A page whose list arrives from a request that the server holds for
+/// 800 ms, served on its own runtime.
+struct SlowSite {
+    _runtime: Runtime,
+    url:      String,
+}
+
+impl SlowSite {
+    fn start() -> Self {
+        let runtime = Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .expect("the site runtime should build");
+        let listener = runtime
+            .block_on(TcpListener::bind("127.0.0.1:0"))
+            .expect("the site should bind a local port");
+        let url = format!(
+            "http://{}",
+            listener
+                .local_addr()
+                .expect("a bound listener has an address")
+        );
+        let app = Router::new()
+            .route(
+                "/",
+                get(|| async {
+                    Html(
+                        "<h1>Mugs</h1><ul id=list></ul><script>\
+                         fetch('/items').then(r => r.text()).then(t => {\
+                         document.getElementById('list').innerHTML = t; });</script>",
+                    )
+                }),
+            )
+            .route(
+                "/items",
+                get(|| async {
+                    sleep(Duration::from_millis(800)).await;
+                    "<li>Blue mug</li>"
+                }),
+            );
+        runtime.spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("the site should serve");
+        });
+        Self {
+            _runtime: runtime,
+            url,
+        }
+    }
+}
+
+#[test]
+fn a_model_reads_the_page_after_its_requests_finish() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    let site = SlowSite::start();
+    twin.answer(&[json!({"value": "Blue mug"})]);
+    let flow = dir.file(
+        "slow.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\nVISIT {}/\n\
+             EXTRACT item \"the first item\"\n\
+             ASSERT extract:item == \"Blue mug\"\n",
+            site.url
+        ),
+    );
+    let output = twin.run(&dir, &flow, &[]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    let log = twin.request_log();
+    assert!(log.contains("listitem [ref=e4]: Blue mug"), "{log}");
 }
