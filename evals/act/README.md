@@ -1,9 +1,11 @@
 # ACT evals
 
 These evals compare language models on `ACT` (SPEC section 7.4), `ai:`
-targets (SPEC section 6.3), and `EXTRACT` (SPEC section 7.6) for accuracy,
-cost, and speed. The `ai-target-*` tasks use `ai:` instead of `ACT`, and the
-`extract-*` tasks use `EXTRACT`. Each task is an ordinary `.whirl` flow: `ACT` is
+targets (SPEC section 6.3), `EXTRACT` (SPEC section 7.6), and `JUDGE` (SPEC
+section 9.8) for accuracy, cost, and speed. The `ai-target-*` tasks use `ai:`
+instead of `ACT`, the `extract-*` tasks use `EXTRACT`, and the `judge-*` tasks
+use `JUDGE`. Some `judge-*` claims only the screenshot shows, such as a color
+or a canvas chart. Each task is an ordinary `.whirl` flow: `ACT` is
 the step under test, and its `ASSERT` lines grade it. Whirl's JSON report records
 the rest.
 
@@ -22,7 +24,7 @@ $ mise run eval:act -- --summarize              # summarize existing runs only
 ```
 
 A session calls real models and costs money. Check it first with
-`--preview`. A local session is about 590 runs per model.
+`--preview`. A local session is about 760 runs per model.
 
 `-n` is a target: the script runs only the runs each model and task still
 need, one pass over the tasks at a time. Repeating a command resumes an
@@ -75,8 +77,11 @@ A task whose file name ends in `.no-match.whirl` expects `ACT` to find no
 element: it passes only when the ACT step fails with `act-no-match`. A task
 whose file name ends in `.ambiguous.whirl` expects an `ai:` description to
 fit several elements: it passes only when the step fails with `strictness`.
-Times, calls, tokens, and costs sum the task's `ACT`, `ai:`, and `EXTRACT`
-steps.
+A task whose file name ends in `.judge-false.whirl` expects `JUDGE` to answer
+`no`: it passes only when the step fails with `judge-false`. A task whose file
+name ends in `.unsure.whirl` expects `JUDGE` to answer `unsure`: it passes
+only when the flow passes with the warning `judge-unsure`. Times, calls,
+tokens, and costs sum the task's `ACT`, `ai:`, `EXTRACT`, and `JUDGE` steps.
 
 ## Results
 

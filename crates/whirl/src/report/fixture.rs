@@ -30,6 +30,7 @@ fn step(
         warnings: Vec::new(),
         ai: None,
         extract: None,
+        judge: None,
     }
 }
 

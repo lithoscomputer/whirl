@@ -55,7 +55,7 @@ import type {
 } from "./protocol.js";
 import { assertNever, ShimError } from "./protocol.js";
 import { runRead } from "./reads.js";
-import { runSnapshot } from "./snapshots.js";
+import { runSnapshot, settledScreenshot } from "./snapshots.js";
 import {
 	actionErrorMessage,
 	Deadline,
@@ -1172,6 +1172,24 @@ export class PlaywrightDriver implements ShimDriver {
 				await page.screenshot({ path, fullPage: true, timeout: timeoutMs });
 				return {};
 			}
+			case "judgeScreenshot": {
+				const target = fieldArrayOrNull(params, "locator") as
+					| readonly LocatorSegment[]
+					| null;
+				const png = await settledScreenshot(
+					page,
+					target === null
+						? { type: "viewport" }
+						: {
+								type: "element",
+								locator: buildLocator(page, target),
+								description: describeLocator(target),
+								frames: frameOwners(page, target),
+							},
+					timeoutMs,
+				);
+				return { pngBase64: png.toString("base64") };
+			}
 			case "snapshot": {
 				const target = fieldArrayOrNull(params, "target") as
 					| readonly LocatorSegment[]
@@ -1625,6 +1643,7 @@ function defaultErrorKind(cmd: StepCommand): ErrorKind {
 		case "generateLocator":
 			return "internal";
 		case "snapshot":
+		case "judgeScreenshot":
 		case "page":
 		case "assert":
 		case "traceGroup":

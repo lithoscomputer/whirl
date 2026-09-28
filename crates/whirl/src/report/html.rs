@@ -417,6 +417,7 @@ fn render_entry(
         render_act(output, step)?;
         render_ai(output, step)?;
         render_extract(output, step)?;
+        render_judge(output, step)?;
         render_snapshot(output, step)?;
         render_error(output, step)?;
         write!(output, "</li>")?;
@@ -549,6 +550,28 @@ fn render_extract(output: &mut impl io::Write, step: &StepReport) -> io::Result<
             escape(&value.value_type)
         )?,
         None => write!(output, "<dt>Read</dt><dd>no value</dd>")?,
+    }
+    write!(output, "</dl>")
+}
+
+/// A `JUDGE` step's verdict and reason (SPEC 9.8).
+fn render_judge(output: &mut impl io::Write, step: &StepReport) -> io::Result<()> {
+    let Some(judge) = &step.judge else {
+        return Ok(());
+    };
+    write!(
+        output,
+        "<dl><dt>Model</dt><dd><code>{}</code> · {} call(s) · {} input and {} output tokens</dd>",
+        escape(&judge.model),
+        judge.usage.model_calls,
+        judge.usage.input_tokens,
+        judge.usage.output_tokens
+    )?;
+    if let Some(verdict) = &judge.verdict {
+        write!(output, "<dt>Verdict</dt><dd>{}</dd>", escape(verdict))?;
+    }
+    if let Some(reason) = &judge.reason {
+        write!(output, "<dt>Reason</dt><dd>{}</dd>", escape(reason))?;
     }
     write!(output, "</dl>")
 }

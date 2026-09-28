@@ -319,6 +319,7 @@ pub(crate) fn file_keys(file: &File) -> Vec<CacheKey> {
                     };
                     (capture.line, capture.text.as_str(), locator)
                 }
+                CheckStep::Judge(judge) => (judge.line, judge.text.as_str(), judge.scope.as_ref()),
             };
             targets(line, text, locator.into_iter().collect(), &mut keys);
         }
@@ -336,10 +337,10 @@ pub(crate) fn occurrences(file: &File) -> HashMap<u32, u32> {
             .actions
             .iter()
             .map(|action| (action.line, action.text.as_str()));
-        let checks = entry.checks.iter().map(|check| match check {
-            CheckStep::Assert(assert) => (assert.line, assert.text.as_str()),
-            CheckStep::Capture(capture) => (capture.line, capture.text.as_str()),
-        });
+        let checks = entry
+            .checks
+            .iter()
+            .map(|check| (check.line(), check.text()));
         for (line, text) in actions.chain(checks) {
             let count = seen.entry(text).or_insert(0);
             *count += 1;

@@ -165,6 +165,7 @@
                           "action",
                           "page",
                           "assert",
+                          "judge",
                           "capture"
                         ]
                       },
@@ -496,6 +497,56 @@
                                     "minimum": 0
                                   }
                                 }
+                              }
+                            }
+                          }
+                        }
+                      },
+                      "judge": {
+                        "type": "object",
+                        "description": "What a JUDGE step asked and the model's answer (SPEC 9.8). The verdict and reason are absent when the step ended before the model answered.",
+                        "required": [
+                          "model",
+                          "usage"
+                        ],
+                        "properties": {
+                          "model": {
+                            "type": "string"
+                          },
+                          "verdict": {
+                            "enum": [
+                              "yes",
+                              "no",
+                              "unsure"
+                            ]
+                          },
+                          "reason": {
+                            "type": "string",
+                            "description": "The model's reason, with masked values as ***."
+                          },
+                          "usage": {
+                            "type": "object",
+                            "required": [
+                              "modelCalls",
+                              "inputTokens",
+                              "outputTokens"
+                            ],
+                            "properties": {
+                              "modelCalls": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "inputTokens": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "outputTokens": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "costUsdMicros": {
+                                "type": "integer",
+                                "minimum": 0
                               }
                             }
                           }

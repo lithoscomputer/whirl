@@ -87,7 +87,7 @@ rl.on("line", (line) => {
   switch (cmd) {
     case "hello":
       if (ignoreLifecycle) break;
-      reply(id, { protocol: 6, playwrightVersion: "0.0.0-fake" });
+      reply(id, { protocol: 7, playwrightVersion: "0.0.0-fake" });
       break;
     case "startFlow":
       if (ignoreLifecycle) break;

@@ -20,7 +20,7 @@ use sha2::{Digest as _, Sha256};
 use tokio::runtime::Runtime;
 
 use crate::lang::lint::{
-    Lint, Severity, lint_act, lint_file_with, lint_setup_refs, setup_capture_uses,
+    Lint, ModelFacts, Severity, lint_act, lint_file_with, lint_setup_refs, setup_capture_uses,
 };
 use crate::lang::parse::{ParseError, parse_file, reject_sections};
 use crate::lang::{ast, fmt};
@@ -649,7 +649,11 @@ fn check_inputs(
         }
         let mut lints = lint_file_with(&input.file, &external);
         lints.extend(lint_act(&input.file, |model| {
-            models.as_ref().is_none_or(|models| models.knows(model))
+            models
+                .as_ref()
+                .map_or(ModelFacts::Known { images: Some(true) }, |models| {
+                    models.facts(model)
+                })
         }));
         lints.sort_by_key(|lint| (lint.line, lint.column));
         for lint in lints {

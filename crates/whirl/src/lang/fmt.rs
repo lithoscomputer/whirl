@@ -20,10 +20,10 @@ use crate::check::{Number, is_bytes_literal_shape};
 use crate::lang::ast::snapshot::SnapshotOption;
 use crate::lang::ast::{
     Action, ActionKind, Assert, AssertBody, Capture, CheckLine, CheckStep, Comment, DurationLit,
-    DurationUnit, Entry, Extractor, File, FileOption, FilterArg, FilterSpec, HttpBodyKind, Locator,
-    MockResponse, Operand, OptionValue, Page, PageCheck, PredicateSpec, Regex, RequestField,
-    ResponseField, ScrollDirection, ScrollMotion, SegmentKind, StateCheck, Subject, TextPrefix,
-    Value, ValueSegment, Viewport,
+    DurationUnit, Entry, Extractor, File, FileOption, FilterArg, FilterSpec, HttpBodyKind, Judge,
+    Locator, MockResponse, Operand, OptionValue, Page, PageCheck, PredicateSpec, Regex,
+    RequestField, ResponseField, ScrollDirection, ScrollMotion, SegmentKind, StateCheck, Subject,
+    TextPrefix, Value, ValueSegment, Viewport,
 };
 
 /// Where a rendered value sits in its line. The context decides which
@@ -730,6 +730,24 @@ fn render_response_field(field: &ResponseField) -> String {
     }
 }
 
+/// Renders a `JUDGE` line (SPEC 9.8).
+fn render_judge(judge: &Judge) -> String {
+    let is_final = judge.timeout.is_none();
+    let mut out = match &judge.scope {
+        Some(scope) => format!(
+            "JUDGE {} {}",
+            render_locator(scope, LocatorCtx::Action, false),
+            render_value(&judge.claim, ValueCtx::Plain, is_final)
+        ),
+        None => format!(
+            "JUDGE {}",
+            render_value(&judge.claim, ValueCtx::Plain, is_final)
+        ),
+    };
+    push_timeout(&mut out, judge.timeout);
+    out
+}
+
 /// Renders a `CAPTURE` line (SPEC 10).
 fn render_capture(capture: &Capture) -> String {
     let is_final = capture.timeout.is_none();
@@ -934,6 +952,7 @@ fn entry_region(entry: &Entry) -> Region {
     for check in &entry.checks {
         let text = match check {
             CheckStep::Assert(assert) => render_assert(assert),
+            CheckStep::Judge(judge) => render_judge(judge),
             CheckStep::Capture(capture) => render_capture(capture),
         };
         lines.push(Line {
@@ -1334,6 +1353,15 @@ mod tests {
         for check in &mut entry.checks {
             match check {
                 CheckStep::Assert(assert) => scrub_assert(assert),
+                CheckStep::Judge(judge) => {
+                    judge.line = 0;
+                    judge.span = ZERO;
+                    judge.text = String::new();
+                    if let Some(scope) = &mut judge.scope {
+                        scrub_locator(scope);
+                    }
+                    scrub_value(&mut judge.claim);
+                }
                 CheckStep::Capture(capture) => scrub_capture(capture),
             }
         }
@@ -1493,6 +1521,17 @@ HTTP GET "@10s"
         assert_eq!(
             fmt("VISIT /\nEXTRACT order   \"the total\"\n{ \"type\":  \"number\" }\n"),
             "VISIT /\nEXTRACT order \"the total\"\n{ \"type\":  \"number\" }\n"
+        );
+    }
+
+    #[test]
+    fn judge_round_trips() {
+        assert_round_trip(
+            "VISIT /\nASSERT testid:x visible\nJUDGE testid:x \"the total is {{total}}\" @20s\nJUDGE \"no error shows\"\n",
+        );
+        assert_eq!(
+            fmt("VISIT /\nJUDGE    css:main   \"it is fine\"\n"),
+            "VISIT /\nJUDGE css:main \"it is fine\"\n"
         );
     }
 

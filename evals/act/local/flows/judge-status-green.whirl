@@ -1,0 +1,8 @@
+[Options]
+base: {{env.EVAL_BASE}}
+model: {{model}}
+
+# JUDGE: a claim that only the screenshot shows; the dot has no text.
+VISIT /judge-dashboard/
+ASSERT testid:status visible
+JUDGE testid:status "the status indicator next to API is green" @60s

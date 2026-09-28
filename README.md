@@ -212,6 +212,19 @@ ASSERT extract:order json:$.total > 0
 
 See [EXTRACT](SPEC.md#76-extract).
 
+`JUDGE` asks the model whether a claim about the page holds. The model sees a
+screenshot and the page outline. Put an `ASSERT` first that waits for the
+state the claim describes, because `JUDGE` does not retry:
+
+```whirl
+ASSERT testid:summary visible
+JUDGE testid:summary "the total matches the sum of the line items"
+JUDGE "the page shows no error message"
+```
+
+`yes` passes, `no` fails with the model's reason, and `unsure` passes with a
+warning. The model must accept images. See [JUDGE](SPEC.md#98-judge).
+
 More commands:
 
 ```console

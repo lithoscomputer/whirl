@@ -13,9 +13,9 @@ mod snapshot;
 pub(crate) use decision::{ActDecision, FollowUp, PlannedAction};
 pub(crate) use instruction::Instruction;
 pub(crate) use jev::{JevClient, JevPlanner, JevSetupError};
-pub(crate) use model::{ModelCatalog, ModelClient, ModelSetupError};
+pub(crate) use model::{ModelCatalog, ModelClient, ModelSetupError, Verdict};
 pub(crate) use planner::{
     ActPlanner, LlmPlanner, PlanError, PlanRequest, PlanStep, PlanUsage, PlannedBy,
 };
-pub(crate) use prompt::{extract_message, target_message};
+pub(crate) use prompt::{extract_message, judge_message, target_message};
 pub(crate) use snapshot::{Fingerprint, PageSnapshot, Target};

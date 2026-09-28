@@ -19,11 +19,11 @@ use crate::lang::ast::snapshot::{MaxDiff, PixelThreshold, SnapshotOption, Snapsh
 use crate::lang::ast::{
     Action, ActionKind, Assert, AssertBody, BrowserKind, Capture, CheckLine, CheckStep, Comment,
     DialogPolicy, DurationLit, Entry, ExtractSchema, Extractor, File, FileOption, FilterArg,
-    FilterSpec, HttpBody, HttpBodyKind, HttpHeader, Ident, JsonLiteral, Locator, LocatorSegment,
-    MockResponse, MouseButton, Operand, OptionLine, OptionValue, Page, PageCheck, Percent,
-    PredicateSpec, ReducedMotion, Regex, RegexFlags, RequestField, ResponseField, ScrollDirection,
-    ScrollMotion, SegmentKind, Span, StateCheck, StoreScope, Subject, TextPrefix, Value,
-    ValueSegment, Viewport, chain_type,
+    FilterSpec, HttpBody, HttpBodyKind, HttpHeader, Ident, JsonLiteral, Judge, Locator,
+    LocatorSegment, MockResponse, MouseButton, Operand, OptionLine, OptionValue, Page, PageCheck,
+    Percent, PredicateSpec, ReducedMotion, Regex, RegexFlags, RequestField, ResponseField,
+    ScrollDirection, ScrollMotion, SegmentKind, Span, StateCheck, StoreScope, Subject, TextPrefix,
+    Value, ValueSegment, Viewport, chain_type,
 };
 
 /// A parse diagnostic (SPEC 16): file, line, column, the source line, a
@@ -2473,7 +2473,7 @@ enum State {
 }
 
 /// The keywords that start a check line (SPEC 9, 10).
-const CHECK_KEYWORDS: [&str; 2] = ["ASSERT", "CAPTURE"];
+const CHECK_KEYWORDS: [&str; 3] = ["ASSERT", "JUDGE", "CAPTURE"];
 
 struct Parser {
     options:        Vec<OptionLine>,
@@ -2801,7 +2801,7 @@ fn mark_text_extracts(file: &mut File) {
                     ..
                 }) => &mut line.subject,
                 CheckStep::Capture(capture) => &mut capture.subject,
-                CheckStep::Assert(_) => continue,
+                CheckStep::Assert(_) | CheckStep::Judge(_) => continue,
             };
             if let Subject::Extract { name, text: plain } = subject {
                 *plain = text.get(&name.text).copied().unwrap_or(false);
@@ -3342,7 +3342,31 @@ impl Parser {
         self.first_keyword.get_or_insert(keyword_span.line);
         let implicit_http = self.in_http_entry();
         let line_no = cursor.line_no;
-        let check = if keyword == "ASSERT" {
+        let check = if keyword == "JUDGE" {
+            if implicit_http {
+                return Err(LineError::new(
+                    keyword_span,
+                    "JUDGE checks the page; an HTTP entry has no page",
+                ));
+            }
+            let mut tokens = Vec::new();
+            while let Some(token) = cursor.next_token()? {
+                tokens.push(token);
+            }
+            let timeout = split_timeout(&mut tokens);
+            let ActionKind::Act { scope, instruction } = parse_act(tokens, keyword_span)? else {
+                unreachable!("parse_act returns ACT");
+            };
+            let (text, span) = cursor.content(content_start);
+            CheckStep::Judge(Judge {
+                scope,
+                claim: instruction,
+                timeout,
+                line: line_no,
+                span,
+                text,
+            })
+        } else if keyword == "ASSERT" {
             let Some(first) = cursor.next_token()? else {
                 return Err(LineError::new(after_span(keyword_span), "expected a check")
                     .expecting([
@@ -4660,7 +4684,7 @@ ASSERT status == 202
                         ..
                     }) => &line.subject,
                     CheckStep::Capture(capture) => &capture.subject,
-                    CheckStep::Assert(_) => panic!("expected a subject"),
+                    CheckStep::Assert(_) | CheckStep::Judge(_) => panic!("expected a subject"),
                 };
                 let Subject::Request { name, field } = subject else {
                     panic!("expected a request subject");
@@ -4770,6 +4794,40 @@ ASSERT status == 202
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn judge_is_a_check_line_with_an_optional_scope() {
+        let file = parse(
+            "VISIT /\nASSERT testid:summary visible\nJUDGE testid:summary \"the total is {{total}}\" @20s\nJUDGE \"no error shows\"\nCAPTURE t: url\n",
+        );
+        let entry = only_entry(&file);
+        let judges: Vec<&Judge> = entry.judges().collect();
+        assert_eq!(judges.len(), 2);
+        assert!(judges[0].scope.is_some());
+        assert_eq!(judges[0].line, 3);
+        assert_eq!(judges[0].timeout.map(DurationLit::millis), Some(20_000));
+        assert_eq!(
+            judges[0].text,
+            "JUDGE testid:summary \"the total is {{total}}\" @20s"
+        );
+        assert!(judges[1].scope.is_none());
+        assert_eq!(lit(&judges[1].claim), "no error shows");
+        assert!(matches!(entry.checks[3], CheckStep::Capture(_)));
+        assert!(file.uses_judge() && file.uses_ai());
+    }
+
+    #[test]
+    fn judge_needs_a_page() {
+        assert_eq!(
+            parse_err("HTTP GET /x\nJUDGE \"fine\"\n").message,
+            "JUDGE checks the page; an HTTP entry has no page"
+        );
+        assert!(
+            parse_err("VISIT /\nJUDGE\n")
+                .message
+                .starts_with("expected")
+        );
     }
 
     #[test]
