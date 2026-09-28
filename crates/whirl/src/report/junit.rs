@@ -24,8 +24,8 @@ pub(crate) fn render(report: &RunReport) -> String {
         // and the reports list every blocked host (SPEC 5), so the
         // suite carries both as its <system-out> text.
         let lines: Vec<String> = file
-            .warnings
-            .iter()
+            .warning_lines()
+            .into_iter()
             .map(|warning| format!("warning: {warning}"))
             .chain(
                 file.blocked_hosts

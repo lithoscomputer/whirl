@@ -18,10 +18,11 @@ use crate::lang::ast::snapshot::{MaxDiff, PixelThreshold, SnapshotOption, Snapsh
 use crate::lang::ast::{
     Action, ActionKind, Assert, AssertBody, BrowserKind, Capture, CheckLine, CheckStep, Comment,
     DialogPolicy, DurationLit, Entry, Extractor, File, FileOption, FilterArg, FilterSpec, HttpBody,
-    HttpBodyKind, HttpHeader, Ident, JsonLiteral, Locator, LocatorSegment, MouseButton, Operand,
-    OptionLine, OptionValue, Page, PageCheck, Percent, PredicateSpec, ReducedMotion, Regex,
-    RegexFlags, ResponseField, ScrollDirection, ScrollMotion, SegmentKind, Span, StateCheck,
-    StoreScope, Subject, TextPrefix, Value, ValueSegment, Viewport, chain_type,
+    HttpBodyKind, HttpHeader, Ident, JsonLiteral, Locator, LocatorSegment, MockResponse,
+    MouseButton, Operand, OptionLine, OptionValue, Page, PageCheck, Percent, PredicateSpec,
+    ReducedMotion, Regex, RegexFlags, RequestField, ResponseField, ScrollDirection, ScrollMotion,
+    SegmentKind, Span, StateCheck, StoreScope, Subject, TextPrefix, Value, ValueSegment, Viewport,
+    chain_type,
 };
 
 /// A parse diagnostic (SPEC 16): file, line, column, the source line, a
@@ -74,9 +75,12 @@ impl ParseError {
 pub(crate) enum ParseErrorCode {
     /// An ordinary syntax error.
     Syntax,
-    /// A file that mixes check lines with the deprecated `[Asserts]` and
+    /// A file that mixes check lines with the removed `[Asserts]` and
     /// `[Captures]` sections (SPEC 4.1).
     MixedCheckSyntax,
+    /// A file with a removed `[Asserts]` or `[Captures]` section, outside
+    /// `whirl fmt` (SPEC 4.1).
+    SectionsRemoved,
 }
 
 impl ParseErrorCode {
@@ -84,6 +88,7 @@ impl ParseErrorCode {
         match self {
             Self::Syntax => "parse-error",
             Self::MixedCheckSyntax => "mixed-check-syntax",
+            Self::SectionsRemoved => "sections-removed",
         }
     }
 }
@@ -909,9 +914,10 @@ fn split_timeout(tokens: &mut Vec<RawToken>) -> Option<DurationLit> {
     Some(duration)
 }
 
-const ACTION_KEYWORDS: [&str; 26] = [
+const ACTION_KEYWORDS: [&str; 27] = [
     "HTTP",
     "RESPONSE",
+    "MOCK",
     "POPUP",
     "TAB",
     "CLOSE",
@@ -1117,6 +1123,55 @@ fn is_response_field(text: &str) -> bool {
         || text.starts_with("xpath:")
 }
 
+const REQUEST_FIELDS: [&str; 7] = [
+    "method",
+    "url",
+    "header:NAME",
+    "body",
+    "bytes",
+    "json:PATH",
+    "xpath:EXPR",
+];
+
+/// Parses the field after `request:NAME` (SPEC 9.2).
+fn parse_request_field(cursor: &mut Cursor, span: Span) -> Result<RequestField, LineError> {
+    let token = cursor.next_token()?.ok_or_else(|| {
+        LineError::new(after_span(span), "expected a request field").expecting(REQUEST_FIELDS)
+    })?;
+    match token.bare_single() {
+        Some("method") => return Ok(RequestField::Method),
+        Some("url") => return Ok(RequestField::Url),
+        Some("body") => return Ok(RequestField::Body),
+        Some("bytes") => return Ok(RequestField::Bytes),
+        _ => {}
+    }
+    let head = match token.parts.first() {
+        Some(RawPart::Bare { text, .. }) => text.as_str(),
+        _ => "",
+    };
+    if head.starts_with("json:") {
+        return Ok(RequestField::Json(json_path_value(token)?));
+    }
+    if head.starts_with("xpath:") {
+        return Ok(RequestField::Xpath(xpath_value(token)?));
+    }
+    if !head.starts_with("header:") {
+        return Err(
+            LineError::new(token.span, "expected a request field").expecting(REQUEST_FIELDS)
+        );
+    }
+    let field_span = token.span;
+    let value = strip_prefix_token(token, "header:".len())
+        .ok_or_else(|| LineError::new(field_span, "expected a header name after `header:`"))?
+        .into_value()?;
+    if let Some(literal) = value.as_literal()
+        && !is_attr_name(&literal)
+    {
+        return Err(LineError::new(field_span, "invalid request header name"));
+    }
+    Ok(RequestField::Header(value))
+}
+
 fn parse_response_field(cursor: &mut Cursor, span: Span) -> Result<ResponseField, LineError> {
     let token = cursor.next_token()?.ok_or_else(|| {
         LineError::new(after_span(span), "expected a response field").expecting(RESPONSE_FIELDS)
@@ -1201,6 +1256,53 @@ fn xpath_value(token: RawToken) -> Result<Value, LineError> {
 }
 
 /// Parses an action line after its keyword (SPEC 7, 17).
+/// Parses `MOCK METHOD url STATUS` or `MOCK METHOD url failed` (SPEC
+/// 7.5). Header and body lines follow in [`Parser::parse_http_tail`].
+fn parse_mock(tokens: Vec<RawToken>, span: Span) -> Result<ActionKind, LineError> {
+    let Ok([method, url, answer]) = <[RawToken; 3]>::try_from(tokens) else {
+        return Err(LineError::new(span, "expected MOCK METHOD url STATUS")
+            .expecting(["MOCK METHOD url STATUS", "MOCK METHOD url failed"]));
+    };
+    let method = method
+        .bare_single()
+        .filter(|text| !text.is_empty() && text.chars().all(|ch| ch.is_ascii_uppercase()))
+        .ok_or_else(|| {
+            LineError::new(
+                method.span,
+                "expected an uppercase HTTP method like GET or POST",
+            )
+        })?
+        .to_owned();
+    let url = url.into_value()?;
+    let response = match answer.bare_single() {
+        Some("failed") => MockResponse::Failed,
+        Some(text)
+            if text.len() == 3
+                && text.bytes().all(|byte| byte.is_ascii_digit())
+                && (200..=599).contains(&text.parse::<u16>().unwrap_or(0)) =>
+        {
+            MockResponse::Fulfill {
+                status:  text.parse().expect("three digits parse as a u16"),
+                headers: Vec::new(),
+                body:    None,
+            }
+        }
+        _ => {
+            return Err(LineError::new(
+                answer.span,
+                "expected a status code from 200 to 599, or `failed`",
+            )
+            .expecting(["a status code", "failed"]));
+        }
+    };
+    Ok(ActionKind::Mock {
+        method,
+        url,
+        response,
+        source: String::new(),
+    })
+}
+
 fn parse_action_body(
     keyword: &str,
     keyword_span: Span,
@@ -1210,10 +1312,20 @@ fn parse_action_body(
     while let Some(token) = cursor.next_token()? {
         tokens.push(token);
     }
+    if keyword == "MOCK" {
+        // A mock registers at once (SPEC 7.5).
+        if let Some(last) = tokens.last()
+            && split_timeout(&mut vec![last.clone()]).is_some()
+        {
+            return Err(LineError::new(last.span, "MOCK has no step timeout"));
+        }
+        return Ok((parse_mock(tokens, keyword_span)?, None));
+    }
     let timeout = split_timeout(&mut tokens);
     let locator_only = |tokens| build_locator(tokens, true, keyword_span);
     let kind = match keyword {
         "HTTP" | "RESPONSE" => parse_network_action(keyword, tokens, keyword_span)?,
+        "MOCK" => unreachable!("MOCK returns before the timeout split"),
         "POPUP" => ActionKind::Popup {
             name: parse_name(tokens, keyword_span)?,
         },
@@ -1826,6 +1938,14 @@ fn parse_subject(
         }
         let field = parse_response_field_token(first)?;
         return Ok(Head::Subject(Subject::Response { name: None, field }));
+    }
+    if head_text.starts_with("request:") {
+        let span = first.span;
+        let name = strip_prefix_token(first, "request:".len())
+            .ok_or_else(|| LineError::new(span, "expected a response name"))?;
+        let name = parse_name(vec![name], span)?;
+        let field = parse_request_field(cursor, first_span)?;
+        return Ok(Head::Subject(Subject::Request { name, field }));
     }
     if head_text.starts_with("response:") {
         let name = response_name(first)?;
@@ -2481,6 +2601,30 @@ fn json_body_end(lines: &[&str], start: usize) -> Result<usize, LineError> {
     ))
 }
 
+/// Rejects a parsed file that still has an `[Asserts]` or `[Captures]`
+/// section (SPEC 4.1). Only `whirl fmt` accepts them, to rewrite them.
+pub(crate) fn reject_sections(file: &File, source: &str) -> Result<(), ParseError> {
+    let Some(span) = file.entries.iter().flat_map(|entry| &entry.sections).next() else {
+        return Ok(());
+    };
+    let source_line = source
+        .lines()
+        .nth(usize::try_from(span.line.saturating_sub(1)).unwrap_or(0))
+        .unwrap_or_default()
+        .trim_end_matches('\r')
+        .to_owned();
+    Err(ParseError {
+        code: ParseErrorCode::SectionsRemoved,
+        path: file.path.clone(),
+        line: span.line,
+        column: span.column,
+        len: span.len,
+        source_line,
+        message: "`[Asserts]` and `[Captures]` sections were removed; run `whirl fmt` to rewrite them as ASSERT and CAPTURE lines".to_owned(),
+        expected: Vec::new(),
+    })
+}
+
 /// Parses one `.whirl` source, stopping at the file's first error.
 pub(crate) fn parse_file(path: &Path, source: &str) -> Result<File, ParseError> {
     let mut parser = Parser {
@@ -2502,7 +2646,7 @@ pub(crate) fn parse_file(path: &Path, source: &str) -> Result<File, ParseError> 
         parser
             .parse_line(line, line_no)
             .map_err(|error| into_parse_error(path, error, line_no, line))?;
-        if line.split_whitespace().next() == Some("HTTP") {
+        if matches!(line.split_whitespace().next(), Some("HTTP" | "MOCK")) {
             index = parser.parse_http_tail(path, &lines, index)?;
         } else {
             index += 1;
@@ -2754,19 +2898,56 @@ impl Parser {
             .current
             .as_mut()
             .and_then(|entry| entry.actions.last_mut())
-            .expect("an HTTP headline creates a current action");
-        let ActionKind::Http {
-            headers: action_headers,
-            body: action_body,
-            source: action_source,
-            ..
-        } = &mut action.kind
-        else {
-            unreachable!("parse_http_tail follows an HTTP action");
-        };
-        *action_headers = headers;
-        *action_body = body;
-        *action_source = source;
+            .expect("an HTTP or MOCK headline creates a current action");
+        match &mut action.kind {
+            ActionKind::Http {
+                headers: action_headers,
+                body: action_body,
+                source: action_source,
+                ..
+            }
+            | ActionKind::Mock {
+                response:
+                    MockResponse::Fulfill {
+                        headers: action_headers,
+                        body: action_body,
+                        ..
+                    },
+                source: action_source,
+                ..
+            } => {
+                *action_headers = headers;
+                *action_body = body;
+                *action_source = source;
+            }
+            ActionKind::Mock {
+                response: MockResponse::Failed,
+                source: action_source,
+                ..
+            } => {
+                if last_component != headline {
+                    let line = lines[headline + 1..=last_component]
+                        .iter()
+                        .position(|line| {
+                            let trimmed = line.trim_start();
+                            !trimmed.is_empty() && !trimmed.starts_with('#')
+                        })
+                        .map_or(headline + 1, |offset| headline + 1 + offset);
+                    let error = LineError::new(
+                        Span {
+                            line:   0,
+                            column: 1,
+                            len:    1,
+                        },
+                        "a failed MOCK takes no header lines and no body",
+                    )
+                    .at_source(u32::try_from(line + 1).unwrap_or(u32::MAX), lines[line]);
+                    return Err(into_parse_error(path, error, 0, lines[line]));
+                }
+                *action_source = source;
+            }
+            _ => unreachable!("parse_http_tail follows an HTTP or MOCK action"),
+        }
         Ok(index)
     }
 
@@ -2989,7 +3170,8 @@ impl Parser {
             let (kind, timeout) = parse_action_body(&keyword, first_span, cursor)?;
             let is_http = matches!(kind, ActionKind::Http { .. });
             let is_visit = matches!(kind, ActionKind::Visit { .. });
-            if !self.seen_visit && !is_http && !is_visit {
+            let is_mock = matches!(kind, ActionKind::Mock { .. });
+            if !self.seen_visit && !is_http && !is_visit && !is_mock {
                 return Err(
                     LineError::new(first_span, "a browser action needs an earlier VISIT")
                         .expecting(["HTTP", "VISIT"]),
@@ -4141,6 +4323,132 @@ ASSERT status == 202
         assert_eq!(error.line, 5);
         let error = parse_err("VISIT /\n[Asserts]\nASSERT url == /\n");
         assert_eq!(error.code, ParseErrorCode::MixedCheckSyntax);
+    }
+
+    #[test]
+    fn mock_parses_a_status_headers_and_a_body() {
+        let file = parse(
+            "MOCK GET /api/flags 200\nX-Test: yes\n{ \"on\": true }\nVISIT /\nASSERT url == /\n",
+        );
+        let entry = only_entry(&file);
+        assert_eq!(entry.actions.len(), 2);
+        let ActionKind::Mock {
+            method,
+            url,
+            response:
+                MockResponse::Fulfill {
+                    status,
+                    headers,
+                    body,
+                },
+            source,
+        } = &entry.actions[0].kind
+        else {
+            panic!("expected a fulfilling mock");
+        };
+        assert_eq!(method, "GET");
+        assert_eq!(lit(url), "/api/flags");
+        assert_eq!(*status, 200);
+        assert_eq!(headers[0].name, "X-Test");
+        assert_eq!(
+            body.as_ref().map(|body| body.kind),
+            Some(HttpBodyKind::Json)
+        );
+        assert_eq!(
+            source,
+            "MOCK GET /api/flags 200\nX-Test: yes\n{ \"on\": true }"
+        );
+    }
+
+    #[test]
+    fn mock_parses_a_failed_request() {
+        let file = parse("VISIT /\nMOCK POST https://x.test/* failed\nCLICK Go\n");
+        let ActionKind::Mock { response, .. } = &file.entries[0].actions[1].kind else {
+            panic!("expected a mock");
+        };
+        assert_eq!(*response, MockResponse::Failed);
+    }
+
+    #[test]
+    fn malformed_mocks_are_parse_errors() {
+        for (source, message) in [
+            ("MOCK GET /a 200 @5s\n", "MOCK has no step timeout"),
+            ("MOCK GET /a\n", "expected MOCK METHOD url STATUS"),
+            (
+                "MOCK get /a 200\n",
+                "expected an uppercase HTTP method like GET or POST",
+            ),
+            (
+                "MOCK GET /a 99\n",
+                "expected a status code from 200 to 599, or `failed`",
+            ),
+            (
+                "MOCK GET /a 600\n",
+                "expected a status code from 200 to 599, or `failed`",
+            ),
+            (
+                "MOCK GET /a failed\nX-Test: yes\n",
+                "a failed MOCK takes no header lines and no body",
+            ),
+            (
+                "MOCK GET /a failed\n{}\n",
+                "a failed MOCK takes no header lines and no body",
+            ),
+        ] {
+            assert_eq!(parse_err(source).message, message, "source: {source}");
+        }
+        let error = parse_err("MOCK GET /a failed\n# note\nX-Test: yes\n");
+        assert_eq!(error.line, 3);
+    }
+
+    #[test]
+    fn mock_lines_come_before_the_first_visit_only() {
+        assert_eq!(parse("MOCK GET /a 204\nVISIT /\n").entries.len(), 1);
+        let error = parse_err("MOCK GET /a 204\nCLICK Go\n");
+        assert_eq!(error.message, "a browser action needs an earlier VISIT");
+    }
+
+    #[test]
+    fn request_subjects_parse_every_field() {
+        let file = parse(
+            "VISIT /\nRESPONSE r GET /a\nASSERT request:r method == GET\nASSERT request:r url contains a\nASSERT request:r header:x-id == 1\nASSERT request:r body isEmpty\nASSERT request:r bytes count == 0\nASSERT request:r json:$.qty == 1\nCAPTURE q: request:r xpath:\"string(//q)\"\n",
+        );
+        let fields: Vec<RequestField> = only_entry(&file)
+            .checks
+            .iter()
+            .map(|check| {
+                let subject = match check {
+                    CheckStep::Assert(Assert {
+                        body: AssertBody::Check(line),
+                        ..
+                    }) => &line.subject,
+                    CheckStep::Capture(capture) => &capture.subject,
+                    CheckStep::Assert(_) => panic!("expected a subject"),
+                };
+                let Subject::Request { name, field } = subject else {
+                    panic!("expected a request subject");
+                };
+                assert_eq!(name.text, "r");
+                field.clone()
+            })
+            .collect();
+        assert!(matches!(fields[..], [
+            RequestField::Method,
+            RequestField::Url,
+            RequestField::Header(_),
+            RequestField::Body,
+            RequestField::Bytes,
+            RequestField::Json(_),
+            RequestField::Xpath(_),
+        ]));
+        assert_eq!(
+            parse_err("VISIT /\nASSERT request:r status == 200\n").message,
+            "expected a request field"
+        );
+        assert_eq!(
+            parse_err("HTTP GET /a\nASSERT request:r method == GET\n").message,
+            "an HTTP entry can only check its response"
+        );
     }
 
     #[test]

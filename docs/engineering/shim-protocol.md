@@ -50,9 +50,11 @@ Error object:
 ### `hello`
 
 Sent once after spawn. Params: `{}`. Result:
-`{"protocol": 4, "playwrightVersion": "1.62.1", "ffmpegPath": "abs path" | null}`.
+`{"protocol": 5, "playwrightVersion": "1.62.1", "ffmpegPath": "abs path" | null}`.
 `ffmpegPath` is Playwright's bundled ffmpeg, which every video recording
 needs; `null` means it is not installed. `whirl doctor` reports it.
+Protocol 5 adds `mock` and `readRequest` (sections 4.6 and 4.7) and the
+`mocks` fields of `startFlow` and `endFlow`.
 Protocol 4 requires the snapshot `target`, so an older shim cannot silently
 take a full-page snapshot of an element snapshot.
 Protocol 3 requires effective snapshot masks and comparison settings. Older shims
@@ -78,7 +80,8 @@ Creates the browser context and page for one flow. Params:
   "video": {"tempDir": "abs path", "finalPath": "abs path", "fps": 60 | null} | null,
   "harPath": "abs path" | null,
   "trace": false,
-  "openShadowRoots": false
+  "openShadowRoots": false,
+  "mocks": false
 }
 ```
 
@@ -100,6 +103,10 @@ Result: `{"browserVersion": "...", "nodeVersion": "...", "playwrightVersion": ".
 - `reducedMotion` emulates the `prefers-reduced-motion` media feature for
   the context; `null` keeps the engine default.
 - `trace: true` starts Playwright tracing (screenshots and snapshots on).
+- `mocks: true` routes every request of the context through the flow's
+  mocks (section 4.6) and blocks service workers. The shim registers this
+  route after host filtering, so it runs first: a mocked request never
+  reaches host filtering. Rust sets it when the file uses `MOCK` (SPEC 7.5).
 - `openShadowRoots: true` adds an init script to the context that makes every
   `attachShadow` call create an open root, so the AI snapshot and locators see
   inside roots a page asks to close. Rust sets it when the file uses `ACT`
@@ -135,7 +142,9 @@ Ends the flow and closes the context. Params:
 - `saveStoragePath` writes the context storage state before close.
 - `tracePath` exports the trace there; `null` discards a running trace.
 
-Result: `{"blockedHosts": ["host", ...], "videoPath": "abs path" | null, "videoSkipped": "reason" | null, "videoBlank": "reason" | null}`.
+Result: `{"blockedHosts": ["host", ...], "videoPath": "abs path" | null, "videoSkipped": "reason" | null, "videoBlank": "reason" | null, "mocks": [{"id": 5, "hits": 2}, ...]}`.
+`mocks` lists every mock the flow registered, replaced ones included, in
+registration order, with the number of requests each served.
 `blockedHosts` is the sorted, de-duplicated set of hostnames blocked by
 `allowHosts` during the flow. `videoSkipped` says why the shim skipped a
 requested recording, such as an ffmpeg failure. `videoBlank` says why a
@@ -176,6 +185,7 @@ Commands and their extra params (result `{}` unless noted):
 | --- | --- |
 | `visit` | `url` (absolute; Rust resolved `base`); resolves at the new document's `DOMContentLoaded`, not `load` |
 | `response` | `name`, `method`, `url` (absolute) — select the first matching request from the selected tab in the current entry and await its response headers |
+| `mock` | `id`, `method`, `pattern`, `response` (section 4.6) — register a mock at once |
 | `http` | `name`, `method`, `url` (absolute), `headers` (array of `[name, value]` pairs), `body` (string or null) — send a request without browser cookies and name its completed response |
 | `popup` | `name` — name an unnamed popup from the selected tab in the current entry, without selecting it |
 | `tab` | `name` — select a named open tab |
@@ -201,6 +211,7 @@ Commands and their extra params (result `{}` unless noted):
 | `assert` | `spec` (section 4.3) — state checks and tab closure only |
 | `read` | `subject` (section 4.4); result `{"type": "value", "value": ...}` or `{"type": "missing", "reason": "no-element" \| "absent-attribute"}` |
 | `readResponse` | `name`, `body` (bool) (section 4.5); result `{"status": 201, "url": "...", "headers": [[name, value], ...], "bodyBase64": "..." \| null, "bodyError": "..." \| null, "bodyMayBeDecoded": false}` |
+| `readRequest` | `name` (section 4.7); result `{"method": "POST", "url": "...", "headers": [[name, value], ...], "bodyBase64": "..." \| null, "bodyError": "..." \| null}` |
 | `traceGroup` | none; opens one trace group named by `title` for the reads of one check |
 | `traceGroupEnd` | none; closes the group that `traceGroup` opened |
 
@@ -405,6 +416,40 @@ browsers can hand a text body back already decoded, and Playwright then
 encodes it as UTF-8. Rust undoes that decoding when the `Content-Type` names a
 charset other than UTF-8 that can encode the text (SPEC section 9.2). It is
 false for an `http` step and in Firefox, which give the exact bytes.
+
+### 4.6 Mocks
+
+```json
+{"id": 5, "method": "GET", "pattern": "^https:\\/\\/shop\\.test\\/api\\/.*$",
+ "response": {"type": "fulfill", "status": 200, "headers": [["Content-Type", "application/json"]], "body": "{}"}}
+{"id": 9, "method": "GET", "pattern": "^https:\\/\\/cdn\\.test\\/.*$", "response": {"type": "failed"}}
+```
+
+`id` is the `MOCK` line; `endFlow` reports hits by it. Rust resolves the URL
+against `base`, normalizes it, drops the fragment, escapes the ECMAScript
+syntax characters, and turns each `*` into `.*`. `pattern` is anchored and
+has no flags. The shim tests it against the request URL without its
+fragment. `body` is the complete response body as text, or `null` for an
+empty body; Rust has already added `Content-Type: application/json` for a
+JSON body without one.
+
+The shim keeps one list of mocks per flow. A new mock with the same `method`
+and `pattern` as an active one replaces it: the old one stops serving and
+keeps its hit count. For each request, the active mock registered last with
+the same method and a matching pattern serves it and counts a hit: `fulfill`
+through `route.fulfill` with the status, headers, and body, and `failed`
+through `route.abort("failed")`. A request that no mock matches falls back to
+the earlier routes, such as host filtering. `mock` fails only with kind
+`"internal"`, for a malformed request.
+
+### 4.7 Read request
+
+`readRequest` takes a name from `response` and replies with the request that
+it selected: `method`, `url` without its fragment, `headers` as the browser
+sent them (`request.headersArray()`), and the body from `postDataBuffer()` as
+`bodyBase64`, which is empty for a request without a body. A body over the
+SPEC 1 MiB limit comes back as `bodyError` with `bodyBase64: null`. An unknown
+name is error kind `"internal"`.
 
 ## 5. Timeouts
 

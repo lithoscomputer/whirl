@@ -22,7 +22,7 @@ use tokio::runtime::Runtime;
 use crate::lang::lint::{
     Lint, Severity, lint_act, lint_file_with, lint_setup_refs, setup_capture_uses,
 };
-use crate::lang::parse::{ParseError, parse_file};
+use crate::lang::parse::{ParseError, parse_file, reject_sections};
 use crate::lang::{ast, fmt};
 use crate::report::metadata::ReportMetadata;
 use crate::report::model::Status;
@@ -377,13 +377,34 @@ struct ParsedInput {
     source: String,
 }
 
+/// Which removed syntax a command still reads (SPEC 4.1).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Sections {
+    /// `whirl fmt` reads `[Asserts]` and `[Captures]` to rewrite them.
+    Rewrite,
+    /// Runs and `whirl check` reject them.
+    Reject,
+}
+
+/// Parses one source under the section rule of the command.
+fn parse_input(path: &Path, source: &str, sections: Sections) -> Result<ast::File, ParseError> {
+    let file = parse_file(path, source)?;
+    if sections == Sections::Reject {
+        reject_sections(&file, source)?;
+    }
+    Ok(file)
+}
+
 /// Parses every input. Files that parse are returned even when others
 /// fail, so `check` can lint and report everything in one pass.
-fn parse_inputs(sources: Vec<(PathBuf, String)>) -> (Vec<ParsedInput>, Vec<ParseError>) {
+fn parse_inputs(
+    sources: Vec<(PathBuf, String)>,
+    sections: Sections,
+) -> (Vec<ParsedInput>, Vec<ParseError>) {
     let mut parsed = Vec::new();
     let mut errors = Vec::new();
     for (path, source) in sources {
-        match parse_file(&path, &source) {
+        match parse_input(&path, &source, sections) {
             Ok(file) => parsed.push(ParsedInput { file, source }),
             Err(error) => errors.push(error),
         }
@@ -524,7 +545,7 @@ fn check_inputs(
     sources: Vec<(PathBuf, String)>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> (CheckedInputs, Exit) {
-    let (inputs, parse_errors) = parse_inputs(sources);
+    let (inputs, parse_errors) = parse_inputs(sources, Sections::Reject);
     for error in &parse_errors {
         diagnostics.push(Diagnostic::parse(error));
     }
@@ -563,7 +584,7 @@ fn check_inputs(
             continue;
         }
         match fs::read_to_string(&path) {
-            Ok(source) => match parse_file(&path, &source) {
+            Ok(source) => match parse_input(&path, &source, Sections::Reject) {
                 Ok(file) => setups.push(ParsedInput { file, source }),
                 Err(error) => {
                     diagnostics.push(Diagnostic::parse(&error));
@@ -677,7 +698,7 @@ fn fmt_command(check: bool, paths: &[PathBuf]) -> Exit {
         Ok(sources) => sources,
         Err(exit) => return exit,
     };
-    let (parsed, parse_errors) = parse_inputs(sources);
+    let (parsed, parse_errors) = parse_inputs(sources, Sections::Rewrite);
     for error in &parse_errors {
         print_err(&error.render());
     }

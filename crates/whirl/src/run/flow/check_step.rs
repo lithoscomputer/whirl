@@ -22,12 +22,13 @@ use crate::check::{
     Pattern, PatternFlags, Predicate, Read, ReadContext, Value, XpathQuery,
 };
 use crate::lang::ast::{
-    self, Extractor, FilterArg, FilterSpec, Operand, PredicateSpec, ResponseField, Subject,
+    self, Extractor, FilterArg, FilterSpec, Operand, PredicateSpec, RequestField, ResponseField,
+    Subject,
 };
 use crate::report::model::{CaptureValue, StepError};
 use crate::run::shim::{
-    MissingReason, ReadResult, ResponseReadResult, ShimClient, StepCommand, StepOutcome,
-    StepRequest, wire,
+    MissingReason, ReadResult, RequestReadResult, ResponseReadResult, ShimClient, StepCommand,
+    StepOutcome, StepRequest, wire,
 };
 use crate::run::vars::{MASK, VarStore};
 
@@ -71,6 +72,30 @@ enum Source {
         name:  String,
         field: ResponseRead,
     },
+    /// The request that a `RESPONSE` name selected (SPEC 9.2).
+    Request {
+        name:  String,
+        field: RequestRead,
+    },
+}
+
+/// The part of a request a line reads.
+enum RequestRead {
+    Method,
+    Url,
+    Header(String),
+    Body,
+    Bytes,
+}
+
+/// A request read once and kept for the flow.
+#[derive(Clone, Debug)]
+pub(super) struct RequestData {
+    method:  String,
+    url:     String,
+    headers: Vec<(String, String)>,
+    /// The body bytes, or why they could not be read.
+    body:    Result<Vec<u8>, String>,
 }
 
 /// The part of a response a line reads.
@@ -201,6 +226,38 @@ impl FlowExec<'_> {
                     (field, _) => field,
                 };
                 Source::Response { name, field }
+            }
+            Subject::Request { name, field } => {
+                let field = match field {
+                    RequestField::Method => RequestRead::Method,
+                    RequestField::Url => RequestRead::Url,
+                    RequestField::Header(header) => RequestRead::Header(self.resolve(header)?),
+                    RequestField::Body => RequestRead::Body,
+                    RequestField::Bytes => RequestRead::Bytes,
+                    RequestField::Json(path) => {
+                        let path = self.resolve(path)?;
+                        filters.push(Filter::Json(JsonQuery::parse(&path).map_err(filter_error)?));
+                        RequestRead::Body
+                    }
+                    RequestField::Xpath(expression) => {
+                        let expression = self.resolve(expression)?;
+                        filters.push(Filter::Xpath(
+                            XpathQuery::parse(&expression).map_err(filter_error)?,
+                        ));
+                        RequestRead::Body
+                    }
+                };
+                // `bytes xpath:` parses the body like `body xpath:` (SPEC 9.5).
+                let field = match (field, filter_specs.first()) {
+                    (RequestRead::Bytes, Some(first)) if first.kind == FilterKind::Xpath => {
+                        RequestRead::Body
+                    }
+                    (field, _) => field,
+                };
+                Source::Request {
+                    name: name.text.clone(),
+                    field,
+                }
             }
             page => {
                 let vars = &mut self.vars;
@@ -497,6 +554,13 @@ impl FlowExec<'_> {
                 .responses
                 .get(name)
                 .map_or(Markup::Html, ResponseData::markup),
+            Source::Request {
+                name,
+                field: RequestRead::Body,
+            } => self
+                .requests
+                .get(name)
+                .map_or(Markup::Html, RequestData::markup),
             _ => Markup::Html,
         };
         ReadContext { now: now(), markup }
@@ -587,6 +651,31 @@ impl FlowExec<'_> {
                 }
                 let data = &self.responses[name];
                 match data.field(field) {
+                    Ok(read) => Attempt::Read(read),
+                    Err(message) => Attempt::End(StepEnd::Failed(simple_error("read", &message))),
+                }
+            }
+            Source::Request { name, field } => {
+                if !self.requests.contains_key(name) {
+                    let command = StepCommand::ReadRequest { name: name.clone() };
+                    let result = match self
+                        .shim_call(node, command, remaining, budget, title, client, state)
+                        .await
+                    {
+                        Ok(result) => result,
+                        Err(Attempt::Retry(error)) => return Attempt::End(StepEnd::Failed(error)),
+                        Err(attempt) => return attempt,
+                    };
+                    let Ok(read) = serde_json::from_value::<RequestReadResult>(result) else {
+                        return Attempt::End(StepEnd::Error(simple_error(
+                            "internal",
+                            "malformed readRequest result from the shim",
+                        )));
+                    };
+                    self.requests
+                        .insert(name.clone(), RequestData::from_read(read));
+                }
+                match self.requests[name].field(field) {
                     Ok(read) => Attempt::Read(read),
                     Err(message) => Attempt::End(StepEnd::Failed(simple_error("read", &message))),
                 }
@@ -738,6 +827,72 @@ impl ResponseData {
     }
 }
 
+impl RequestData {
+    fn from_read(read: RequestReadResult) -> Self {
+        let body = match (read.body_base64, read.body_error) {
+            (Some(encoded), _) => STANDARD
+                .decode(encoded)
+                .map_err(|_| "the shim sent a malformed body".to_owned()),
+            (None, Some(error)) => Err(error),
+            (None, None) => Ok(Vec::new()),
+        };
+        Self {
+            method: read.method,
+            url: read.url,
+            headers: read.headers,
+            body,
+        }
+    }
+
+    /// A header's value; repeated headers join with `, `. Names compare
+    /// without case.
+    fn header(&self, name: &str) -> Option<String> {
+        let values: Vec<&str> = self
+            .headers
+            .iter()
+            .filter(|(header, _)| header.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value.as_str())
+            .collect();
+        (!values.is_empty()).then(|| values.join(", "))
+    }
+
+    /// XML when the `Content-Type` names an XML media type, else HTML.
+    fn markup(&self) -> Markup {
+        match self.header("content-type") {
+            Some(content_type) if check::is_xml_content_type(&content_type) => Markup::Xml,
+            _ => Markup::Html,
+        }
+    }
+
+    fn body(&self) -> Result<&[u8], String> {
+        self.body
+            .as_deref()
+            .map_err(|error| format!("the request body is unavailable: {error}"))
+    }
+
+    /// Reads one field (SPEC 9.2).
+    fn field(&self, field: &RequestRead) -> Result<Read, String> {
+        Ok(match field {
+            RequestRead::Method => Read::Value(Value::String(self.method.clone())),
+            RequestRead::Url => Read::Value(Value::String(self.url.clone())),
+            RequestRead::Header(name) => match self.header(name) {
+                Some(value) => Read::Value(Value::String(value)),
+                None => Read::Missing(Missing::AbsentHeader(name.clone())),
+            },
+            RequestRead::Bytes => Read::Value(Value::Bytes(self.body()?.to_vec())),
+            RequestRead::Body => {
+                let label = self
+                    .header("content-type")
+                    .and_then(|content_type| charset_label(&content_type))
+                    .unwrap_or_else(|| "utf-8".to_owned());
+                Read::Value(Value::String(
+                    Charset::from_label(&label)?.decode(self.body()?)?,
+                ))
+            }
+        })
+    }
+}
+
 /// Replaces the value stored under `name`, or appends it.
 fn upsert<T>(entries: &mut Vec<(String, T)>, name: &str, value: T) {
     match entries.iter_mut().find(|(existing, _)| existing == name) {
@@ -829,3 +984,6 @@ fn failure_error(vars: &VarStore, failure: &check::Failure) -> StepError {
 
 /// The flow's cache of read responses.
 pub(super) type ResponseCache = HashMap<String, ResponseData>;
+
+/// The flow's cache of read requests, by `RESPONSE` name.
+pub(super) type RequestCache = HashMap<String, RequestData>;

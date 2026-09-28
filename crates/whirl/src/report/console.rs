@@ -34,7 +34,7 @@ pub(crate) fn render(report: &RunReport) -> String {
             status = status_text(file.status),
             duration = duration_text(file.duration_ms)
         );
-        for warning in &file.warnings {
+        for warning in file.warning_lines() {
             let _ = writeln!(out, "  warning: {warning}");
         }
         // The reports list every blocked host (SPEC 5).
@@ -119,6 +119,7 @@ mod tests {
             error,
             snapshot: None,
             act: None,
+            warnings: Vec::new(),
         }
     }
 
@@ -140,6 +141,7 @@ mod tests {
                     warnings:      vec!["SCREENSHOT shot skipped: page crashed".to_owned()],
                     artifacts:     Vec::new(),
                     entries:       Vec::new(),
+                    mocks:         Vec::new(),
                 },
                 FileReport {
                     timing:        Timing::default(),
@@ -176,6 +178,7 @@ mod tests {
                         captures:    Vec::new(),
                         artifacts:   vec!["whirl-artifacts/flows/fail/failure.png".to_owned()],
                     }],
+                    mocks:         Vec::new(),
                 },
             ],
         }

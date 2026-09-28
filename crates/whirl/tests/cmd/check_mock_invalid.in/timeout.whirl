@@ -1,0 +1,2 @@
+MOCK GET /api/flags 200 @5s
+VISIT /

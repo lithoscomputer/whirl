@@ -26,6 +26,7 @@ test("the driver runs a flow against a data: URL in chromium", {
 			harPath: null,
 			trace: false,
 			openShadowRoots: false,
+			mocks: false,
 		});
 		await driver.runStep("visit", {
 			timeoutMs: 10000,

@@ -29,7 +29,7 @@ use crate::report::model::SnapshotReport;
 pub(super) mod wire;
 
 /// The protocol version this Whirl speaks (protocol section 3).
-pub(crate) const PROTOCOL: u64 = 4;
+pub(crate) const PROTOCOL: u64 = 5;
 
 /// Environment variable naming the built shim entry (protocol section 8).
 pub(crate) const SHIM_JS_ENV: &str = "WHIRL_SHIM_JS";
@@ -232,6 +232,9 @@ pub(crate) struct StartFlowParams {
     /// Open every shadow root that page scripts attach, so `ACT` sees
     /// closed ones (SPEC 7.4).
     pub(crate) open_shadow_roots:  bool,
+    /// Route requests through the flow's mocks and block service workers
+    /// (SPEC 7.5). Rust sets it when the file uses `MOCK`.
+    pub(crate) mocks:              bool,
 }
 
 /// `endFlow` params (protocol section 3).
@@ -254,6 +257,18 @@ pub(crate) struct EndFlowResult {
     /// Why a saved recording holds only a white frame. Older shims omit it.
     #[serde(default)]
     pub(crate) video_blank:   Option<String>,
+    /// How many requests each mock served, in registration order (SPEC
+    /// 7.5). Older shims omit it.
+    #[serde(default)]
+    pub(crate) mocks:         Vec<MockHits>,
+}
+
+/// One mock's served-request count at `endFlow` (protocol section 3).
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+pub(crate) struct MockHits {
+    /// The id Rust gave the mock: its line.
+    pub(crate) id:   u32,
+    pub(crate) hits: u64,
 }
 
 /// A step command's own params (protocol section 4). Locator, PAGE
@@ -273,6 +288,14 @@ pub(crate) enum StepCommand {
         name:   String,
         method: String,
         url:    String,
+    },
+    /// `MOCK` (protocol section 4.6): `pattern` is an anchored regular
+    /// expression for the request URL.
+    Mock {
+        id:       u32,
+        method:   String,
+        pattern:  String,
+        response: Json,
     },
     Popup {
         name: String,
@@ -385,6 +408,11 @@ pub(crate) enum StepCommand {
         name: String,
         body: bool,
     },
+    /// The request that a `RESPONSE` name selected (protocol 4.7); result
+    /// [`RequestReadResult`].
+    ReadRequest {
+        name: String,
+    },
     /// Opens the trace group for the reads of one check.
     TraceGroup,
     /// Closes the group [`StepCommand::TraceGroup`] opened.
@@ -433,6 +461,17 @@ pub(crate) struct ResponseReadResult {
     /// re-encoded as UTF-8 (protocol 4.5).
     #[serde(default)]
     pub(crate) body_may_be_decoded: bool,
+}
+
+/// `readRequest` result (protocol section 4.7).
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RequestReadResult {
+    pub(crate) method:      String,
+    pub(crate) url:         String,
+    pub(crate) headers:     Vec<(String, String)>,
+    pub(crate) body_base64: Option<String>,
+    pub(crate) body_error:  Option<String>,
 }
 
 /// `ariaSnapshot` result (protocol section 4).

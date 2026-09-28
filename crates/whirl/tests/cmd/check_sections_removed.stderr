@@ -1,0 +1,3 @@
+old.whirl:2:1: error: `[Asserts]` and `[Captures]` sections were removed; run `whirl fmt` to rewrite them as ASSERT and CAPTURE lines
+  [Asserts]
+  ^^^^^^^^^

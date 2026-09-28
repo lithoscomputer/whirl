@@ -271,6 +271,14 @@ impl File {
             .any(|action| matches!(action.kind, ActionKind::Act { .. }))
     }
 
+    /// True when any entry has a `MOCK` line (SPEC 7.5).
+    pub(crate) fn uses_mock(&self) -> bool {
+        self.entries
+            .iter()
+            .flat_map(|entry| &entry.actions)
+            .any(|action| matches!(action.kind, ActionKind::Mock { .. }))
+    }
+
     /// The `model:` option line, when the file has one.
     pub(crate) fn model_option(&self) -> Option<&OptionLine> {
         self.options
@@ -342,6 +350,15 @@ pub(crate) enum ActionKind {
         name:   Ident,
         method: String,
         url:    Value,
+    },
+    /// `MOCK METHOD url STATUS` or `MOCK METHOD url failed` serves browser
+    /// requests until the file ends (SPEC 7.5).
+    Mock {
+        method:   String,
+        url:      Value,
+        response: MockResponse,
+        /// The complete mock text for reports and trace titles.
+        source:   String,
     },
     Popup {
         name: Ident,
@@ -441,6 +458,19 @@ pub(crate) enum ActionKind {
         key:   Value,
         value: Value,
     },
+}
+
+/// What a `MOCK` serves (SPEC 7.5).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum MockResponse {
+    /// A response with a status, header lines, and an optional body.
+    Fulfill {
+        status:  u16,
+        headers: Vec<HttpHeader>,
+        body:    Option<HttpBody>,
+    },
+    /// A failed request, as for a dropped connection.
+    Failed,
 }
 
 /// Browser storage a `STORE` action writes to (SPEC 7).
@@ -593,6 +623,7 @@ impl ActionKind {
             | Self::Drop { .. } => Some(DefaultEngine::Text),
             Self::Http { .. }
             | Self::Response { .. }
+            | Self::Mock { .. }
             | Self::Popup { .. }
             | Self::Tab { .. }
             | Self::Close { .. }
@@ -682,6 +713,11 @@ pub(crate) enum Subject {
         name:  Option<Ident>,
         field: ResponseField,
     },
+    /// A field of the request that a `RESPONSE` name selected (SPEC 9.2).
+    Request {
+        name:  Ident,
+        field: RequestField,
+    },
 }
 
 impl Subject {
@@ -702,14 +738,30 @@ impl Subject {
             | Self::Response {
                 field: ResponseField::Header(_) | ResponseField::Location | ResponseField::Body,
                 ..
+            }
+            | Self::Request {
+                field:
+                    RequestField::Method
+                    | RequestField::Url
+                    | RequestField::Header(_)
+                    | RequestField::Body,
+                ..
             } => StaticType::STRING,
             Self::Response {
                 field: ResponseField::Bytes,
+                ..
+            }
+            | Self::Request {
+                field: RequestField::Bytes,
                 ..
             } => StaticType::BYTES,
             Self::Eval(_)
             | Self::Response {
                 field: ResponseField::Json(_) | ResponseField::Xpath(_),
+                ..
+            }
+            | Self::Request {
+                field: RequestField::Json(_) | RequestField::Xpath(_),
                 ..
             } => StaticType::Any,
         }
@@ -722,6 +774,20 @@ pub(crate) enum ResponseField {
     Status,
     Header(Value),
     Location,
+    Body,
+    Bytes,
+    /// `json:PATH`, short for `body json:PATH`.
+    Json(Value),
+    /// `xpath:EXPR`, short for `body xpath:EXPR`.
+    Xpath(Value),
+}
+
+/// A field of one observed request (SPEC 9.2).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum RequestField {
+    Method,
+    Url,
+    Header(Value),
     Body,
     Bytes,
     /// `json:PATH`, short for `body json:PATH`.

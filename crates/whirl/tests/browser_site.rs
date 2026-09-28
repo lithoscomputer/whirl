@@ -4228,3 +4228,215 @@ fn element_snapshots_crop_and_compare_in_each_engine() {
         }
     }
 }
+
+#[test]
+fn mocks_serve_browser_requests_and_request_checks_read_what_the_page_sent() {
+    let site = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file(
+        "mock.whirl",
+        &format!(
+            r##"[Options]
+base: {}
+allow-hosts: 127.0.0.1
+
+MOCK GET /api/flags 200
+{{ "checkout_v2": true }}
+MOCK GET /api/items* 200
+X-Source: mock
+MOCK GET http://blocked.test/* 200
+Content-Type: text/plain
+```
+fonts ok
+```
+VISIT /mock.html
+ASSERT css:"#flags" text == v2
+ASSERT css:"#items" text == "200 mock"
+ASSERT css:"#font" text == "fonts ok"
+
+MOCK POST /api/cart* 201
+CLICK "Add to cart"
+RESPONSE cart POST /api/cart?source=page
+ASSERT css:"#cart" text == "cart 201"
+ASSERT response:cart status == 201
+ASSERT request:cart method == POST
+ASSERT request:cart url endsWith "/api/cart?source=page"
+ASSERT request:cart header:x-cart == c1
+ASSERT request:cart header:x-missing not exists
+ASSERT request:cart json:$.qty == 1
+ASSERT request:cart body contains A-1
+ASSERT request:cart bytes startsWith hex,7b;
+"##,
+            site.base()
+        ),
+    );
+    let output = run_whirl(&dir, &["--report-json", "report.json", "mock.whirl"]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    let report: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(dir.path.join("report.json")).expect("report exists"),
+    )
+    .expect("the report is JSON");
+    let file = &report["files"][0];
+    // A mocked request never reaches the network, so allow-hosts does
+    // not block it (SPEC 7.5).
+    assert_eq!(file["blockedHosts"], serde_json::json!([]));
+    let hits: Vec<(u64, u64)> = file["mocks"]
+        .as_array()
+        .expect("the report lists mocks")
+        .iter()
+        .map(|mock| {
+            (
+                mock["line"].as_u64().expect("a line"),
+                mock["hits"].as_u64().expect("a count"),
+            )
+        })
+        .collect();
+    assert_eq!(hits, [(5, 1), (7, 1), (9, 1), (19, 1)]);
+    assert_eq!(file["mocks"][0]["method"], "GET");
+    assert_eq!(
+        file["mocks"][0]["url"],
+        format!("{}/api/flags", site.base())
+    );
+}
+
+#[test]
+fn a_failed_mock_drops_the_request_and_a_later_mock_replaces_it() {
+    let site = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file(
+        "replace.whirl",
+        &format!(
+            r##"[Options]
+base: {}
+
+MOCK GET /api/flags failed
+VISIT /mock.html
+ASSERT css:"#flags" text == "flags failed"
+
+MOCK GET /api/flags 200
+{{ "checkout_v2": false }}
+VISIT /mock.html
+ASSERT css:"#flags" text == v1
+
+MOCK GET /never 204
+"##,
+            site.base()
+        ),
+    );
+    let output = run_whirl(&dir, &["--report-json", "report.json", "replace.whirl"]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "{stdout}");
+    assert!(
+        stdout.contains("line 13: unused-mock: MOCK GET"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("line 4: unused-mock"), "{stdout}");
+    assert!(!stdout.contains("line 8: unused-mock"), "{stdout}");
+    let report = fs::read_to_string(dir.path.join("report.json")).expect("report exists");
+    assert!(report.contains(r#""code": "unused-mock""#), "{report}");
+}
+
+#[test]
+fn a_mock_serves_the_page_document_that_visit_loads() {
+    let site = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file(
+        "document.whirl",
+        &format!(
+            r#"[Options]
+base: {}
+MOCK GET /virtual.html 200
+Content-Type: text/html
+```
+<h1>Virtual page</h1>
+```
+VISIT /virtual.html
+ASSERT role:heading "Virtual page" visible
+"#,
+            site.base()
+        ),
+    );
+    let output = run_whirl(&dir, &["document.whirl"]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+}
+
+#[test]
+fn response_fails_on_a_request_that_a_failed_mock_served() {
+    let site = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file(
+        "failed.whirl",
+        &format!(
+            r#"[Options]
+base: {}
+VISIT /mock.html
+MOCK POST /api/cart* failed
+CLICK "Add to cart"
+RESPONSE cart POST /api/cart?source=page
+"#,
+            site.base()
+        ),
+    );
+    let output = run_whirl(&dir, &["failed.whirl"]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 1, "{stdout}");
+    assert!(
+        stdout.contains("request for response cart failed"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn har_records_mocked_responses_and_failed_mocks() {
+    let dir = TestDir::new();
+    dir.file(
+        "har.whirl",
+        r##"MOCK GET http://mock.test/ 200
+Content-Type: text/html
+```
+<p id="a">a</p><p id="b">b</p>
+<script>
+fetch('/api/ok').then((r) => r.text()).then((t) => { document.getElementById('a').textContent = t; });
+fetch('/api/down').catch(() => { document.getElementById('b').textContent = 'down'; });
+</script>
+```
+MOCK GET http://mock.test/api/ok 200
+Content-Type: text/plain
+```
+fine
+```
+MOCK GET http://mock.test/api/down failed
+VISIT http://mock.test/
+ASSERT css:"#a" text == fine
+ASSERT css:"#b" text == down
+"##,
+    );
+    let output = run_whirl(&dir, &["--har", "har.whirl"]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    let har: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(dir.artifacts().join("har/network.har")).expect("the HAR exists"),
+    )
+    .expect("the HAR is JSON");
+    let entries: Vec<(String, i64)> = har["log"]["entries"]
+        .as_array()
+        .expect("HAR entries")
+        .iter()
+        .map(|entry| {
+            (
+                entry["request"]["url"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+                entry["response"]["status"].as_i64().unwrap_or_default(),
+            )
+        })
+        .collect();
+    assert!(
+        entries.contains(&("http://mock.test/api/ok".to_owned(), 200)),
+        "{entries:?}"
+    );
+    assert!(
+        entries.contains(&("http://mock.test/api/down".to_owned(), -1)),
+        "{entries:?}"
+    );
+}

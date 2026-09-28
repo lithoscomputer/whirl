@@ -11,9 +11,9 @@ use crate::check::{Number, PredicateKind, StaticType, ValueType, is_bytes_litera
 use crate::lang::ast::snapshot::SnapshotOption;
 use crate::lang::ast::{
     Action, ActionKind, Assert, AssertBody, Capture, CheckLine, CheckStep, Entry, Extractor, File,
-    FileOption, FilterArg, FilterSpec, Ident, Locator, Operand, OptionValue, PageCheck,
-    PredicateSpec, ResponseField, SegmentKind, Span, StateCheck, Subject, Value, ValueSegment,
-    chain_type,
+    FileOption, FilterArg, FilterSpec, Ident, Locator, MockResponse, Operand, OptionValue,
+    PageCheck, PredicateSpec, RequestField, ResponseField, SegmentKind, Span, StateCheck, Subject,
+    Value, ValueSegment, chain_type,
 };
 
 /// How serious a lint diagnostic is: an [`Severity::Error`] fails
@@ -52,24 +52,8 @@ pub(crate) fn lint_file_with(file: &File, external_uses: &HashSet<String>) -> Ve
     setup_option_rules(file, &mut lints);
     redundant_presence_counts(file, &mut lints);
     filter_types(file, &mut lints);
-    deprecated_sections(file, &mut lints);
     lints.sort_by_key(|lint| (lint.line, lint.column));
     lints
-}
-
-/// Warns about each deprecated `[Asserts]` and `[Captures]` section
-/// (SPEC 4); `whirl fmt` rewrites them as `ASSERT` and `CAPTURE` lines.
-fn deprecated_sections(file: &File, lints: &mut Vec<Lint>) {
-    for span in file.entries.iter().flat_map(|entry| &entry.sections) {
-        lints.push(lint_at(
-            file,
-            Severity::Warning,
-            "sections-deprecated",
-            *span,
-            "sections are deprecated; run `whirl fmt` to rewrite them as ASSERT and CAPTURE lines"
-                .to_owned(),
-        ));
-    }
 }
 
 /// The capture names a file reads as `{{setup.name}}`.
@@ -628,6 +612,11 @@ fn collect_action_refs<'a>(action: &'a Action, refs: &mut Vec<VarRef<'a>>) {
     match &action.kind {
         ActionKind::Http {
             url, headers, body, ..
+        }
+        | ActionKind::Mock {
+            url,
+            response: MockResponse::Fulfill { headers, body, .. },
+            ..
         } => {
             collect_value_refs(url, line, refs);
             for header in headers {
@@ -637,7 +626,13 @@ fn collect_action_refs<'a>(action: &'a Action, refs: &mut Vec<VarRef<'a>>) {
                 collect_value_refs(&body.value, body.line, refs);
             }
         }
-        ActionKind::Response { url, .. } | ActionKind::Visit { url } => {
+        ActionKind::Response { url, .. }
+        | ActionKind::Visit { url }
+        | ActionKind::Mock {
+            url,
+            response: MockResponse::Failed,
+            ..
+        } => {
             collect_value_refs(url, line, refs);
         }
         ActionKind::Click { target, .. }
@@ -732,6 +727,15 @@ fn collect_chain_refs<'a>(
         Subject::Element { locator, .. } => collect_locator_refs(locator, line, refs),
         Subject::Eval(script) => collect_value_refs(script, line, refs),
         Subject::Response { field, .. } => collect_response_field_refs(field, line, refs),
+        Subject::Request { field, .. } => match field {
+            RequestField::Header(value)
+            | RequestField::Json(value)
+            | RequestField::Xpath(value) => {
+                collect_value_refs(value, line, refs);
+            }
+            RequestField::Method | RequestField::Url | RequestField::Body | RequestField::Bytes => {
+            }
+        },
         Subject::Url | Subject::Title => {}
     }
     for filter in filters {
@@ -869,12 +873,14 @@ fn response_names(file: &File, lints: &mut Vec<Lint>) {
     }
 }
 
-/// The `RESPONSE` name a subject reads, if any.
+/// The `RESPONSE` name a subject reads, if any: a response, or the
+/// request that the response answered.
 fn response_name_of(subject: &Subject) -> Option<&Ident> {
     match subject {
         Subject::Response {
             name: Some(name), ..
-        } => Some(name),
+        }
+        | Subject::Request { name, .. } => Some(name),
         _ => None,
     }
 }
@@ -1308,17 +1314,6 @@ mod tests {
     fn act_instructions_use_captures() {
         let source = "VISIT /\nCAPTURE item: testid:x text\n\nACT \"open {{item}}\"\n";
         assert_eq!(lint(source), Vec::new());
-    }
-
-    #[test]
-    fn warns_about_each_section_header() {
-        let lints = lint("VISIT /\n[Asserts]\nurl == /\n[Captures]\nc: url\nVISIT {{c}}\n");
-        let codes: Vec<(&str, u32)> = lints.iter().map(|lint| (lint.code, lint.line)).collect();
-        assert_eq!(codes, [
-            ("sections-deprecated", 2),
-            ("sections-deprecated", 4)
-        ]);
-        assert_eq!(lints[0].severity, Severity::Warning);
     }
 
     #[test]
