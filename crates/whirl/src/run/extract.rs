@@ -146,6 +146,95 @@ fn required_names(node: &Json) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// The answer with each string that the schema wants as a number read as
+/// that number, when the string is a plain number: an optional sign,
+/// currency sign, and thousands commas, and an optional trailing `%`, as in
+/// `"$1,299.00"` (SPEC 7.6). Any other string stays a string, so the schema
+/// check reports it.
+pub(crate) fn read_numbers(value: Value, schema: &Json) -> Value {
+    match value {
+        Value::String(text) if wants_number(schema) => number_text(&text)
+            .and_then(|number| parse_json(&number).ok())
+            .unwrap_or(Value::String(text)),
+        Value::Object(members) => {
+            let properties = schema.get("properties").and_then(Json::as_object);
+            Value::Object(
+                members
+                    .into_iter()
+                    .map(|(name, member)| {
+                        let member = match properties.and_then(|all| all.get(&name)) {
+                            Some(property) => read_numbers(member, property),
+                            None => member,
+                        };
+                        (name, member)
+                    })
+                    .collect(),
+            )
+        }
+        Value::List(items) => match schema.get("items") {
+            Some(item) => Value::List(
+                items
+                    .into_iter()
+                    .map(|member| read_numbers(member, item))
+                    .collect(),
+            ),
+            None => Value::List(items),
+        },
+        other => other,
+    }
+}
+
+/// Whether a node wants a number and does not allow a string.
+fn wants_number(schema: &Json) -> bool {
+    let mut kinds = types_of(schema);
+    if let Some(branches) = schema.get("anyOf").and_then(Json::as_array) {
+        kinds.extend(branches.iter().flat_map(types_of));
+    }
+    kinds
+        .iter()
+        .any(|kind| kind == "number" || kind == "integer")
+        && !kinds.iter().any(|kind| kind == "string")
+}
+
+/// The JSON number that a plain number written as text stands for.
+fn number_text(text: &str) -> Option<String> {
+    let text = text.trim();
+    let (negative, text) = match text.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, text),
+    };
+    let text = text.trim_start_matches(['$', '€', '£', '¥']);
+    let text = text.strip_suffix('%').unwrap_or(text);
+    let (whole, fraction) = match text.split_once('.') {
+        Some((whole, fraction)) => (whole, Some(fraction)),
+        None => (text, None),
+    };
+    let groups: Vec<&str> = whole.split(',').collect();
+    let grouped = groups.len() > 1
+        && (1..=3).contains(&groups[0].len())
+        && groups[1..].iter().all(|group| group.len() == 3);
+    if groups
+        .iter()
+        .any(|group| group.is_empty() || !group.bytes().all(|byte| byte.is_ascii_digit()))
+        || (groups.len() > 1 && !grouped)
+        || fraction.is_some_and(|digits| {
+            digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit())
+        })
+    {
+        return None;
+    }
+    let mut number = String::new();
+    if negative {
+        number.push('-');
+    }
+    number.push_str(&groups.concat());
+    if let Some(digits) = fraction {
+        number.push('.');
+        number.push_str(digits);
+    }
+    Some(number)
+}
+
 /// The answer as the author's schema describes it: unwrapped from the
 /// `value` property, with a null optional property removed.
 pub(crate) fn unwrap_answer(answer: Value, schema: Option<&Json>, wrapped: bool) -> Value {
@@ -352,6 +441,44 @@ pub(crate) fn is_missing(value: &Value, has_schema: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_plain_number_written_as_text_reads_as_a_number_where_the_schema_wants_one() {
+        let read = |answer: &str, schema_text: &str| {
+            let value = parse_json(answer).expect("JSON");
+            read_numbers(value, &schema(schema_text)).to_json()
+        };
+        let number = r#"{"type": "number"}"#;
+        assert_eq!(read(r#""$12.00""#, number).as_deref(), Some("12.00"));
+        assert_eq!(read(r#""1,299.5""#, number).as_deref(), Some("1299.5"));
+        assert_eq!(read(r#""-€3""#, number).as_deref(), Some("-3"));
+        assert_eq!(read(r#""45%""#, number).as_deref(), Some("45"));
+        for text in [
+            r#""12 items""#,
+            r#""about 12""#,
+            r#""1,29""#,
+            r#""12.""#,
+            r#""$""#,
+        ] {
+            assert_eq!(
+                read(text, number),
+                parse_json(text).ok().and_then(|v| v.to_json()),
+                "{text}"
+            );
+        }
+        assert_eq!(
+            read(r#""12""#, r#"{"type": ["string", "number"]}"#).as_deref(),
+            Some(r#""12""#)
+        );
+        assert_eq!(
+            read(
+                r#"{"total": "$20.50", "items": ["3"], "note": "7"}"#,
+                r#"{"type": "object", "properties": {"total": {"type": "number"}, "items": {"type": "array", "items": {"type": "integer"}}, "note": {"type": "string"}}}"#
+            )
+            .as_deref(),
+            Some(r#"{"total":20.50,"items":[3],"note":"7"}"#)
+        );
+    }
 
     fn schema(text: &str) -> Json {
         serde_json::from_str(text).expect("JSON")
