@@ -28,6 +28,17 @@ EXTRACT null fix (`extract-missing-coupon` 0/9 -> 9/9) and the login page
 tasks (`goal-heal-renamed` and the two `judge-several-claims` tasks). The
 p50 step time grew by the settle wait.
 
+## Live set
+
+The live set on real websites, 3 runs per task on the four default models,
+before and after idea 1 (`2026-09-28-live-before-settle.md` and
+`2026-09-28-live.md`): every good run passed both ways (96/96). With the wait,
+`vantech-journal` took 1.08 model calls instead of 2.0, since the model no
+longer read the page before it finished loading; a model step's p50 time
+grew by 0.7-1.6 s, as real pages keep loading longer. `apartments` failed its
+precheck on every run, and `bidnet` and `amazon` on some, before any model
+step.
+
 ## Kept
 
 1. **Wait for the page to settle before a model reads it.** Full set, 3
