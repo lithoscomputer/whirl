@@ -70,17 +70,20 @@ pub(crate) enum GoalStatus {
 pub(crate) struct GoalInference {
     pub(crate) status: GoalStatus,
     pub(crate) reason: String,
-    action:            Option<InferredAction>,
+    actions:           Vec<InferredAction>,
 }
 
 impl GoalInference {
-    /// The answer's action as a one-step `ACT` answer, so it goes through
-    /// [`PageSnapshot::decide`] like any answer.
-    pub(crate) fn into_act(self) -> ActInference {
-        ActInference {
-            action:   self.action,
-            two_step: false,
-        }
+    /// The answer's actions, each as a one-step `ACT` answer, so each goes
+    /// through [`PageSnapshot::decide`] like any answer.
+    pub(crate) fn into_acts(self) -> Vec<ActInference> {
+        self.actions
+            .into_iter()
+            .map(|action| ActInference {
+                action:   Some(action),
+                two_step: false,
+            })
+            .collect()
     }
 }
 
@@ -194,49 +197,55 @@ pub(crate) fn goal_schema() -> Json {
                 "type": "string",
                 "description": "A short reason for the answer."
             },
-            "action": action_schema("The next action when status is act; otherwise null.")
+            "actions": {
+                "type": "array",
+                "items": action_object_schema(),
+                "description": "When status is act, the next action. Give several only when each fills in or chooses a value in a different field of the same form and none of them changes the page; they run in order. Empty unless status is act."
+            }
         },
-        "required": ["status", "reason", "action"],
+        "required": ["status", "reason", "actions"],
         "additionalProperties": false
     })
 }
 
 /// The wire schema of one element action, or null.
 fn action_schema(description: &str) -> Json {
+    json!({
+        "anyOf": [action_object_schema(), {"type": "null"}],
+        "description": description
+    })
+}
+
+/// The wire schema of one element action.
+fn action_object_schema() -> Json {
     let methods: Vec<&str> = ActMethod::ALL
         .iter()
         .map(|method| method.wire_name())
         .collect();
     json!({
-        "anyOf": [
-            {
-                "type": "object",
-                "properties": {
-                    "elementId": {
-                        "type": "string",
-                        "description": "The ref of the element, copied from the accessibility tree without brackets, such as e12."
-                    },
-                    "description": {
-                        "type": "string",
-                        "description": "A description of the element and its purpose."
-                    },
-                    "method": {
-                        "type": "string",
-                        "enum": methods,
-                        "description": "The supported browser interaction method to execute."
-                    },
-                    "arguments": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "The arguments to pass to the selected interaction method."
-                    }
-                },
-                "required": ["elementId", "description", "method", "arguments"],
-                "additionalProperties": false
+        "type": "object",
+        "properties": {
+            "elementId": {
+                "type": "string",
+                "description": "The ref of the element, copied from the accessibility tree without brackets, such as e12."
             },
-            {"type": "null"}
-        ],
-        "description": description
+            "description": {
+                "type": "string",
+                "description": "A description of the element and its purpose."
+            },
+            "method": {
+                "type": "string",
+                "enum": methods,
+                "description": "The supported browser interaction method to execute."
+            },
+            "arguments": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "The arguments to pass to the selected interaction method."
+            }
+        },
+        "required": ["elementId", "description", "method", "arguments"],
+        "additionalProperties": false
     })
 }
 

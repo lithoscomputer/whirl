@@ -135,15 +135,17 @@ pub(crate) fn goal_system_prompt() -> String {
          either the user's goal has been completed or if there are still steps that need to be \
          taken.
 
-         Answer with status act and one action when steps remain, with status done when the \
-         goal is complete, or with status impossible when the goal cannot be achieved on this \
-         page. Give a short reason. Set action to null unless the status is act.
+         Answer with status act and the next action when steps remain, with status done when \
+         the goal is complete, or with status impossible when the goal cannot be achieved on \
+         this page. Give a short reason. Leave actions empty unless the status is act.
 
          Important guidelines:
          1. Break down complex actions into individual atomic steps.
-         2. Use only one action at a time, such as a single click on a specific element, \
+         2. Each action is a single step, such as a single click on a specific element, \
          typing into a single input field, or selecting a single option.
-         3. Avoid combining multiple actions in one step.
+         3. To fill in a form, give one action for each field that needs a value, in order, \
+         in the same answer. A click, or any other step that changes the page, is an answer \
+         of its own.
          4. If a step failed, look at the page as it is now and try another way.
          5. You cannot go to a URL, go back, or reload the page.
          6. Only answer done when the goal is genuinely complete, and impossible when it is \

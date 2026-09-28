@@ -975,9 +975,12 @@ opens every shadow root that a page script attaches, as for `ACT`.
 Each model call receives the goal, with masked values as placeholders
 (section 7.4), the Whirl lines that already ran for this `GOAL`, each with its
 error when it failed, and the AI snapshot of the selected tab, without link
-URLs. The model answers with one action, in the form that `ACT` uses, or with
-`done`, or with `impossible` and a reason. Whirl checks an action as it checks
-an `ACT` answer and runs it as the matching Whirl action, with the methods of
+URLs. The model answers with actions in the form that `ACT` uses, or with
+`done`, or with `impossible` and a reason. An answer holds one action, or,
+to fill in a form, one action for each field that needs a value; they run in
+order on the page that the snapshot showed, and the first that fails stops the
+rest. Each counts as one action. Whirl checks each action as it checks an
+`ACT` answer and runs it as the matching Whirl action, with the methods of
 section 7.4. So `GOAL` cannot go to a URL, go back, reload the page, or upload
 or drop a file. A custom dropdown takes two actions: one opens it, and the
 next chooses the option. Each action gets at most the step timeout

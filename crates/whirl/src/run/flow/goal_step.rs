@@ -430,39 +430,52 @@ impl FlowExec<'_> {
                 }
                 GoalStatus::Act => {}
             }
-            let (action, description) = match snapshot.decide(answer.into_act(), goal) {
-                Ok(ActDecision::Perform {
-                    action,
-                    description,
-                    ..
-                }) => (action, description),
-                Ok(ActDecision::NoMatch) => {
-                    return StepEnd::Failed(act_failure(
-                        "act-invalid-decision",
-                        "the model answered act without an action",
-                    ));
+            let mut planned = Vec::new();
+            for inference in answer.into_acts() {
+                match snapshot.decide(inference, goal) {
+                    Ok(ActDecision::Perform {
+                        action,
+                        description,
+                        ..
+                    }) => planned.push((action, description)),
+                    Ok(ActDecision::NoMatch) => {}
+                    Err(error) => {
+                        return StepEnd::Failed(act_failure(
+                            "act-invalid-decision",
+                            &self.vars.mask(&error.to_string()),
+                        ));
+                    }
                 }
-                Err(error) => {
-                    return StepEnd::Failed(act_failure(
-                        "act-invalid-decision",
-                        &self.vars.mask(&error.to_string()),
-                    ));
+            }
+            if planned.is_empty() {
+                return StepEnd::Failed(act_failure(
+                    "act-invalid-decision",
+                    "the model answered act without an action",
+                ));
+            }
+            // The actions of one answer, such as the fields of a form, run in
+            // order until one fails (SPEC 7.7).
+            for (action, description) in planned {
+                if record.reports.len() >= MAX_ACTIONS {
+                    break;
                 }
-            };
-            if let Err(end) = self
-                .run_goal_action(
-                    line,
-                    &action,
-                    &description,
-                    goal,
-                    action_cap,
-                    record,
-                    client,
-                    state,
-                )
-                .await
-            {
-                return end;
+                match self
+                    .run_goal_action(
+                        line,
+                        &action,
+                        &description,
+                        goal,
+                        action_cap,
+                        record,
+                        client,
+                        state,
+                    )
+                    .await
+                {
+                    Ok(true) => {}
+                    Ok(false) => break,
+                    Err(end) => return end,
+                }
             }
         }
     }

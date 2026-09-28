@@ -934,13 +934,13 @@ fn goal_act(element: &str, method: &str, arguments: &[&str]) -> Json {
     json!({
         "status": "act",
         "reason": "one more step",
-        "action": {"elementId": element, "description": "an element", "method": method, "arguments": arguments}
+        "actions": [{"elementId": element, "description": "an element", "method": method, "arguments": arguments}]
     })
 }
 
 /// A `GOAL` answer that ends the goal.
 fn goal_end(status: &str, reason: &str) -> Json {
-    json!({"status": status, "reason": reason, "action": null})
+    json!({"status": status, "reason": reason, "actions": []})
 }
 
 fn goal_flow(dir: &TestDir, goal: &str) -> PathBuf {
@@ -1302,4 +1302,35 @@ fn a_goal_finds_a_renamed_element_again_and_replays_the_rest_of_its_path() {
         cache["entries"][0]["actions"][1]["line"],
         "CLICK role:button \"Add to cart\""
     );
+}
+
+#[test]
+fn a_goal_fills_the_fields_of_a_form_in_one_answer() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.answer(&[
+        json!({
+            "status": "act",
+            "reason": "fill the form",
+            "actions": [
+                {"elementId": "e4", "description": "user", "method": "fill", "arguments": ["ada"]},
+                {"elementId": "e6", "description": "password", "method": "fill", "arguments": ["%env.PASSWORD%"]}
+            ]
+        }),
+        goal_end("done", "filled"),
+    ]);
+    let flow = dir.file(
+        "form.whirl",
+        "[Options]\nmodel: gpt-test\n\
+         VISIT \"data:text/html,<h1>Sign in</h1><label>User <input></label><label>Password <input type=password></label>\"\n\
+         GOAL \"sign in as ada with {{env.PASSWORD}}\"\n\
+         ASSERT label:User value == ada\n\
+         ASSERT label:Password value == {{env.PASSWORD}}\n",
+    );
+    let output = twin.run(&dir, &flow, &[("PASSWORD", "hunter2")]);
+    let log = twin.request_log();
+    assert_eq!(exit_code(&output), 0, "{}{log}", stdout_text(&output));
+    let goal = &steps(&dir)[1]["goal"];
+    assert_eq!(goal["usage"]["modelCalls"], 2);
+    assert_eq!(goal["actions"].as_array().map(Vec::len), Some(2));
 }
