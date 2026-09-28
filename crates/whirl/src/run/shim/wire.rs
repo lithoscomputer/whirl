@@ -23,6 +23,34 @@ pub(crate) fn independent_http_response(line: u32) -> String {
     format!("$whirl:http:{line}")
 }
 
+/// The anchored regular expression a `MOCK` sends for its absolute URL
+/// (SPEC 7.5): the normalized URL without its fragment, where each `*`
+/// matches any run of characters. The expression is ECMAScript without
+/// the `u` flag, so it escapes only syntax characters.
+pub(crate) fn mock_pattern(url: &str) -> Result<String, String> {
+    let mut parsed = url::Url::parse(url)
+        .map_err(|_| format!("MOCK needs an absolute HTTP URL or a path with base: {url}"))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(format!("MOCK only serves HTTP and HTTPS requests: {url}"));
+    }
+    parsed.set_fragment(None);
+    let parts: Vec<String> = parsed
+        .as_str()
+        .split('*')
+        .map(|part| {
+            let mut escaped = String::with_capacity(part.len());
+            for ch in part.chars() {
+                if "\\^$.|?*+()[]{}/".contains(ch) {
+                    escaped.push('\\');
+                }
+                escaped.push(ch);
+            }
+            escaped
+        })
+        .collect();
+    Ok(format!("^{}$", parts.join(".*")))
+}
+
 /// A `scroll` command's motion (protocol section 4): into view without a
 /// motion, else one chunk or a vertical position.
 pub(crate) fn scroll_motion_wire(motion: Option<&ScrollMotion>) -> Json {
@@ -222,7 +250,7 @@ pub(crate) fn read_subject_wire<E>(
         Subject::Url => json!({"type": "url"}),
         Subject::Title => json!({"type": "title"}),
         Subject::Eval(script) => json!({"type": "eval", "script": resolve(script)?}),
-        Subject::Response { .. } => return Ok(None),
+        Subject::Response { .. } | Subject::Request { .. } => return Ok(None),
     };
     Ok(Some(json))
 }
@@ -237,6 +265,29 @@ mod tests {
     use super::*;
     use crate::lang::ast::{ActionKind, AssertBody, File, ValueSegment};
     use crate::lang::parse::parse_file;
+
+    #[test]
+    fn a_mock_pattern_escapes_the_url_and_widens_each_star() {
+        assert_eq!(
+            mock_pattern("https://shop.test/api/items?page=1").as_deref(),
+            Ok("^https:\\/\\/shop\\.test\\/api\\/items\\?page=1$")
+        );
+        assert_eq!(
+            mock_pattern("https://shop.test/api/*#top").as_deref(),
+            Ok("^https:\\/\\/shop\\.test\\/api\\/.*$")
+        );
+        assert_eq!(
+            mock_pattern("https://*.cdn.test/fonts/*").as_deref(),
+            Ok("^https:\\/\\/.*\\.cdn\\.test\\/fonts\\/.*$")
+        );
+        // The pattern is normalized like the request URL it matches.
+        assert_eq!(
+            mock_pattern("HTTPS://Shop.test").as_deref(),
+            Ok("^https:\\/\\/shop\\.test\\/$")
+        );
+        assert!(mock_pattern("/relative").is_err());
+        assert!(mock_pattern("ftp://shop.test/a").is_err());
+    }
 
     /// A test resolver: literals pass through and variable references
     /// resolve to `<name>` / `<env:NAME>` markers.

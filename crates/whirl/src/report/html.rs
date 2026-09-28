@@ -299,11 +299,11 @@ fn render_file(
         )?;
     }
     write!(output, "</div>")?;
-    for warning in &file.warnings {
+    for warning in file.warning_lines() {
         write!(
             output,
             "<p class=\"warning\">Warning: {}</p>",
-            escape(warning)
+            escape(&warning)
         )?;
     }
     if !file.blocked_hosts.is_empty() {
@@ -312,6 +312,24 @@ fn render_file(
             "<p class=\"warning\">Blocked hosts: {}</p>",
             escape(&file.blocked_hosts.join(", "))
         )?;
+    }
+    if !file.mocks.is_empty() {
+        write!(output, "<p>Mocks:</p><ul>")?;
+        for mock in &file.mocks {
+            let served = if mock.hits == 1 {
+                "1 request".to_owned()
+            } else {
+                format!("{} requests", mock.hits)
+            };
+            write!(
+                output,
+                "<li>Line {}: MOCK {} {} served {served}</li>",
+                mock.line,
+                escape(&mock.method),
+                escape(&mock.url)
+            )?;
+        }
+        write!(output, "</ul>")?;
     }
     write!(
         output,

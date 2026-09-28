@@ -80,6 +80,37 @@
               "type": "string"
             }
           },
+          "mocks": {
+            "type": "array",
+            "description": "Every MOCK line that ran, in order, with the number of requests it served (SPEC 7.5). Absent when the file ran no MOCK.",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "line",
+                "method",
+                "url",
+                "hits"
+              ],
+              "properties": {
+                "line": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "method": {
+                  "type": "string"
+                },
+                "url": {
+                  "type": "string",
+                  "description": "The resolved URL pattern; secret values are masked."
+                },
+                "hits": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            }
+          },
           "entries": {
             "type": "array",
             "items": {
@@ -270,6 +301,26 @@
                                   }
                                 }
                               }
+                            }
+                          }
+                        }
+                      },
+                      "warnings": {
+                        "type": "array",
+                        "description": "Notices that do not change the step's status, such as unused-mock.",
+                        "items": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "required": [
+                            "code",
+                            "message"
+                          ],
+                          "properties": {
+                            "code": {
+                              "type": "string"
+                            },
+                            "message": {
+                              "type": "string"
                             }
                           }
                         }

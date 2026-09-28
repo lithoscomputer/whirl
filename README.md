@@ -140,6 +140,24 @@ ASSERT eval "window.dataLayer" json:$[?@.event=='purchase'] count == 1
 Page checks retry until they pass or time out. See
 [SPEC section 9](SPEC.md#9-asserts) for every subject, filter, and predicate.
 
+Use `MOCK` to give the page a fixed answer, and `request:NAME` to check what
+the page sent:
+
+```whirl
+MOCK GET /api/flags 200
+{ "checkout_v2": true }
+MOCK GET https://fonts.example.com/* failed
+
+VISIT /checkout
+MOCK POST /api/cart 201
+CLICK "Add to cart"
+RESPONSE cart POST /api/cart
+ASSERT request:cart json:$.qty == 1
+```
+
+A mock serves every matching browser request until the file ends. `*`
+matches any run of characters. See [MOCK](SPEC.md#75-mock).
+
 Use `ACT` when a step is easier to describe than to locate. A language model
 reads a snapshot of the page and chooses one action, which Whirl runs like
 any other action:

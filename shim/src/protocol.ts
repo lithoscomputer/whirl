@@ -240,6 +240,15 @@ export interface ResponseRead {
 	readonly bodyMayBeDecoded: boolean;
 }
 
+/** The request that a `RESPONSE` name selected (protocol 4.7). */
+export interface RequestRead {
+	readonly method: string;
+	readonly url: string;
+	readonly headers: readonly (readonly [string, string])[];
+	readonly bodyBase64: string | null;
+	readonly bodyError: string | null;
+}
+
 // --- Lifecycle params (protocol 3) ---
 
 export type BrowserEngine = "chromium" | "firefox" | "webkit";
@@ -277,6 +286,8 @@ export interface StartFlowParams {
 	readonly trace: boolean;
 	/** Open every shadow root that page scripts attach (SPEC 7.4). */
 	readonly openShadowRoots: boolean;
+	/** Route requests through the flow's mocks and block service workers (SPEC 7.5). */
+	readonly mocks: boolean;
 }
 
 export interface EndFlowParams {
@@ -291,6 +302,32 @@ export interface EndFlowResult {
 	readonly videoSkipped: string | null;
 	/** Why a saved recording holds only a white frame, or null. */
 	readonly videoBlank: string | null;
+	/** How many requests each mock served, in registration order. */
+	readonly mocks: readonly MockHits[];
+}
+
+export interface MockHits {
+	readonly id: number;
+	readonly hits: number;
+}
+
+/** What a `MOCK` serves (SPEC 7.5). */
+export type MockResponse =
+	| {
+			readonly type: "fulfill";
+			readonly status: number;
+			readonly headers: readonly (readonly [string, string])[];
+			readonly body: string | null;
+	  }
+	| { readonly type: "failed" };
+
+/** `mock` params (protocol 4.6). */
+export interface MockParams {
+	readonly id: number;
+	readonly method: string;
+	/** An anchored regular expression for the URL without its fragment. */
+	readonly pattern: string;
+	readonly response: MockResponse;
 }
 
 // --- Step commands (protocol 4) ---
@@ -322,6 +359,7 @@ export type ScrollMotion =
 export type StepCommand =
 	| "http"
 	| "response"
+	| "mock"
 	| "popup"
 	| "tab"
 	| "close"
@@ -347,12 +385,14 @@ export type StepCommand =
 	| "assert"
 	| "read"
 	| "readResponse"
+	| "readRequest"
 	| "traceGroup"
 	| "traceGroupEnd";
 
 const stepCommandList: readonly StepCommand[] = [
 	"http",
 	"response",
+	"mock",
 	"popup",
 	"tab",
 	"close",
@@ -378,6 +418,7 @@ const stepCommandList: readonly StepCommand[] = [
 	"assert",
 	"read",
 	"readResponse",
+	"readRequest",
 	"traceGroup",
 	"traceGroupEnd",
 ];

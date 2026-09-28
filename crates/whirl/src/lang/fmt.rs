@@ -21,8 +21,9 @@ use crate::lang::ast::snapshot::SnapshotOption;
 use crate::lang::ast::{
     Action, ActionKind, Assert, AssertBody, Capture, CheckLine, CheckStep, Comment, DurationLit,
     DurationUnit, Entry, Extractor, File, FileOption, FilterArg, FilterSpec, HttpBodyKind, Locator,
-    Operand, OptionValue, Page, PageCheck, PredicateSpec, Regex, ResponseField, ScrollDirection,
-    ScrollMotion, SegmentKind, StateCheck, Subject, TextPrefix, Value, ValueSegment, Viewport,
+    MockResponse, Operand, OptionValue, Page, PageCheck, PredicateSpec, Regex, RequestField,
+    ResponseField, ScrollDirection, ScrollMotion, SegmentKind, StateCheck, Subject, TextPrefix,
+    Value, ValueSegment, Viewport,
 };
 
 /// Where a rendered value sits in its line. The context decides which
@@ -358,6 +359,21 @@ fn render_action(action: &Action) -> String {
                 render_value(url, ValueCtx::Plain, is_final)
             )
         }
+        ActionKind::Mock {
+            method,
+            url,
+            response,
+            ..
+        } => {
+            let answer = match response {
+                MockResponse::Fulfill { status, .. } => status.to_string(),
+                MockResponse::Failed => "failed".to_owned(),
+            };
+            format!(
+                "MOCK {method} {} {answer}",
+                render_value(url, ValueCtx::Plain, false)
+            )
+        }
         ActionKind::Response { name, method, url } => format!(
             "RESPONSE {} {method} {}",
             name.text,
@@ -611,6 +627,27 @@ fn render_subject(subject: &Subject, ctx: LocatorCtx, is_final: bool) -> String 
             name: Some(name),
             field,
         } => format!("response:{} {}", name.text, render_response_field(field)),
+        Subject::Request { name, field } => {
+            format!("request:{} {}", name.text, render_request_field(field))
+        }
+    }
+}
+
+fn render_request_field(field: &RequestField) -> String {
+    match field {
+        RequestField::Method => "method".to_owned(),
+        RequestField::Url => "url".to_owned(),
+        RequestField::Body => "body".to_owned(),
+        RequestField::Bytes => "bytes".to_owned(),
+        RequestField::Header(value) => {
+            format!("header:{}", render_value(value, ValueCtx::Prefixed, false))
+        }
+        RequestField::Json(value) => {
+            format!("json:{}", render_value(value, ValueCtx::Prefixed, false))
+        }
+        RequestField::Xpath(value) => {
+            format!("xpath:{}", render_value(value, ValueCtx::Prefixed, false))
+        }
     }
 }
 
@@ -802,7 +839,15 @@ fn entry_region(entry: &Entry) -> Region {
                 });
             }
         }
-        if let ActionKind::Http { headers, body, .. } = &action.kind {
+        let request_lines = match &action.kind {
+            ActionKind::Http { headers, body, .. }
+            | ActionKind::Mock {
+                response: MockResponse::Fulfill { headers, body, .. },
+                ..
+            } => Some((headers, body)),
+            _ => None,
+        };
+        if let Some((headers, body)) = request_lines {
             for header in headers {
                 lines.push(Line {
                     source_line: header.line,
@@ -1012,6 +1057,15 @@ mod tests {
                 }
                 scrub_response_field(field);
             }
+            Subject::Request { name, field } => {
+                scrub_ident(name);
+                if let RequestField::Header(value)
+                | RequestField::Json(value)
+                | RequestField::Xpath(value) = field
+                {
+                    scrub_value(value);
+                }
+            }
             Subject::Url | Subject::Title => {}
         }
     }
@@ -1093,6 +1147,12 @@ mod tests {
                 body,
                 source,
                 ..
+            }
+            | ActionKind::Mock {
+                url,
+                response: MockResponse::Fulfill { headers, body, .. },
+                source,
+                ..
             } => {
                 source.clear();
                 scrub_value(url);
@@ -1111,6 +1171,15 @@ mod tests {
                 scrub_value(url);
             }
             ActionKind::Visit { url } => scrub_value(url),
+            ActionKind::Mock {
+                url,
+                response: MockResponse::Failed,
+                source,
+                ..
+            } => {
+                source.clear();
+                scrub_value(url);
+            }
             ActionKind::Click { target, .. }
             | ActionKind::Dblclick { target }
             | ActionKind::Check { target }

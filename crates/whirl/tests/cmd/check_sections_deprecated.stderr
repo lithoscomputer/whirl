@@ -1,6 +1,0 @@
-old.whirl:2:1: warning: sections are deprecated; run `whirl fmt` to rewrite them as ASSERT and CAPTURE lines
-  [Asserts]
-  ^^^^^^^^^
-old.whirl:4:1: warning: sections are deprecated; run `whirl fmt` to rewrite them as ASSERT and CAPTURE lines
-  [Captures]
-  ^^^^^^^^^^

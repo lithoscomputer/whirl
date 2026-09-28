@@ -1,0 +1,9 @@
+./failed.whirl:2:1: error: a failed MOCK takes no header lines and no body
+  Content-Type: text/plain
+  ^
+./timeout.whirl:1:25: error: MOCK has no step timeout
+  MOCK GET /api/flags 200 @5s
+                          ^^^
+./request.whirl:4:16: error: unknown response `cart`; name it with RESPONSE first
+  ASSERT request:cart json:$.qty == 1
+                 ^^^^

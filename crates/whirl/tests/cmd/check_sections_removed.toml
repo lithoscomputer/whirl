@@ -1,4 +1,4 @@
 bin.name = "whirl"
 args = ["check", "old.whirl"]
 fs.sandbox = true
-status = "success"
+status.code = 2

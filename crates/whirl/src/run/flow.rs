@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use serde_json::Value as Json;
+use serde_json::{Value as Json, json};
 use tokio::fs;
 use tracing::{Instrument as _, debug, debug_span, info_span};
 
@@ -16,14 +16,14 @@ use crate::lang::ast::{
 };
 use crate::lang::fmt::render_snapshot_target;
 use crate::report::model::{
-    ActReport, CaptureValue, EntryReport, FileReport, ReportViewport, RuntimeMetadata, SETUP_ENTRY,
-    SnapshotReport, Status, StepError, StepKind, StepReport, Timing,
+    ActReport, CaptureValue, EntryReport, FileReport, MockReport, ReportViewport, RuntimeMetadata,
+    SETUP_ENTRY, SnapshotReport, Status, StepError, StepKind, StepReport, StepWarning, Timing,
 };
 use crate::run::act::{ActPlanner, Instruction};
 use crate::run::artifacts;
 use crate::run::shim::{
-    EndFlowParams, ErrorObject, ShimClient, ShimError, StartFlowParams, StepCommand, StepOutcome,
-    StepRequest, VideoParams, ViewportParams, wire,
+    EndFlowParams, ErrorObject, MockHits, ShimClient, ShimError, StartFlowParams, StepCommand,
+    StepOutcome, StepRequest, VideoParams, ViewportParams, wire,
 };
 use crate::run::vars::{VarError, VarStore};
 
@@ -422,7 +422,9 @@ impl<'a> StepNode<'a> {
     fn raw_text(self) -> &'a str {
         match self {
             Self::Action(step) => match &step.kind {
-                ast::ActionKind::Http { source, .. } => source,
+                ast::ActionKind::Http { source, .. } | ast::ActionKind::Mock { source, .. } => {
+                    source
+                }
                 _ => &step.text,
             },
             Self::Page(step) => &step.text,
@@ -577,6 +579,21 @@ struct FlowExec<'a> {
     captures:  Vec<(String, check::Value)>,
     /// Responses read so far; a response never changes (SPEC 9.7).
     responses: check_step::ResponseCache,
+    /// Requests read so far, by `RESPONSE` name (SPEC 9.2).
+    requests:  check_step::RequestCache,
+    /// Every `MOCK` that ran, in order (SPEC 7.5).
+    mocks:     Vec<RegisteredMock>,
+}
+
+/// The resolved header pairs and body of a request or a mocked response.
+type MessageParts = (Vec<(String, String)>, Option<String>);
+
+/// A `MOCK` line that ran, for the report (SPEC 7.5).
+struct RegisteredMock {
+    line:   u32,
+    method: String,
+    /// The resolved URL pattern, masked.
+    url:    String,
 }
 
 impl FlowExec<'_> {
@@ -650,6 +667,34 @@ impl FlowExec<'_> {
         }
     }
 
+    /// Resolves the header lines and body of an `HTTP` request or a
+    /// `MOCK` response (SPEC 7.3, 7.5). A JSON body without a
+    /// `Content-Type` header gets `application/json`.
+    fn message_parts(
+        &mut self,
+        headers: &[ast::HttpHeader],
+        body: Option<&ast::HttpBody>,
+    ) -> Result<MessageParts, BuildError> {
+        let mut resolved = Vec::with_capacity(headers.len() + 1);
+        for header in headers {
+            resolved.push((header.name.clone(), self.resolve(&header.value)?));
+        }
+        let has_content_type = headers
+            .iter()
+            .any(|header| header.name.eq_ignore_ascii_case("content-type"));
+        if body.is_some_and(|body| body.kind == ast::HttpBodyKind::Json) && !has_content_type {
+            resolved.push(("Content-Type".to_owned(), "application/json".to_owned()));
+        }
+        let body = body
+            .map(|body| match body.kind {
+                // Typed variables insert as JSON (SPEC 11).
+                ast::HttpBodyKind::Json => self.vars.resolve_json(&body.text, body.value.span),
+                ast::HttpBodyKind::Text => self.resolve(&body.value),
+            })
+            .transpose()?;
+        Ok((resolved, body))
+    }
+
     fn resolve_url(&mut self, value: &ast::Value) -> Result<String, BuildError> {
         let resolved = self.resolve(value)?;
         if resolved.starts_with('/') {
@@ -693,34 +738,49 @@ impl FlowExec<'_> {
                 body,
                 ..
             } => {
-                let mut resolved_headers = Vec::with_capacity(headers.len() + 1);
-                for header in headers {
-                    resolved_headers.push((header.name.clone(), self.resolve(&header.value)?));
-                }
-                if body.as_ref().is_some_and(|body| {
-                    body.kind == ast::HttpBodyKind::Json
-                        && !headers
-                            .iter()
-                            .any(|header| header.name.eq_ignore_ascii_case("content-type"))
-                }) {
-                    resolved_headers
-                        .push(("Content-Type".to_owned(), "application/json".to_owned()));
-                }
+                let (headers, body) = self.message_parts(headers, body.as_ref())?;
                 StepCommand::Http {
-                    name:    wire::independent_http_response(action.line),
-                    method:  method.clone(),
-                    url:     self.resolve_url(url)?,
-                    headers: resolved_headers,
-                    body:    body
-                        .as_ref()
-                        .map(|body| match body.kind {
-                            // Typed variables insert as JSON (SPEC 11).
-                            ast::HttpBodyKind::Json => {
-                                self.vars.resolve_json(&body.text, body.value.span)
-                            }
-                            ast::HttpBodyKind::Text => self.resolve(&body.value),
+                    name: wire::independent_http_response(action.line),
+                    method: method.clone(),
+                    url: self.resolve_url(url)?,
+                    headers,
+                    body,
+                }
+            }
+            K::Mock {
+                method,
+                url,
+                response,
+                ..
+            } => {
+                let url = self.resolve_url(url)?;
+                let pattern = wire::mock_pattern(&url).map_err(BuildError::Check)?;
+                let response = match response {
+                    ast::MockResponse::Fulfill {
+                        status,
+                        headers,
+                        body,
+                    } => {
+                        let (headers, body) = self.message_parts(headers, body.as_ref())?;
+                        json!({
+                            "type": "fulfill",
+                            "status": status,
+                            "headers": headers,
+                            "body": body,
                         })
-                        .transpose()?,
+                    }
+                    ast::MockResponse::Failed => json!({"type": "failed"}),
+                };
+                self.mocks.push(RegisteredMock {
+                    line:   action.line,
+                    method: method.clone(),
+                    url:    self.vars.mask(&url),
+                });
+                StepCommand::Mock {
+                    id: action.line,
+                    method: method.clone(),
+                    pattern,
+                    response,
                 }
             }
             K::Click { target, button } => StepCommand::Click {
@@ -1257,6 +1317,7 @@ impl FlowExec<'_> {
                     error:       None,
                     snapshot:    None,
                     act:         None,
+                    warnings:    Vec::new(),
                 });
                 continue;
             }
@@ -1273,6 +1334,7 @@ impl FlowExec<'_> {
                 error: run.end.into_error(),
                 act: run.act,
                 snapshot: run.snapshot,
+                warnings: Vec::new(),
             });
             if status != Status::Passed {
                 entry_status = status;
@@ -1337,6 +1399,7 @@ fn skipped_entry(file: &File, entry: &ast::Entry, vars: &VarStore) -> EntryRepor
             error:       None,
             snapshot:    None,
             act:         None,
+            warnings:    Vec::new(),
         })
         .collect();
     EntryReport {
@@ -1382,6 +1445,7 @@ impl EntryReport {
             }),
             snapshot:    None,
             act:         None,
+            warnings:    Vec::new(),
         });
         self
     }
@@ -1424,6 +1488,39 @@ fn start_flow_params(run: &FlowRun<'_>, options: &ResolvedOptions) -> StartFlowP
             .then(|| wire_path(&run.abs_dir.join(artifacts::NETWORK_HAR))),
         trace:              run.flags.trace,
         open_shadow_roots:  run.file.uses_act(),
+        mocks:              run.file.uses_mock(),
+    }
+}
+
+/// Lists each mock with the requests it served (SPEC 7.5). When the
+/// file passed, a mock that served none gets the `unused-mock` warning
+/// on its line.
+fn report_mocks(report: &mut FileReport, mocks: &[RegisteredMock], hits: &[MockHits]) {
+    for mock in mocks {
+        let served = hits
+            .iter()
+            .find(|entry| entry.id == mock.line)
+            .map_or(0, |entry| entry.hits);
+        report.mocks.push(MockReport {
+            line:   mock.line,
+            method: mock.method.clone(),
+            url:    mock.url.clone(),
+            hits:   served,
+        });
+        if served > 0 || report.status != Status::Passed {
+            continue;
+        }
+        let step = report
+            .entries
+            .iter_mut()
+            .flat_map(|entry| &mut entry.steps)
+            .find(|step| step.line == mock.line);
+        if let Some(step) = step {
+            step.warnings.push(StepWarning {
+                code:    "unused-mock".to_owned(),
+                message: format!("MOCK {} {} served no request", mock.method, mock.url),
+            });
+        }
     }
 }
 
@@ -1456,6 +1553,7 @@ pub(crate) async fn run_flow(run: &FlowRun<'_>, client: &mut ShimClient) -> Flow
             blocked_hosts: Vec::new(),
             warnings:      Vec::new(),
             artifacts:     Vec::new(),
+            mocks:         Vec::new(),
             entries:       Vec::new(),
         };
         let finish = |mut report: FileReport,
@@ -1561,6 +1659,8 @@ pub(crate) async fn run_flow(run: &FlowRun<'_>, client: &mut ShimClient) -> Flow
             flow_open: true,
             captures: Vec::new(),
             responses: check_step::ResponseCache::new(),
+            requests: check_step::RequestCache::new(),
+            mocks: Vec::new(),
         };
         // An explicit rate that the engine cannot honor is a warning, not a
         // failure: the recording still exists at the engine's rate (SPEC 13).
@@ -1614,6 +1714,7 @@ pub(crate) async fn run_flow(run: &FlowRun<'_>, client: &mut ShimClient) -> Flow
             match client.end_flow(&end).await {
                 Ok(result) => {
                     report.blocked_hosts = result.blocked_hosts;
+                    report_mocks(&mut report, &exec.mocks, &result.mocks);
                     if trace_path.is_some()
                         && let Some(entry) = report.entries.iter_mut().find(|entry| {
                             entry.status != Status::Passed && entry.status != Status::Skipped

@@ -122,20 +122,20 @@ check-line    := ASSERT-line | CAPTURE-line
 - Check lines run in the order written. A `CAPTURE` can come before an
   `ASSERT` that reads its value.
 - `HTTP` entries can appear before the first `VISIT`, and a file can contain
-  only HTTP entries. The first browser entry must start with `VISIT`, because
-  no page exists yet. After it, later browser entries can start with any
-  browser action.
+  only HTTP entries. The first browser entry must start with `VISIT`, after
+  any `MOCK` lines (section 7.5), because no page exists yet. After it, later
+  browser entries can start with any browser action.
 
-### 4.1 Deprecated sections
+### 4.1 Removed sections
 
 Earlier versions marked checks with an `[Asserts]` section and captures with
 a `[Captures]` section: a header line, then one check or capture per line
-without a keyword. Whirl still accepts these sections, with the same meaning:
-`[Asserts]` comes before `[Captures]`, and each entry has at most one of
-each. `whirl check` reports each section header as the warning
-`sections-deprecated`, and `whirl fmt` rewrites each section as `ASSERT` and
-`CAPTURE` lines. A file that uses both sections and check lines is the parse
-error `mixed-check-syntax`. A later version will reject sections.
+without a keyword. A run and `whirl check` reject a file with such a section
+with the parse error `sections-removed`. `whirl fmt` still rewrites each
+section as `ASSERT` and `CAPTURE` lines, with the same meaning: `[Asserts]`
+comes before `[Captures]`, and each entry has at most one of each. A file that
+uses both sections and check lines is the parse error `mixed-check-syntax`,
+and `whirl fmt` cannot rewrite it.
 
 ## 5. Options
 
@@ -243,6 +243,8 @@ An action is a verb, an optional locator, and an optional value. Element-targeti
 | `VISIT url` | Navigate, and continue once the new document has parsed. A `url` starting with `/` resolves against `base`. |
 | `RESPONSE name METHOD url` | Name the first matching HTTP request started in this entry and wait for its response headers. |
 | `HTTP METHOD url` | Send an independent HTTP request. Header and body lines can follow as defined in section 7.3. |
+| `MOCK METHOD url STATUS` | Serve a fixed response to matching browser requests until the file ends. Header and body lines can follow (section 7.5). |
+| `MOCK METHOD url failed` | Fail matching browser requests the way a dropped connection does (section 7.5). |
 | `POPUP name` | Name an unnamed popup opened by the selected tab in this entry; selection stays unchanged. |
 | `TAB name` | Select an open named tab for subsequent commands. The original tab is `main`. |
 | `CLOSE name` | Close a named tab; selection stays unchanged. Already closed tabs succeed. |
@@ -423,6 +425,9 @@ or captured in later entries, including after their tab closes. Selecting the
 same method and URL under another name in one entry selects the same first
 request. Names and observed requests are not transferred by `setup`.
 
+The request that `RESPONSE` selects can be checked too, with the
+`request:NAME` subject (section 9.2): its method, URL, headers, and body.
+
 The command waits for response headers, not a completed body. Its timeout covers
 both finding the request and receiving those headers. Checks and captures that
 read the body (`body`, `bytes`, `json:`, and `xpath:`) wait for it within their
@@ -439,6 +444,7 @@ ASSERT response:order status == 201
 ASSERT response:order header:content-type contains application/json
 ASSERT response:order json:$.status == paid
 ASSERT response:order json:$.items count >= 1
+ASSERT request:order json:$.qty == 1
 ASSERT text:"Order confirmed" visible
 CAPTURE order_id: response:order json:$.id
 ```
@@ -719,6 +725,74 @@ the token usage and cost of the model calls, and with `--jev` Jev's requests,
 tokens, and cost. A rendered line such as `CLICK role:button "Sign in"` describes the
 element; it is not guaranteed to be unique on the page.
 
+### 7.5 MOCK
+
+`MOCK` serves a fixed response to the browser's requests, so a flow can test
+the page against a known answer: a feature flag, an empty list, a server error,
+or a network failure.
+
+```whirl
+MOCK GET /api/flags 200
+{ "checkout_v2": true }
+
+MOCK POST /api/orders 503
+Retry-After: 30
+
+MOCK GET https://cdn.example.com/fonts/* failed
+
+VISIT /checkout
+```
+
+`MOCK METHOD url STATUS` is an action. `STATUS` is a status code from 200 to
+599. Header lines and one JSON or fenced body can follow, under the rules of
+`HTTP` (section 7.3). A JSON body without a `Content-Type` header gets
+`Content-Type: application/json`. Without a body, the response body is empty.
+`MOCK METHOD url failed` fails a matching request the way a dropped connection
+does. It takes no header lines and no body. `MOCK` has no step timeout: it
+registers at once, and a trailing `@duration` is a parse error.
+
+`MOCK` lines can come before the first `VISIT`, so the first page load can use
+them. A `MOCK` before `VISIT` belongs to the entry that `VISIT` joins.
+
+A mock matches a request when both of these hold:
+
+- The method is the same. Methods are literal uppercase names.
+- The URL matches the pattern. A URL that starts with `/` resolves against
+  `base`, as for `VISIT`. Whirl normalizes the pattern and the request URL as
+  `RESPONSE` does (section 7.2) and ignores fragments. Every `*` in the pattern
+  matches any run of characters, including none, `/`, and `?`. The rest
+  matches exactly, so `/api/items` does not match `/api/items?page=2`, and
+  `/api/items*` matches both. A pattern cannot match a literal `*`.
+
+A mock lasts until the file ends. It applies to every tab and frame of the
+flow, and to the page document that `VISIT` loads. A later `MOCK` with the same
+method and the same URL, after interpolation and resolution against `base`,
+replaces the earlier one.
+When mocks with different patterns match one request, the one registered last
+serves it. There is no way to remove a mock. `setup` does not carry mocks to a
+dependent file.
+
+`MOCK` applies only to requests that the browser sends. An `HTTP` request never
+matches a mock. `RESPONSE` observes a mocked request like any other: it can
+name a response that a mock served, and `request:NAME` can check what the page
+sent. A request that a `failed` mock served has no response, so `RESPONSE`
+fails on it (section 7.2).
+
+A mocked request never reaches the network, so Whirl serves it even when
+`allow-hosts` does not allow its host, and does not report that host as
+blocked. A file that uses `MOCK` runs with service workers disabled, as with
+`allow-hosts`, because a service worker can answer requests before a mock sees
+them. The URL, header values, and body support interpolation, which happens
+when the line runs.
+
+Reports list each mock with its method, URL, and the number of requests it
+served. When a file passes, a mock that served no request before the file ended
+or before a later `MOCK` replaced it gets the warning `unused-mock`. A file that
+fails stops early, so Whirl does not warn about its mocks. With `--har`, the
+network log records a mocked response as an ordinary response with the mock's
+status, headers, and body. It records a request that a `failed` mock served
+with the status `-1` and the engine's failure text, as for any failed request.
+
 ## 8. PAGE
 
 ```
@@ -784,6 +858,13 @@ Page checks retry until they pass or the step timeout expires. Response checks r
 | `response:NAME bytes` | bytes | The body after content decoding, such as gzip |
 | `response:NAME json:PATH` | any | Short for `response:NAME body json:PATH` |
 | `response:NAME xpath:EXPR` | any | Short for `response:NAME body xpath:EXPR` |
+| `request:NAME method` | string | The method of the request that `RESPONSE NAME` selected |
+| `request:NAME url` | string | The request URL, without a fragment |
+| `request:NAME header:HEADER` | string | Value of the request header; the name is case-insensitive |
+| `request:NAME body` | string | The request body, decoded with the charset of its `Content-Type`, UTF-8 by default; empty when the request has no body |
+| `request:NAME bytes` | bytes | The request body |
+| `request:NAME json:PATH` | any | Short for `request:NAME body json:PATH` |
+| `request:NAME xpath:EXPR` | any | Short for `request:NAME body xpath:EXPR` |
 
 Inside an HTTP entry (section 7.3), omit `response:NAME`: `status`, `header:HEADER`, `location`, `body`, `bytes`, `json:PATH`, and `xpath:EXPR` examine that entry's response. These implicit forms are invalid in a browser entry.
 
@@ -795,13 +876,15 @@ The `eval` subject runs its script under the rules of `EVAL` (section 7) each ti
 
 A response subject waits for the body within the step timeout. The 1 MiB body limit of sections 7.2 and 7.3 applies. All checks for one response examine the same response.
 
+A request subject reads the request that `RESPONSE NAME` selected (section 7.2), with the headers the browser sent. A request check reads once and does not retry, as a response check does (section 9.7), and the 1 MiB body limit applies. `request:NAME` with a name that no earlier `RESPONSE` line declared is the lint error `unknown-response`. An `HTTP` entry has no `request:` subject. Its request is the one the file wrote.
+
 An `HTTP` entry reads the exact bytes of its body. A `RESPONSE` reads its body through the browser, and Chromium and WebKit can hand a text body back already decoded. When the `Content-Type` names a charset other than UTF-8, Whirl undoes that decoding, so `body` and `bytes` match what the server sent. WebKit replaces bytes it cannot decode, so in WebKit a `RESPONSE` text body in a charset other than UTF-8 can differ from the bytes the server sent.
 
 A subject can give a **missing value**:
 
 - a locator with no match, for `text`, `value`, and `attr:`;
 - an attribute that the element does not have;
-- an absent response header, including an absent `Location` header for `location`;
+- an absent response or request header, including an absent `Location` header for `location`;
 - a JSONPath singular query that selects nothing (section 9.5).
 
 `count` is never missing; zero is a value. Section 9.7 says how predicates treat a missing value.
@@ -946,7 +1029,7 @@ One exception applies to attributes. When the element exists but does not have t
 
 Page checks retry. A page check is a check on a locator subject, `url`, `title`, or `eval`. Whirl reads the value, applies the filters, and tests the predicate. When the check does not pass, Whirl reads again after 100 ms, 250 ms, 500 ms, and then every 1000 ms, until the check passes or the step timeout expires. A false predicate, a type mismatch, a filter error, a missing value, and an `eval` exception all count as "not passing yet". At the timeout, the check fails with the result of its last attempt. A locator that matches more than one element fails at once (section 6.2).
 
-Response checks do not retry. A false predicate, a type mismatch, a filter error, or a missing value fails the check at once.
+Response checks and request checks do not retry. A false predicate, a type mismatch, a filter error, or a missing value fails the check at once.
 
 Each failure has a stable report code: `assert` for a false predicate, `type-mismatch`, `filter-error`, `missing-value`, `eval` for an exception in an `eval` script, `eval-result` for an `eval` result outside the contract of section 10, `strictness`, and `read` for a subject that cannot be read, such as `value` on an element that is not an input or a `RESPONSE` body over the limit. See section 16 and [machine-readable output](docs/engineering/machine-output.md).
 
@@ -1032,7 +1115,7 @@ whirl report <REPORT>... --html <PATH>  Generate HTML from saved results
 `whirl fmt` rewrites files to the canonical form: single spaces between tokens,
 quotes only where a value requires them, one HTTP header per line, check lines
 directly after the actions of their entry, and one blank line between entries.
-It rewrites deprecated `[Asserts]` and `[Captures]` sections as `ASSERT` and
+It rewrites removed `[Asserts]` and `[Captures]` sections as `ASSERT` and
 `CAPTURE` lines (section 4.1). It keeps the quotes on a value whose bare form is a typed
 literal, such as `"42"` or `"true"` (section 3.1), and it keeps JSON literals as
 written. It preserves JSON and fenced body text, apart from the LF
@@ -1187,7 +1270,7 @@ Rust source, configuration, and project setup follow the [Brynary Rust Style Gui
 ## 16. Errors
 
 - **JSON diagnostics.** `whirl check --json` writes one version 1 JSON document to stdout, containing `exitCode` and `diagnostics`, with no diagnostic text on stderr. Each diagnostic includes a stable code, severity, path, line, column, length, message, and expected alternatives. Positions are 1-based Unicode character positions; locations unavailable for input or I/O errors are null. CLI argument syntax errors still use the ordinary usage message.
-- **Parse errors** (exit 2) are reported with file, line, column, a caret under the offending token, and the expected alternatives. `whirl check` surfaces them without launching a browser. Lint warnings do not change the exit code. Whirl warns about a capture that is never used, about an HTTP entry without a `status` check, and about a `count >= 1` assert directly followed by a check on the same locator, only when the following check requires at least one element. A `hidden` check or a count comparison that accepts zero does not make the presence check redundant. `whirl check` reports a check whose types cannot work, such as `text toHex` or `url > 3`, as the error `filter-type`. It reports an invalid literal regex, JSONPath, or XPath as a parse error. A file that mixes deprecated sections with check lines is the parse error `mixed-check-syntax`, and each deprecated section header is the warning `sections-deprecated` (section 4.1).
+- **Parse errors** (exit 2) are reported with file, line, column, a caret under the offending token, and the expected alternatives. `whirl check` surfaces them without launching a browser. Lint warnings do not change the exit code. Whirl warns about a capture that is never used, about an HTTP entry without a `status` check, and about a `count >= 1` assert directly followed by a check on the same locator, only when the following check requires at least one element. A `hidden` check or a count comparison that accepts zero does not make the presence check redundant. `whirl check` reports a check whose types cannot work, such as `text toHex` or `url > 3`, as the error `filter-type`. It reports an invalid literal regex, JSONPath, or XPath as a parse error. A file with an `[Asserts]` or `[Captures]` section is the parse error `sections-removed`, and a file that mixes such sections with check lines is the parse error `mixed-check-syntax` (section 4.1).
 - **Test failures** (exit 1) report the failing step the same way, plus expected versus actual and the artifacts. Check failures use the codes of section 9.7.
 - **Runtime errors** (exit 3) cover shim crashes, missing browsers, and similar environmental failures.
 
@@ -1204,7 +1287,7 @@ http-entry = http-request , { http-check-line } ;
 check-line = assert | capture ;
 http-check-line = http-assert | http-capture ;
 
-action     = action-body , [ step-timeout ] | snapshot ;
+action     = action-body , [ step-timeout ] | snapshot | mock ;
 snapshot   = "SNAPSHOT" , artifact-name , [ locator ] , [ step-timeout ]
            , { snapshot-option } ;   (* prefixed segments only; 6.1 *)
 snapshot-option = "snapshot-mask:" , ( locator | "none" )
@@ -1232,6 +1315,10 @@ action-body = "VISIT" , value
            | "ACT" , [ locator ] , value
            | "STORE" , ( "local" | "session" | "cookie" ) , value , value ;
 
+mock       = "MOCK" , http-method , value
+           , ( status-code , { http-header } , [ http-body ] | "failed" ) ;
+status-code = digit , digit , digit ;   (* 200 to 599 *)
+
 http-request = http-headline , { http-header } , [ http-body ] ;
 http-headline = "HTTP" , http-method , value , [ step-timeout ] ;
 http-header = attr-name , ":" , value ;
@@ -1251,7 +1338,10 @@ state-check= "visible" | "hidden" | "enabled" | "disabled"
 subject    = locator , extractor
            | "url" | "title"
            | "eval" , value
-           | "response:" , artifact-name , response-field ;
+           | "response:" , artifact-name , response-field
+           | "request:" , artifact-name , request-field ;
+request-field = "method" | "url" | "header:" , value | "body" | "bytes"
+              | json-path | xpath-expr ;
 extractor  = "text" | "value" | "count" | "attr:" , attr-name ;
 response-field = "status" | "header:" , value | "location" | "body" | "bytes"
                | json-path | xpath-expr ;
@@ -1320,7 +1410,7 @@ Permanent non-goals — these keep the format Hurl-grade:
 
 Deferred beyond V1 (candidate V2 features, not promised):
 
-- Network stubbing and request-body or request-count assertions.
+- Request-count assertions, and `MOCK` responses served from a HAR file.
 - The Hurl features that the check vocabulary does not adopt: the `sha256`, `md5`, `cookie`, `certificate`, `redirects`, `duration`, `ip`, `version`, `variable`, and `rawbytes` queries; `file,…;` values; and following redirects in HTTP entries.
 - Per-entry `[Options]` overrides and mobile device emulation.
 - An LLM-as-judge assertion (a `JUDGE` keyword with an explicit model option and advisory rather than hard-failing verdicts).

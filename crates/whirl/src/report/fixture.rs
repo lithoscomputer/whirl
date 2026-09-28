@@ -27,6 +27,7 @@ fn step(
         error,
         snapshot: None,
         act: None,
+        warnings: Vec::new(),
     }
 }
 
@@ -74,6 +75,7 @@ fn passed_file() -> FileReport {
             captures:    vec![("next_url".to_owned(), CaptureValue::string("/dashboard"))],
             artifacts:   Vec::new(),
         }],
+        mocks:         Vec::new(),
     }
 }
 
@@ -131,6 +133,7 @@ fn failed_file(fill_text: &str, actual_value: &str) -> FileReport {
                 artifacts:   Vec::new(),
             },
         ],
+        mocks:         Vec::new(),
     }
 }
 
@@ -156,6 +159,7 @@ fn setup_failed_file() -> FileReport {
             captures:    Vec::new(),
             artifacts:   Vec::new(),
         }],
+        mocks:         Vec::new(),
     }
 }
 
@@ -193,5 +197,6 @@ fn error_file() -> FileReport {
             captures:    Vec::new(),
             artifacts:   Vec::new(),
         }],
+        mocks:         Vec::new(),
     }
 }
