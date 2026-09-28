@@ -16,7 +16,7 @@ import {
 import type { ProtocolError } from "./protocol.js";
 import { isStepCommand, toProtocolError } from "./protocol.js";
 
-const protocolVersion = 2;
+const protocolVersion = 3;
 
 /** One-response-per-request guard. */
 interface ResponseSlot {

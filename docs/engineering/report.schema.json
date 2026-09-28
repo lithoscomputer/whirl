@@ -273,6 +273,32 @@
                             }
                           }
                         }
+                      },
+                      "snapshot": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "masks",
+                          "maxDiff",
+                          "pixelThreshold"
+                        ],
+                        "properties": {
+                          "masks": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "Effective explicit mask locator text; secret values are masked."
+                          },
+                          "maxDiff": {
+                            "type": "string",
+                            "description": "Pixel count or percentage, including its unit; may contain secret masking."
+                          },
+                          "pixelThreshold": {
+                            "type": "string",
+                            "description": "Effective threshold; may contain secret masking."
+                          }
+                        }
                       }
                     }
                   }

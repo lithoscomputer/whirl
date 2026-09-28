@@ -132,3 +132,11 @@ A report with no failures exits successfully without opening a browser. Reports
 without `workingDirectory`, invalid statuses, and unknown versions are rejected
 as usage errors. This intentionally excludes reports from older Whirl releases
 that did not record the working directory.
+
+`SNAPSHOT` steps include an optional `snapshot` object after settings resolve:
+`masks` is the effective list of explicit locator strings, `maxDiff` is the
+count or percentage text (such as `20` or `0.1%`), and `pixelThreshold` is
+numeric text. These strings follow normal secret masking. The object records
+file defaults and local overrides, including on comparison failures. The step
+text includes its local option lines. Older reports without this object remain
+readable. HTML renders the settings for both live and saved reports.

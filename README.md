@@ -185,6 +185,32 @@ Run the complete [sample shop](examples/shop/README.md) with
 `mise run example:test`. It covers login, validation, shared setup, snapshots,
 and CI reports. See [examples/](examples/) for more flows.
 
+### Snapshot comparison settings
+
+Set defaults in `[Options]`, then override each setting below a `SNAPSHOT`:
+
+```whirl
+[Options]
+snapshot-mask: testid:clock
+snapshot-max-diff: 0.1%
+snapshot-pixel-threshold: 0.2
+
+VISIT /dashboard
+SNAPSHOT dashboard
+snapshot-max-diff: 20
+
+SNAPSHOT unmasked
+snapshot-mask: none
+```
+
+`snapshot-mask` covers matching elements with pink. Repeat it for several
+locators. A local list replaces the file list; `none` clears it.
+`snapshot-max-diff` permits a pixel count or a percentage of the full image.
+`snapshot-pixel-threshold` sets the color difference that counts as a changed
+pixel. Omitted options inherit file defaults. The built-in defaults are no
+masks, zero different pixels, and a pixel threshold of `0.2`. Image dimensions
+must always match. Masks do not redact other screenshots, traces, or video.
+
 ## HTML reports
 
 Create a portable browser test report with recordings and screenshots:
