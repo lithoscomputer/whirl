@@ -59,6 +59,20 @@ step.
    answered `no` where alone it answered `unsure` for a claim whose evidence
    was out of view.
 
+## Kept later, on robustness
+
+- **A click argument that names no mouse button is a left click.** Full
+  local set, 3 runs, five models: the default models unchanged beyond
+  noise (luna 0.992 -> 1.000, terra 0.996 -> 0.992, both Geminis flat);
+  GLM 5.3 Flash, which often adds such arguments, ACT pass 0.806 -> 0.883.
+  One `right-click-menu` run became a left click that its check then
+  failed.
+- **A plain number written as text reads as a number where EXTRACT wants
+  one.** The six EXTRACT tasks, 6 runs, five models: Gemini 3.5 Flash-Lite
+  0.778 -> 0.944 (`extract-slow-products` 0/6 -> 6/6). The change touches
+  only answers that would fail the schema check, so the other models'
+  differences on `extract-cheapest-price` are noise.
+
 ## Discarded
 
 2. **Least reasoning effort for ACT, `ai:`, and EXTRACT.** These models
