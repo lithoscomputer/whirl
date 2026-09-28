@@ -26,7 +26,7 @@ $ mise run eval:act -- --summarize              # summarize existing runs only
 ```
 
 A session calls real models and costs money. Check it first with
-`--preview`. A local session is about 800 runs per model.
+`--preview`. A local session is about 840 runs per model.
 
 `-n` is a target: the script runs only the runs each model and task still
 need, one pass over the tasks at a time. Repeating a command resumes an
@@ -53,7 +53,10 @@ requests, which `lithos-llm` prices from its catalog.
 - **local** (default): flows in `local/flows/` against the pages in
   `local/site/`, which the script serves on `127.0.0.1`. A page reaches a
   second site through `localhost`. These runs are deterministic apart from
-  the model. The `saved-*` tasks use saved copies of real sites, in
+  the model. A page can ask the server to hold a response with a
+  `delay=MS` query parameter; the `slow-*` tasks and `goal-slow-search` load
+  their data that way, as many real sites do. The `saved-*` tasks use saved
+  copies of real sites, in
   `local/site/saved/` (see its README). Other tasks make the model reason:
   compare prices, tell identical buttons apart by their row, or find an
   element that the instruction names by meaning only.
