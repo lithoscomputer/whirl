@@ -3988,7 +3988,7 @@ fn element_snapshots_settle_on_the_target_and_never_pass_on_stale_pixels() {
     let run = |query: &str, update: bool| {
         dir.file(
             "settle.whirl",
-            &element_flow(query, "SNAPSHOT cart testid:target @3s", ""),
+            &element_flow(query, "SNAPSHOT cart testid:target @5s", ""),
         );
         let mut args = vec!["--base", &base, "--report-json", "report.json"];
         if update {
