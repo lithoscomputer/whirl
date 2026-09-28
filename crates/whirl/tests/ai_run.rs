@@ -1334,3 +1334,34 @@ fn a_goal_fills_the_fields_of_a_form_in_one_answer() {
     assert_eq!(goal["usage"]["modelCalls"], 2);
     assert_eq!(goal["actions"].as_array().map(Vec::len), Some(2));
 }
+
+#[test]
+fn consecutive_judge_lines_with_one_scope_share_one_call() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.answer(&[json!({"verdicts": [
+        verdict("yes", "the total is right"),
+        verdict("unsure", "the chart is cut off")
+    ]})]);
+    let flow = dir.file(
+        "judge.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{ORDER}\
+             ASSERT testid:summary visible\n\
+             JUDGE \"the total matches the line items\"\n\
+             JUDGE \"the chart trends upward\"\n"
+        ),
+    );
+    let output = twin.run(&dir, &flow, &[]);
+    let log = twin.request_log();
+    assert_eq!(exit_code(&output), 0, "{}{log}", stdout_text(&output));
+    let steps = steps(&dir);
+    assert_eq!(steps[2]["judge"]["usage"]["modelCalls"], 1);
+    assert_eq!(steps[3]["judge"]["usage"]["modelCalls"], 0);
+    assert_eq!(steps[3]["judge"]["verdict"], "unsure");
+    assert_eq!(warning_codes(&dir), ["judge-unsure"]);
+    assert!(
+        log.contains("1. the total matches the line items 2. the chart trends upward"),
+        "{log}"
+    );
+}

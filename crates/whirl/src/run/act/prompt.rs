@@ -197,18 +197,36 @@ pub(crate) fn goal_message(
     message + "\nSteps taken so far:\n" + &steps + "\nAccessibility Tree: \n" + snapshot + "\n"
 }
 
-/// The text of a `JUDGE` call's user message: the claim, its
-/// placeholders, and the snapshot. The screenshot follows it.
-pub(crate) fn judge_message(claim: &str, placeholders: &[String], snapshot: &str) -> String {
-    let placeholders = if placeholders.is_empty() {
-        String::new()
-    } else {
-        format!(
+/// The text of a `JUDGE` call's user message: the claims, their
+/// placeholders, and the snapshot. The screenshot follows it. Several
+/// claims about the same view share one call.
+pub(crate) fn judge_message(claims: &[&str], placeholders: &[String], snapshot: &str) -> String {
+    let placeholders = match (placeholders.is_empty(), claims.len()) {
+        (true, _) => String::new(),
+        (false, 1) => format!(
             "\nThe claim uses placeholders for hidden values: {}.",
             placeholders.join(", ")
-        )
+        ),
+        (false, _) => format!(
+            "\nThe claims use placeholders for hidden values: {}.",
+            placeholders.join(", ")
+        ),
     };
-    format!("Claim: {claim}{placeholders}\nAccessibility Tree: \n{snapshot}\nScreenshot:")
+    let claims = match claims {
+        [claim] => format!("Claim: {claim}"),
+        many => {
+            let listed: Vec<String> = many
+                .iter()
+                .enumerate()
+                .map(|(index, claim)| format!("{}. {claim}", index + 1))
+                .collect();
+            format!(
+                "Claims, each judged on its own:\n{}\nAnswer one verdict for each claim, in the same order.",
+                listed.join("\n")
+            )
+        }
+    };
+    format!("{claims}{placeholders}\nAccessibility Tree: \n{snapshot}\nScreenshot:")
 }
 
 /// The user message of an `EXTRACT` call: the instruction, its

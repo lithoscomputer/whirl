@@ -155,8 +155,15 @@ pub(crate) struct JudgeAnswer {
 /// One `JUDGE` answer, and what the call used.
 #[derive(Debug)]
 pub(crate) struct JudgeReply {
-    pub(crate) answer: Result<JudgeAnswer, serde_json::Error>,
+    /// One answer for each claim, in order.
+    pub(crate) answer: Result<Vec<JudgeAnswer>, serde_json::Error>,
     pub(crate) usage:  Usage,
+}
+
+/// Several `JUDGE` answers, one for each claim of a batch.
+#[derive(Deserialize)]
+struct JudgeAnswers {
+    verdicts: Vec<JudgeAnswer>,
 }
 
 /// One `GOAL` answer, and what the call used.
@@ -299,9 +306,10 @@ impl ModelClient {
         model: &str,
         text: &str,
         png: &[u8],
+        claims: usize,
         deadline: Instant,
     ) -> Result<JudgeReply, lithos_llm::Error> {
-        let schema = json!({
+        let one = json!({
             "type": "object",
             "properties": {
                 "verdict": {"type": "string", "enum": ["yes", "no", "unsure"]},
@@ -310,6 +318,22 @@ impl ModelClient {
             "required": ["verdict", "reason"],
             "additionalProperties": false
         });
+        let schema = if claims == 1 {
+            one
+        } else {
+            json!({
+                "type": "object",
+                "properties": {
+                    "verdicts": {
+                        "type": "array",
+                        "items": one,
+                        "description": "One verdict for each claim, in the order of the claims"
+                    }
+                },
+                "required": ["verdicts"],
+                "additionalProperties": false
+            })
+        };
         let image = ImageContent::new(MediaSource::base64(STANDARD.encode(png), "image/png"));
         let message = Message::new(Role::User, [
             ContentPart::Text {
@@ -332,9 +356,14 @@ impl ModelClient {
             .client
             .complete_object_with_context(request, "Judge", schema, context)
             .await?;
+        let answer = if claims == 1 {
+            serde_json::from_value(completion.object).map(|answer| vec![answer])
+        } else {
+            serde_json::from_value::<JudgeAnswers>(completion.object).map(|all| all.verdicts)
+        };
         Ok(JudgeReply {
-            answer: serde_json::from_value(completion.object),
-            usage:  completion.response.usage_with_cost(),
+            answer,
+            usage: completion.response.usage_with_cost(),
         })
     }
 

@@ -98,7 +98,9 @@ reason. It passes with the warning `judge-unsure` when the model answers
 `unsure`. A model error is `judge-model`. It has a `judge` object: `model`,
 the `verdict` (`yes`, `no`, or `unsure`) and the masked `reason`, both absent
 when the step ended before the model answered, and `usage` in the shape of
-the `act` usage.
+the `act` usage. Consecutive `JUDGE` lines with the same scope and timeout
+share one call: the first line's `usage` holds it, and the later lines have
+`modelCalls` 0.
 
 A `GOAL` step (SPEC 7.7) fails with `goal-impossible` when the model answers
 `impossible` (`actual` is the model's reason), `goal-limit` when the answer

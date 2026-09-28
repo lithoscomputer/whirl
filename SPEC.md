@@ -1327,6 +1327,12 @@ A model whose image support the catalog does not know is the warning
 applies. The AI cache (section 12.1) never records `JUDGE`, so `--cache=only`
 still calls the model.
 
+Consecutive `JUDGE` lines with the same scope and the same timeout are judged
+in one model call, on one snapshot and one screenshot, since nothing between
+them changes the page. The model answers each claim on its own, and each line
+passes or fails on its own answer, in order. The first line's report holds
+the call's usage; the later lines report no model call.
+
 The step's report text is the authored line. The JSON report adds a `judge`
 object to the step: the model, the verdict, the reason, and the token usage and
 cost of the model call.
