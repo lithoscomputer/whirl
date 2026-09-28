@@ -1,4 +1,4 @@
-# Ideas from Stagehand, measured: 2026-09-28
+# Ideas for the AI steps, measured: 2026-09-28
 
 Each idea was built, run on the local set against the build before it, and
 kept only when it helped. Models: `openrouter/gpt-5.6-terra`,
