@@ -5,11 +5,16 @@
 
 use std::time::{Duration, Instant};
 
-use super::act_step::{ActBudget, ActLine, ShimFailure, act_failure, usage_report, warning};
+use super::act_step::{
+    ActBudget, ActLine, Replay, ShimFailure, act_failure, usage_report, warning,
+};
 use super::{EntryState, FlowExec, StepEnd, StepNode};
+use crate::lang::fmt::render_action;
+use crate::lang::parse::parse_action_line;
 use crate::report::model::{ActActionReport, GoalReport, StepError, StepWarning};
 use crate::run::act::{
-    ActDecision, GoalStatus, Instruction, ModelClient, PageSnapshot, PlanUsage, goal_message,
+    ActDecision, GoalStatus, Instruction, ModelClient, PageSnapshot, PlanUsage, PlannedAction,
+    Target, goal_message, target_message,
 };
 use crate::run::cache::{CacheEntry, CachedAction, EntryKind};
 use crate::run::shim::{AriaSnapshotResult, ShimClient, StepCommand};
@@ -74,6 +79,102 @@ fn recode(end: StepEnd) -> StepEnd {
 }
 
 impl FlowExec<'_> {
+    /// Finds again the elements of a cached line that no longer fit their
+    /// fingerprints, from their role and name, and runs the line on them
+    /// with its own method and arguments (SPEC 12.1). `None` when the model
+    /// finds none or several, or the line fails.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the re-find needs the line, the cached action, and the flow's state"
+    )]
+    async fn refind(
+        &mut self,
+        line: &mut ActLine<'_>,
+        cached: &CachedAction,
+        missing: &[usize],
+        action_cap: u64,
+        record: &mut GoalRecord,
+        client: &mut ShimClient,
+        state: &mut EntryState,
+    ) -> Option<(CachedAction, String)> {
+        let (Some(model_client), Some(model)) = (self.run.model, self.options.model.clone()) else {
+            return None;
+        };
+        let mut action = parse_action_line(&cached.line).ok()?;
+        let mut fingerprints = cached.fingerprints.clone();
+        let mut descriptions = Vec::new();
+        for &index in missing {
+            let fingerprint = fingerprints.get(index)?.clone();
+            let result = self
+                .act_shim_call(
+                    line,
+                    StepCommand::AriaSnapshot {
+                        locator: None,
+                        settle:  true,
+                    },
+                    client,
+                    state,
+                )
+                .await
+                .ok()?;
+            let snapshot = serde_json::from_value::<AriaSnapshotResult>(result).ok()?;
+            let snapshot = PageSnapshot::parse(&snapshot.snapshot).of_page();
+            let wanted = match &fingerprint.name {
+                Some(name) => format!(
+                    "the {} named \"{name}\", which the step `{}` acts on; the page may show it with another name now",
+                    fingerprint.role, cached.line
+                ),
+                None => format!(
+                    "the {}, which the step `{}` acts on",
+                    fingerprint.role, cached.line
+                ),
+            };
+            let user = target_message(&wanted, &[], snapshot.text());
+            let reply = model_client
+                .find_elements(&model, &user, line.deadline)
+                .await;
+            record.usage.model_calls = record.usage.model_calls.saturating_add(1);
+            let reply = reply.ok()?;
+            record.usage.model = record.usage.model.saturating_add(reply.usage);
+            let mut found: Vec<(Target, String)> = Vec::new();
+            for element in reply.answer.ok()?.elements {
+                let target = snapshot.target(&element.element_id)?;
+                if !found.iter().any(|(known, _)| known == &target) {
+                    found.push((target, element.description));
+                }
+            }
+            let [(target, description)] = <[_; 1]>::try_from(found).ok()?;
+            let text = self
+                .generated_locator(line, &target, client, state)
+                .await
+                .ok()?;
+            let locator = parse_action_line(&format!("CLICK {text}"))
+                .ok()?
+                .kind
+                .locators()
+                .first()
+                .map(|locator| (*locator).clone())?;
+            **action.kind.locators_mut().get_mut(index)? = locator;
+            fingerprints[index] = target.fingerprint();
+            descriptions.push(self.vars.mask(&description));
+        }
+        let command = self.build_action(&action).ok()?;
+        let mut attempt = ActLine {
+            deadline: Instant::now() + Duration::from_millis(line.remaining_ms().min(action_cap)),
+            ..*line
+        };
+        let ran = self
+            .act_shim_call(&mut attempt, command, client, state)
+            .await;
+        line.entry_start = attempt.entry_start;
+        ran.ok()?;
+        let refound = CachedAction {
+            line: render_action(&action),
+            fingerprints,
+        };
+        Some((refound, descriptions.join("; ")))
+    }
+
     /// Runs one `GOAL` line and reports what it did, pass or fail, with the
     /// warnings of its AI cache (SPEC 7.7, 12.1).
     pub(super) async fn run_goal(
@@ -120,25 +221,46 @@ impl FlowExec<'_> {
         };
         if let Some(cached) = &cached {
             let mut hit = true;
+            let mut refound = false;
             for action in cached {
-                if !self
+                let replay = self
                     .replay_action(&mut line, action, Some(action_cap), client, state)
-                    .await
-                {
+                    .await;
+                // A line whose element changed its role or name asks the
+                // model to find that element again, and the path goes on.
+                let ran = match replay {
+                    Replay::Ran => Some((action.clone(), "the cached line".to_owned())),
+                    Replay::Missing(missing) if self.cache.mode().allows_model() => {
+                        self.refind(
+                            &mut line,
+                            action,
+                            &missing,
+                            action_cap,
+                            &mut record,
+                            client,
+                            state,
+                        )
+                        .await
+                    }
+                    Replay::Missing(_) | Replay::Failed => None,
+                };
+                let Some((ran, description)) = ran else {
                     hit = false;
                     break;
-                }
-                let text = self.vars.mask(&action.line);
+                };
+                let text = self.vars.mask(&ran.line);
+                let planned_by = if &ran == action { "cache" } else { "llm" };
+                refound |= planned_by == "llm";
                 record.reports.push(ActActionReport {
-                    line:        text.clone(),
-                    description: "the cached line".to_owned(),
-                    planned_by:  "cache".to_owned(),
-                    error:       None,
+                    line: text.clone(),
+                    description,
+                    planned_by: planned_by.to_owned(),
+                    error: None,
                 });
                 record.history.push(text);
-                record.lines.push(action.clone());
+                record.lines.push(ran);
             }
-            if hit {
+            if hit && !refound {
                 self.cache.keep(node.line(), CacheEntry::Goal {
                     line:       key.line,
                     occurrence: key.occurrence,
@@ -151,6 +273,8 @@ impl FlowExec<'_> {
                     Vec::new(),
                 );
             }
+            // After a re-find, the model sees every line that ran and says
+            // whether the goal is done (SPEC 7.7).
         }
         let status = if cached.is_some() { "healed" } else { "miss" };
         let cached_lines = cached.as_ref().map(|actions| {
@@ -325,67 +449,102 @@ impl FlowExec<'_> {
                     ));
                 }
             };
-
-            // The line the cache writes, before the action changes the page
-            // (SPEC 12.1).
-            let cache_line = self.cache_line(line, &action, goal, client, state).await;
-            let mut attempt = ActLine {
-                deadline: Instant::now()
-                    + Duration::from_millis(line.remaining_ms().min(action_cap)),
-                ..*line
-            };
-            let ran = self
-                .act_shim_call(&mut attempt, action.command(goal), client, state)
-                .await;
-            line.entry_start = attempt.entry_start;
-            let mut failure = match ran {
-                Ok(_) => None,
-                Err(ShimFailure {
-                    end: StepEnd::Failed(error),
-                    ..
-                }) => Some(error.message),
-                Err(failure) => return failure.end,
-            };
-            if failure.is_none()
-                && let Some(read_back) = action.fill_read_back(goal)
+            if let Err(end) = self
+                .run_goal_action(
+                    line,
+                    &action,
+                    &description,
+                    goal,
+                    action_cap,
+                    record,
+                    client,
+                    state,
+                )
+                .await
             {
-                match self
-                    .read_back_value(line, read_back.command.clone(), client, state)
-                    .await
-                {
-                    Ok(Some(held)) if !read_back.matches(&held) => {
-                        failure = Some(format!(
-                            "act-fill-mismatch: {}",
-                            read_back.mismatch(&action, &held)
-                        ));
-                    }
-                    Ok(_) => {}
-                    Err(failure) => return failure.end,
-                }
-            }
-            if line.remaining_ms() == 0 {
-                return line.timed_out();
-            }
-            let text = self.vars.mask(&action.line());
-            let error = failure.map(|message| self.vars.mask(&message));
-            record.history.push(match &error {
-                Some(error) => format!("{text} (failed: {error})"),
-                None => text.clone(),
-            });
-            record.reports.push(ActActionReport {
-                line:        text,
-                description: self.vars.mask(&description),
-                planned_by:  "llm".to_owned(),
-                error:       error.clone(),
-            });
-            if error.is_none() {
-                match cache_line {
-                    Ok(cached) => record.lines.push(cached),
-                    Err(reason) => {
-                        record.uncacheable.get_or_insert(reason);
-                    }
-                }
+                return end;
             }
         }
+    }
+
+    /// Runs one action that the model planned for a goal and records it.
+    /// `Ok(false)` when the action failed and the model plans again; `Err`
+    /// when the step ends.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the action needs the line, the goal, and the flow's state"
+    )]
+    async fn run_goal_action(
+        &mut self,
+        line: &mut ActLine<'_>,
+        action: &PlannedAction,
+        description: &str,
+        goal: &Instruction,
+        action_cap: u64,
+        record: &mut GoalRecord,
+        client: &mut ShimClient,
+        state: &mut EntryState,
+    ) -> Result<bool, StepEnd> {
+        // The line the cache writes, before the action changes the page
+        // (SPEC 12.1).
+        let cache_line = self.cache_line(line, action, goal, client, state).await;
+        let mut attempt = ActLine {
+            deadline: Instant::now() + Duration::from_millis(line.remaining_ms().min(action_cap)),
+            ..*line
+        };
+        let ran = self
+            .act_shim_call(&mut attempt, action.command(goal), client, state)
+            .await;
+        line.entry_start = attempt.entry_start;
+        let mut failure = match ran {
+            Ok(_) => None,
+            Err(ShimFailure {
+                end: StepEnd::Failed(error),
+                ..
+            }) => Some(error.message),
+            Err(failure) => return Err(failure.end),
+        };
+        if failure.is_none()
+            && let Some(read_back) = action.fill_read_back(goal)
+        {
+            match self
+                .read_back_value(line, read_back.command.clone(), client, state)
+                .await
+            {
+                Ok(Some(held)) if !read_back.matches(&held) => {
+                    failure = Some(format!(
+                        "act-fill-mismatch: {}",
+                        read_back.mismatch(action, &held)
+                    ));
+                }
+                Ok(_) => {}
+                Err(failure) => return Err(failure.end),
+            }
+        }
+        if line.remaining_ms() == 0 {
+            return Err(line.timed_out());
+        }
+        let text = self.vars.mask(&action.line());
+        let error = failure.map(|message| self.vars.mask(&message));
+        record.history.push(match &error {
+            Some(error) => format!("{text} (failed: {error})"),
+            None => text.clone(),
+        });
+        record.reports.push(ActActionReport {
+            line:        text,
+            description: self.vars.mask(description),
+            planned_by:  "llm".to_owned(),
+            error:       error.clone(),
+        });
+        if error.is_some() {
+            return Ok(false);
+        }
+        match cache_line {
+            Ok(cached) => record.lines.push(cached),
+            Err(reason) => {
+                record.uncacheable.get_or_insert(reason);
+            }
+        }
+        Ok(true)
     }
 }

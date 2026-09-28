@@ -102,6 +102,17 @@ pub(super) fn warning(code: &str, message: String) -> StepWarning {
     }
 }
 
+/// How the replay of one cached line went (SPEC 12.1).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum Replay {
+    Ran,
+    /// The elements at these locator positions no longer fit their
+    /// fingerprints; nothing ran.
+    Missing(Vec<usize>),
+    /// The line did not parse or build, or its action failed.
+    Failed,
+}
+
 /// What one `ACT` line ran and spent, and the lines its cache entry holds.
 struct ActRecord {
     model:       String,
@@ -236,9 +247,10 @@ impl FlowExec<'_> {
         if let Some(cached) = &cached {
             let mut hit = true;
             for action in cached {
-                if !self
+                if self
                     .replay_action(&mut line, action, None, client, state)
                     .await
+                    != Replay::Ran
                 {
                     hit = false;
                     break;
@@ -479,13 +491,13 @@ impl FlowExec<'_> {
         cap_ms: Option<u64>,
         client: &mut ShimClient,
         state: &mut EntryState,
-    ) -> bool {
+    ) -> Replay {
         let Ok(action) = parse_action_line(&cached.line) else {
-            return false;
+            return Replay::Failed;
         };
         let locators = action.kind.locators();
         if locators.len() != cached.fingerprints.len() {
-            return false;
+            return Replay::Failed;
         }
         let capped = ActLine {
             deadline: cap_ms.map_or(line.deadline, |cap| {
@@ -494,17 +506,23 @@ impl FlowExec<'_> {
             }),
             ..*line
         };
-        for (locator, fingerprint) in locators.into_iter().zip(&cached.fingerprints) {
+        let mut missing = Vec::new();
+        for (index, (locator, fingerprint)) in
+            locators.into_iter().zip(&cached.fingerprints).enumerate()
+        {
             if self
                 .check_cached(&capped, locator, fingerprint, client, state)
                 .await
                 .is_none()
             {
-                return false;
+                missing.push(index);
             }
         }
+        if !missing.is_empty() {
+            return Replay::Missing(missing);
+        }
         let Ok(command) = self.build_action(&action) else {
-            return false;
+            return Replay::Failed;
         };
         let time_ms = capped.remaining_ms() / 2;
         let mut attempt = ActLine {
@@ -516,7 +534,7 @@ impl FlowExec<'_> {
             .await
             .is_ok();
         line.entry_start = attempt.entry_start;
-        ran
+        if ran { Replay::Ran } else { Replay::Failed }
     }
 
     /// The cache line of a planned action, with its fingerprints, or the

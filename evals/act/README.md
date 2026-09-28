@@ -7,7 +7,9 @@ These evals compare language models on `ACT` (SPEC section 7.4), `GOAL`
 `EXTRACT`, the `judge-*` tasks use `JUDGE`, and the `goal-*` tasks use `GOAL`.
 Some `judge-*` claims only the screenshot shows, such as a color or a canvas
 chart. `goal-heal-checkout` has a committed AI cache whose second line no
-longer fits the page, so the model plans the rest of the goal from there. Each task is an ordinary `.whirl` flow: `ACT` is
+longer fits the page, so the model plans the rest of the goal from there.
+`goal-heal-renamed` has a committed cache of the whole path in which one button
+has an old name, so the model finds that button again and the rest replays. Each task is an ordinary `.whirl` flow: `ACT` is
 the step under test, and its `ASSERT` lines grade it. Whirl's JSON report records
 the rest.
 
@@ -26,7 +28,7 @@ $ mise run eval:act -- --summarize              # summarize existing runs only
 ```
 
 A session calls real models and costs money. Check it first with
-`--preview`. A local session is about 840 runs per model.
+`--preview`. A local session is about 850 runs per model.
 
 `-n` is a target: the script runs only the runs each model and task still
 need, one pass over the tasks at a time. Repeating a command resumes an

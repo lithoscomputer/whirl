@@ -1106,7 +1106,10 @@ fn a_goal_heals_from_the_current_page_when_a_cached_line_misses() {
         .to_string(),
     )
     .expect("the cache writes");
+    // The model finds no element for the renamed button, so it plans the
+    // rest of the goal.
     twin.answer(&[
+        found(&[]),
         goal_act("e5", "click", &[]),
         goal_end("done", "the cart holds 2"),
     ]);
@@ -1115,6 +1118,7 @@ fn a_goal_heals_from_the_current_page_when_a_cached_line_misses() {
     assert_eq!(exit_code(&output), 0, "{}{log}", stdout_text(&output));
     let goal = &steps(&dir)[1]["goal"];
     assert_eq!(goal["cache"], "healed");
+    assert_eq!(goal["usage"]["modelCalls"], 3);
     assert_eq!(goal["actions"][0]["plannedBy"], "cache");
     assert_eq!(goal["actions"][1]["plannedBy"], "llm");
     assert_eq!(goal["cached"][1], "CLICK role:button Buy");
@@ -1256,4 +1260,46 @@ fn a_model_reads_the_page_after_its_requests_finish() {
     assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
     let log = twin.request_log();
     assert!(log.contains("listitem [ref=e4]: Blue mug"), "{log}");
+}
+
+#[test]
+fn a_goal_finds_a_renamed_element_again_and_replays_the_rest_of_its_path() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    let flow = goal_flow(&dir, "add two to the cart");
+    fs::write(
+        dir.path.join("goal.whirl-cache.json"),
+        json!({
+            "version": 1,
+            "entries": [{
+                "kind": "goal",
+                "line": "GOAL \"add two to the cart\"",
+                "occurrence": 1,
+                "model": "gpt-test",
+                "actions": [
+                    {"line": "FILL role:textbox Quantity \"2\"", "fingerprints": [{"role": "textbox", "name": "Quantity"}]},
+                    {"line": "CLICK role:button Buy", "fingerprints": [{"role": "button", "name": "Buy"}]}
+                ]
+            }]
+        })
+        .to_string(),
+    )
+    .expect("the cache writes");
+    // One call finds the button again; one more confirms the goal is done.
+    twin.answer(&[found(&["e5"]), goal_end("done", "the cart holds 2")]);
+    let output = twin.run_with_args(&dir, &flow, &[], &["--cache=update"]);
+    let log = twin.request_log();
+    assert_eq!(exit_code(&output), 0, "{}{log}", stdout_text(&output));
+    let goal = &steps(&dir)[1]["goal"];
+    assert_eq!(goal["cache"], "healed");
+    assert_eq!(goal["end"], "done");
+    assert_eq!(goal["usage"]["modelCalls"], 2);
+    assert_eq!(goal["actions"][1]["plannedBy"], "llm");
+    assert_eq!(warning_codes(&dir), ["healed"]);
+    assert!(log.contains("the button named \\\"Buy\\\""), "{log}");
+    let cache = cache_of(&flow).expect("the cache is written");
+    assert_eq!(
+        cache["entries"][0]["actions"][1]["line"],
+        "CLICK role:button \"Add to cart\""
+    );
 }

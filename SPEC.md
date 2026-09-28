@@ -1003,9 +1003,17 @@ model errors are runtime errors (exit 3). `--jev` does not plan `GOAL`.
 
 The AI cache (section 12.1) records the lines that ran, so a later run replays
 them without a model call. A cached path is a straight list of lines, with no
-branches. When a cached line misses, the model plans the rest of the goal from
-the current page, and it sees the lines that already ran. The step reports the
-warning `healed`. A path that changes between runs heals on every run.
+branches. When a cached line misses because its element's role or name
+changed, as when the page renamed a button, Whirl asks the model to find that
+element again from the cached role and name, with an `ai:` target call
+(section 6.3). When the model finds exactly one, the line runs on it with its
+own method and arguments, and the rest of the path replays. After such a
+re-find, the model sees every line that ran and says whether the goal is done,
+as on any `GOAL` call. When a line misses in any other way, or the re-find
+finds no element or several, the model plans the rest of the goal from the
+current page, and it sees the lines that already ran. Either way the step
+reports the warning `healed`, and `--cache=update` stores the path that ran. A
+path that changes between runs heals on every run.
 
 The step's report text is the authored line. The JSON report adds a `goal`
 object to the step: the model, each action as a Whirl line with the
@@ -1492,8 +1500,8 @@ On a miss, Whirl resolves the target, or plans the `ACT` line, with the model,
 as if no entry existed, in the rest of the step's time. When a cached `ACT`
 line misses after an earlier cached action ran, the model plans the rest of
 the instruction from the current page, as for step two of a two-step action.
-A cached `GOAL` line that misses continues from the current page in the same
-way (section 7.7). This is a heal. The step passes or fails on its new
+A cached `GOAL` line that misses finds its element again, or continues from
+the current page (section 7.7). This is a heal. The step passes or fails on its new
 result.
 
 **Modes.** `--cache` (section 13) selects what a run does with the file:

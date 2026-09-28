@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- When a cached `GOAL` line misses because the page renamed its element, ask the model to find that element again and replay the rest of the cached path, instead of planning the rest of the goal step by step. The model then confirms the goal is done. In the evals, such a heal took 2 model calls instead of 4 and half the time.
 - Before `ACT`, `GOAL`, `ai:` targets, `EXTRACT`, and `JUDGE` read the page, wait until no request has been open for 500 ms, for at most 5 seconds. A page that loads its content after the document, such as a product list from a slow API, showed the model no content. In the evals, such tasks went from 0 of 9 passes to 9 of 9, and a model step takes about 0.5 s longer.
 - Move the browser shim to protocol 8; `whirl install` provisions the matching bundle.
 - Let `EXTRACT` answer null when its schema's root is not an object, such as `{ "type": "string" }`. The model could not say that the page does not show the value, so it answered `"null"`, an empty string, or `0` instead of a missing value.
