@@ -17,6 +17,7 @@ use lithos_llm::middleware::{CallContext, RetryMiddleware, RetryPolicy};
 use lithos_llm::resolver::{AvailableProviders, CatalogResolver, ModelResolver as _};
 use lithos_llm::types::{ErrorKind, Usage};
 use lithos_llm::{Client, Request};
+use serde::Deserialize;
 use serde_json::{Value as Json, json};
 
 use crate::run::act::decision::{ActInference, inference_schema};
@@ -84,6 +85,27 @@ pub(crate) struct ModelReply {
     pub(crate) usage:  Usage,
 }
 
+/// One element that an `ai:` target call found (SPEC 6.3).
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FoundElement {
+    pub(crate) element_id:  String,
+    pub(crate) description: String,
+}
+
+/// Every element an `ai:` target call found.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+pub(crate) struct TargetAnswer {
+    pub(crate) elements: Vec<FoundElement>,
+}
+
+/// One `ai:` target answer, and what the call used.
+#[derive(Debug)]
+pub(crate) struct TargetReply {
+    pub(crate) answer: Result<TargetAnswer, serde_json::Error>,
+    pub(crate) usage:  Usage,
+}
+
 /// The text an instruction wants typed, and what the call used.
 #[derive(Debug)]
 pub(crate) struct TextReply {
@@ -132,6 +154,55 @@ impl ModelClient {
             .structured(model, system, user, "Act", inference_schema(), deadline)
             .await?;
         Ok(ModelReply {
+            answer: serde_json::from_value(object),
+            usage,
+        })
+    }
+
+    /// Asks the model for every element that an `ai:` description names
+    /// (SPEC 6.3). The call, with its retries, ends by `deadline`.
+    pub(crate) async fn find_elements(
+        &self,
+        model: &str,
+        user: &str,
+        deadline: Instant,
+    ) -> Result<TargetReply, lithos_llm::Error> {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "elements": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "elementId": {
+                                "type": "string",
+                                "description": "The element's ref, copied exactly from the tree, such as e12"
+                            },
+                            "description": {
+                                "type": "string",
+                                "description": "A few words that describe the element"
+                            }
+                        },
+                        "required": ["elementId", "description"],
+                        "additionalProperties": false
+                    }
+                }
+            },
+            "required": ["elements"],
+            "additionalProperties": false
+        });
+        let (object, usage) = self
+            .structured(
+                model,
+                &prompt::target_system_prompt(),
+                user,
+                "AiTarget",
+                schema,
+                deadline,
+            )
+            .await?;
+        Ok(TargetReply {
             answer: serde_json::from_value(object),
             usage,
         })

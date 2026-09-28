@@ -245,8 +245,125 @@
                                 "plannedBy": {
                                   "enum": [
                                     "llm",
-                                    "jev"
+                                    "jev",
+                                    "cache"
                                   ]
+                                }
+                              }
+                            }
+                          },
+                          "usage": {
+                            "type": "object",
+                            "required": [
+                              "modelCalls",
+                              "inputTokens",
+                              "outputTokens"
+                            ],
+                            "properties": {
+                              "modelCalls": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "inputTokens": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "outputTokens": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "costUsdMicros": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "jev": {
+                                "type": "object",
+                                "required": [
+                                  "requests",
+                                  "inputTokens",
+                                  "outputTokens"
+                                ],
+                                "properties": {
+                                  "requests": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  },
+                                  "inputTokens": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  },
+                                  "outputTokens": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  },
+                                  "costUsdMicros": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  }
+                                }
+                              }
+                            }
+                          },
+                          "cache": {
+                            "enum": [
+                              "hit",
+                              "miss",
+                              "healed"
+                            ],
+                            "description": "The line's AI cache status (SPEC 12.1)."
+                          },
+                          "cached": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "For a healed line, the lines the cache held."
+                          }
+                        }
+                      },
+                      "ai": {
+                        "type": "object",
+                        "description": "What the step's ai: targets resolved to (SPEC 6.3).",
+                        "required": [
+                          "model",
+                          "targets",
+                          "usage"
+                        ],
+                        "properties": {
+                          "model": {
+                            "type": "string"
+                          },
+                          "targets": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "required": [
+                                "target",
+                                "cache"
+                              ],
+                              "properties": {
+                                "target": {
+                                  "type": "string",
+                                  "description": "The authored locator with its ai: segment; secret values are masked."
+                                },
+                                "locator": {
+                                  "type": "string",
+                                  "description": "The locator of the element it resolved to."
+                                },
+                                "description": {
+                                  "type": "string"
+                                },
+                                "cache": {
+                                  "enum": [
+                                    "hit",
+                                    "miss",
+                                    "healed",
+                                    "uncached"
+                                  ]
+                                },
+                                "cached": {
+                                  "type": "string",
+                                  "description": "For a healed target, the locator the cache held."
                                 }
                               }
                             }

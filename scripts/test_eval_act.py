@@ -5,12 +5,14 @@ import unittest
 import eval_act
 
 
-def step(status="passed", code=None, act=None, duration_ms=1200):
+def step(status="passed", code=None, act=None, duration_ms=1200, ai=None):
     step = {"line": 5, "kind": "action", "text": "ACT", "status": status, "durationMs": duration_ms}
     if code is not None:
         step["error"] = {"code": code, "message": f"{code}: detail"}
     if act is not None:
         step["act"] = act
+    if ai is not None:
+        step["ai"] = ai
     return step
 
 
@@ -108,9 +110,30 @@ class ClassifyTest(unittest.TestCase):
         self.assertEqual(eval_act.classify(chose, "m").outcome, "fail")
 
 
+    def test_ai_steps_count_toward_the_measurements(self):
+        ai = {"model": "m", "targets": [], "usage": {"modelCalls": 1, "inputTokens": 100, "outputTokens": 10, "costUsdMicros": 5}}
+        report = file_report(
+            "x/ai-target-blue-mug.whirl",
+            "passed",
+            [entry("Buy.", "passed", [step(act=act_report(calls=1)), step(ai=ai, duration_ms=300)])],
+        )
+        result = eval_act.classify(report, "m")
+        self.assertEqual(result.model_calls, 2)
+        self.assertEqual(result.duration_ms, 1500)
+        self.assertEqual(result.cost_usd_micros, 7505)
+
+    def test_an_ambiguous_task_passes_only_on_strictness(self):
+        path = "x/any-button.ambiguous.whirl"
+        strict = file_report(path, "failed", [entry("Buy.", "failed", [step("failed", "strictness")])])
+        chose = file_report(path, "passed", [entry("Buy.", "passed", [step()])])
+        self.assertEqual(eval_act.classify(strict, "m").task, "any-button")
+        self.assertEqual(eval_act.classify(strict, "m").outcome, "pass")
+        self.assertEqual(eval_act.classify(chose, "m").outcome, "fail")
+
+
 class PlanTest(unittest.TestCase):
     def test_drift_and_errors_do_not_count_toward_n(self):
-        tasks = [eval_act.Task("local", "a", None, False), eval_act.Task("local", "b", None, False)]
+        tasks = [eval_act.Task("local", "a", None, None), eval_act.Task("local", "b", None, None)]
         results = [
             eval_act.Result("a", "m", "pass"),
             eval_act.Result("a", "m", "fail"),

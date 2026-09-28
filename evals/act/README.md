@@ -1,7 +1,8 @@
 # ACT evals
 
-These evals compare language models on `ACT` (SPEC section 7.4) for
-accuracy, cost, and speed. Each task is an ordinary `.whirl` flow: `ACT` is
+These evals compare language models on `ACT` (SPEC section 7.4) and `ai:`
+targets (SPEC section 6.3) for accuracy, cost, and speed. The `ai-target-*`
+tasks use `ai:` instead of `ACT`. Each task is an ordinary `.whirl` flow: `ACT` is
 the step under test, and its `ASSERT` lines grade it. Whirl's JSON report records
 the rest.
 
@@ -70,7 +71,10 @@ replacements. A pass that adds no good run stops the session, so a broken
 site or key does not retry without end.
 
 A task whose file name ends in `.no-match.whirl` expects `ACT` to find no
-element: it passes only when the ACT step fails with `act-no-match`.
+element: it passes only when the ACT step fails with `act-no-match`. A task
+whose file name ends in `.ambiguous.whirl` expects an `ai:` description to
+fit several elements: it passes only when the step fails with `strictness`.
+Times, calls, tokens, and costs sum the task's `ACT` and `ai:` steps.
 
 ## Results
 

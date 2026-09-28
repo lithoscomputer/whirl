@@ -13,6 +13,8 @@ use chrono::{DateTime, Utc};
 use serde_json::Value as Json;
 use tokio::time::sleep;
 
+use super::act_step::{ActBudget, ActLine};
+use super::ai_step::{self, AiSpend, AiTarget, Found};
 use super::{
     BuildError, EntryState, FlowExec, StepBudget, StepEnd, StepNode, entry_timeout_error,
     step_error,
@@ -26,6 +28,7 @@ use crate::lang::ast::{
     Subject,
 };
 use crate::report::model::{CaptureValue, StepError};
+use crate::run::act::PlanUsage;
 use crate::run::shim::{
     MissingReason, ReadResult, RequestReadResult, ResponseReadResult, ShimClient, StepCommand,
     StepOutcome, StepRequest, wire,
@@ -67,6 +70,9 @@ enum Source {
         attr:    Option<String>,
         /// False for a capture that never waits: `count` and `eval`.
         retry:   bool,
+        /// The subject's `ai:` target, which resolves while the line reads
+        /// (SPEC 6.3).
+        ai:      Option<Box<AiRead>>,
     },
     Response {
         name:  String,
@@ -77,6 +83,20 @@ enum Source {
         name:  String,
         field: RequestRead,
     },
+}
+
+/// A page subject whose locator ends in an `ai:` target.
+#[derive(Debug)]
+pub(super) struct AiRead {
+    /// The authored subject.
+    subject:    Subject,
+    /// True for `not exists`: no element passes (SPEC 6.3).
+    absence_ok: bool,
+    /// The target, made at the first read, which knows the line.
+    target:     Option<AiTarget>,
+    usage:      PlanUsage,
+    /// True when the subject needs its element found (again).
+    stale:      bool,
 }
 
 /// The part of a request a line reads.
@@ -111,6 +131,53 @@ enum ResponseRead {
 pub(super) struct PreparedCheck {
     source: Source,
     check:  Check,
+}
+
+impl PreparedCheck {
+    /// The subject's `ai:` target, when it has one.
+    pub(super) fn take_ai(&mut self) -> Option<AiRead> {
+        take_ai(&mut self.source)
+    }
+}
+
+impl PreparedCapture {
+    /// The subject's `ai:` target, when it has one.
+    pub(super) fn take_ai(&mut self) -> Option<AiRead> {
+        take_ai(&mut self.source)
+    }
+}
+
+fn take_ai(source: &mut Source) -> Option<AiRead> {
+    let Source::Page { ai, .. } = source else {
+        return None;
+    };
+    ai.take().map(|ai| *ai)
+}
+
+impl FlowExec<'_> {
+    /// The `ai` report and warnings of a check or capture that read an
+    /// `ai:` target, after it keeps the target's cache entry (SPEC 12.1).
+    pub(super) fn finish_ai_read(
+        &mut self,
+        node: StepNode<'_>,
+        ai: Option<AiRead>,
+        passed: bool,
+    ) -> AiSpend {
+        let mut spend = AiSpend::default();
+        let Some(AiRead { target, usage, .. }) = ai else {
+            return spend;
+        };
+        spend.usage = usage;
+        let Some(target) = target else {
+            return spend;
+        };
+        if passed {
+            self.finish_target(node, target, &mut spend);
+        } else {
+            spend.targets.push(target.report_owned());
+        }
+        spend
+    }
 }
 
 /// A capture line resolved into the engine's types.
@@ -148,8 +215,13 @@ impl FlowExec<'_> {
         line: &ast::CheckLine,
         implicit_response: Option<&str>,
     ) -> Result<PreparedCheck, BuildError> {
-        let (source, filters) =
-            self.prepare_source(&line.subject, &line.filters, implicit_response, true)?;
+        let (source, filters) = self.prepare_source(
+            &line.subject,
+            &line.filters,
+            implicit_response,
+            true,
+            ai_step::checks_absence(line),
+        )?;
         let text_compare = ast::chain_type(&line.subject, &line.filters)
             .is_ok_and(|value_type| value_type.is_string());
         let predicate = match &line.predicate {
@@ -173,8 +245,13 @@ impl FlowExec<'_> {
         capture: &ast::Capture,
         implicit_response: Option<&str>,
     ) -> Result<PreparedCapture, BuildError> {
-        let (source, filters) =
-            self.prepare_source(&capture.subject, &capture.filters, implicit_response, false)?;
+        let (source, filters) = self.prepare_source(
+            &capture.subject,
+            &capture.filters,
+            implicit_response,
+            false,
+            false,
+        )?;
         Ok(PreparedCapture {
             source,
             filters,
@@ -188,6 +265,7 @@ impl FlowExec<'_> {
         filter_specs: &[FilterSpec],
         implicit_response: Option<&str>,
         in_check: bool,
+        absence_ok: bool,
     ) -> Result<(Source, Vec<Filter>), BuildError> {
         let mut filters = Vec::with_capacity(filter_specs.len() + 1);
         let source = match subject {
@@ -260,9 +338,25 @@ impl FlowExec<'_> {
                 }
             }
             page => {
-                let vars = &mut self.vars;
-                let subject = wire::read_subject_wire(page, &mut |value| vars.resolve(value))?
-                    .expect("a page subject always has a read subject");
+                let ai = match page {
+                    Subject::Element { locator, .. } if locator.ai_description().is_some() => {
+                        Some(Box::new(AiRead {
+                            subject: page.clone(),
+                            absence_ok,
+                            target: None,
+                            usage: PlanUsage::default(),
+                            stale: true,
+                        }))
+                    }
+                    _ => None,
+                };
+                let subject = if ai.is_some() {
+                    Json::Null
+                } else {
+                    let vars = &mut self.vars;
+                    wire::read_subject_wire(page, &mut |value| vars.resolve(value))?
+                        .expect("a page subject always has a read subject")
+                };
                 let attr = match page {
                     Subject::Element {
                         extractor: Extractor::Attr(name),
@@ -282,6 +376,7 @@ impl FlowExec<'_> {
                     subject,
                     attr,
                     retry: in_check || waits,
+                    ai,
                 }
             }
         };
@@ -389,7 +484,7 @@ impl FlowExec<'_> {
     pub(super) async fn run_check(
         &mut self,
         node: StepNode<'_>,
-        prepared: PreparedCheck,
+        prepared: &mut PreparedCheck,
         title: &str,
         budget: LineBudget,
         client: &mut ShimClient,
@@ -411,7 +506,7 @@ impl FlowExec<'_> {
             match self
                 .read(
                     node,
-                    &prepared.source,
+                    &mut prepared.source,
                     remaining,
                     budget,
                     (!retry).then_some(title),
@@ -449,7 +544,7 @@ impl FlowExec<'_> {
     pub(super) async fn run_capture(
         &mut self,
         node: StepNode<'_>,
-        prepared: PreparedCapture,
+        prepared: &mut PreparedCapture,
         title: &str,
         budget: LineBudget,
         client: &mut ShimClient,
@@ -471,7 +566,7 @@ impl FlowExec<'_> {
             match self
                 .read(
                     node,
-                    &prepared.source,
+                    &mut prepared.source,
                     remaining,
                     budget,
                     (!retry).then_some(title),
@@ -584,7 +679,7 @@ impl FlowExec<'_> {
     async fn read(
         &mut self,
         node: StepNode<'_>,
-        source: &Source,
+        source: &mut Source,
         remaining: u64,
         budget: LineBudget,
         title: Option<&str>,
@@ -592,7 +687,23 @@ impl FlowExec<'_> {
         state: &mut EntryState,
     ) -> Attempt {
         match source {
-            Source::Page { subject, attr, .. } => {
+            Source::Page {
+                subject, attr, ai, ..
+            } => {
+                if let Some(ai) = ai.as_deref_mut()
+                    && ai.stale
+                {
+                    match self
+                        .find_subject(node, ai, remaining, budget, title, client, state)
+                        .await
+                    {
+                        Ok(Some(found)) => *subject = found,
+                        // No element yet, or none at all: a missing value,
+                        // which `not exists` accepts (SPEC 6.3).
+                        Ok(None) => return Attempt::Read(Read::Missing(Missing::NoElement)),
+                        Err(end) => return Attempt::End(end),
+                    }
+                }
                 let command = StepCommand::Read {
                     subject: subject.clone(),
                 };
@@ -603,7 +714,18 @@ impl FlowExec<'_> {
                     Ok(result) => result,
                     Err(attempt) => return attempt,
                 };
-                match serde_json::from_value::<ReadResult>(result) {
+                let result = serde_json::from_value::<ReadResult>(result);
+                // The element is gone: find it again on a later attempt.
+                if let (
+                    Some(ai),
+                    Ok(ReadResult::Missing {
+                        reason: MissingReason::NoElement,
+                    }),
+                ) = (ai.as_deref_mut(), &result)
+                {
+                    ai.stale = true;
+                }
+                match result {
                     Ok(ReadResult::Value { value }) => {
                         Attempt::Read(Read::Value(Value::from_json(value)))
                     }
@@ -681,6 +803,69 @@ impl FlowExec<'_> {
                 }
             }
         }
+    }
+
+    /// Finds the element of a subject's `ai:` target, at most once every 2
+    /// seconds (SPEC 6.3), and returns the read subject on it. `None` means
+    /// no element yet.
+    async fn find_subject(
+        &mut self,
+        node: StepNode<'_>,
+        ai: &mut AiRead,
+        remaining: u64,
+        budget: LineBudget,
+        title: Option<&str>,
+        client: &mut ShimClient,
+        state: &mut EntryState,
+    ) -> Result<Option<Json>, StepEnd> {
+        if ai.target.is_none() {
+            let Subject::Element { locator, .. } = &ai.subject else {
+                unreachable!("an AI read has an element subject");
+            };
+            ai.target = Some(self.ai_target(node, locator, ai.absence_ok));
+        }
+        let target = ai.target.as_mut().expect("the target was just made");
+        if !target.may_ask() {
+            return Ok(None);
+        }
+        let mut line = ActLine {
+            node,
+            title: title.unwrap_or_default(),
+            deadline: Instant::now() + Duration::from_millis(remaining),
+            budget: ActBudget {
+                timeout_ms:      budget.timeout_ms,
+                entry_capped:    budget.entry_capped,
+                entry_budget_ms: budget.entry_budget_ms,
+            },
+            entry_start: false,
+            what: "the step",
+        };
+        let locator = match self
+            .find_target(&mut line, target, &mut ai.usage, client, state)
+            .await?
+        {
+            Found::One(locator) => locator,
+            Found::Nothing => return Ok(None),
+        };
+        ai.stale = false;
+        let mut subject = ai.subject.clone();
+        if let Subject::Element {
+            locator: target, ..
+        } = &mut subject
+        {
+            *target = locator;
+        }
+        let vars = &mut self.vars;
+        let wire = wire::read_subject_wire(&subject, &mut |value| vars.resolve(value)).map_err(
+            |error| {
+                StepEnd::Failed(StepError {
+                    code: "variable-resolution".to_owned(),
+                    message: error.to_string(),
+                    ..StepError::default()
+                })
+            },
+        )?;
+        Ok(wire)
     }
 
     /// Runs one shim command for a line. A retryable page failure comes

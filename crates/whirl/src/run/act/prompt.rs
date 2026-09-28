@@ -1,7 +1,9 @@
 //! The `ACT` prompts (SPEC 7.4), ported from Stagehand's
 //! `packages/extension/prompt.ts` (`buildActSystemPrompt`,
 //! `buildActPrompt`, `buildStepTwoPrompt`, and `buildObserveUserMessage`),
-//! and the text-argument prompt of its Jev path (browserbase/stagehand#2953).
+//! the `ai:` target prompt (SPEC 6.3), ported from its
+//! `buildObserveSystemPrompt`, and the text-argument prompt of its Jev path
+//! (browserbase/stagehand#2953).
 //!
 //! Whirl's changes: element IDs are Playwright AI-snapshot refs rather than
 //! frame-and-node IDs, the method list is Whirl's, and rules are added for
@@ -55,6 +57,37 @@ pub(crate) fn system_prompt() -> String {
          [ref=f1e3]. Copy the ref value exactly into elementId, without the brackets or the \
          `ref=` prefix. For example, if the tree shows [ref=e12], return elementId \"e12\".",
     )
+}
+
+/// The system prompt of an `ai:` target call (SPEC 6.3). Whirl asks for
+/// every match and applies its own strictness rule, so the prompt forbids
+/// guessing and choosing among matches.
+pub(crate) fn target_system_prompt() -> String {
+    collapse_whitespace(
+        "You are helping the user test a web page by finding the elements that a description          names.
+
+         You will be given:
+         1. a description of the elements to find
+         2. a hierarchical accessibility tree showing the semantic structure of the page. The          tree is a hybrid of the DOM and the accessibility tree.
+
+         Return an array of EVERY element that matches the description, otherwise return an          empty array. Do not choose one element when several match: return them all. Do not          fabricate or guess an element; if you are not sure an element matches, leave it out.          Describe each element you return in a few words.
+
+         Each element in the accessibility tree has a ref in square brackets, like [ref=e12] or          [ref=f1e3]. Copy the ref value exactly into elementId, without the brackets or the          `ref=` prefix. For example, if the tree shows [ref=e12], return elementId \"e12\".",
+    )
+}
+
+/// The user message of an `ai:` target call: the description, its
+/// placeholders, and the snapshot.
+pub(crate) fn target_message(description: &str, placeholders: &[String], snapshot: &str) -> String {
+    let placeholders = if placeholders.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\nThe description uses placeholders for hidden values: {}.",
+            placeholders.join(", ")
+        )
+    };
+    format!("description: {description}{placeholders}\nAccessibility Tree: \n{snapshot}\n")
 }
 
 /// The system prompt of the call that reads the text to type from an

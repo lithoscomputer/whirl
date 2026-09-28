@@ -46,6 +46,26 @@ pub(crate) struct SnapshotNode {
     name: Option<String>,
 }
 
+/// An element's ARIA role and accessible name: what the AI cache checks
+/// before it replays a locator (SPEC 12.1).
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub(crate) struct Fingerprint {
+    pub(crate) role: String,
+    pub(crate) name: Option<String>,
+}
+
+impl Fingerprint {
+    /// The fingerprint of the first entry of an element's AI snapshot,
+    /// which is the element itself.
+    pub(crate) fn of_snapshot(snapshot: &str) -> Option<Self> {
+        let line = snapshot.lines().find_map(SnapshotLine::parse)?;
+        Some(Self {
+            role: line.role,
+            name: line.name,
+        })
+    }
+}
+
 impl SnapshotNode {
     /// The element as a Whirl locator, such as `role:button "Sign in"`.
     /// It describes the element for reports; it is not guaranteed to be
@@ -459,6 +479,14 @@ impl Target {
     /// True when the element stands for the whole page.
     pub(crate) fn is_page(&self) -> bool {
         self.page
+    }
+
+    /// The element's role and accessible name (SPEC 12.1).
+    pub(crate) fn fingerprint(&self) -> Fingerprint {
+        Fingerprint {
+            role: self.node.role.clone(),
+            name: self.node.name.clone(),
+        }
     }
 }
 

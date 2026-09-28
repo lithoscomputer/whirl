@@ -30,8 +30,11 @@ Schemas: [check](check.schema.json), [run report](report.schema.json).
 | `unused-capture` | A capture is never read; warning |
 | `redundant-presence` | The following assertion requires presence; warning |
 | `unasserted-http-status` | An independent HTTP entry has no status assertion; warning |
-| `act-without-model` | A file uses `ACT` without a `model` option |
+| `act-without-model` | A file uses `ACT` or `ai:` without a `model` option |
 | `unknown-model` | The `model` option names a model the catalog cannot route |
+| `ai-count` | An `ai:` target is counted; it names one element |
+| `cache-invalid` | A flow's AI cache is not a valid version 1 file; path is the cache file |
+| `cache-stale-entry` | An AI cache entry matches no line of its flow; path is the cache file; warning |
 | `filter-type` | A check's subject, filters, predicate, and literal expected value cannot work together, such as `text toHex` or `status == "200"` |
 
 Locations use 1-based Unicode character positions, not bytes or UTF-16 units.
@@ -60,7 +63,20 @@ plus Jev's; a step with no model call costs only what Jev did. Arguments keep th
 
 A step can have `warnings`, each with a stable `code` and a `message`. The
 step's status does not change. `unused-mock` marks a `MOCK` line whose mock
-served no request in a file that passed (SPEC 7.5). A file that ran `MOCK`
+served no request in a file that passed (SPEC 7.5). The AI cache (SPEC 12.1)
+adds `cache-miss` for a line with no entry, `healed` for a stale entry that
+the model replaced, `uncached` for an absence check that passed with no
+element, `cache-unstable` for an element without a strict locator, and
+`cache-secret` for a line whose masked value no reference names.
+
+A step with `ai:` targets has an `ai` object: `model`, `targets`, and `usage`
+in the shape of the `act` usage. Each target has the authored `target`, the
+`locator` it resolved to, the model's `description`, its `cache` status
+(`hit`, `miss`, `healed`, or `uncached`), and for a heal the `cached`
+locator. An `ACT` step's `act` object adds `cache` (`hit`, `miss`, or
+`healed`) and, for a heal, the `cached` lines; an action replayed from the
+cache has `plannedBy` `cache`. In `--cache=only`, a miss fails the step with
+the code `cache-miss`. A file that ran `MOCK`
 lines has `mocks`: each with its `line`, `method`, resolved `url`, and
 `hits`, the number of requests it served. Codes are stable; message text may
 change and must not be parsed. Secret masking covers diagnostic action logs in

@@ -16,11 +16,13 @@ use crate::lang::ast::{
 };
 use crate::lang::fmt::render_snapshot_target;
 use crate::report::model::{
-    ActReport, CaptureValue, EntryReport, FileReport, MockReport, ReportViewport, RuntimeMetadata,
-    SETUP_ENTRY, SnapshotReport, Status, StepError, StepKind, StepReport, StepWarning, Timing,
+    ActReport, AiReport, CaptureValue, EntryReport, FileReport, MockReport, ReportViewport,
+    RuntimeMetadata, SETUP_ENTRY, SnapshotReport, Status, StepError, StepKind, StepReport,
+    StepWarning, Timing,
 };
-use crate::run::act::{ActPlanner, Instruction};
+use crate::run::act::{ActPlanner, Instruction, ModelClient};
 use crate::run::artifacts;
+use crate::run::cache::{self, CacheMode};
 use crate::run::shim::{
     EndFlowParams, ErrorObject, MockHits, ShimClient, ShimError, StartFlowParams, StepCommand,
     StepOutcome, StepRequest, VideoParams, ViewportParams, wire,
@@ -28,6 +30,7 @@ use crate::run::shim::{
 use crate::run::vars::{VarError, VarStore};
 
 mod act_step;
+mod ai_step;
 mod check_step;
 mod snapshot;
 use snapshot::SnapshotSettings;
@@ -71,6 +74,8 @@ pub(crate) struct FlowFlags {
     pub(crate) update_snapshots: bool,
     /// Set only when this flow is the run's single file.
     pub(crate) save_storage:     Option<PathBuf>,
+    /// The `--cache` mode (SPEC 12.1).
+    pub(crate) cache:            CacheMode,
 }
 
 /// The hostname of a URL, textually: scheme and userinfo stripped, cut
@@ -397,6 +402,9 @@ pub(crate) struct FlowRun<'a> {
     pub(crate) state_out:  Option<&'a Path>,
     /// The run's `ACT` planner; present when any input uses `ACT`.
     pub(crate) planner:    Option<&'a dyn ActPlanner>,
+    /// The run's language model client; present when any input asks a
+    /// model (SPEC 6.3, 7.4).
+    pub(crate) model:      Option<&'a ModelClient>,
 }
 
 /// One step line of an entry, in execution order (SPEC 12).
@@ -583,6 +591,8 @@ struct FlowExec<'a> {
     requests:  check_step::RequestCache,
     /// Every `MOCK` that ran, in order (SPEC 7.5).
     mocks:     Vec<RegisteredMock>,
+    /// The flow's AI cache (SPEC 12.1).
+    cache:     cache::FlowCache,
 }
 
 /// The resolved header pairs and body of a request or a mocked response.
@@ -1047,6 +1057,8 @@ struct StepRun {
     text:        String,
     act:         Option<ActReport>,
     snapshot:    Option<SnapshotReport>,
+    ai:          Option<AiReport>,
+    warnings:    Vec<StepWarning>,
 }
 
 impl StepRun {
@@ -1057,6 +1069,8 @@ impl StepRun {
             text,
             snapshot: None,
             act: None,
+            ai: None,
+            warnings: Vec::new(),
         }
     }
 }
@@ -1086,7 +1100,21 @@ impl FlowExec<'_> {
         state: &mut EntryState,
     ) -> StepRun {
         let entry_budget_ms = self.options.entry_timeout_ms.unwrap_or(0);
-        let prepared = match self.prepare_step(node, implicit_response) {
+        let ai_targets = ai_step::ai_locators(node);
+        // A line whose locators hold `ai:` targets resolves them before it
+        // builds its command (SPEC 6.3). Resolving each description records
+        // its env secrets, so the title masks them.
+        let prepared = if ai_targets.is_empty() {
+            self.prepare_step(node, implicit_response).map(Some)
+        } else {
+            for (locator, _) in &ai_targets {
+                if let Some(description) = locator.ai_description() {
+                    let _ = self.vars.resolve(description);
+                }
+            }
+            Ok(None)
+        };
+        let prepared = match prepared {
             Ok(prepared) => prepared,
             Err(error) => {
                 let text = render_step_text(node.raw_text(), &mut self.vars);
@@ -1103,7 +1131,9 @@ impl FlowExec<'_> {
         let title = render_step_text(node.raw_text(), &mut self.vars);
 
         let snapshot = match &prepared {
-            PreparedStep::Command(StepCommand::Snapshot { report, .. }) => Some((**report).clone()),
+            Some(PreparedStep::Command(StepCommand::Snapshot { report, .. })) => {
+                Some((**report).clone())
+            }
             _ => None,
         };
         let line_budget = line_budget_ms(node, &self.options);
@@ -1118,8 +1148,18 @@ impl FlowExec<'_> {
 
         let started = Instant::now();
         let span = debug_span!("step", line = node.line(), step_kind = ?node.kind());
-        let (end, act) = match prepared {
-            PreparedStep::Command(command) => {
+        let (end, act, mut spend) = match prepared {
+            None => {
+                let budget = act_step::ActBudget {
+                    timeout_ms,
+                    entry_capped,
+                    entry_budget_ms,
+                };
+                self.run_ai_line(node, implicit_response, &title, budget, client, state)
+                    .instrument(span)
+                    .await
+            }
+            Some(PreparedStep::Command(command)) => {
                 let request = StepRequest {
                     entry_start: state.steps.is_empty(),
                     command,
@@ -1133,53 +1173,70 @@ impl FlowExec<'_> {
                     timeout_ms,
                     elapsed: started.elapsed(),
                 };
-                (self.apply_outcome(node, outcome, state, budget), None)
+                (
+                    self.apply_outcome(node, outcome, state, budget),
+                    None,
+                    ai_step::AiSpend::default(),
+                )
             }
-            PreparedStep::Act { instruction, scope } => {
+            Some(PreparedStep::Act { instruction, scope }) => {
                 let budget = act_step::ActBudget {
                     timeout_ms,
                     entry_capped,
                     entry_budget_ms,
                 };
-                self.run_act(node, &instruction, scope, &title, budget, client, state)
+                let (end, act, warnings) = self
+                    .run_act(node, &instruction, scope, &title, budget, client, state)
                     .instrument(span)
-                    .await
+                    .await;
+                let spend = ai_step::AiSpend {
+                    warnings,
+                    ..ai_step::AiSpend::default()
+                };
+                (end, act, spend)
             }
-            PreparedStep::Check(check) => {
+            Some(PreparedStep::Check(mut check)) => {
                 let budget = check_step::LineBudget {
                     timeout_ms,
                     entry_capped,
                     entry_budget_ms,
                 };
                 let end = self
-                    .run_check(node, check, &title, budget, client, state)
+                    .run_check(node, &mut check, &title, budget, client, state)
                     .instrument(span)
                     .await;
-                (end, None)
+                let ai = check.take_ai();
+                let spend = self.finish_ai_read(node, ai, matches!(end, StepEnd::Passed));
+                (end, None, spend)
             }
-            PreparedStep::Capture(capture) => {
+            Some(PreparedStep::Capture(mut capture)) => {
                 let budget = check_step::LineBudget {
                     timeout_ms,
                     entry_capped,
                     entry_budget_ms,
                 };
                 let end = self
-                    .run_capture(node, capture, &title, budget, client, state)
+                    .run_capture(node, &mut capture, &title, budget, client, state)
                     .instrument(span)
                     .await;
-                (end, None)
+                let ai = capture.take_ai();
+                let spend = self.finish_ai_read(node, ai, matches!(end, StepEnd::Passed));
+                (end, None, spend)
             }
         };
         let duration_ms = elapsed_ms(started);
         if let Some(remaining) = state.remaining_ms.as_mut() {
             *remaining = remaining.saturating_sub(duration_ms);
         }
+        let ai = spend.report(self.options.model.clone());
         StepRun {
             end,
             duration_ms,
             text: title,
             snapshot,
             act,
+            ai,
+            warnings: spend.warnings,
         }
     }
 
@@ -1318,6 +1375,7 @@ impl FlowExec<'_> {
                     snapshot:    None,
                     act:         None,
                     warnings:    Vec::new(),
+                    ai:          None,
                 });
                 continue;
             }
@@ -1334,7 +1392,8 @@ impl FlowExec<'_> {
                 error: run.end.into_error(),
                 act: run.act,
                 snapshot: run.snapshot,
-                warnings: Vec::new(),
+                warnings: run.warnings,
+                ai: run.ai,
             });
             if status != Status::Passed {
                 entry_status = status;
@@ -1400,6 +1459,7 @@ fn skipped_entry(file: &File, entry: &ast::Entry, vars: &VarStore) -> EntryRepor
             snapshot:    None,
             act:         None,
             warnings:    Vec::new(),
+            ai:          None,
         })
         .collect();
     EntryReport {
@@ -1446,6 +1506,7 @@ impl EntryReport {
             snapshot:    None,
             act:         None,
             warnings:    Vec::new(),
+            ai:          None,
         });
         self
     }
@@ -1651,6 +1712,8 @@ pub(crate) async fn run_flow(run: &FlowRun<'_>, client: &mut ShimClient) -> Flow
             video_fps:          runtime_result.get("videoFps").and_then(Json::as_u64),
         });
 
+        let (flow_cache, cache_error) =
+            cache::FlowCache::load(run.flags.cache, run.canonical, run.file);
         let mut exec = FlowExec {
             run,
             options,
@@ -1661,7 +1724,14 @@ pub(crate) async fn run_flow(run: &FlowRun<'_>, client: &mut ShimClient) -> Flow
             responses: check_step::ResponseCache::new(),
             requests: check_step::RequestCache::new(),
             mocks: Vec::new(),
+            cache: flow_cache,
         };
+        if let Some(error) = cache_error {
+            exec.warnings.push(format!(
+                "the AI cache is ignored: {}",
+                exec.vars.mask(&error.to_string())
+            ));
+        }
         // An explicit rate that the engine cannot honor is a warning, not a
         // failure: the recording still exists at the engine's rate (SPEC 13).
         if let (Some(fps), Some(video)) = (run.flags.video_fps, &params.video)
@@ -1778,6 +1848,12 @@ pub(crate) async fn run_flow(run: &FlowRun<'_>, client: &mut ShimClient) -> Flow
                     }
                 }
             }
+        }
+        match exec.cache.finish(report.status == Status::Passed) {
+            Ok(_) => {}
+            Err(error) => exec
+                .warnings
+                .push(format!("the AI cache could not be written: {error}")),
         }
         report.warnings = exec.warnings;
         finish(report, &exec.vars, exec.captures)

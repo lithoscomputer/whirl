@@ -13,8 +13,8 @@
 use serde_json::{Value as Json, json};
 
 use crate::lang::ast::{
-    DefaultEngine, Extractor, Ident, Locator, PageCheck, Regex, ScrollMotion, SegmentKind,
-    StateCheck, Subject, TextPrefix, Value,
+    DefaultEngine, Extractor, Ident, Locator, LocatorSegment, PageCheck, Regex, ScrollMotion,
+    SegmentKind, Span, StateCheck, Subject, TextPrefix, Value, ValueSegment,
 };
 
 /// Shim-only response key for an independent HTTP entry. `$` and `:` cannot
@@ -49,6 +49,62 @@ pub(crate) fn mock_pattern(url: &str) -> Result<String, String> {
         })
         .collect();
     Ok(format!("^{}$", parts.join(".*")))
+}
+
+/// The locator that wire segments stand for (protocol 4.1), with literal
+/// values: the reverse of [`locator_wire`], for the locators the shim
+/// generates (SPEC 12.1). `None` for a segment a file cannot write.
+pub(crate) fn locator_from_wire(segments: &Json) -> Option<Locator> {
+    let span = Span {
+        line:   0,
+        column: 0,
+        len:    0,
+    };
+    let text = |value: &Json| -> Option<Value> {
+        Some(Value {
+            segments: vec![ValueSegment::Literal(value.as_str()?.to_owned())],
+            span,
+            quoted: false,
+        })
+    };
+    let mut out = Vec::new();
+    for segment in segments.as_array()? {
+        let exact = segment.get("exact").and_then(Json::as_bool).unwrap_or(true);
+        let kind = match segment.get("type")?.as_str()? {
+            "role" => SegmentKind::Role {
+                substring: !exact,
+                role:      segment.get("role")?.as_str()?.to_owned(),
+                name:      match segment.get("name")? {
+                    Json::Null => None,
+                    name => Some(text(name)?),
+                },
+            },
+            "testid" => SegmentKind::TestId(text(segment.get("id")?)?),
+            "css" => SegmentKind::Css(text(segment.get("selector")?)?),
+            "frame" => SegmentKind::Frame(text(segment.get("selector")?)?),
+            "nth" => SegmentKind::Nth(segment.get("index")?.as_i64()?),
+            engine => {
+                let prefix = match engine {
+                    "label" => TextPrefix::Label,
+                    "placeholder" => TextPrefix::Placeholder,
+                    "text" => TextPrefix::Text,
+                    "alt" => TextPrefix::Alt,
+                    "title" => TextPrefix::Title,
+                    _ => return None,
+                };
+                SegmentKind::TextEngine {
+                    prefix,
+                    substring: !exact,
+                    value: text(segment.get("text")?)?,
+                }
+            }
+        };
+        out.push(LocatorSegment { kind, span });
+    }
+    (!out.is_empty()).then_some(Locator {
+        segments: out,
+        span,
+    })
 }
 
 /// A `scroll` command's motion (protocol section 4): into view without a
@@ -158,6 +214,10 @@ fn segment_wire<E>(
         SegmentKind::Css(value) => json!({"type": "css", "selector": resolve(value)?}),
         SegmentKind::Frame(value) => json!({"type": "frame", "selector": resolve(value)?}),
         SegmentKind::Nth(index) => json!({"type": "nth", "index": index}),
+        SegmentKind::Ref(element) => json!({"type": "ref", "ref": element}),
+        // The runner resolves every `ai:` target before it builds a
+        // command (SPEC 6.3); the shim rejects this segment.
+        SegmentKind::Ai(_) => json!({"type": "ai"}),
         SegmentKind::Default(value) => {
             let engine = default_engine
                 .expect("a default-engine segment only parses in actions, which have an engine");
@@ -263,8 +323,33 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::lang::ast::{ActionKind, AssertBody, File, ValueSegment};
-    use crate::lang::parse::parse_file;
+    use crate::lang::ast::{ActionKind, AssertBody, File};
+    use crate::lang::fmt::render_snapshot_target;
+    use crate::lang::parse::{parse_file, parse_locator};
+
+    #[test]
+    fn generated_locators_read_back_from_the_wire() {
+        let wire = json!([
+            {"type": "frame", "selector": "iframe[title='Pay']"},
+            {"type": "role", "role": "dialog", "name": "Cart", "exact": true},
+            {"type": "label", "text": "First name", "exact": true},
+            {"type": "nth", "index": 1}
+        ]);
+        let locator = locator_from_wire(&wire).expect("a locator");
+        assert_eq!(
+            render_snapshot_target(&locator),
+            r#"frame:iframe[title='Pay'] >> role:dialog Cart >> label:"First name" >> nth:1"#
+        );
+        let parsed = parse_locator(&render_snapshot_target(&locator)).expect("the text parses");
+        assert_eq!(
+            locator_wire(&parsed, None, &mut resolve).expect("resolves"),
+            wire
+        );
+        assert_eq!(
+            locator_from_wire(&json!([{"type": "ref", "ref": "e1"}])),
+            None
+        );
+    }
 
     #[test]
     fn a_mock_pattern_escapes_the_url_and_widens_each_star() {

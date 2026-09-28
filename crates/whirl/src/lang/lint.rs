@@ -52,6 +52,7 @@ pub(crate) fn lint_file_with(file: &File, external_uses: &HashSet<String>) -> Ve
     setup_option_rules(file, &mut lints);
     redundant_presence_counts(file, &mut lints);
     filter_types(file, &mut lints);
+    ai_counts(file, &mut lints);
     lints.sort_by_key(|lint| (lint.line, lint.column));
     lints
 }
@@ -131,21 +132,59 @@ pub(crate) fn lint_act(file: &File, known_model: impl Fn(&str) -> bool) -> Vec<L
             _ => Vec::new(),
         };
     }
-    file.entries
+    let act = file
+        .entries
         .iter()
         .flat_map(|entry| &entry.actions)
         .find(|action| matches!(action.kind, ActionKind::Act { .. }))
-        .map(|action| {
+        .map(|action| (action.span, "ACT"));
+    let target = file.locator_uses().into_iter().find_map(|used| {
+        let segment = used.locator.segments.last()?;
+        used.locator
+            .ai_description()
+            .map(|_| (segment.span, "`ai:`"))
+    });
+    let first = match (act, target) {
+        (Some(act), Some(target)) => Some(
+            if (act.0.line, act.0.column) <= (target.0.line, target.0.column) {
+                act
+            } else {
+                target
+            },
+        ),
+        (act, target) => act.or(target),
+    };
+    first
+        .map(|(span, what)| {
             lint_at(
                 file,
                 Severity::Error,
                 "act-without-model",
-                action.span,
-                "ACT needs a `model` option naming the language model to ask".to_owned(),
+                span,
+                format!("{what} needs a `model` option naming the language model to ask"),
             )
         })
         .into_iter()
         .collect()
+}
+
+/// `ai:` names one element, so it cannot be counted (SPEC 6.3).
+fn ai_counts(file: &File, lints: &mut Vec<Lint>) {
+    for used in file.locator_uses() {
+        if used.count
+            && used.locator.ai_description().is_some()
+            && let Some(segment) = used.locator.segments.last()
+        {
+            lints.push(lint_at(
+                file,
+                Severity::Error,
+                "ai-count",
+                segment.span,
+                "`ai:` names one element and cannot be counted; count a locator without `ai:`"
+                    .to_owned(),
+            ));
+        }
+    }
 }
 
 /// A plain `LOCATOR count OP N` check: no filters, no `not`, and a
@@ -397,6 +436,8 @@ fn locator_key(locator: &Locator) -> String {
             SegmentKind::Frame(value) => format!("frame:{}", value_key(value)),
             SegmentKind::Nth(index) => format!("nth:{index}"),
             SegmentKind::Default(value) => format!("default:{}", value_key(value)),
+            SegmentKind::Ai(value) => format!("ai:{}", value_key(value)),
+            SegmentKind::Ref(element) => format!("ref:{element}"),
         })
         .collect::<Vec<_>>()
         .join(" >> ")
@@ -759,8 +800,9 @@ fn collect_locator_refs<'a>(locator: &'a Locator, line: u32, refs: &mut Vec<VarR
             | SegmentKind::TestId(value)
             | SegmentKind::Css(value)
             | SegmentKind::Frame(value)
-            | SegmentKind::Default(value) => collect_value_refs(value, line, refs),
-            SegmentKind::Nth(_) => {}
+            | SegmentKind::Default(value)
+            | SegmentKind::Ai(value) => collect_value_refs(value, line, refs),
+            SegmentKind::Nth(_) | SegmentKind::Ref(_) => {}
         }
     }
 }
@@ -1314,6 +1356,26 @@ mod tests {
     fn act_instructions_use_captures() {
         let source = "VISIT /\nCAPTURE item: testid:x text\n\nACT \"open {{item}}\"\n";
         assert_eq!(lint(source), Vec::new());
+    }
+
+    #[test]
+    fn an_ai_target_cannot_be_counted() {
+        let lints = lint("[Options]\nmodel: m\nVISIT /\nASSERT ai:\"the rows\" count == 2\n");
+        assert_eq!(lints.len(), 1);
+        assert_eq!(lints[0].code, "ai-count");
+        assert_eq!(lints[0].severity, Severity::Error);
+    }
+
+    #[test]
+    fn an_ai_target_needs_a_model() {
+        let lints = lint_act_source("VISIT /\nCLICK ai:\"the buy button\"\n");
+        assert_eq!(lints.len(), 1);
+        assert_eq!(lints[0].code, "act-without-model");
+        assert_eq!(
+            lints[0].message,
+            "`ai:` needs a `model` option naming the language model to ask"
+        );
+        assert_eq!(lints[0].column, 7);
     }
 
     #[test]
