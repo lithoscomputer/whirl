@@ -51,12 +51,15 @@
     let frame = 0;
     setInterval(() => { current().style.background = `rgb(0, 0, ${++frame % 256})`; }, 30);
   }
-  // An identical target replaced faster than a capture completes.
+  // An identical target replaced faster than a capture completes, for the
+  // first second: early captures must find it again, and a slow machine
+  // still gets a stable target before the step's time runs out.
   if (query.has("replace")) {
-    setInterval(() => {
+    const swaps = setInterval(() => {
       const old = current();
       old.replaceWith(old.cloneNode(true));
     }, 30);
+    setTimeout(() => clearInterval(swaps), 1000);
   }
   // Remove the target after the step has compared stable frames.
   if (query.has("vanish")) setTimeout(() => current().remove(), 1000);
