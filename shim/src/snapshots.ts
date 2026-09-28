@@ -3,15 +3,22 @@
 // A shim-owned poll loop captures full-page frames until two consecutive
 // captures are byte-identical, compares the settled frame against the
 // baseline with Playwright's image comparator (identical dimensions;
-// per-pixel color distance threshold 0.2 on a 0-1 scale), and keeps
+// configurable pixel threshold and difference allowance), and keeps
 // recapturing and recomparing on mismatch until the deadline.
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname } from "node:path";
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
+import { describeLocator, type FrameOwner } from "./locators.js";
+import type { SnapshotComparison } from "./protocol.js";
 import { ShimError } from "./protocol.js";
-import { Deadline, isTimeoutError, sleep } from "./step-util.js";
+import {
+	Deadline,
+	failOnMultipleMatches,
+	isTimeoutError,
+	sleep,
+} from "./step-util.js";
 
 interface ComparatorResult {
 	readonly errorMessage: string;
@@ -21,7 +28,11 @@ interface ComparatorResult {
 type Comparator = (
 	actual: Buffer,
 	expected: Buffer,
-	options?: { readonly threshold?: number },
+	options?: {
+		readonly threshold?: number;
+		readonly maxDiffPixels?: number;
+		readonly maxDiffPixelRatio?: number;
+	},
 ) => ComparatorResult | null;
 
 interface CoreBundle {
@@ -38,23 +49,43 @@ const require = createRequire(import.meta.url);
 const coreBundle = require("playwright-core/lib/coreBundle") as CoreBundle;
 const comparePng: Comparator = coreBundle.utils.getComparator("image/png");
 
-const defaultThreshold = 0.2;
 const interFrameDelayMs = 100;
 
-export interface SnapshotParams {
+export interface SnapshotMask {
+	readonly locator: Locator;
+	readonly frames: readonly FrameOwner[];
+}
+
+export interface SnapshotParams extends SnapshotComparison {
 	readonly baselinePath: string;
 	readonly actualPath: string;
 	readonly diffPath: string;
 	readonly update: boolean;
+	readonly masks: readonly SnapshotMask[];
 }
 
 export interface SnapshotResult {
 	readonly updated?: boolean;
 }
 
-async function captureFrame(page: Page, deadline: Deadline): Promise<Buffer> {
+async function captureFrame(
+	page: Page,
+	deadline: Deadline,
+	masks: readonly SnapshotMask[],
+): Promise<Buffer> {
+	// Screenshot masks allow many element matches, but frame owners must
+	// remain unambiguous. Check each capture because the DOM can change.
+	for (const mask of masks) {
+		for (const frame of mask.frames) {
+			await failOnMultipleMatches(
+				frame.locator,
+				describeLocator(frame.segments),
+			);
+		}
+	}
 	return page.screenshot({
 		fullPage: true,
+		mask: masks.map((mask) => mask.locator),
 		timeout: deadline.remainingMs(),
 	});
 }
@@ -68,14 +99,15 @@ interface SettledFrame {
 async function settleFrame(
 	page: Page,
 	deadline: Deadline,
+	masks: readonly SnapshotMask[],
 ): Promise<SettledFrame> {
-	let previous = await captureFrame(page, deadline);
+	let previous = await captureFrame(page, deadline, masks);
 	for (;;) {
 		if (deadline.expired()) {
 			return { frame: previous, settled: false };
 		}
 		await sleep(Math.min(interFrameDelayMs, deadline.remainingMs()));
-		const current = await captureFrame(page, deadline);
+		const current = await captureFrame(page, deadline, masks);
 		if (current.equals(previous)) {
 			return { frame: current, settled: true };
 		}
@@ -103,6 +135,20 @@ async function readBaseline(path: string): Promise<Buffer | null> {
 	}
 }
 
+/** The pinned comparator enforces equal dimensions even at a 100% allowance. */
+export function compareSnapshot(
+	actual: Buffer,
+	expected: Buffer,
+	settings: SnapshotComparison,
+): ComparatorResult | null {
+	return comparePng(actual, expected, {
+		threshold: settings.pixelThreshold,
+		...(settings.maxDiff.type === "pixels"
+			? { maxDiffPixels: settings.maxDiff.value }
+			: { maxDiffPixelRatio: settings.maxDiff.value / 100 }),
+	});
+}
+
 export async function runSnapshot(
 	page: Page,
 	params: SnapshotParams,
@@ -111,7 +157,7 @@ export async function runSnapshot(
 	const deadline = new Deadline(timeoutMs);
 
 	if (params.update) {
-		const settled = await settleFrame(page, deadline);
+		const settled = await settleFrame(page, deadline, params.masks);
 		if (!settled.settled) {
 			throw new ShimError(
 				"timeout",
@@ -135,7 +181,7 @@ export async function runSnapshot(
 	for (;;) {
 		let capture: SettledFrame;
 		try {
-			capture = await settleFrame(page, deadline);
+			capture = await settleFrame(page, deadline, params.masks);
 		} catch (error) {
 			// A capture near the deadline can outlive its sliver of budget
 			// and throw Playwright's timeout. The comparison already has a
@@ -146,9 +192,7 @@ export async function runSnapshot(
 			throw error;
 		}
 		const { frame, settled } = capture;
-		const mismatch = comparePng(frame, baseline, {
-			threshold: defaultThreshold,
-		});
+		const mismatch = compareSnapshot(frame, baseline, params);
 		if (mismatch === null && settled) {
 			return {};
 		}

@@ -601,6 +601,7 @@ fn synthetic_outcome(job: &FlowJob, status: Status, message: &str) -> FlowOutcom
                         message: message.to_owned(),
                         ..StepError::default()
                     }),
+                    snapshot: None,
                     act: None,
                 }],
                 captures: Vec::new(),

@@ -3562,3 +3562,264 @@ json:$.body == "{\"count\": 2, \"zip\": \"007\", \"id\": 1234567890123456789, \"
     let html = fs::read_to_string(dir.path.join("report.html")).expect("HTML exists");
     assert!(html.contains("<small>number</small>"), "{html}");
 }
+
+#[test]
+fn snapshot_count_percent_threshold_and_dimension_boundaries() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file(
+        "snap.whirl",
+        "[Options]\nviewport: 100x100\nVISIT /snapshot.html\nSNAPSHOT pixels\n",
+    );
+    let output = run_whirl(&dir, &[
+        "--base",
+        &server.base(),
+        "--update-snapshots",
+        "snap.whirl",
+    ]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    // The fixture changes a solid 10x10 rectangle in a 100x100 image.
+    for (query, limit, threshold, expected) in [
+        ("a", "100", "0.2", 0),
+        ("a", "99", "0.2", 1),
+        ("a", "1%", "0.2", 0),
+        ("a", "0.999%", "0.2", 1),
+        ("a", "0", "0.2", 1),
+        ("a", "100%", "0.2", 0),
+        ("a&color=%23f0f0f0", "0", "0", 1),
+        ("a&color=%23f0f0f0", "0", "0.2", 0),
+        ("a&grow", "100%", "1", 1),
+    ] {
+        dir.file("snap.whirl", &format!("[Options]\nviewport: 100x100\nsnapshot-max-diff: 100%\nsnapshot-pixel-threshold: 1\nVISIT /snapshot.html?{query}\nSNAPSHOT pixels @1s\nsnapshot-max-diff: {limit}\nsnapshot-pixel-threshold: {threshold}\n"));
+        let output = run_whirl(&dir, &[
+            "--base",
+            &server.base(),
+            "--report-json",
+            "report.json",
+            "--report-html",
+            "report.html",
+            "snap.whirl",
+        ]);
+        assert_eq!(
+            exit_code(&output),
+            expected,
+            "{query}, {limit}, {threshold}: {}",
+            stdout_text(&output)
+        );
+        let report: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(dir.path.join("report.json")).expect("report"),
+        )
+        .expect("JSON");
+        let step = &report["files"][0]["entries"][0]["steps"][1];
+        assert_eq!(step["snapshot"]["maxDiff"], limit);
+        assert_eq!(step["snapshot"]["pixelThreshold"], threshold);
+        assert!(
+            step["text"]
+                .as_str()
+                .expect("text")
+                .contains(&format!("\nsnapshot-max-diff: {limit}"))
+        );
+        let html = fs::read_to_string(dir.path.join("report.html")).expect("HTML");
+        assert!(html.contains("Snapshot settings"));
+        if expected == 1 {
+            assert_eq!(step["error"]["code"], "snapshot-mismatch");
+            for file in ["snapshot-pixels-actual.png", "snapshot-pixels-diff.png"] {
+                assert!(dir.artifacts().join("snap").join(file).is_file());
+            }
+        }
+    }
+}
+
+#[test]
+fn snapshot_masks_replace_clear_and_cover_every_capture() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    let defaults = "[Options]\nviewport: 100x100\nsnapshot-mask: testid:patch\nsnapshot-mask: css:.missing\nsnapshot-mask: css:.hidden\nsnapshot-max-diff: 0\n";
+    let source = |query: &str, local: &str| {
+        format!(
+            "{defaults}VISIT /snapshot.html?{query}\nSNAPSHOT masked @1s\n{local}SCREENSHOT raw\n"
+        )
+    };
+    dir.file("mask.whirl", &source("", ""));
+    let output = run_whirl(&dir, &[
+        "--base",
+        &server.base(),
+        "--update-snapshots",
+        "mask.whirl",
+    ]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    let baseline = dir.path.join(format!(
+        "mask.whirl-snapshots/masked-chromium-{}.png",
+        platform_tag()
+    ));
+    let masked = fs::read(&baseline).expect("baseline");
+    assert_ne!(
+        masked,
+        fs::read(dir.artifacts().join("mask/raw.png")).expect("raw screenshot")
+    );
+    // One locator masks multiple elements; an absent locator does not wait.
+    // Replacement on every capture must still settle and compare successfully.
+    for query in ["a&b", "replace&b", "hidden"] {
+        dir.file("mask.whirl", &source(query, ""));
+        let output = run_whirl(&dir, &["--base", &server.base(), "mask.whirl"]);
+        assert_eq!(exit_code(&output), 0, "{query}: {}", stdout_text(&output));
+    }
+    // Moving a masked box still changes the image. The saved actual must
+    // match a fresh baseline made from that same page with the same masks.
+    dir.file("mask.whirl", &source("a&b&move", ""));
+    let output = run_whirl(&dir, &["--base", &server.base(), "mask.whirl"]);
+    assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
+    let actual = fs::read(dir.artifacts().join("mask/snapshot-masked-actual.png")).expect("actual");
+    let output = run_whirl(&dir, &[
+        "--base",
+        &server.base(),
+        "--update-snapshots",
+        "mask.whirl",
+    ]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    assert_eq!(actual, fs::read(&baseline).expect("updated baseline"));
+    // Build a baseline with a local list. A change to the inherited mask's
+    // other element fails, proving replacement rather than list appending.
+    for local in ["snapshot-mask: css:.b\n", "snapshot-mask: none\n"] {
+        dir.file("mask.whirl", &source("", local));
+        let output = run_whirl(&dir, &[
+            "--base",
+            &server.base(),
+            "--update-snapshots",
+            "mask.whirl",
+        ]);
+        assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+        dir.file("mask.whirl", &source("a", local));
+        let output = run_whirl(&dir, &["--base", &server.base(), "mask.whirl"]);
+        assert_eq!(exit_code(&output), 1, "{local}: {}", stdout_text(&output));
+    }
+}
+
+#[test]
+fn snapshot_options_resolve_at_their_scope_and_do_not_leak() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    let source = "[Options]\nviewport: 100x100\nsnapshot-mask: css:.{{mask}}\nsnapshot-max-diff: {{limit}}\nsnapshot-pixel-threshold: {{threshold}}\nVISIT /snapshot.html\n[Captures]\nlimit: eval \"'0.125%'\"\nmask: eval \"'b'\"\nSNAPSHOT local\nsnapshot-mask: css:.{{mask}}\nsnapshot-max-diff: {{limit}}\nSNAPSHOT inherited\n";
+    dir.file("scope.whirl", source);
+    let output = run_whirl(&dir, &[
+        "--base",
+        &server.base(),
+        "--var",
+        "mask=a",
+        "--var",
+        "limit=100",
+        "--var",
+        "threshold=0.2",
+        "--update-snapshots",
+        "--report-json",
+        "report.json",
+        "scope.whirl",
+    ]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    let report: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(dir.path.join("report.json")).expect("report"))
+            .expect("JSON");
+    let steps = &report["files"][0]["entries"][1]["steps"];
+    assert_eq!(
+        steps[0]["snapshot"],
+        serde_json::json!({"masks":["css:.b"],"maxDiff":"0.125%","pixelThreshold":"0.2"})
+    );
+    assert_eq!(
+        steps[1]["snapshot"],
+        serde_json::json!({"masks":["css:.a"],"maxDiff":"100","pixelThreshold":"0.2"})
+    );
+    // Invalid interpolated file settings stop setup; invalid local settings
+    // fail only that snapshot, after VISIT has run.
+    for (prefix, expected_entry) in [
+        (
+            "[Options]\nsnapshot-max-diff: {{limit}}\nVISIT /snapshot.html\nSNAPSHOT invalid\n",
+            "[setup]",
+        ),
+        (
+            "VISIT /snapshot.html\nSNAPSHOT invalid\nsnapshot-max-diff: {{limit}}\n",
+            "",
+        ),
+    ] {
+        dir.file("invalid.whirl", prefix);
+        let output = run_whirl(&dir, &[
+            "--base",
+            &server.base(),
+            "--var",
+            "limit=-1",
+            "--report-json",
+            "invalid.json",
+            "invalid.whirl",
+        ]);
+        assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
+        let report: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(dir.path.join("invalid.json")).expect("report"),
+        )
+        .expect("JSON");
+        let entry = &report["files"][0]["entries"][0];
+        if expected_entry == "[setup]" {
+            assert_eq!(entry["name"], expected_entry);
+        } else {
+            assert_eq!(entry["steps"][0]["status"], "passed");
+            assert_eq!(entry["steps"][1]["error"]["code"], "variable-resolution");
+        }
+    }
+}
+
+#[test]
+fn snapshot_masks_use_the_selected_tab_and_strict_frame_owners() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    let source = |script: &str, mask: &str| {
+        format!(
+            "[Options]\nviewport: 200x200\nVISIT /popups.html\nCLICK role:button \"Pay with provider\"\nPOPUP extra\nTAB extra\nVISIT /snapshot-frames.html\n[Asserts]\nframe:iframe >> nth:0 >> testid:patch >> nth:0 visible\nframe:iframe >> nth:1 >> testid:patch >> nth:0 visible\nEVAL \"{script}\"\nSNAPSHOT frames @2s\nsnapshot-mask: {mask}\n"
+        )
+    };
+    let mask = "frame:iframe >> nth:0 >> testid:patch";
+    dir.file("frames.whirl", &source("void 0", mask));
+    let output = run_whirl(&dir, &[
+        "--base",
+        &server.base(),
+        "--update-snapshots",
+        "frames.whirl",
+    ]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    for (script, mask, expected) in [
+        (
+            "document.querySelectorAll('iframe')[0].contentDocument.getElementById('a').style.background = 'black'",
+            mask,
+            0,
+        ),
+        (
+            "document.querySelectorAll('iframe')[1].contentDocument.getElementById('a').style.background = 'black'",
+            mask,
+            1,
+        ),
+        ("void 0", "frame:iframe >> testid:patch", 1),
+        ("void 0", "css:[", 3),
+    ] {
+        dir.file("frames.whirl", &source(script, mask));
+        let output = run_whirl(&dir, &[
+            "--base",
+            &server.base(),
+            "--report-json",
+            "report.json",
+            "frames.whirl",
+        ]);
+        assert_eq!(
+            exit_code(&output),
+            expected,
+            "{script}, {mask}: {}",
+            stdout_text(&output)
+        );
+        if mask == "frame:iframe >> testid:patch" {
+            let report: serde_json::Value = serde_json::from_str(
+                &fs::read_to_string(dir.path.join("report.json")).expect("report"),
+            )
+            .expect("JSON");
+            assert_eq!(
+                report["files"][0]["entries"][1]["steps"][1]["error"]["code"],
+                "strictness"
+            );
+        }
+    }
+}

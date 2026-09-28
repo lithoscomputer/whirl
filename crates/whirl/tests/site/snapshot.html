@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Snapshot pixels</title>
+<style>
+  html, body { margin: 0; background: white; }
+  .patch { position: absolute; top: 10px; width: 10px; height: 10px; background: white; }
+  #a { left: 10px; }
+  #b { left: 30px; }
+  #hidden { left: 50px; visibility: hidden; }
+</style>
+<div class="patch a" id="a" data-testid="patch"></div>
+<div class="patch b" id="b" data-testid="patch"></div>
+<div class="patch hidden" id="hidden"></div>
+<script>
+  const query = new URLSearchParams(location.search);
+  for (const id of ["a", "b"]) {
+    if (query.has(id)) document.getElementById(id).style.background = query.get("color") || "black";
+  }
+  if (query.has("hidden")) {
+    document.getElementById("hidden").style.visibility = "visible";
+    document.getElementById("hidden").style.background = "black";
+  }
+  if (query.has("grow")) document.body.style.height = "101px";
+  if (query.has("move")) document.getElementById("a").style.left = "11px";
+  if (query.has("replace")) {
+    setInterval(() => {
+      const old = document.getElementById("a");
+      const next = old.cloneNode();
+      next.style.background = Math.random() > 0.5 ? "red" : "blue";
+      old.replaceWith(next);
+    }, 30);
+  }
+</script>
+</html>

@@ -16,7 +16,7 @@ use crate::lang::ast::{
 };
 use crate::report::model::{
     ActReport, CaptureValue, EntryReport, FileReport, ReportViewport, RuntimeMetadata, SETUP_ENTRY,
-    Status, StepError, StepKind, StepReport, Timing,
+    SnapshotReport, Status, StepError, StepKind, StepReport, Timing,
 };
 use crate::run::act::{ActPlanner, Instruction};
 use crate::run::artifacts;
@@ -28,6 +28,8 @@ use crate::run::vars::{VarError, VarStore};
 
 mod act_step;
 mod check_step;
+mod snapshot;
+use snapshot::SnapshotSettings;
 
 /// Default per-step timeout (SPEC 5).
 pub(crate) const DEFAULT_STEP_TIMEOUT_MS: u64 = 10_000;
@@ -93,6 +95,7 @@ fn url_host(url: &str) -> Option<String> {
 /// command-line overrides applied.
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ResolvedOptions {
+    snapshot:         SnapshotSettings,
     base:             Option<String>,
     browser:          BrowserKind,
     viewport:         Viewport,
@@ -132,7 +135,7 @@ enum OptionsError {
 
 /// Resolves one typed option value: a literal passes through; an
 /// interpolated value resolves (SPEC 11) then re-parses its shape.
-fn resolve_option<T: Copy>(
+fn resolve_option<T: Clone>(
     value: &OptionValue<T>,
     key: &'static str,
     line: u32,
@@ -140,7 +143,7 @@ fn resolve_option<T: Copy>(
     parse: impl Fn(&str) -> Option<T>,
 ) -> Result<T, OptionsError> {
     match value {
-        OptionValue::Literal(typed) => Ok(*typed),
+        OptionValue::Literal(typed) => Ok(typed.clone()),
         OptionValue::Interpolated(raw) => {
             let resolved = vars.resolve(raw)?;
             parse(&resolved).ok_or(OptionsError::InvalidValue {
@@ -165,6 +168,16 @@ impl ResolvedOptions {
         vars: &mut VarStore,
         overrides: &Overrides,
     ) -> Result<Self, OptionsError> {
+        let snapshot = SnapshotSettings::default().with_options(
+            file.options.iter().filter_map(|line| {
+                if let FileOption::Snapshot(option) = &line.option {
+                    Some((option, line.line))
+                } else {
+                    None
+                }
+            }),
+            vars,
+        )?;
         let mut base = None;
         let mut browser = BrowserKind::Chromium;
         let mut viewport = DEFAULT_VIEWPORT;
@@ -182,6 +195,7 @@ impl ResolvedOptions {
         for option in &file.options {
             let line = option.line;
             match &option.option {
+                FileOption::Snapshot(_) => {}
                 FileOption::Base(value) => base = Some(vars.resolve(value)?),
                 FileOption::Browser(value) => {
                     browser = resolve_option(value, "browser", line, vars, |text| {
@@ -264,6 +278,7 @@ impl ResolvedOptions {
         };
 
         Ok(Self {
+            snapshot,
             base,
             browser,
             viewport,
@@ -511,6 +526,8 @@ fn render_step_text(raw: &str, vars: &mut VarStore) -> String {
 #[derive(Debug, thiserror::Error)]
 enum BuildError {
     #[error("{0}")]
+    Snapshot(#[from] OptionsError),
+    #[error("{0}")]
     Var(#[from] VarError),
     #[error("relative URL '{url}' needs the base option")]
     NoBase { url: String },
@@ -524,7 +541,7 @@ impl BuildError {
     /// The stable report code of the failure.
     fn code(&self) -> &'static str {
         match self {
-            Self::Var(_) | Self::NoBase { .. } => "variable-resolution",
+            Self::Snapshot(_) | Self::Var(_) | Self::NoBase { .. } => "variable-resolution",
             Self::Check(_) => "filter-error",
         }
     }
@@ -777,7 +794,12 @@ impl FlowExec<'_> {
                     .to_string_lossy()
                     .into_owned(),
             },
-            K::Snapshot { name } => {
+            K::Snapshot { name, options } => {
+                let settings = self.options.snapshot.with_options(
+                    options.iter().map(|line| (&line.option, line.line)),
+                    &mut self.vars,
+                )?;
+                let report = settings.report(&self.vars);
                 let baseline = artifacts::snapshot_baseline_path(
                     self.run.canonical,
                     &name.text,
@@ -786,19 +808,23 @@ impl FlowExec<'_> {
                 // The shim's snapshot writer creates the baseline directory.
                 StepCommand::Snapshot {
                     baseline_path: baseline.to_string_lossy().into_owned(),
-                    actual_path:   self
+                    actual_path: self
                         .run
                         .abs_dir
                         .join(artifacts::snapshot_actual_file(&name.text))
                         .to_string_lossy()
                         .into_owned(),
-                    diff_path:     self
+                    diff_path: self
                         .run
                         .abs_dir
                         .join(artifacts::snapshot_diff_file(&name.text))
                         .to_string_lossy()
                         .into_owned(),
-                    update:        self.run.flags.update_snapshots,
+                    update: self.run.flags.update_snapshots,
+                    masks: settings.masks.clone(),
+                    pixel_threshold: settings.threshold.value(),
+                    max_diff: settings.max_diff_wire(),
+                    report,
                 }
             }
             K::Eval { script } => StepCommand::EvalAction {
@@ -943,6 +969,7 @@ struct StepRun {
     duration_ms: u64,
     text:        String,
     act:         Option<ActReport>,
+    snapshot:    Option<SnapshotReport>,
 }
 
 impl StepRun {
@@ -951,6 +978,7 @@ impl StepRun {
             end,
             duration_ms: 0,
             text,
+            snapshot: None,
             act: None,
         }
     }
@@ -997,11 +1025,18 @@ impl FlowExec<'_> {
         // rendered title masks them (SPEC 11).
         let title = render_step_text(node.raw_text(), &mut self.vars);
 
+        let snapshot = match &prepared {
+            PreparedStep::Command(StepCommand::Snapshot { report, .. }) => Some(report.clone()),
+            _ => None,
+        };
         let line_budget = line_budget_ms(node, &self.options);
         let (timeout_ms, entry_capped) = effective_timeout_ms(line_budget, state.remaining_ms);
         if entry_capped && timeout_ms == 0 {
             let end = StepEnd::Failed(entry_timeout_error(entry_budget_ms));
-            return StepRun::before_start(end, title);
+            return StepRun {
+                snapshot,
+                ..StepRun::before_start(end, title)
+            };
         }
 
         let started = Instant::now();
@@ -1066,6 +1101,7 @@ impl FlowExec<'_> {
             end,
             duration_ms,
             text: title,
+            snapshot,
             act,
         }
     }
@@ -1102,7 +1138,7 @@ impl FlowExec<'_> {
                             return StepEnd::Passed;
                         }
                     }
-                    if let ast::ActionKind::Snapshot { name } = &action.kind
+                    if let ast::ActionKind::Snapshot { name, .. } = &action.kind
                         && error.kind == "snapshot-mismatch"
                     {
                         state.artifacts.push(
@@ -1202,6 +1238,7 @@ impl FlowExec<'_> {
                     status:      Status::Skipped,
                     duration_ms: 0,
                     error:       None,
+                    snapshot:    None,
                     act:         None,
                 });
                 continue;
@@ -1218,6 +1255,7 @@ impl FlowExec<'_> {
                 duration_ms: run.duration_ms,
                 error: run.end.into_error(),
                 act: run.act,
+                snapshot: run.snapshot,
             });
             if status != Status::Passed {
                 entry_status = status;
@@ -1280,6 +1318,7 @@ fn skipped_entry(file: &File, entry: &ast::Entry, vars: &VarStore) -> EntryRepor
             status:      Status::Skipped,
             duration_ms: 0,
             error:       None,
+            snapshot:    None,
             act:         None,
         })
         .collect();
@@ -1324,6 +1363,7 @@ impl EntryReport {
                 message,
                 ..StepError::default()
             }),
+            snapshot:    None,
             act:         None,
         });
         self

@@ -397,6 +397,7 @@ fn render_entry(
             duration(step.duration_ms)
         )?;
         render_act(output, step)?;
+        render_snapshot(output, step)?;
         render_error(output, step)?;
         write!(output, "</li>")?;
     }
@@ -426,6 +427,30 @@ fn render_entry(
         }
     }
     write!(output, "</li>")
+}
+
+/// Effective comparison options, including inherited file defaults.
+fn render_snapshot(output: &mut impl io::Write, step: &StepReport) -> io::Result<()> {
+    let Some(snapshot) = &step.snapshot else {
+        return Ok(());
+    };
+    write!(
+        output,
+        "<details><summary>Snapshot settings</summary><dl><dt>snapshot-max-diff</dt><dd><code>{}</code></dd><dt>snapshot-pixel-threshold</dt><dd><code>{}</code></dd>",
+        escape(&snapshot.max_diff),
+        escape(&snapshot.pixel_threshold)
+    )?;
+    if snapshot.masks.is_empty() {
+        write!(output, "<dt>snapshot-mask</dt><dd><code>none</code></dd>")?;
+    }
+    for mask in &snapshot.masks {
+        write!(
+            output,
+            "<dt>snapshot-mask</dt><dd><code>{}</code></dd>",
+            escape(mask)
+        )?;
+    }
+    write!(output, "</dl></details>")
 }
 
 /// What an `ACT` step asked and ran (SPEC 7.4).

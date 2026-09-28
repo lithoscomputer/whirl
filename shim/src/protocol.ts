@@ -295,6 +295,14 @@ export interface EndFlowResult {
 
 // --- Step commands (protocol 4) ---
 
+export interface SnapshotComparison {
+	readonly pixelThreshold: number;
+	readonly maxDiff: {
+		readonly type: "pixels" | "percent";
+		readonly value: number;
+	};
+}
+
 export interface HttpParams {
 	readonly name: string;
 	readonly method: string;

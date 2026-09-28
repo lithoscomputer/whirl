@@ -50,9 +50,11 @@ Error object:
 ### `hello`
 
 Sent once after spawn. Params: `{}`. Result:
-`{"protocol": 2, "playwrightVersion": "1.62.1", "ffmpegPath": "abs path" | null}`.
+`{"protocol": 3, "playwrightVersion": "1.62.1", "ffmpegPath": "abs path" | null}`.
 `ffmpegPath` is Playwright's bundled ffmpeg, which every video recording
 needs; `null` means it is not installed. `whirl doctor` reports it.
+Protocol 3 requires effective snapshot masks and comparison settings. Older shims
+cannot silently ignore requested visual tolerances or masks.
 Protocol 2 replaces value checks and captures with the `read` and
 `readResponse` commands (sections 4.4 and 4.5).
 
@@ -189,7 +191,7 @@ Commands and their extra params (result `{}` unless noted):
 | `upload` | `locator`, `path` (absolute; Rust resolved it) |
 | `drop` | `locator`, `path` (absolute; Rust resolved it) — `locator.drop({ files: path })`; an `action` error when the file does not exist or the element's `dragover` does not call `preventDefault()` (SPEC 7) |
 | `screenshot` | `path` (absolute .png; full page) |
-| `snapshot` | `baselinePath`, `actualPath`, `diffPath`, `update` (bool) |
+| `snapshot` | `baselinePath`, `actualPath`, `diffPath`, `update` (bool), `masks` (array of locator arrays), `pixelThreshold` (number 0–1), `maxDiff` (`{"type":"pixels","value":count}` or `{"type":"percent","value":percent}`) |
 | `evalAction` | `script` |
 | `store` | `scope` (`"local"` \| `"session"` \| `"cookie"`), `key`, `value` — writes one `localStorage` or `sessionStorage` entry on the current origin, or one cookie for the current page's URL (host, path `/`, no attributes); `cookie` on a non-http(s) page is an `action` error |
 | `ariaSnapshot` | `locator` (or `null`); result `{"snapshot": "..."}`, the selected tab's `page.ariaSnapshot({ mode: "ai" })`, or that one element's `locator.ariaSnapshot({ mode: "ai" })` with the usual waiting and strictness, for `ACT` (SPEC 7.4) |
@@ -206,10 +208,17 @@ Semantics the shim owns (per SPEC sections 7, 9, 15):
   resolves to more than one element is a strictness failure reported with
   error kind `"strictness"` and the candidate list.
 - `screenshot` reports errors normally; Rust downgrades them to warnings.
+- Snapshot settings are resolved by Rust before the request. `masks` contains
+  explicit locator chains; zero and multiple element matches are allowed.
+  Every frame uses Playwright's pink screenshot masks, including update and
+  stabilization frames. `maxDiff.type` preserves the requested unit. Counts
+  are safe nonnegative JavaScript integers; percentages range from 0 to 100.
+  The shim passes only `maxDiffPixels` or `maxDiffPixelRatio` (percent / 100)
+  to the comparator. `pixelThreshold` is finite and between 0 and 1.
 - `snapshot` is a shim-owned poll loop: capture frames until two consecutive
   frames are byte-identical, compare with Playwright's image comparator
-  (identical dimensions; per-pixel color-distance threshold 0.2, no other
-  tolerance), recapture on mismatch until `timeoutMs` expires. On final
+  (identical dimensions; effective `pixelThreshold` and `maxDiff`), recapture
+  on mismatch until `timeoutMs` expires. On final
   mismatch write `actualPath` and `diffPath` and reply with error kind
   `"snapshot-mismatch"`. A missing baseline is error kind
   `"snapshot-missing-baseline"` (Rust reports it as a runtime error). With

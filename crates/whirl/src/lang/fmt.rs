@@ -17,6 +17,7 @@
 use std::fmt::Write as _;
 
 use crate::check::{Number, is_bytes_literal_shape};
+use crate::lang::ast::snapshot::SnapshotOption;
 use crate::lang::ast::{
     Action, ActionKind, Assert, AssertBody, Capture, CheckLine, Comment, DurationLit, DurationUnit,
     Entry, Extractor, File, FileOption, FilterArg, FilterSpec, HttpBodyKind, Locator, Operand,
@@ -452,7 +453,7 @@ fn render_action(action: &Action) -> String {
             render_value(path, ValueCtx::Prefixed, false)
         ),
         ActionKind::Screenshot { name } => format!("SCREENSHOT {}", name.text),
-        ActionKind::Snapshot { name } => format!("SNAPSHOT {}", name.text),
+        ActionKind::Snapshot { name, .. } => format!("SNAPSHOT {}", name.text),
         ActionKind::Eval { script } => {
             format!("EVAL {}", render_value(script, ValueCtx::Plain, is_final))
         }
@@ -689,10 +690,21 @@ fn viewport_text(viewport: Viewport) -> String {
     format!("{}x{}", viewport.width, viewport.height)
 }
 
-/// Renders one `[Options]` line (SPEC 5).
+/// Renders a snapshot setting at either scope (SPEC 5, 7).
+pub(crate) fn render_snapshot_option(option: &SnapshotOption) -> String {
+    let value = match option {
+        SnapshotOption::Mask(None) => "none".to_owned(),
+        SnapshotOption::Mask(Some(locator)) => render_locator(locator, LocatorCtx::Action, true),
+        SnapshotOption::MaxDiff(value) => render_option_value(value, ToString::to_string),
+        SnapshotOption::PixelThreshold(value) => render_option_value(value, ToString::to_string),
+    };
+    format!("{}: {value}", option.key())
+}
+
 fn render_option(option: &FileOption) -> String {
     let plain = |value: &Value| render_value(value, ValueCtx::Plain, false);
     match option {
+        FileOption::Snapshot(option) => render_snapshot_option(option),
         FileOption::Base(value) => format!("base: {}", plain(value)),
         FileOption::Browser(value) => format!(
             "browser: {}",
@@ -770,6 +782,14 @@ fn entry_region(entry: &Entry) -> Region {
             source_line: action.line,
             text:        render_action(action),
         });
+        if let ActionKind::Snapshot { options, .. } = &action.kind {
+            for option in options {
+                lines.push(Line {
+                    source_line: option.line,
+                    text:        render_snapshot_option(&option.option),
+                });
+            }
+        }
         if let ActionKind::Http { headers, body, .. } = &action.kind {
             for header in headers {
                 lines.push(Line {
@@ -915,6 +935,7 @@ mod tests {
     use std::path::Path;
 
     use super::*;
+    use crate::lang::ast::snapshot::SnapshotOption;
     use crate::lang::ast::{Ident, LocatorSegment, OptionLine, Span};
     use crate::lang::parse::parse_file;
 
@@ -1011,10 +1032,20 @@ mod tests {
         }
     }
 
+    fn scrub_snapshot_option(option: &mut SnapshotOption) {
+        match option {
+            SnapshotOption::Mask(Some(locator)) => scrub_locator(locator),
+            SnapshotOption::Mask(None) => {}
+            SnapshotOption::MaxDiff(value) => scrub_option_value(value),
+            SnapshotOption::PixelThreshold(value) => scrub_option_value(value),
+        }
+    }
+
     fn scrub_option_line(option: &mut OptionLine) {
         option.line = 0;
         option.span = ZERO;
         match &mut option.option {
+            FileOption::Snapshot(value) => scrub_snapshot_option(value),
             FileOption::Base(value)
             | FileOption::Storage(value)
             | FileOption::UserAgent(value)
@@ -1110,8 +1141,15 @@ mod tests {
             ActionKind::Popup { name }
             | ActionKind::Tab { name }
             | ActionKind::Close { name }
-            | ActionKind::Screenshot { name }
-            | ActionKind::Snapshot { name } => scrub_ident(name),
+            | ActionKind::Screenshot { name } => scrub_ident(name),
+            ActionKind::Snapshot { name, options } => {
+                scrub_ident(name);
+                for option in options {
+                    option.line = 0;
+                    option.span = ZERO;
+                    scrub_snapshot_option(&mut option.option);
+                }
+            }
             ActionKind::Eval { script } => scrub_value(script),
             ActionKind::Act { scope, instruction } => {
                 if let Some(scope) = scope {
@@ -1426,6 +1464,13 @@ frame:"#payment iframe" >> label:Email value == alice@example.com
 email: frame:"#payment iframe" >> label:Email value
 "##,
         );
+    }
+
+    #[test]
+    fn snapshot_options_preserve_comments_order_units_and_meaning() {
+        let source = "[Options]\nsnapshot-mask: testid:clock\nsnapshot-max-diff: 0.125%\n\nVISIT /\nSNAPSHOT first @2s # headline\n# local masks\nsnapshot-mask: role:button \"Buy now\" # inline\nsnapshot-mask: frame:iframe >> css:.price\nsnapshot-pixel-threshold: 2e-1\nSNAPSHOT second\nsnapshot-mask: none\nsnapshot-max-diff: 0\n";
+        assert_round_trip(source);
+        assert_eq!(fmt(source), source);
     }
 
     #[test]

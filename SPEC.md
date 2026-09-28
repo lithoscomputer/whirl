@@ -62,6 +62,7 @@ $ whirl --report-junit report.xml flows/
 - The format is line-oriented. Each check, capture, and option is one line. Most
   actions are one line. An independent `HTTP` request can also own the header
   and body lines defined in section 7.3; the complete request is one action.
+  A `SNAPSHOT` owns the comparison option lines below it (section 7).
 - `#` starts a comment. A comment runs to the end of the line. A `#` inside a
   quoted string, a regex literal, a JSON body, or a fenced HTTP body is literal
   text.
@@ -73,11 +74,13 @@ $ whirl --report-junit report.xml flows/
 A **value** is written in one of two forms:
 
 - **Quoted**: `"..."` with backslash escapes `\"`, `\\`, `\n`, `\t`, and `\u{XXXX}`.
-- **Bare**: a single token with no whitespace, no `"`, and no `#`. Bare and quoted forms are interchangeable, with four reservations:
+- **Bare**: a single token with no whitespace, no `"`, and no `#`. Bare and quoted forms are interchangeable, with five reservations:
   - A line's final bare token of the form `@duration` always parses as the step timeout (section 12), so that value must stay quoted (`"@60s"`).
   - In a typed comparison (section 9.6), a bare typed literal and its quoted form differ: `42` is a number and `"42"` is a string.
   - In `[Asserts]` and `[Captures]`, a bare role name cannot be a subject, state, or predicate keyword such as `text` or `visible`, because that word ends the locator. Quote it: `role:button "visible" visible`.
   - In `DRAG` and `SCROLL`, a bare `to` is a keyword, and in `SCROLL` so is a bare `down`, `up`, `left`, or `right` at the end of the line. Quote them to match the text: `DRAG "to" to testid:done`, `SCROLL "down"`.
+
+  - In `snapshot-mask`, only bare `none` clears the mask list.
 
 A token can join bare and quoted parts, as in `label:"First name"`; the parts form one value.
 
@@ -95,7 +98,7 @@ Other literal forms:
 - **JSON literal**: in the expected-value position of a check, a value that starts with `[` or `{` is a JSON array or object. It must end on the same line, and it may contain spaces. `{{name}}` works inside it as in HTTP JSON bodies (sections 7.3 and 11).
 - **Duration**: an integer with unit `ms` or `s` (for example `500ms`, `10s`).
 - **Viewport**: `WIDTHxHEIGHT` in CSS pixels (for example `1280x800`).
-- **Percent**: a number from 0 to 100 with a `%` suffix, such as `50%` or `33.5%`, for `SCROLL`.
+- **Percent**: a number from 0 to 100 with a `%` suffix, such as `50%` or `33.5%`, for `SCROLL` and `snapshot-max-diff`.
 
 ## 4. File structure
 
@@ -143,6 +146,9 @@ The `[Options]` section holds `key: value` lines. V1 keys:
 | `user-agent` | alias or string | engine default | User agent string the browser sends and reports |
 | `setup` | file path | none | A flow that runs first; this file starts from its final state |
 | `model` | `provider/model` | none | The language model that `ACT` asks (section 7.4) |
+| `snapshot-mask` | explicit locator or `none` | no masks | Mask matching elements in every `SNAPSHOT`; repeated lines form a list |
+| `snapshot-max-diff` | pixel count or percentage | `0` | Maximum different pixels allowed in a `SNAPSHOT` |
+| `snapshot-pixel-threshold` | number from 0 to 1 | `0.2` | Color distance above which a pixel counts as different |
 
 `allow-hosts` takes one or more host globs (`allow-hosts: example.com *.example.com`). Globs match the request's hostname only — scheme and port are ignored — and `*.example.com` does not match the apex `example.com`; list both to cover both. The `base` host is always allowed. Whirl aborts requests to any other host, including fetch/XHR, WebSockets, and subresources, and the reports list every blocked host. Service workers are disabled when `allow-hosts` is set, because they can bypass request routing. IP-literal hosts match textually; `data:` and `blob:` URLs have no host and are always allowed. Without the option, all hosts are allowed.
 
@@ -276,7 +282,38 @@ Every action already scrolls its element into view, so a flow needs `SCROLL` onl
 
 `SCREENSHOT` never fails the entry, even when it goes wrong: if the capture or the file write fails — a crashed page, an I/O error, or its step timeout expiring — Whirl skips the artifact and records a warning naming the screenshot and the cause, in the console output and in reports, so a missing artifact is always explained. One cap outranks this: an expiring `entry-timeout` fails the entry as usual, whatever line is in flight.
 
-`SNAPSHOT` is retried like an assert through a shim-owned polling loop and uses Playwright's image comparator; V1 exposes no tuning knobs. Whirl captures frames until two consecutive frames are identical, then compares against the baseline at `<flow>.whirl-snapshots/<name>-<browser>-<platform>.png` next to the flow file. Images match only when their dimensions are identical and no pixel differs; a pixel differs when its color distance exceeds the comparator's default per-pixel threshold (0.2 on a 0–1 scale), which absorbs invisible anti-aliasing noise and nothing more. On a mismatch Whirl recaptures and recompares until the step timeout, so a difference that settles late can still pass; a stable mismatch fails the entry when the timeout expires and writes the actual and diff images to the artifacts directory. The platform tag (`linux`, `darwin`, `win32`) keeps baselines rendered on one OS from failing on another; the viewport is not part of the key, because the flow's `viewport` option already pins it. A missing baseline fails the run; `--update-snapshots` writes or refreshes baselines instead of comparing.
+`SNAPSHOT` is retried like an assert through a shim-owned polling loop and uses Playwright's image comparator. Whirl captures frames until two consecutive frames are identical, then compares against the baseline at `<flow>.whirl-snapshots/<name>-<browser>-<platform>.png` next to the flow file. Images must have identical dimensions. By default no pixel may differ; a pixel differs when its color distance exceeds `snapshot-pixel-threshold` (default `0.2` on a 0–1 scale). On a mismatch Whirl recaptures and recompares until the step timeout. A stable mismatch fails the entry and writes the actual and diff images to the artifacts directory. Tolerances do not change frame stabilization or retry timing. The platform tag (`linux`, `darwin`, `win32`) keeps baselines rendered on one OS separate. The viewport is not part of the key. A missing baseline fails the run; `--update-snapshots` writes or refreshes baselines instead of comparing.
+
+The three snapshot options work in `[Options]` and on lines below a `SNAPSHOT`:
+
+```whirl
+[Options]
+snapshot-mask: testid:clock
+snapshot-max-diff: 0.1%
+snapshot-pixel-threshold: 0.2
+
+VISIT /checkout
+SNAPSHOT checkout @20s
+snapshot-mask: testid:order-number
+snapshot-max-diff: 20
+
+SNAPSHOT unmasked
+snapshot-mask: none
+snapshot-max-diff: 0
+```
+
+Each supplied local setting overrides only that setting. A local mask list replaces the complete file list. Omission inherits; explicit zero overrides. A later snapshot resumes the file defaults. Setup flows do not pass their snapshot settings to dependents. Repeated mask lines add masks within one scope. Literal, unquoted `none` clears the list and must be its only mask line. Duplicate scalar settings, conflicting masks, and unknown keys are parse errors. These duplicate rules apply only to the new options.
+
+Masks use explicit locator prefixes and support chaining, substring matching, `nth:`, and frames (section 6). There is no default locator engine. Interpolation changes locator values, not grammar; a quoted or interpolated `none` is not a sentinel. A mask may match zero, one, or many elements. Missing masks do not wait. Frame selection retains strictness. Invalid selectors and browser errors fail the step. Playwright covers matching bounding boxes with pink (`#FF00FF`) without removing elements from layout. Every capture uses the masks, including stabilization, baseline updates, and saved actual images. Locators resolve again on each capture, including replaced elements. Hidden elements and frames follow the pinned Playwright screenshot behavior. Moving or resizing a masked element can still cause a difference. Masks apply only to `SNAPSHOT`, not to `SCREENSHOT`, failure screenshots, traces, or video.
+
+`snapshot-max-diff` accepts an unsigned decimal integer from `0` through `9007199254740991`, or a percent literal from `0%` through `100%`, including decimals. Counts reject signs, fractions, and exponent notation. Equality with the limit passes. Percentage limits use every pixel in the captured image, including masked regions, as the denominator. Percentages convert to a ratio without rounding to an integer count. Dimensions must still match at `100%`.
+
+`snapshot-pixel-threshold` accepts a finite JSON number from `0` through `1`. It controls how different a pixel's color must be before that pixel counts toward `snapshot-max-diff`. It does not accept percentages.
+
+Blank lines and comments do not end snapshot options. The next action, `PAGE`, section header, or end of file ends them. Option lines are part of the snapshot step and its report text. Only the headline may have `@duration`. Options cannot attach to `SCREENSHOT` or follow `[Asserts]` without a new `SNAPSHOT`. The formatter preserves option order, comments, and count versus percentage units.
+
+Literal settings are validated before execution. File settings interpolate once at file start, including setup captures; local settings interpolate when the snapshot starts, so earlier captures are available. Invalid resolved file settings fail the synthetic `[setup]` entry. Invalid resolved local settings fail the snapshot step. Reports include effective settings, preserve count versus percentage units, and mask secret values using the normal rules in section 11.
+
 
 `EVAL` is the JavaScript escape hatch — the `css:` of actions — and the one place Whirl runs code it does not read: a script of one or more statements, such as `EVAL "foo(); bar();"`. Whirl runs the script as the body of an async function in the page's main world through Playwright's `page.evaluate`: a script that parses as a single expression runs as `return (expression);`, so its value is the result; any other script runs as written and yields its `return` value, or `undefined` without one. `await` is available in both forms, and a returned Promise is awaited. A syntax error, a thrown exception, a rejected Promise, or the step timeout fails the entry; the action form discards the result. `EVAL` has no target, does not auto-wait, and does not retry: it runs once, after the preceding line completes. `{{name}}` interpolation happens textually before evaluation, so interpolated values become source text — and a value sent into the page escapes the output masking of section 11, so keep secrets out of `EVAL`. A script the page cannot cancel — one that blocks the renderer or never settles — is still bounded: section 12 defines how Whirl enforces timeouts from outside the page.
 
@@ -1127,7 +1164,11 @@ entry      = browser-entry | http-entry ;
 browser-entry = action , { action } , [ page ] , [ asserts ] , [ captures ] ;
 http-entry = http-request , [ http-asserts ] , [ http-captures ] ;
 
-action     = action-body , [ step-timeout ] ;
+action     = action-body , [ step-timeout ] | snapshot ;
+snapshot   = "SNAPSHOT" , artifact-name , [ step-timeout ] , { snapshot-option } ;
+snapshot-option = "snapshot-mask:" , ( locator | "none" )
+                | "snapshot-max-diff:" , value
+                | "snapshot-pixel-threshold:" , value ;
 action-body = "VISIT" , value
            | "RESPONSE" , artifact-name , http-method , value
            | ( "POPUP" | "TAB" | "CLOSE" ) , artifact-name
@@ -1146,7 +1187,6 @@ action-body = "VISIT" , value
            | "UPLOAD" , locator , "file:" , value
            | "DROP" , locator , "file:" , value
            | "SCREENSHOT" , artifact-name
-           | "SNAPSHOT" , artifact-name
            | "EVAL" , value
            | "ACT" , [ locator ] , value
            | "STORE" , ( "local" | "session" | "cookie" ) , value , value ;
