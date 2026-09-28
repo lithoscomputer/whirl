@@ -635,6 +635,22 @@ pub(crate) enum DecisionError {
     Placeholder(#[from] UnboundPlaceholder),
 }
 
+/// The arguments a method can use (SPEC 7.4). A method that takes none
+/// drops what the answer gave, and a click keeps only an argument that
+/// names a mouse button, so an empty string or the element's text is a
+/// left click. Other methods keep every argument and are checked strictly.
+fn usable_arguments(method: ActMethod, arguments: Vec<String>) -> Vec<String> {
+    match method {
+        ActMethod::Click => arguments
+            .into_iter()
+            .find(|argument| MouseButton::from_name(argument).is_some())
+            .into_iter()
+            .collect(),
+        _ if *method.arity().end() == 0 => Vec::new(),
+        _ => arguments,
+    }
+}
+
 fn arity_text(arity: &RangeInclusive<usize>) -> String {
     if arity.start() == arity.end() {
         arity.start().to_string()
@@ -659,6 +675,11 @@ impl PageSnapshot {
                 .ok_or_else(|| DecisionError::UnknownElement {
                     element_id: action.element_id.clone(),
                 })?;
+        let arguments = usable_arguments(action.method, action.arguments);
+        let action = InferredAction {
+            arguments,
+            ..action
+        };
         let expected = action.method.arity();
         if !expected.contains(&action.arguments.len()) {
             return Err(DecisionError::Arguments {
@@ -1064,28 +1085,47 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_mouse_button_is_rejected() {
+    fn a_click_ignores_an_argument_that_names_no_button() {
+        for arguments in [&["sideways"][..], &[""], &["Blue"], &["right", "twice"]] {
+            let answer = json!({
+                "action": {"elementId": "e5", "description": "", "method": "click", "arguments": arguments},
+                "twoStep": false
+            });
+            let action = perform(answer, &instruction("x"));
+            let expected = if arguments.contains(&"right") {
+                "RIGHTCLICK role:button \"Sign in\""
+            } else {
+                "CLICK role:button \"Sign in\""
+            };
+            assert_eq!(action.line(), expected, "{arguments:?}");
+        }
+        let answer = json!({
+            "action": {"elementId": "e5", "description": "", "method": "hover", "arguments": ["now"]},
+            "twoStep": false
+        });
         assert_eq!(
-            snapshot().decide(click_with(&["sideways"]), &instruction("x")),
-            Err(DecisionError::Button {
-                given: "sideways".to_owned(),
-            })
+            perform(answer, &instruction("x")).line(),
+            "HOVER role:button \"Sign in\""
         );
     }
 
     #[test]
     fn arguments_must_fit_the_method() {
+        let answer = inference(json!({
+            "action": {"elementId": "e4", "description": "", "method": "fill", "arguments": ["a", "b"]},
+            "twoStep": false
+        }));
         let error = snapshot()
-            .decide(click_with(&["right", "twice"]), &instruction("x"))
+            .decide(answer, &instruction("x"))
             .expect_err("two arguments");
         assert_eq!(error, DecisionError::Arguments {
-            method:   "click",
-            expected: 0..=1,
+            method:   "fill",
+            expected: 1..=1,
             actual:   2,
         });
         assert_eq!(
             error.to_string(),
-            "click takes 0 or 1 argument(s), but the answer gave 2"
+            "fill takes 1 argument(s), but the answer gave 2"
         );
         let answer = inference(json!({
             "action": {"elementId": "e4", "description": "", "method": "fill", "arguments": []},

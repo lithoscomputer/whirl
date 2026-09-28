@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- When a model answers `click` with an argument that names no mouse button, such as an empty string or the element's text, click with the left button instead of failing with `act-invalid-decision`; ignore arguments to methods that take none, such as `hover`. In the evals, this recovered most of GLM 5.3 Flash's `act-invalid-decision` failures (ACT pass rate 0.81 to 0.88) and changed nothing beyond noise for the default models.
 ## 0.19.0 (2026-09-28)
 
 - Judge consecutive `JUDGE` lines with the same scope and timeout in one model call, on one snapshot and one screenshot. Each line still passes or fails on its own answer. In the evals, four claims took 1 call instead of 4, about a quarter of the input tokens, and a third of the time, with the same results.

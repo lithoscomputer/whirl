@@ -637,6 +637,12 @@ matching Whirl action, with that action's actionability and strictness rules:
 | `scrollLeft` | `SCROLL locator left` |
 | `scrollRight` | `SCROLL locator right` |
 
+A `click` takes one optional argument, `right` or `middle`, for that mouse
+button. Whirl ignores any other `click` argument, such as an empty string or
+the element's text, and clicks with the left button; it ignores any argument
+to a method that takes none, such as `hover`. The other methods' arguments
+carry meaning, so a wrong number of them fails the line.
+
 For `dragAndDrop`, the element is the one to drag, and the one argument is the
 ref of the element to drop it on, such as `e12`. That ref must be in the
 snapshot and name another element. For `scrollTo`, the one argument is a

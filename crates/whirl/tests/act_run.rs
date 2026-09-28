@@ -403,19 +403,22 @@ fn act_right_clicks_when_the_model_names_the_right_button() {
 }
 
 #[test]
-fn an_unknown_mouse_button_fails_the_entry() {
+fn an_argument_that_names_no_mouse_button_is_a_left_click() {
     let dir = TestDir::new();
     let twin = ModelTwin::start();
     twin.answer(&[click_with_button("e3", "sideways")]);
     let flow = dir.file(
         "sideways.whirl",
-        &format!("[Options]\nmodel: gpt-test\n{FILES}ACT \"right-click report.pdf\"\n"),
+        &format!("[Options]\nmodel: gpt-test\n{FILES}ACT \"click report.pdf\"\n"),
     );
     let output = twin.run(&dir, &flow, &[]);
     let stdout = stdout_text(&output);
-    assert_eq!(exit_code(&output), 1, "stdout:\n{stdout}");
-    assert_eq!(act_step(&dir)["error"]["code"], "act-invalid-decision");
-    assert!(stdout.contains("sideways"), "stdout:\n{stdout}");
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+    let line = act_step(&dir)["act"]["actions"][0]["line"].clone();
+    assert!(
+        line.as_str().is_some_and(|line| line.starts_with("CLICK ")),
+        "{line}"
+    );
 }
 
 /// A native drag source and drop zone, as `ref=e3` and `ref=e4`.
