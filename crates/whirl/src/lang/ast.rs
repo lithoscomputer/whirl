@@ -419,8 +419,11 @@ pub(crate) enum ActionKind {
     Screenshot {
         name: Ident,
     },
+    /// `SNAPSHOT name [locator]` compares the full page, or only `target`
+    /// when it is given (SPEC 7).
     Snapshot {
         name:    Ident,
+        target:  Option<Locator>,
         options: Vec<snapshot::SnapshotOptionLine>,
     },
     Eval {

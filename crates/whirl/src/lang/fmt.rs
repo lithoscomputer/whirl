@@ -453,7 +453,14 @@ fn render_action(action: &Action) -> String {
             render_value(path, ValueCtx::Prefixed, false)
         ),
         ActionKind::Screenshot { name } => format!("SCREENSHOT {}", name.text),
-        ActionKind::Snapshot { name, .. } => format!("SNAPSHOT {}", name.text),
+        ActionKind::Snapshot { name, target, .. } => match target {
+            Some(target) => format!(
+                "SNAPSHOT {} {}",
+                name.text,
+                render_locator(target, LocatorCtx::Action, is_final)
+            ),
+            None => format!("SNAPSHOT {}", name.text),
+        },
         ActionKind::Eval { script } => {
             format!("EVAL {}", render_value(script, ValueCtx::Plain, is_final))
         }
@@ -688,6 +695,11 @@ fn render_option_value<T>(value: &OptionValue<T>, literal: impl Fn(&T) -> String
 
 fn viewport_text(viewport: Viewport) -> String {
     format!("{}x{}", viewport.width, viewport.height)
+}
+
+/// Renders a `SNAPSHOT` target locator for reports (SPEC 7).
+pub(crate) fn render_snapshot_target(target: &Locator) -> String {
+    render_locator(target, LocatorCtx::Action, true)
 }
 
 /// Renders a snapshot setting at either scope (SPEC 5, 7).
@@ -1142,8 +1154,15 @@ mod tests {
             | ActionKind::Tab { name }
             | ActionKind::Close { name }
             | ActionKind::Screenshot { name } => scrub_ident(name),
-            ActionKind::Snapshot { name, options } => {
+            ActionKind::Snapshot {
+                name,
+                target,
+                options,
+            } => {
                 scrub_ident(name);
+                if let Some(target) = target {
+                    scrub_locator(target);
+                }
                 for option in options {
                     option.line = 0;
                     option.span = ZERO;
@@ -1471,6 +1490,17 @@ email: frame:"#payment iframe" >> label:Email value
         let source = "[Options]\nsnapshot-mask: testid:clock\nsnapshot-max-diff: 0.125%\n\nVISIT /\nSNAPSHOT first @2s # headline\n# local masks\nsnapshot-mask: role:button \"Buy now\" # inline\nsnapshot-mask: frame:iframe >> css:.price\nsnapshot-pixel-threshold: 2e-1\nSNAPSHOT second\nsnapshot-mask: none\nsnapshot-max-diff: 0\n";
         assert_round_trip(source);
         assert_eq!(fmt(source), source);
+    }
+
+    #[test]
+    fn snapshot_targets_round_trip_with_options_and_timeouts() {
+        let source = "[Options]\nsnapshot-mask: testid:clock\n\nVISIT /\nSNAPSHOT cart testid:cart @10s\nsnapshot-mask: testid:cart >> testid:delivery-estimate\nsnapshot-max-diff: 0.5%\nSNAPSHOT payment frame:\"#payment iframe\" >> testid:payment-form\nsnapshot-mask: none\nSNAPSHOT buy role:button \"Buy now\" >> nth:0\nSNAPSHOT row testid:{{row_id}}\nSNAPSHOT total text:\"Order total\"\n";
+        assert_round_trip(source);
+        assert_eq!(fmt(source), source);
+        assert_eq!(
+            fmt("VISIT /\nSNAPSHOT   cart   css:\".cart\"   @2s\n"),
+            "VISIT /\nSNAPSHOT cart css:.cart @2s\n"
+        );
     }
 
     #[test]

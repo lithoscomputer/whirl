@@ -429,14 +429,23 @@ fn render_entry(
     write!(output, "</li>")
 }
 
-/// Effective comparison options, including inherited file defaults.
+/// What the snapshot captured and its effective comparison options,
+/// including inherited file defaults.
 fn render_snapshot(output: &mut impl io::Write, step: &StepReport) -> io::Result<()> {
     let Some(snapshot) = &step.snapshot else {
         return Ok(());
     };
     write!(
         output,
-        "<details><summary>Snapshot settings</summary><dl><dt>snapshot-max-diff</dt><dd><code>{}</code></dd><dt>snapshot-pixel-threshold</dt><dd><code>{}</code></dd>",
+        "<details><summary>Snapshot settings</summary><dl><dt>Capture</dt>"
+    )?;
+    match &snapshot.target {
+        Some(target) => write!(output, "<dd>Element <code>{}</code></dd>", escape(target))?,
+        None => write!(output, "<dd>Full page</dd>")?,
+    }
+    write!(
+        output,
+        "<dt>snapshot-max-diff</dt><dd><code>{}</code></dd><dt>snapshot-pixel-threshold</dt><dd><code>{}</code></dd>",
         escape(&snapshot.max_diff),
         escape(&snapshot.pixel_threshold)
     )?;

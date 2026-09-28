@@ -211,7 +211,7 @@ Text matching is exact (after whitespace normalization). For partial or pattern 
 
 Every text-matching prefix has a substring variant marked with `~` — `role~:`, `label~:`, `placeholder~:`, `text~:`, `alt~:`, `title~:` — which matches by case-insensitive substring, Playwright's default matching. So `text~:"Added"` matches "Added to cart". `testid:` and `css:` have no `~` form, and the unprefixed default engine stays exact.
 
-An unprefixed value in locator position selects a default engine: `label:` for form actions (`FILL`, `SELECT`, `CHECK`, `UNCHECK`, `UPLOAD`, and `PRESS` with a target), and `text:` for pointer actions (`CLICK`, `RIGHTCLICK`, `MIDDLECLICK`, `DBLCLICK`, `HOVER`, `DRAG`, `SCROLL`) and `DROP` — buttons and links have no label; their accessible name is their text, and a drop zone says what it takes, such as "Drop files here". So `FILL "Email" alice@example.com` fills the input labeled Email, and `CLICK "Add to cart"` clicks the element with that exact text. Prefixes stay available everywhere for precision. Default engines exist only in actions: in `[Asserts]` and `[Captures]` every segment must carry a prefix (or be `nth:`), and an unprefixed value there is a parse error. The scope of `ACT` (section 7.4) follows the same rule.
+An unprefixed value in locator position selects a default engine: `label:` for form actions (`FILL`, `SELECT`, `CHECK`, `UNCHECK`, `UPLOAD`, and `PRESS` with a target), and `text:` for pointer actions (`CLICK`, `RIGHTCLICK`, `MIDDLECLICK`, `DBLCLICK`, `HOVER`, `DRAG`, `SCROLL`) and `DROP` — buttons and links have no label; their accessible name is their text, and a drop zone says what it takes, such as "Drop files here". So `FILL "Email" alice@example.com` fills the input labeled Email, and `CLICK "Add to cart"` clicks the element with that exact text. Prefixes stay available everywhere for precision. Default engines exist only in actions: in `[Asserts]` and `[Captures]` every segment must carry a prefix (or be `nth:`), and an unprefixed value there is a parse error. The scope of `ACT` (section 7.4), the target of `SNAPSHOT`, and `snapshot-mask` (section 7) follow the same rule.
 
 `frame:` works in actions, asserts, and captures. It may follow an element scope or another frame. An immediately following `nth:N` selects the iframe before entering it. A frame must be followed by an element segment; use `css:` to check the iframe element itself. Nested and cross-origin frames use the same syntax. Frames are resolved lazily, so normal actionability and assertion timeouts also cover frames that load or are replaced later. Multiple matching frames fail strictly unless narrowed explicitly.
 
@@ -223,7 +223,7 @@ frame:"#payment-element iframe" >> label:"Card number" value contains "4242"
 
 ### 6.2 Strictness
 
-When an action or a single-element check runs, the locator must resolve to exactly one element. Zero matches fails after the timeout — except the `hidden` check, which passes when nothing matches (section 9.1). More than one match fails immediately with the candidate list, for `hidden` as well. Narrow the locator or add `nth:`. Only `count` accepts any number of matches. Both locators of `DRAG` follow this rule.
+When an action or a single-element check runs, the locator must resolve to exactly one element. Zero matches fails after the timeout — except the `hidden` check, which passes when nothing matches (section 9.1). More than one match fails immediately with the candidate list, for `hidden` as well. Narrow the locator or add `nth:`. Only `count` accepts any number of matches. Both locators of `DRAG` follow this rule, and so does the target of `SNAPSHOT`. A `snapshot-mask` locator is not a target: it may match any number of elements (section 7).
 
 ## 7. Actions
 
@@ -257,6 +257,7 @@ An action is a verb, an optional locator, and an optional value. Element-targeti
 | `DROP locator file:path` | Drop the file at `path` on the element, as a user drops a file from the desktop. `path` resolves relative to the `.whirl` file. |
 | `SCREENSHOT name` | Save a full-page screenshot as artifact `name.png`. The name is an identifier that may also contain hyphens. Never fails the entry (see below). |
 | `SNAPSHOT name` | Compare a full-page screenshot against the stored baseline; fails the entry on visual difference. |
+| `SNAPSHOT name locator` | The same, for a screenshot of the element alone. |
 | `EVAL "script"` | Run a JavaScript script in the page. The escape hatch; rules below. |
 | `ACT "instruction"` | Ask a language model to choose one element action, then run it (section 7.4). |
 | `ACT locator "instruction"` | The same, looking only inside the element (section 7.4). |
@@ -284,6 +285,42 @@ Every action already scrolls its element into view, so a flow needs `SCROLL` onl
 
 `SNAPSHOT` is retried like an assert through a shim-owned polling loop and uses Playwright's image comparator. Whirl captures frames until two consecutive frames are identical, then compares against the baseline at `<flow>.whirl-snapshots/<name>-<browser>-<platform>.png` next to the flow file. Images must have identical dimensions. By default no pixel may differ; a pixel differs when its color distance exceeds `snapshot-pixel-threshold` (default `0.2` on a 0–1 scale). On a mismatch Whirl recaptures and recompares until the step timeout. A stable mismatch fails the entry and writes the actual and diff images to the artifacts directory. Tolerances do not change frame stabilization or retry timing. The platform tag (`linux`, `darwin`, `win32`) keeps baselines rendered on one OS separate. The viewport is not part of the key. A missing baseline fails the run; `--update-snapshots` writes or refreshes baselines instead of comparing.
 
+A locator after the name makes an element snapshot: `SNAPSHOT cart testid:cart`
+captures only the element's rendered rectangle. The name stays first. Every
+segment of the locator needs a prefix or is `nth:` (section 6.1), and chains,
+`nth:`, and frames work as in other locators. The target is part of the action,
+so it has no file default. Interpolation changes the locator's values, not its
+segments. The target resolves on the selected tab and must match exactly one
+element (section 6.2). A missing or hidden target waits until the step timeout.
+Whirl resolves the target again for every capture, so a replaced element or a
+changed size is seen. Each capture scrolls the element into view and waits
+until it is visible and stable, as Playwright's `locator.screenshot()` does; the
+scroll can affect later steps. An element taller than the viewport is captured
+whole. The capture is a crop of the page: content that overlaps the element is
+in it, and a scroll box shows only its visible content. Whirl does not disable
+animations, isolate the element, or add padding.
+
+An element snapshot checks the element's appearance and size, not its position
+on the page. Use a full-page snapshot when the layout around the element
+matters. Frame stabilization, masks, tolerances, retries, baselines, and
+`--update-snapshots` work as for a full-page snapshot, on the element's image.
+Activity outside the element does not delay stabilization unless it changes the
+element's pixels. One step timeout covers finding, scrolling, capturing,
+stabilizing, and comparing. When the page detaches or resizes the element
+during a capture, Whirl finds it again and retries within the step timeout.
+When a capture times out after a stable mismatch, Whirl checks the target once
+without waiting: if the target is missing or hidden, the step fails with a
+timeout and writes no actual or diff image, because the old pixels no longer
+describe the page. If the target is still visible, the step fails with the
+mismatch as usual. The actual and diff images have the element's size. Failure
+screenshots, traces, and video are unchanged.
+
+Element snapshots use the same baseline path as full-page snapshots, so a name
+is unique across both kinds (section 14). Adding a locator to an existing
+snapshot, or removing one, changes what its baseline shows: review the page and
+run `--update-snapshots`, or use a new name to keep both. `SCREENSHOT` always
+captures the full page.
+
 The three snapshot options work in `[Options]` and on lines below a `SNAPSHOT`:
 
 ```whirl
@@ -304,15 +341,15 @@ snapshot-max-diff: 0
 
 Each supplied local setting overrides only that setting. A local mask list replaces the complete file list. Omission inherits; explicit zero overrides. A later snapshot resumes the file defaults. Setup flows do not pass their snapshot settings to dependents. Repeated mask lines add masks within one scope. Literal, unquoted `none` clears the list and must be its only mask line. Duplicate scalar settings, conflicting masks, and unknown keys are parse errors. These duplicate rules apply only to the new options.
 
-Masks use explicit locator prefixes and support chaining, substring matching, `nth:`, and frames (section 6). There is no default locator engine. Interpolation changes locator values, not grammar; a quoted or interpolated `none` is not a sentinel. A mask may match zero, one, or many elements. Missing masks do not wait. Frame selection retains strictness. Invalid selectors and browser errors fail the step. Playwright covers matching bounding boxes with pink (`#FF00FF`) without removing elements from layout. Every capture uses the masks, including stabilization, baseline updates, and saved actual images. Locators resolve again on each capture, including replaced elements. Hidden elements and frames follow the pinned Playwright screenshot behavior. Moving or resizing a masked element can still cause a difference. Masks apply only to `SNAPSHOT`, not to `SCREENSHOT`, failure screenshots, traces, or video.
+Masks use explicit locator prefixes and support chaining, substring matching, `nth:`, and frames (section 6). There is no default locator engine. Masks resolve from the selected tab, not from an element snapshot's target, so file masks mean the same in page and element snapshots; chain a mask through the target to limit it, as in `testid:cart >> testid:total`. Parts of a mask outside an element snapshot's crop add nothing to its image, and a mask that covers the target covers the whole image. Interpolation changes locator values, not grammar; a quoted or interpolated `none` is not a sentinel. A mask may match zero, one, or many elements. Missing masks do not wait. Frame selection retains strictness. Invalid selectors and browser errors fail the step. Playwright covers matching bounding boxes with pink (`#FF00FF`) without removing elements from layout. Every capture uses the masks, including stabilization, baseline updates, and saved actual images. Locators resolve again on each capture, including replaced elements. Hidden elements and frames follow the pinned Playwright screenshot behavior. Moving or resizing a masked element can still cause a difference. Masks apply only to `SNAPSHOT`, not to `SCREENSHOT`, failure screenshots, traces, or video.
 
-`snapshot-max-diff` accepts an unsigned decimal integer from `0` through `9007199254740991`, or a percent literal from `0%` through `100%`, including decimals. Counts reject signs, fractions, and exponent notation. Equality with the limit passes. Percentage limits use every pixel in the captured image, including masked regions, as the denominator. Percentages convert to a ratio without rounding to an integer count. Dimensions must still match at `100%`.
+`snapshot-max-diff` accepts an unsigned decimal integer from `0` through `9007199254740991`, or a percent literal from `0%` through `100%`, including decimals. Counts reject signs, fractions, and exponent notation. Equality with the limit passes. Percentage limits use every pixel in the captured image, including masked regions, as the denominator: the full page, or the element's image in an element snapshot, so 100 changed pixels in a 10,000-pixel element image are 1%. Percentages convert to a ratio without rounding to an integer count. Dimensions must still match at `100%`.
 
 `snapshot-pixel-threshold` accepts a finite JSON number from `0` through `1`. It controls how different a pixel's color must be before that pixel counts toward `snapshot-max-diff`. It does not accept percentages.
 
 Blank lines and comments do not end snapshot options. The next action, `PAGE`, section header, or end of file ends them. Option lines are part of the snapshot step and its report text. Only the headline may have `@duration`. Options cannot attach to `SCREENSHOT` or follow `[Asserts]` without a new `SNAPSHOT`. The formatter preserves option order, comments, and count versus percentage units.
 
-Literal settings are validated before execution. File settings interpolate once at file start, including setup captures; local settings interpolate when the snapshot starts, so earlier captures are available. Invalid resolved file settings fail the synthetic `[setup]` entry. Invalid resolved local settings fail the snapshot step. Reports include effective settings, preserve count versus percentage units, and mask secret values using the normal rules in section 11.
+Literal settings are validated before execution. File settings interpolate once at file start, including setup captures; local settings and the target interpolate when the snapshot starts, so earlier captures are available. Invalid resolved file settings fail the synthetic `[setup]` entry. Invalid resolved local settings or an undefined variable in the target fail the snapshot step. Reports include the target and effective settings, preserve count versus percentage units, and mask secret values using the normal rules in section 11.
 
 
 `EVAL` is the JavaScript escape hatch — the `css:` of actions — and the one place Whirl runs code it does not read: a script of one or more statements, such as `EVAL "foo(); bar();"`. Whirl runs the script as the body of an async function in the page's main world through Playwright's `page.evaluate`: a script that parses as a single expression runs as `return (expression);`, so its value is the result; any other script runs as written and yields its `return` value, or `undefined` without one. `await` is available in both forms, and a returned Promise is awaited. A syntax error, a thrown exception, a rejected Promise, or the step timeout fails the entry; the action form discards the result. `EVAL` has no target, does not auto-wait, and does not retry: it runs once, after the preceding line completes. `{{name}}` interpolation happens textually before evaluation, so interpolated values become source text — and a value sent into the page escapes the output masking of section 11, so keep secrets out of `EVAL`. A script the page cannot cancel — one that blocks the renderer or never settles — is still bounded: section 12 defines how Whirl enforces timeouts from outside the page.
@@ -1165,7 +1202,8 @@ browser-entry = action , { action } , [ page ] , [ asserts ] , [ captures ] ;
 http-entry = http-request , [ http-asserts ] , [ http-captures ] ;
 
 action     = action-body , [ step-timeout ] | snapshot ;
-snapshot   = "SNAPSHOT" , artifact-name , [ step-timeout ] , { snapshot-option } ;
+snapshot   = "SNAPSHOT" , artifact-name , [ locator ] , [ step-timeout ]
+           , { snapshot-option } ;   (* prefixed segments only; 6.1 *)
 snapshot-option = "snapshot-mask:" , ( locator | "none" )
                 | "snapshot-max-diff:" , value
                 | "snapshot-pixel-threshold:" , value ;

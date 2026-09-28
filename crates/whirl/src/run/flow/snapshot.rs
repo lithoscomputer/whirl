@@ -88,8 +88,10 @@ impl SnapshotSettings {
         }
     }
 
-    pub(super) fn report(&self, vars: &VarStore) -> SnapshotReport {
+    /// `target` is the element target's rendered locator text, if any.
+    pub(super) fn report(&self, target: Option<&str>, vars: &VarStore) -> SnapshotReport {
         SnapshotReport {
+            target:          target.map(|text| vars.mask(text)),
             masks:           self.mask_text.iter().map(|text| vars.mask(text)).collect(),
             max_diff:        vars.mask(&self.max_diff_text),
             pixel_threshold: vars.mask(&self.threshold.to_string()),
@@ -138,7 +140,8 @@ mod tests {
         assert_eq!(local.masks, vec![
             json!([{"type":"css", "selector":".second"}])
         ]);
-        assert_eq!(local.report(&vars), SnapshotReport {
+        assert_eq!(local.report(None, &vars), SnapshotReport {
+            target:          None,
             masks:           vec!["css:.second".to_owned()],
             max_diff:        "0.125%".to_owned(),
             pixel_threshold: "0.1".to_owned(),
@@ -147,7 +150,10 @@ mod tests {
             defaults.max_diff_wire(),
             json!({"type":"pixels", "value":20})
         );
-        assert_eq!(defaults.report(&vars).masks, ["css:.first", "testid:clock"]);
+        assert_eq!(defaults.report(None, &vars).masks, [
+            "css:.first",
+            "testid:clock"
+        ]);
         let ActionKind::Snapshot { options, .. } = &file.entries[0].actions[2].kind else {
             panic!("snapshot");
         };
@@ -184,8 +190,8 @@ mod tests {
             settings.max_diff_wire(),
             json!({"type":"pixels", "value":1})
         );
-        assert_eq!(settings.report(&vars).max_diff, "***");
-        assert_eq!(settings.report(&vars).masks, ["testid:***"]);
+        assert_eq!(settings.report(None, &vars).max_diff, "***");
+        assert_eq!(settings.report(None, &vars).masks, ["testid:***"]);
         vars.set_input("limit", "-1");
         let error = defaults
             .with_options(

@@ -3823,3 +3823,505 @@ fn snapshot_masks_use_the_selected_tab_and_strict_frame_owners() {
         }
     }
 }
+
+/// Width and height from a PNG's IHDR chunk.
+fn png_size(path: &Path) -> (u32, u32) {
+    let bytes = fs::read(path).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+    let read = |offset: usize| {
+        let field: [u8; 4] = bytes
+            .get(offset..offset + 4)
+            .and_then(|field| field.try_into().ok())
+            .expect("a PNG header");
+        u32::from_be_bytes(field)
+    };
+    (read(16), read(20))
+}
+
+fn read_report(path: &Path) -> serde_json::Value {
+    serde_json::from_str(&fs::read_to_string(path).expect("report")).expect("JSON")
+}
+
+/// A flow that snapshots the 20x20 target of `snapshot-element.html`.
+fn element_flow(query: &str, headline: &str, local: &str) -> String {
+    format!(
+        "[Options]\nviewport: 100x100\nVISIT /snapshot-element.html?{query}\n{headline}\n{local}"
+    )
+}
+
+#[test]
+fn element_snapshots_compare_only_the_target_crop() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    let flow = |query: &str| {
+        format!(
+            "{}SNAPSHOT page\n",
+            element_flow(query, "SNAPSHOT cart testid:target @2s", "")
+        )
+    };
+    dir.file("crop.whirl", &flow(""));
+    let output = run_whirl(&dir, &[
+        "--base",
+        &server.base(),
+        "--update-snapshots",
+        "crop.whirl",
+    ]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    let baselines = dir.path.join("crop.whirl-snapshots");
+    let platform = platform_tag();
+    assert_eq!(
+        png_size(&baselines.join(format!("cart-chromium-{platform}.png"))),
+        (20, 20)
+    );
+    // A name-only snapshot keeps capturing the full page.
+    assert_eq!(
+        png_size(&baselines.join(format!("page-chromium-{platform}.png"))),
+        (100, 100)
+    );
+
+    // A change outside the target fails only the full-page snapshot.
+    dir.file(
+        "crop.whirl",
+        &element_flow("outside", "SNAPSHOT cart testid:target @2s", ""),
+    );
+    let output = run_whirl(&dir, &[
+        "--base",
+        &server.base(),
+        "--report-json",
+        "report.json",
+        "--report-html",
+        "report.html",
+        "crop.whirl",
+    ]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    let report = read_report(&dir.path.join("report.json"));
+    let snapshot = &report["files"][0]["entries"][0]["steps"][1]["snapshot"];
+    assert_eq!(snapshot["target"], "testid:target");
+    let html = fs::read_to_string(dir.path.join("report.html")).expect("HTML");
+    assert!(html.contains("<dd>Element <code>testid:target</code></dd>"));
+
+    // A change inside the target fails with element-sized artifacts.
+    dir.file("crop.whirl", &flow("dot"));
+    let output = run_whirl(&dir, &[
+        "--base",
+        &server.base(),
+        "--report-json",
+        "report.json",
+        "crop.whirl",
+    ]);
+    assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
+    let report = read_report(&dir.path.join("report.json"));
+    let step = &report["files"][0]["entries"][0]["steps"][1];
+    assert_eq!(step["error"]["code"], "snapshot-mismatch");
+    for file in ["snapshot-cart-actual.png", "snapshot-cart-diff.png"] {
+        assert_eq!(png_size(&dir.artifacts().join("crop").join(file)), (20, 20));
+    }
+
+    // A resized target fails even when every pixel may differ.
+    dir.file(
+        "crop.whirl",
+        &element_flow(
+            "wide",
+            "SNAPSHOT cart testid:target @2s",
+            "snapshot-max-diff: 100%\nsnapshot-pixel-threshold: 1\n",
+        ),
+    );
+    let output = run_whirl(&dir, &["--base", &server.base(), "crop.whirl"]);
+    assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
+}
+
+#[test]
+fn element_snapshot_tolerances_count_the_crop_pixels() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file(
+        "tolerance.whirl",
+        &element_flow("", "SNAPSHOT cart testid:target", ""),
+    );
+    let output = run_whirl(&dir, &[
+        "--base",
+        &server.base(),
+        "--update-snapshots",
+        "tolerance.whirl",
+    ]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    // The dot is 10 of the target's 400 pixels: 2.5% of the crop, but
+    // only 0.1% of the 100x100 page.
+    for (query, limit, threshold, expected) in [
+        ("dot", "10", "0.2", 0),
+        ("dot", "9", "0.2", 1),
+        ("dot", "2.5%", "0.2", 0),
+        ("dot", "2.49%", "0.2", 1),
+        ("dot", "0.1%", "0.2", 1),
+        ("dot=0b8bff", "0", "0", 1),
+        ("dot=0b8bff", "0", "0.2", 0),
+    ] {
+        dir.file(
+            "tolerance.whirl",
+            &element_flow(
+                query,
+                "SNAPSHOT cart testid:target @1s",
+                &format!("snapshot-max-diff: {limit}\nsnapshot-pixel-threshold: {threshold}\n"),
+            ),
+        );
+        let output = run_whirl(&dir, &["--base", &server.base(), "tolerance.whirl"]);
+        assert_eq!(
+            exit_code(&output),
+            expected,
+            "{query}, {limit}, {threshold}: {}",
+            stdout_text(&output)
+        );
+    }
+}
+
+#[test]
+fn element_snapshot_targets_are_strict_and_wait_within_the_step() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file(
+        "strict.whirl",
+        &element_flow("", "SNAPSHOT cart testid:target", ""),
+    );
+    let output = run_whirl(&dir, &[
+        "--base",
+        &server.base(),
+        "--update-snapshots",
+        "strict.whirl",
+    ]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    // A target that appears later passes; one that never shows times out.
+    for (query, expected, code) in [
+        ("late", 0, None),
+        ("missing", 1, Some("timeout")),
+        ("hidden", 1, Some("timeout")),
+        ("dup", 1, Some("strictness")),
+    ] {
+        dir.file(
+            "strict.whirl",
+            &element_flow(query, "SNAPSHOT cart testid:target @2s", ""),
+        );
+        let output = run_whirl(&dir, &[
+            "--base",
+            &server.base(),
+            "--report-json",
+            "report.json",
+            "strict.whirl",
+        ]);
+        assert_eq!(
+            exit_code(&output),
+            expected,
+            "{query}: {}",
+            stdout_text(&output)
+        );
+        if let Some(code) = code {
+            let report = read_report(&dir.path.join("report.json"));
+            let step = &report["files"][0]["entries"][0]["steps"][1];
+            assert_eq!(step["error"]["code"], code, "{query}");
+        }
+    }
+    // Two targets and two frame owners fail at once, not at the timeout.
+    for (page, target) in [
+        ("snapshot-element.html?dup", "testid:target"),
+        ("snapshot-frames.html", "frame:iframe >> css:\"#a\""),
+    ] {
+        dir.file(
+            "strict.whirl",
+            &format!("VISIT /{page}\nSNAPSHOT many {target} @20s\n"),
+        );
+        let output = run_whirl(&dir, &[
+            "--base",
+            &server.base(),
+            "--update-snapshots",
+            "--report-json",
+            "report.json",
+            "strict.whirl",
+        ]);
+        assert_eq!(exit_code(&output), 1, "{target}: {}", stdout_text(&output));
+        let report = read_report(&dir.path.join("report.json"));
+        let step = &report["files"][0]["entries"][0]["steps"][1];
+        assert_eq!(step["error"]["code"], "strictness", "{target}");
+        assert!(
+            step["durationMs"].as_u64().expect("duration") < 10_000,
+            "{target}: {step}"
+        );
+    }
+}
+
+#[test]
+fn element_snapshots_scroll_to_and_capture_the_whole_element() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    let platform = platform_tag();
+    // An offscreen target scrolls into view, a target taller than the
+    // viewport keeps its full height, and a scroll box keeps only its
+    // visible content.
+    for (query, size) in [
+        ("offscreen", (20, 20)),
+        ("tall", (20, 300)),
+        ("scrollbox", (20, 20)),
+    ] {
+        dir.file(
+            "scroll.whirl",
+            &element_flow(query, &format!("SNAPSHOT {query} testid:target"), ""),
+        );
+        for args in [&["--update-snapshots"][..], &[]] {
+            let output = run_whirl(
+                &dir,
+                &[&["--base", &server.base()][..], args, &["scroll.whirl"]].concat(),
+            );
+            assert_eq!(exit_code(&output), 0, "{query}: {}", stdout_text(&output));
+        }
+        let baseline = dir.path.join(format!(
+            "scroll.whirl-snapshots/{query}-chromium-{platform}.png"
+        ));
+        assert_eq!(png_size(&baseline), size, "{query}");
+    }
+}
+
+#[test]
+fn element_snapshots_settle_on_the_target_and_never_pass_on_stale_pixels() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    let base = server.base();
+    let run = |query: &str, update: bool| {
+        dir.file(
+            "settle.whirl",
+            &element_flow(query, "SNAPSHOT cart testid:target @3s", ""),
+        );
+        let mut args = vec!["--base", &base, "--report-json", "report.json"];
+        if update {
+            args.push("--update-snapshots");
+        }
+        args.push("settle.whirl");
+        let output = run_whirl(&dir, &args);
+        let report = read_report(&dir.path.join("report.json"));
+        (
+            exit_code(&output),
+            report["files"][0]["entries"][0]["steps"][1].clone(),
+        )
+    };
+    // Activity outside the crop does not stop the target from settling,
+    // and a target replaced during captures is found again.
+    for query in ["animate", "replace"] {
+        for update in [true, false] {
+            let (code, step) = run(query, update);
+            assert_eq!(code, 0, "{query}, {update}: {step}");
+        }
+    }
+    let baseline = dir.path.join(format!(
+        "settle.whirl-snapshots/cart-chromium-{}.png",
+        platform_tag()
+    ));
+    let kept = fs::read(&baseline).expect("baseline");
+    // A target that never settles cannot become a baseline, and the failed
+    // update keeps the old one.
+    let (code, step) = run("flicker", true);
+    assert_eq!(code, 1, "{step}");
+    assert_eq!(step["error"]["code"], "timeout");
+    assert_eq!(fs::read(&baseline).expect("baseline"), kept);
+
+    // After a stable mismatch, a target that disappears fails as a timeout
+    // without claiming the old pixels as the current element.
+    let actual = dir.artifacts().join("settle/snapshot-cart-actual.png");
+    let (code, step) = run("dot&vanish", false);
+    assert_eq!(code, 1, "{step}");
+    assert_eq!(step["error"]["code"], "timeout", "{step}");
+    assert!(
+        !actual.exists(),
+        "a vanished target must not save an actual image"
+    );
+    // A target that is still visible when the late capture times out keeps
+    // the earlier comparison result.
+    let (code, step) = run("dot&drift", false);
+    assert_eq!(code, 1, "{step}");
+    assert_eq!(step["error"]["code"], "snapshot-mismatch", "{step}");
+    assert_eq!(png_size(&actual), (20, 20));
+}
+
+#[test]
+fn element_snapshot_masks_resolve_from_the_page() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    // Masks outside the crop add nothing; a mask chained through the
+    // target hides its dot; masking the target covers the whole crop.
+    for (name, masks, query, expected) in [
+        ("outside", "snapshot-mask: testid:outside\n", "dot", 1),
+        (
+            "chained",
+            "snapshot-mask: testid:target >> testid:dot\n",
+            "dot",
+            0,
+        ),
+        ("chained", "snapshot-mask: none\n", "dot", 1),
+        ("whole", "snapshot-mask: testid:target\n", "dot&outside", 0),
+        (
+            "absent",
+            "snapshot-mask: css:.missing\nsnapshot-mask: css:div\n",
+            "dot",
+            0,
+        ),
+    ] {
+        dir.file(
+            "mask.whirl",
+            &element_flow("", &format!("SNAPSHOT {name} testid:target"), masks),
+        );
+        let output = run_whirl(&dir, &[
+            "--base",
+            &server.base(),
+            "--update-snapshots",
+            "mask.whirl",
+        ]);
+        assert_eq!(exit_code(&output), 0, "{name}: {}", stdout_text(&output));
+        dir.file(
+            "mask.whirl",
+            &element_flow(query, &format!("SNAPSHOT {name} testid:target @1s"), masks),
+        );
+        let output = run_whirl(&dir, &["--base", &server.base(), "mask.whirl"]);
+        assert_eq!(
+            exit_code(&output),
+            expected,
+            "{name}, {masks}: {}",
+            stdout_text(&output)
+        );
+    }
+    // File masks apply to element snapshots too.
+    let flow = |query: &str| {
+        format!(
+            "[Options]\nviewport: 100x100\nsnapshot-mask: testid:dot\nVISIT /snapshot-element.html?{query}\nSNAPSHOT inherited testid:target @1s\n"
+        )
+    };
+    dir.file("mask.whirl", &flow(""));
+    let output = run_whirl(&dir, &[
+        "--base",
+        &server.base(),
+        "--update-snapshots",
+        "mask.whirl",
+    ]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    dir.file("mask.whirl", &flow("dot"));
+    let output = run_whirl(&dir, &["--base", &server.base(), "mask.whirl"]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+}
+
+#[test]
+fn element_snapshots_use_the_selected_tab_and_nested_cross_origin_frames() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    let source = |query: &str| {
+        format!(
+            "[Options]\nviewport: 200x200\nVISIT /popups.html\nCLICK role:button \"Pay with provider\"\nPOPUP extra\nTAB extra\nVISIT /snapshot-element.html?{query}\nSNAPSHOT tab testid:target @2s\nVISIT /snapshot-element-frames.html?{query}\nSNAPSHOT framed frame:\"#outer\" >> frame:\"#inner\" >> testid:target @5s\n"
+        )
+    };
+    dir.file("frames.whirl", &source(""));
+    let output = run_whirl(&dir, &[
+        "--base",
+        &server.base(),
+        "--update-snapshots",
+        "frames.whirl",
+    ]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    let baselines = dir.path.join("frames.whirl-snapshots");
+    for name in ["tab", "framed"] {
+        let baseline = baselines.join(format!("{name}-chromium-{}.png", platform_tag()));
+        assert_eq!(png_size(&baseline), (20, 20), "{name}");
+    }
+    let output = run_whirl(&dir, &["--base", &server.base(), "frames.whirl"]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    // The popup's own page is unchanged, so the first comparison passes
+    // and the framed target's changed dot fails the second.
+    dir.file(
+        "frames.whirl",
+        &source("").replace(
+            "/snapshot-element-frames.html?",
+            "/snapshot-element-frames.html?dot",
+        ),
+    );
+    let output = run_whirl(&dir, &[
+        "--base",
+        &server.base(),
+        "--report-json",
+        "report.json",
+        "frames.whirl",
+    ]);
+    assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
+    let report = read_report(&dir.path.join("report.json"));
+    let entry = &report["files"][0]["entries"][0];
+    let failed: Vec<_> = entry["steps"]
+        .as_array()
+        .expect("steps")
+        .iter()
+        .filter(|step| step["status"] == "failed")
+        .map(|step| step["snapshot"]["target"].clone())
+        .collect();
+    assert_eq!(failed, [serde_json::json!(
+        "frame:\"#outer\" >> frame:\"#inner\" >> testid:target"
+    )]);
+}
+
+#[test]
+fn element_snapshot_targets_interpolate_and_mask_secrets_in_reports() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file(
+        "secret.whirl",
+        &element_flow("", "SNAPSHOT secret testid:{{env.WHIRL_TEST_TARGET}}", ""),
+    );
+    let env = [("WHIRL_TEST_TARGET", "target")];
+    let output = run_whirl_env(
+        &dir,
+        &[
+            "--base",
+            &server.base(),
+            "--update-snapshots",
+            "--report-json",
+            "report.json",
+            "--report-html",
+            "report.html",
+            "secret.whirl",
+        ],
+        &env,
+    );
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    let report = read_report(&dir.path.join("report.json"));
+    let step = &report["files"][0]["entries"][0]["steps"][1];
+    assert_eq!(step["snapshot"]["target"], "testid:***");
+    assert!(!step["text"].as_str().expect("text").contains("target"));
+    let html = fs::read_to_string(dir.path.join("report.html")).expect("HTML");
+    assert!(html.contains("<dd>Element <code>testid:***</code></dd>"));
+    assert!(!html.contains("testid:target"));
+}
+
+#[test]
+fn element_snapshots_crop_and_compare_in_each_engine() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    for engine in engines() {
+        let flow = |query: &str| {
+            format!(
+                "[Options]\nbrowser: {engine}\nviewport: 100x100\nVISIT /snapshot-element.html?{query}\nSNAPSHOT cart testid:target @2s\n"
+            )
+        };
+        dir.file("engine.whirl", &flow(""));
+        let output = run_whirl(&dir, &[
+            "--base",
+            &server.base(),
+            "--update-snapshots",
+            "engine.whirl",
+        ]);
+        assert_eq!(exit_code(&output), 0, "{engine}: {}", stdout_text(&output));
+        let baseline = dir.path.join(format!(
+            "engine.whirl-snapshots/cart-{engine}-{}.png",
+            platform_tag()
+        ));
+        assert_eq!(png_size(&baseline), (20, 20), "{engine}");
+        for (query, expected) in [("outside", 0), ("dot", 1)] {
+            dir.file("engine.whirl", &flow(query));
+            let output = run_whirl(&dir, &["--base", &server.base(), "engine.whirl"]);
+            assert_eq!(
+                exit_code(&output),
+                expected,
+                "{engine}, {query}: {}",
+                stdout_text(&output)
+            );
+        }
+    }
+}

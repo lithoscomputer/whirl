@@ -612,4 +612,30 @@ fn saved_snapshot_settings_keep_units_and_escape_locator_text() {
         assert!(html.contains(expected), "missing {expected}");
     }
     assert!(!html.contains("text:<script>"));
+    // Reports from before element snapshots describe full-page captures.
+    assert!(html.contains("<dd>Full page</dd>"));
+}
+
+#[test]
+fn saved_snapshot_targets_render_escaped_as_element_captures() {
+    let dir = TempDir::new().expect("temp directory");
+    let mut report = legacy_report(dir.path());
+    let step = &mut report["files"][0]["entries"][0]["steps"][0];
+    step["kind"] = json!("action");
+    step["text"] = json!("SNAPSHOT cart css:\"<b>\"");
+    step["snapshot"] = json!({
+        "target": "css:\"<b>\"",
+        "masks": [],
+        "maxDiff": "0",
+        "pixelThreshold": "0.2"
+    });
+    save(dir.path(), &report);
+    let output = render(dir.path(), &["report.json", "--html", "snapshot.html"]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let html = fs::read_to_string(dir.path().join("snapshot.html")).expect("HTML");
+    assert!(
+        html.contains("<dd>Element <code>css:&quot;&lt;b&gt;&quot;</code></dd>"),
+        "{html}"
+    );
+    assert!(!html.contains("Full page"));
 }
