@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0 (2026-09-28)
+
 - **Breaking:** reject `[Asserts]` and `[Captures]` sections with the parse error `sections-removed`. `whirl fmt flows/` still rewrites them as `ASSERT` and `CAPTURE` lines.
 - Add `MOCK METHOD url STATUS`, which serves a fixed response to matching browser requests until the file ends, and `MOCK METHOD url failed`, which fails them like a dropped connection. Header lines and a JSON or fenced body follow, as for `HTTP`. `*` in the URL matches any run of characters, a later `MOCK` with the same method and URL replaces the earlier one, and the mock registered last wins. `MOCK` lines can come before the first `VISIT`, a mock can serve the page document, and a mocked request is served even when `allow-hosts` blocks its host. Reports list each mock and how many requests it served, and a passing file warns about a mock that served none with `unused-mock`.
 - Add the `request:NAME` subject, which checks the request that `RESPONSE NAME` selected: `method`, `url`, `header:NAME`, `body`, `bytes`, `json:PATH`, and `xpath:EXPR`. Request checks read once, like response checks.
