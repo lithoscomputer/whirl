@@ -11,7 +11,7 @@ use std::iter;
 
 use serde_json::{Map, Value as Json, json};
 
-use crate::run::act::snapshot::unquote_line;
+use crate::run::act::snapshot::SnapshotLine;
 
 /// One line of an AI snapshot.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -30,6 +30,22 @@ pub(crate) struct OutlineNode {
     pointer:            bool,
     /// `[checked]`: a checkbox, radio, or switch that is on.
     pub(crate) checked: bool,
+}
+
+impl OutlineNode {
+    fn from_line(line: SnapshotLine) -> Self {
+        Self {
+            depth:   line.indent / 2,
+            parent:  None,
+            element: line.element().map(str::to_owned),
+            active:  line.has_mark("active"),
+            pointer: line.has_mark("cursor=pointer"),
+            checked: line.has_mark("checked") || line.has_mark("checked=true"),
+            role:    line.role,
+            name:    line.name,
+            text:    line.value,
+        }
+    }
 }
 
 /// The snapshot as a tree, in document order.
@@ -107,23 +123,22 @@ const OPTION_ROLES: &[&str] = &[
 const CELL_ROLES: &[&str] = &["cell", "gridcell", "columnheader", "rowheader"];
 /// Longest context text sent per candidate, in characters.
 const CONTEXT_CHARS: usize = 160;
+/// Longest label sent per candidate, in characters.
+const LABEL_CHARS: usize = 60;
 
 impl Outline {
     pub(crate) fn parse(snapshot: &str) -> Self {
         let mut nodes: Vec<OutlineNode> = Vec::new();
         let mut open: Vec<usize> = Vec::new();
         for line in snapshot.lines() {
-            let line = unquote_line(line);
-            let indent = line.len() - line.trim_start().len();
-            let Some(content) = line.trim_start().strip_prefix("- ") else {
+            let Some(line) = SnapshotLine::parse(line) else {
                 continue;
             };
             // Properties such as `/url:` describe their parent.
-            if content.starts_with('/') {
+            if line.role.starts_with('/') {
                 continue;
             }
-            let mut node = parse_node(content);
-            node.depth = indent / 2;
+            let mut node = OutlineNode::from_line(line);
             while open
                 .last()
                 .is_some_and(|&last| nodes[last].depth >= node.depth)
@@ -275,14 +290,22 @@ impl Outline {
         if let Some(text) = &node.text {
             description.insert("value".to_owned(), json!(text));
         }
-        // An element with neither name nor text, such as an unlabeled
-        // input, takes the text beside it; an element with its own text
-        // would take its neighbour's, as a list item would its sibling's.
-        if node.name.is_none()
-            && node.text.is_none()
-            && let Some(before) = self.label_before(index)
+        // An element with neither name nor text takes the heading it opens
+        // with, or else the text beside it, as an unlabeled input does. An
+        // element with its own text would take its neighbour's, as a list
+        // item would its sibling's.
+        let unnamed = node.name.is_none() && node.text.is_none();
+        let opening = if unnamed {
+            self.opening_heading(index)
+        } else {
+            None
+        };
+        if unnamed
+            && let Some(label) = opening
+                .map(|heading| truncate(heading, LABEL_CHARS))
+                .or_else(|| self.label_before(index))
         {
-            description.insert("label".to_owned(), json!(before));
+            description.insert("label".to_owned(), json!(label));
         }
         if let Some((table, column)) = self.table_place(index) {
             if let Some(table) = table {
@@ -310,11 +333,15 @@ impl Outline {
         if !sections.is_empty() {
             description.insert("within".to_owned(), json!(sections.join(" › ")));
         }
-        if let Some(heading) = (0..index)
-            .rev()
-            .find(|&before| self.nodes[before].role == "heading")
-            .and_then(|heading| self.nodes[heading].name.as_deref())
-        {
+        // The nearest heading: the one the element opens with, else the
+        // last one before it. The heading before a region that its own
+        // heading names belongs to the section before.
+        if let Some(heading) = opening.or_else(|| {
+            (0..index)
+                .rev()
+                .find(|&before| self.nodes[before].role == "heading")
+                .and_then(|heading| self.nodes[heading].name.as_deref())
+        }) {
             description.insert("heading".to_owned(), json!(heading));
         }
         if let Some((position, count)) = twins.get(&index) {
@@ -382,7 +409,34 @@ impl Outline {
         node.name
             .as_deref()
             .or(node.text.as_deref())
-            .map(|text| truncate(text, 60))
+            .map(|text| truncate(text, LABEL_CHARS))
+    }
+
+    /// The name of the heading that an element opens with: its first child,
+    /// or the first child of a plain wrapper that opens it. Playwright
+    /// leaves out the name of an element that its own heading names, as a
+    /// region labelled by its heading through `aria-labelledby`, because
+    /// the heading shows it.
+    fn opening_heading(&self, index: usize) -> Option<&str> {
+        let mut first = self.first_child(index)?;
+        while is_plain_wrapper(&self.nodes[first]) {
+            first = self.first_child(first)?;
+        }
+        let node = &self.nodes[first];
+        if node.role == "heading" {
+            node.name.as_deref()
+        } else {
+            None
+        }
+    }
+
+    /// A child line follows its parent's line at once.
+    fn first_child(&self, index: usize) -> Option<usize> {
+        let next = index + 1;
+        self.nodes
+            .get(next)
+            .filter(|node| node.parent == Some(index))
+            .map(|_| next)
     }
 
     /// Whether two elements are copies of one control inside the same item:
@@ -436,69 +490,17 @@ fn is_root(node: &OutlineNode) -> bool {
     node.parent.is_none() && node.role == "generic"
 }
 
+/// A generic element with no name or text of its own, such as a `div`
+/// around a section's heading.
+fn is_plain_wrapper(node: &OutlineNode) -> bool {
+    node.role == "generic" && node.name.is_none() && node.text.is_none()
+}
+
 fn truncate(text: &str, max: usize) -> String {
     match text.char_indices().nth(max) {
         Some((cut, _)) => format!("{}…", &text[..cut]),
         None => text.to_owned(),
     }
-}
-
-/// Parses a line's content such as `button "Sign in" [ref=e5]` or
-/// `textbox "Search" [ref=e5]: widgets`, after [`unquote_line`] has removed
-/// any YAML quotes.
-fn parse_node(content: &str) -> OutlineNode {
-    let mut node = OutlineNode::default();
-    let role_len = content.find([' ', ':', '[']).unwrap_or(content.len());
-    content[..role_len].clone_into(&mut node.role);
-    let mut rest = &content[role_len..];
-    if let Some(after) = rest.strip_prefix(' ')
-        && after.starts_with('"')
-        && let Some((name, left)) = json_string(after)
-    {
-        node.name = Some(name);
-        rest = left;
-    }
-    while let Some(after) = rest.strip_prefix(" [") {
-        let Some(end) = after.find(']') else {
-            break;
-        };
-        match &after[..end] {
-            "active" => node.active = true,
-            "cursor=pointer" => node.pointer = true,
-            "checked" | "checked=true" => node.checked = true,
-            attr => {
-                if let Some(element) = attr.strip_prefix("ref=") {
-                    node.element = Some(element.to_owned());
-                }
-            }
-        }
-        rest = &after[end + 1..];
-    }
-    if let Some(text) = rest.strip_prefix(": ") {
-        let text = text.trim();
-        node.text = Some(match json_string(text) {
-            Some((unquoted, "")) => unquoted,
-            _ => text.to_owned(),
-        });
-    }
-    node
-}
-
-/// Reads the JSON string at the start of `text`; returns it and the rest.
-fn json_string(text: &str) -> Option<(String, &str)> {
-    let mut escaped = false;
-    for (index, ch) in text.char_indices().skip(1) {
-        match ch {
-            _ if escaped => escaped = false,
-            '\\' => escaped = true,
-            '"' => {
-                let value = serde_json::from_str(&text[..=index]).ok()?;
-                return Some((value, &text[index + 1..]));
-            }
-            _ => {}
-        }
-    }
-    None
 }
 
 /// Words that say little about which element an instruction means.
@@ -694,6 +696,325 @@ mod tests {
             quoted.describe(textbox, &HashMap::new()),
             json!({"role": "textbox", "name": "Note: x", "value": "Status: live", "within": "Q3: plan"})
         );
+    }
+
+    /// The index of the node with `element` as its ref.
+    fn index_of(outline: &Outline, element: &str) -> usize {
+        (0..outline.nodes.len())
+            .find(|&index| outline.node(index).element.as_deref() == Some(element))
+            .expect("the element is in the outline")
+    }
+
+    fn described(outline: &Outline, element: &str) -> Json {
+        outline.describe(index_of(outline, element), &HashMap::new())
+    }
+
+    #[test]
+    fn a_name_cannot_change_which_ref_a_candidate_carries() {
+        // Lines as Playwright 1.62.1 writes them for names and texts that
+        // hold `[ref=…]` and other marks.
+        let outline = Outline::parse(
+            r#"- generic [active] [ref=e1]:
+  - heading "Crafted" [level=1] [ref=e2]
+  - button "Save" [ref=e3]
+  - button "Delete [ref=e9]" [ref=e4]
+  - button "Say \"hi\" \\ back ] [ref=e2] [active]" [ref=e5]
+  - button "x\" [ref=e1] [cursor=pointer]" [ref=e6]: ignored
+  - 'button "Status: [ref=e9] live" [ref=e7]'
+  - button "Go [checked] [active] [cursor=pointer]" [ref=e8]
+  - paragraph [ref=e9]: see [ref=e3] here
+  - textbox "Note [ref=e4]" [ref=e12]: v [ref=e5]
+  - generic [ref=e17]:
+    - button "Mixed" [ref=e18]
+    - text: see [ref=e3] here
+"#,
+        );
+        let candidates = |view| {
+            outline
+                .view(view)
+                .into_iter()
+                .map(|index| {
+                    let node = outline.node(index);
+                    (
+                        node.element.clone().unwrap_or_default(),
+                        node.name.clone().unwrap_or_default(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let expected = [
+            ("e3", "Save"),
+            ("e4", "Delete [ref=e9]"),
+            ("e5", r#"Say "hi" \ back ] [ref=e2] [active]"#),
+            ("e6", r#"x" [ref=e1] [cursor=pointer]"#),
+            ("e7", "Status: [ref=e9] live"),
+            ("e8", "Go [checked] [active] [cursor=pointer]"),
+            ("e18", "Mixed"),
+        ]
+        .map(|(element, name)| (element.to_owned(), name.to_owned()));
+        assert_eq!(candidates(View::Pointer), expected);
+        assert_eq!(candidates(View::Input), [(
+            "e12".to_owned(),
+            "Note [ref=e4]".to_owned()
+        )]);
+        // Marks inside a name do not count.
+        let go = outline.node(index_of(&outline, "e8"));
+        assert!(!go.checked && !go.pointer && !go.active);
+        assert_eq!(outline.focused(), None);
+        assert_eq!(
+            described(&outline, "e4"),
+            json!({"role": "button", "name": "Delete [ref=e9]", "heading": "Crafted"})
+        );
+        assert_eq!(
+            described(&outline, "e12"),
+            json!({"role": "textbox", "name": "Note [ref=e4]", "value": "v [ref=e5]", "heading": "Crafted"})
+        );
+    }
+
+    /// The eval page `trip-planner` as Playwright 1.62.1 writes it. Each
+    /// day is a region that its own heading names with `aria-labelledby`,
+    /// so the snapshot shows the region without a name.
+    const TRIP: &str = r##"- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - strong [ref=e3]: Wayfarer
+    - navigation "Trips" [ref=e4]:
+      - link "My trips" [ref=e5] [cursor=pointer]:
+        - /url: "#"
+      - link "Saved places" [ref=e6] [cursor=pointer]:
+        - /url: "#"
+  - main [ref=e7]:
+    - heading "Lisbon weekend" [level=1] [ref=e8]
+    - paragraph [ref=e9]: Press and hold an activity to move it to another day.
+    - generic [ref=e10]:
+      - region [ref=e11]:
+        - heading "Friday, May 9" [level=2] [ref=e12]
+        - list [ref=e13]:
+          - listitem [ref=e14]:
+            - strong [ref=e15]: Check in at Casa do Rio
+            - generic [ref=e16]: 3:00 PM
+          - listitem [ref=e17]:
+            - strong [ref=e18]: Tram 28 ride
+            - generic [ref=e19]: 5:00 PM · 1 hour
+          - listitem [ref=e20]:
+            - strong [ref=e21]: Dinner in Alfama
+            - generic [ref=e22]: 8:30 PM
+      - region [ref=e23]:
+        - heading "Saturday, May 10" [level=2] [ref=e24]
+        - list [ref=e25]:
+          - listitem [ref=e26]:
+            - strong [ref=e27]: Day trip to Sintra
+            - generic [ref=e28]: 9:00 AM · 7 hours
+          - listitem [ref=e29]:
+            - strong [ref=e30]: Fado show
+            - generic [ref=e31]: 9:30 PM
+      - region [ref=e32]:
+        - heading "Sunday, May 11" [level=2] [ref=e33]
+        - list [ref=e34]:
+          - listitem [ref=e35]:
+            - strong [ref=e36]: Belém Tower
+            - generic [ref=e37]: 10:00 AM · 2 hours
+    - status
+"##;
+
+    #[test]
+    fn a_region_that_its_own_heading_names_reads_as_that_heading() {
+        let outline = Outline::parse(TRIP);
+        for (element, day) in [
+            ("e11", "Friday, May 9"),
+            ("e23", "Saturday, May 10"),
+            ("e32", "Sunday, May 11"),
+        ] {
+            assert_eq!(
+                described(&outline, element),
+                json!({"role": "region", "label": day, "heading": day}),
+                "{element}"
+            );
+        }
+        assert_eq!(
+            described(&outline, "e7"),
+            json!({"role": "main", "label": "Lisbon weekend", "heading": "Lisbon weekend"})
+        );
+    }
+
+    #[test]
+    fn elements_inside_a_region_that_its_heading_names_keep_their_descriptions() {
+        let outline = Outline::parse(TRIP);
+        assert_eq!(
+            described(&outline, "e34"),
+            json!({"role": "list", "label": "Sunday, May 11", "heading": "Sunday, May 11"})
+        );
+        assert_eq!(
+            described(&outline, "e18"),
+            json!({"role": "strong", "value": "Tram 28 ride", "listitem": "5:00 PM · 1 hour", "heading": "Friday, May 9"})
+        );
+        assert_eq!(
+            described(&outline, "e5"),
+            json!({"role": "link", "name": "My trips", "within": "Trips"})
+        );
+        assert_eq!(
+            described(&outline, "e4"),
+            json!({"role": "navigation", "name": "Trips"})
+        );
+    }
+
+    #[test]
+    fn only_an_unnamed_element_that_opens_with_a_heading_reads_as_it() {
+        // Lines as Playwright 1.62.1 writes them. Every region's name
+        // comes from a heading inside it; only "Named" has an
+        // `aria-label`.
+        let outline = Outline::parse(
+            r##"- main [ref=e2]:
+  - heading "Planner" [level=1] [ref=e3]
+  - region "Named" [ref=e13]:
+    - heading "Other heading" [level=2] [ref=e14]
+    - paragraph [ref=e15]: Body
+  - region [ref=e16]:
+    - generic [ref=e17]:
+      - heading "Deep heading" [level=2] [ref=e18]
+      - button "Act" [ref=e19]
+    - paragraph [ref=e20]: x
+  - link [ref=e21] [cursor=pointer]:
+    - /url: "#p"
+    - heading "Product A" [level=3] [ref=e22]
+    - paragraph [ref=e23]: Fine goods
+  - region [ref=e24]:
+    - paragraph [ref=e25]: Intro
+    - heading "Later heading" [level=2] [ref=e26]
+"##,
+        );
+        assert_eq!(
+            described(&outline, "e13"),
+            json!({"role": "region", "name": "Named", "heading": "Planner"})
+        );
+        assert_eq!(
+            described(&outline, "e16"),
+            json!({"role": "region", "label": "Deep heading", "heading": "Deep heading"})
+        );
+        assert_eq!(
+            described(&outline, "e21"),
+            json!({"role": "link", "label": "Product A", "heading": "Product A"})
+        );
+        assert_eq!(
+            described(&outline, "e24"),
+            json!({"role": "region", "heading": "Product A"})
+        );
+        assert_eq!(
+            described(&outline, "e19"),
+            json!({"role": "button", "name": "Act", "heading": "Deep heading"})
+        );
+    }
+
+    #[test]
+    fn a_name_between_slashes_keeps_its_element() {
+        // Playwright 1.62.1 writes a name that starts and ends with `/` as
+        // it is, without quotes or escapes.
+        let outline = Outline::parse(
+            r#"- generic [active] [ref=e1]:
+  - button /api/ [ref=e2]
+  - button / [ref=e3]
+  - button // [ref=e4]
+  - button /a"b\c/ [ref=e5]
+  - button /x/ [ref=e9] / [ref=e6]
+  - 'button /a: b/ [ref=e7]'
+  - button /it's/ [ref=e8]
+  - 'button /a #b/ [ref=e9]'
+  - button "/a/b" [ref=e10]
+  - link /docs/ [ref=e11] [cursor=pointer]:
+    - /url: /docs
+  - heading /title/ [level=2] [ref=e12]
+  - paragraph [ref=e13]: /para/
+  - textbox /field/ [ref=e14]: /v/
+"#,
+        );
+        let buttons: Vec<(String, String)> = outline
+            .view(View::Pointer)
+            .into_iter()
+            .map(|index| {
+                let node = outline.node(index);
+                (
+                    node.element.clone().unwrap_or_default(),
+                    node.name.clone().unwrap_or_default(),
+                )
+            })
+            .collect();
+        let expected = [
+            ("e2", "/api/"),
+            ("e3", "/"),
+            ("e4", "//"),
+            ("e5", r#"/a"b\c/"#),
+            ("e6", "/x/ [ref=e9] /"),
+            ("e7", "/a: b/"),
+            ("e8", "/it's/"),
+            ("e9", "/a #b/"),
+            ("e10", "/a/b"),
+            ("e11", "/docs/"),
+        ]
+        .map(|(element, name)| (element.to_owned(), name.to_owned()));
+        assert_eq!(buttons, expected);
+        assert!(outline.node(index_of(&outline, "e11")).pointer);
+        assert_eq!(
+            described(&outline, "e14"),
+            json!({"role": "textbox", "name": "/field/", "value": "/v/", "heading": "/title/"})
+        );
+    }
+
+    #[test]
+    fn values_and_names_decode_every_escape_that_playwright_writes() {
+        // Lines as Playwright 1.62.1 writes them. A value gets JSON's
+        // escapes and `\xHH` for other control characters; a name gets
+        // JSON's `\uXXXX`, except DEL, which stays as it is.
+        let outline = Outline::parse(concat!(
+            "- generic [active] [ref=e1]:\n",
+            r#"  - paragraph [ref=e2]: "a\x7fb""#,
+            "\n",
+            r#"  - paragraph [ref=e3]: "a\x01b""#,
+            "\n",
+            r#"  - paragraph [ref=e4]: "a\x85b""#,
+            "\n",
+            r#"  - paragraph [ref=e5]: "a\x1bb: c""#,
+            "\n",
+            r#"  - paragraph [ref=e6]: "a\bb""#,
+            "\n",
+            r#"  - paragraph [ref=e7]: "q \"x\" \\ \x7f: y""#,
+            "\n",
+            "  - 'button \"a\u{7f}b\" [ref=e8]'\n",
+            r#"  - button "a\u0001b" [ref=e9]"#,
+            "\n",
+            r#"  - textbox "Field" [ref=e10]: "v\x7fw""#,
+            "\n",
+            r#"  - textbox "p\u0001q" [ref=e12]"#,
+            "\n",
+            r#"  - button "a\ud800b" [ref=e19]"#,
+            "\n",
+            r#"  - paragraph [ref=e20]: "Status: live""#,
+            "\n",
+            r#"  - paragraph [ref=e21]: "\"\\\/\b\f\n\r\té😀""#,
+            "\n",
+            "  - paragraph [ref=e22]: plain \"text\"\n",
+        ));
+        let node = |element: &str| outline.node(index_of(&outline, element));
+        for (element, value) in [
+            ("e2", "a\u{7f}b"),
+            ("e3", "a\u{1}b"),
+            ("e4", "a\u{85}b"),
+            ("e5", "a\u{1b}b: c"),
+            ("e6", "a\u{8}b"),
+            ("e7", "q \"x\" \\ \u{7f}: y"),
+            ("e10", "v\u{7f}w"),
+            ("e20", "Status: live"),
+            ("e21", "\"\\/\u{8}\u{c}\n\r\t\u{e9}\u{1f600}"),
+            ("e22", "plain \"text\""),
+        ] {
+            assert_eq!(node(element).text.as_deref(), Some(value), "{element}");
+        }
+        for (element, name) in [
+            ("e8", "a\u{7f}b"),
+            ("e9", "a\u{1}b"),
+            ("e12", "p\u{1}q"),
+            ("e19", "a\u{fffd}b"),
+        ] {
+            assert_eq!(node(element).name.as_deref(), Some(name), "{element}");
+        }
     }
 
     #[test]
