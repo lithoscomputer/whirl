@@ -1,5 +1,4 @@
 VISIT /
-[Asserts]
-response:order status == 200
+ASSERT response:order status == 200
 RESPONSE order POST /orders
 RESPONSE order POST /orders

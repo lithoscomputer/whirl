@@ -1,4 +1,3 @@
 VISIT /login
-[Asserts]
-role:heading "Hi" visible
+ASSERT role:heading "Hi" visible
 PAGE /dashboard

@@ -10,9 +10,10 @@ use std::path::PathBuf;
 use crate::check::{Number, PredicateKind, StaticType, ValueType, is_bytes_literal_shape};
 use crate::lang::ast::snapshot::SnapshotOption;
 use crate::lang::ast::{
-    Action, ActionKind, Assert, AssertBody, Capture, CheckLine, Entry, Extractor, File, FileOption,
-    FilterArg, FilterSpec, Ident, Locator, Operand, OptionValue, PageCheck, PredicateSpec,
-    ResponseField, SegmentKind, Span, StateCheck, Subject, Value, ValueSegment, chain_type,
+    Action, ActionKind, Assert, AssertBody, Capture, CheckLine, CheckStep, Entry, Extractor, File,
+    FileOption, FilterArg, FilterSpec, Ident, Locator, Operand, OptionValue, PageCheck,
+    PredicateSpec, ResponseField, SegmentKind, Span, StateCheck, Subject, Value, ValueSegment,
+    chain_type,
 };
 
 /// How serious a lint diagnostic is: an [`Severity::Error`] fails
@@ -51,8 +52,24 @@ pub(crate) fn lint_file_with(file: &File, external_uses: &HashSet<String>) -> Ve
     setup_option_rules(file, &mut lints);
     redundant_presence_counts(file, &mut lints);
     filter_types(file, &mut lints);
+    deprecated_sections(file, &mut lints);
     lints.sort_by_key(|lint| (lint.line, lint.column));
     lints
+}
+
+/// Warns about each deprecated `[Asserts]` and `[Captures]` section
+/// (SPEC 4); `whirl fmt` rewrites them as `ASSERT` and `CAPTURE` lines.
+fn deprecated_sections(file: &File, lints: &mut Vec<Lint>) {
+    for span in file.entries.iter().flat_map(|entry| &entry.sections) {
+        lints.push(lint_at(
+            file,
+            Severity::Warning,
+            "sections-deprecated",
+            *span,
+            "sections are deprecated; run `whirl fmt` to rewrite them as ASSERT and CAPTURE lines"
+                .to_owned(),
+        ));
+    }
 }
 
 /// The capture names a file reads as `{{setup.name}}`.
@@ -85,7 +102,7 @@ pub(crate) fn lint_setup_refs(file: &File, setup: &File) -> Vec<Lint> {
     let captured: HashSet<&str> = setup
         .entries
         .iter()
-        .flat_map(|entry| &entry.captures)
+        .flat_map(Entry::captures)
         .map(|capture| capture.name.text.as_str())
         .collect();
     for var_ref in collect_setup_refs(file) {
@@ -193,8 +210,12 @@ fn count_check(assert: &Assert) -> Option<(&Locator, PredicateKind, i64)> {
 /// presence (SPEC 16). Checks accepting zero matches preserve the wait.
 fn redundant_presence_counts(file: &File, lints: &mut Vec<Lint>) {
     for entry in &file.entries {
-        for pair in entry.asserts.windows(2) {
-            let Some((locator, kind, count)) = count_check(&pair[0]) else {
+        for pair in entry.checks.windows(2) {
+            let [CheckStep::Assert(first), CheckStep::Assert(second)] = pair else {
+                continue;
+            };
+            let pair = [first, second];
+            let Some((locator, kind, count)) = count_check(pair[0]) else {
                 continue;
             };
             let asserts_presence = matches!(
@@ -204,7 +225,7 @@ fn redundant_presence_counts(file: &File, lints: &mut Vec<Lint>) {
             if !asserts_presence {
                 continue;
             }
-            let next = if let Some((locator, kind, count)) = count_check(&pair[1]) {
+            let next = if let Some((locator, kind, count)) = count_check(pair[1]) {
                 let accepts_zero = match kind {
                     PredicateKind::Eq => count == 0,
                     PredicateKind::Ne => count != 0,
@@ -260,7 +281,7 @@ fn redundant_presence_counts(file: &File, lints: &mut Vec<Lint>) {
 /// predicate that cannot test the value.
 fn filter_types(file: &File, lints: &mut Vec<Lint>) {
     for entry in &file.entries {
-        for assert in &entry.asserts {
+        for assert in entry.asserts() {
             let AssertBody::Check(check) = &assert.body else {
                 continue;
             };
@@ -285,7 +306,7 @@ fn filter_types(file: &File, lints: &mut Vec<Lint>) {
                 }
             }
         }
-        for capture in &entry.captures {
+        for capture in entry.captures() {
             if let Err((filter, input)) = chain_type(&capture.subject, &capture.filters) {
                 lints.push(filter_type_lint(file, filter, &input));
             }
@@ -538,11 +559,7 @@ fn unused_captures(file: &File, external_uses: &HashSet<String>, lints: &mut Vec
         .into_iter()
         .filter(|var_ref| var_ref.kind == RefKind::Var)
         .collect();
-    let captures: Vec<&Capture> = file
-        .entries
-        .iter()
-        .flat_map(|entry| &entry.captures)
-        .collect();
+    let captures: Vec<&Capture> = file.entries.iter().flat_map(Entry::captures).collect();
     for (index, capture) in captures.iter().enumerate() {
         let overwrite_line = captures[index + 1..]
             .iter()
@@ -587,10 +604,10 @@ fn collect_entry_refs<'a>(entry: &'a Entry, refs: &mut Vec<VarRef<'a>>) {
     {
         collect_value_refs(value, page.line, refs);
     }
-    for assert in &entry.asserts {
+    for assert in entry.asserts() {
         collect_assert_refs(assert, refs);
     }
-    for capture in &entry.captures {
+    for capture in entry.captures() {
         collect_chain_refs(&capture.subject, &capture.filters, capture.line, refs);
     }
 }
@@ -827,15 +844,13 @@ fn response_names(file: &File, lints: &mut Vec<Lint>) {
             }
         }
         let assertion_names = entry
-            .asserts
-            .iter()
+            .asserts()
             .filter_map(|assertion| match &assertion.body {
                 AssertBody::Check(check) => response_name_of(&check.subject),
                 _ => None,
             });
         let capture_names = entry
-            .captures
-            .iter()
+            .captures()
             .filter_map(|capture| response_name_of(&capture.subject));
         for name in assertion_names.chain(capture_names) {
             if !names.contains(name.text.as_str()) {
@@ -870,7 +885,7 @@ fn unasserted_http_status(file: &File, lints: &mut Vec<Lint>) {
             continue;
         };
         if !matches!(action.kind, ActionKind::Http { .. })
-            || entry.asserts.iter().any(|assert| {
+            || entry.asserts().any(|assert| {
                 matches!(
                     &assert.body,
                     AssertBody::Check(CheckLine {
@@ -925,7 +940,7 @@ fn tab_names(file: &File, lints: &mut Vec<Lint>) {
                 _ => {}
             }
         }
-        for assertion in &entry.asserts {
+        for assertion in entry.asserts() {
             if let AssertBody::TabClosed { name } = &assertion.body
                 && !names.contains(name.text.as_str())
             {
@@ -961,7 +976,7 @@ mod tests {
     #[test]
     fn snapshot_options_reference_captures_and_setup_values() {
         let lints = lint(
-            "VISIT /\n[Captures]\nmask: eval \"'a'\"\nlimit: eval 1\nthreshold: eval 0.2\nSNAPSHOT x\nsnapshot-mask: testid:{{mask}}\nsnapshot-max-diff: {{limit}}\nsnapshot-pixel-threshold: {{threshold}}\n",
+            "VISIT /\nCAPTURE mask: eval \"'a'\"\nCAPTURE limit: eval 1\nCAPTURE threshold: eval 0.2\nSNAPSHOT x\nsnapshot-mask: testid:{{mask}}\nsnapshot-max-diff: {{limit}}\nsnapshot-pixel-threshold: {{threshold}}\n",
         );
         assert!(lints.is_empty(), "{lints:?}");
         let lints = lint(
@@ -978,7 +993,7 @@ mod tests {
 
     #[test]
     fn snapshot_targets_reference_captures_and_setup_values() {
-        let lints = lint("VISIT /\n[Captures]\nrow: eval \"'a'\"\nSNAPSHOT row testid:{{row}}\n");
+        let lints = lint("VISIT /\nCAPTURE row: eval \"'a'\"\nSNAPSHOT row testid:{{row}}\n");
         assert!(lints.is_empty(), "{lints:?}");
         let lints = lint("VISIT /\nSNAPSHOT row testid:{{setup.row}}\n");
         assert_eq!(lints.len(), 1, "{lints:?}");
@@ -1028,24 +1043,25 @@ mod tests {
 
     #[test]
     fn warns_about_a_presence_count_before_a_check_on_the_same_locator() {
-        let lints =
-            lint("VISIT /\n[Asserts]\ntestid:card count >= 1\ntestid:card text contains Hello\n");
+        let lints = lint(
+            "VISIT /\nASSERT testid:card count >= 1\nASSERT testid:card text contains Hello\n",
+        );
         assert_eq!(lints.len(), 1);
         assert_eq!(lints[0].severity, Severity::Warning);
-        assert_eq!(lints[0].line, 3);
+        assert_eq!(lints[0].line, 2);
         assert_eq!(
             lints[0].message,
-            "this presence check is redundant; the check on line 4 already waits for the element"
+            "this presence check is redundant; the check on line 3 already waits for the element"
         );
         for source in [
-            "VISIT /\n[Asserts]\ncss:\"li.item\" count > 0\ncss:\"li.item\" count == 3\n",
-            "VISIT /\n[Asserts]\nrole:button \"Save\" count != 0\nrole:button \"Save\" enabled\n",
+            "VISIT /\nASSERT css:\"li.item\" count > 0\nASSERT css:\"li.item\" count == 3\n",
+            "VISIT /\nASSERT role:button \"Save\" count != 0\nASSERT role:button \"Save\" enabled\n",
             // `not` flips a count comparison.
-            "VISIT /\n[Asserts]\ntestid:card count not < 1\ntestid:card visible\n",
-            "VISIT /\n[Asserts]\ntestid:card count >= 1\ntestid:card count not == 0\n",
+            "VISIT /\nASSERT testid:card count not < 1\nASSERT testid:card visible\n",
+            "VISIT /\nASSERT testid:card count >= 1\nASSERT testid:card count not == 0\n",
             // These counts reject zero, so they wait for the element too.
-            "VISIT /\n[Asserts]\ntestid:card count >= 1\ntestid:card count < -1\n",
-            "VISIT /\n[Asserts]\ntestid:card count >= 1\ntestid:card count == -1\n",
+            "VISIT /\nASSERT testid:card count >= 1\nASSERT testid:card count < -1\n",
+            "VISIT /\nASSERT testid:card count >= 1\nASSERT testid:card count == -1\n",
         ] {
             assert_eq!(lint(source).len(), 1, "source:\n{source}");
         }
@@ -1055,19 +1071,19 @@ mod tests {
     fn presence_counts_that_are_not_redundant_pass() {
         for source in [
             // A different locator follows.
-            "VISIT /\n[Asserts]\ntestid:card count >= 1\ntestid:other visible\n",
+            "VISIT /\nASSERT testid:card count >= 1\nASSERT testid:other visible\n",
             // Not a presence check.
-            "VISIT /\n[Asserts]\ntestid:card count >= 2\ntestid:card visible\n",
+            "VISIT /\nASSERT testid:card count >= 2\nASSERT testid:card visible\n",
             // Nothing follows it.
-            "VISIT /\n[Asserts]\ntestid:card count >= 1\n",
+            "VISIT /\nASSERT testid:card count >= 1\n",
             // A page check sits between them.
-            "VISIT /\n[Asserts]\ntestid:card count >= 1\ntitle == Home\ntestid:card visible\n",
+            "VISIT /\nASSERT testid:card count >= 1\nASSERT title == Home\nASSERT testid:card visible\n",
             // The same text through a different segment shape.
-            "VISIT /\n[Asserts]\ntext:Save count >= 1\ntext~:Save visible\n",
+            "VISIT /\nASSERT text:Save count >= 1\nASSERT text~:Save visible\n",
             // Counts that accept zero do not wait for the element.
-            "VISIT /\n[Asserts]\ntestid:card count >= 1\ntestid:card count not > 0\n",
-            "VISIT /\n[Asserts]\ntestid:card count >= 1\ntestid:card count > -1\n",
-            "VISIT /\n[Asserts]\ntestid:card count >= 1\ntestid:card count < 2\n",
+            "VISIT /\nASSERT testid:card count >= 1\nASSERT testid:card count not > 0\n",
+            "VISIT /\nASSERT testid:card count >= 1\nASSERT testid:card count > -1\n",
+            "VISIT /\nASSERT testid:card count >= 1\nASSERT testid:card count < 2\n",
         ] {
             assert_eq!(lint(source), Vec::new(), "source:\n{source}");
         }
@@ -1076,7 +1092,7 @@ mod tests {
     #[test]
     fn reports_literal_expected_values_whose_type_cannot_work() {
         let lints = lint(
-            "HTTP GET /x\n[Asserts]\nstatus == \"200\"\nbytes == \"abc\"\nbytes startsWith 12\nstatus > true\n",
+            "HTTP GET /x\nASSERT status == \"200\"\nASSERT bytes == \"abc\"\nASSERT bytes startsWith 12\nASSERT status > true\n",
         );
         let messages: Vec<&str> = lints.iter().map(|lint| lint.message.as_str()).collect();
         assert_eq!(messages, [
@@ -1085,12 +1101,12 @@ mod tests {
             "`startsWith` cannot compare bytes values with a number literal",
             "`>` cannot compare number values with a boolean literal",
         ]);
-        let lints = lint("VISIT /\n[Asserts]\nurl toDate \"%Y\" > 3\n");
+        let lints = lint("VISIT /\nASSERT url toDate \"%Y\" > 3\n");
         assert_eq!(lints.len(), 1);
         assert_eq!(lints[0].code, "filter-type");
         for source in [
-            "HTTP GET /x\n[Asserts]\nstatus != \"200\"\nstatus not == \"200\"\njson:$.a == 1\nstatus == {{code}}\nbytes == hex,00;\n",
-            "VISIT /\n[Asserts]\nurl toDate \"%Y\" dateFormat \"%Y\" == 2026\ncss:li count >= 1\n",
+            "HTTP GET /x\nASSERT status != \"200\"\nASSERT status not == \"200\"\nASSERT json:$.a == 1\nASSERT status == {{code}}\nASSERT bytes == hex,00;\n",
+            "VISIT /\nASSERT url toDate \"%Y\" dateFormat \"%Y\" == 2026\nASSERT css:li count >= 1\n",
         ] {
             assert_eq!(lint(source), Vec::new(), "source:\n{source}");
         }
@@ -1098,19 +1114,16 @@ mod tests {
 
     #[test]
     fn warns_when_an_http_entry_does_not_assert_status() {
-        let lints = lint("HTTP GET /health\n[Asserts]\njson:$.ok == true\n");
+        let lints = lint("HTTP GET /health\nASSERT json:$.ok == true\n");
         assert_eq!(lints.len(), 1);
         assert_eq!(lints[0].code, "unasserted-http-status");
         assert_eq!(lints[0].severity, Severity::Warning);
         assert_eq!(lints[0].line, 1);
 
-        assert_eq!(
-            lint("HTTP GET /health\n[Asserts]\nstatus == 503\n"),
-            Vec::new()
-        );
+        assert_eq!(lint("HTTP GET /health\nASSERT status == 503\n"), Vec::new());
         assert_eq!(
             lint(
-                "VISIT /\nRESPONSE health GET /health\n[Asserts]\nresponse:health json:$.ok == true\n"
+                "VISIT /\nRESPONSE health GET /health\nASSERT response:health json:$.ok == true\n"
             ),
             Vec::new()
         );
@@ -1159,7 +1172,7 @@ mod tests {
     fn setup_refs_are_checked_against_the_setup_flow() {
         let setup = parse_file(
             Path::new("login.whirl"),
-            "VISIT /\n[Captures]\ntoken: css:\"#t\" text\n",
+            "VISIT /\nCAPTURE token: css:\"#t\" text\n",
         )
         .expect("fixture should parse");
         let file = parse_file(
@@ -1192,7 +1205,7 @@ mod tests {
     fn captures_read_by_dependents_count_as_used() {
         let file = parse_file(
             Path::new("login.whirl"),
-            "VISIT /\n[Captures]\ntoken: css:\"#t\" text\n",
+            "VISIT /\nCAPTURE token: css:\"#t\" text\n",
         )
         .expect("fixture should parse");
         assert_eq!(lint_file(&file).len(), 1);
@@ -1202,43 +1215,44 @@ mod tests {
 
     #[test]
     fn warns_about_a_capture_nothing_uses() {
-        let lints = lint("VISIT /\n[Captures]\norder_id: testid:x text\n");
+        let lints = lint("VISIT /\nCAPTURE order_id: testid:x text\n");
         assert_eq!(lints.len(), 1);
         assert_eq!(lints[0].severity, Severity::Warning);
-        assert_eq!(lints[0].line, 3);
+        assert_eq!(lints[0].line, 2);
         assert_eq!(lints[0].message, "capture `order_id` is never used");
     }
 
     #[test]
     fn a_reference_in_a_later_value_is_a_use() {
-        let source = "VISIT /\n[Captures]\nnext_url: testid:x attr:href\n\nVISIT {{next_url}}\n";
+        let source = "VISIT /\nCAPTURE next_url: testid:x attr:href\n\nVISIT {{next_url}}\n";
         assert_eq!(lint(source), Vec::new());
     }
 
     #[test]
     fn a_reference_in_a_later_locator_is_a_use() {
-        let source = "VISIT /\n[Captures]\nrow: testid:x text\n\nVISIT /b\n[Asserts]\ntestid:{{row}} visible\n";
+        let source =
+            "VISIT /\nCAPTURE row: testid:x text\n\nVISIT /b\nASSERT testid:{{row}} visible\n";
         assert_eq!(lint(source), Vec::new());
     }
 
     #[test]
     fn an_overwrite_is_not_a_use() {
-        let source = "VISIT /\n[Captures]\nid: testid:x text\n\nVISIT /b\n[Captures]\nid: testid:y text\n\nVISIT {{id}}\n";
+        let source = "VISIT /\nCAPTURE id: testid:x text\n\nVISIT /b\nCAPTURE id: testid:y text\n\nVISIT {{id}}\n";
         let lints = lint(source);
         assert_eq!(lints.len(), 1);
-        assert_eq!(lints[0].line, 3);
+        assert_eq!(lints[0].line, 2);
         assert_eq!(lints[0].message, "capture `id` is never used");
     }
 
     #[test]
     fn an_overwriting_captures_own_source_is_a_use() {
-        let source = "VISIT /\n[Captures]\nid: testid:x text\n\nVISIT /b\n[Captures]\nid: eval \"'{{id}}' + '!'\"\n\nVISIT {{id}}\n";
+        let source = "VISIT /\nCAPTURE id: testid:x text\n\nVISIT /b\nCAPTURE id: eval \"'{{id}}' + '!'\"\n\nVISIT {{id}}\n";
         assert_eq!(lint(source), Vec::new());
     }
 
     #[test]
     fn an_earlier_reference_is_not_a_use() {
-        let source = "VISIT {{id}}\n[Captures]\nid: testid:x text\n";
+        let source = "VISIT {{id}}\nCAPTURE id: testid:x text\n";
         let lints = lint(source);
         assert_eq!(lints.len(), 1);
         assert_eq!(lints[0].message, "capture `id` is never used");
@@ -1246,7 +1260,7 @@ mod tests {
 
     #[test]
     fn an_env_reference_is_not_a_capture_use() {
-        let source = "VISIT /\n[Captures]\nid: testid:x text\n\nVISIT {{env.id}}\n";
+        let source = "VISIT /\nCAPTURE id: testid:x text\n\nVISIT {{env.id}}\n";
         let lints = lint(source);
         assert_eq!(lints.len(), 1);
     }
@@ -1292,18 +1306,48 @@ mod tests {
 
     #[test]
     fn act_instructions_use_captures() {
-        let source = "VISIT /\n[Captures]\nitem: testid:x text\n\nACT \"open {{item}}\"\n";
+        let source = "VISIT /\nCAPTURE item: testid:x text\n\nACT \"open {{item}}\"\n";
+        assert_eq!(lint(source), Vec::new());
+    }
+
+    #[test]
+    fn warns_about_each_section_header() {
+        let lints = lint("VISIT /\n[Asserts]\nurl == /\n[Captures]\nc: url\nVISIT {{c}}\n");
+        let codes: Vec<(&str, u32)> = lints.iter().map(|lint| (lint.code, lint.line)).collect();
+        assert_eq!(codes, [
+            ("sections-deprecated", 2),
+            ("sections-deprecated", 4)
+        ]);
+        assert_eq!(lints[0].severity, Severity::Warning);
+    }
+
+    #[test]
+    fn keyword_checks_keep_the_check_rules() {
+        let lints = lint(
+            "HTTP GET /api\nASSERT json:$.id exists\nVISIT /\nASSERT testid:card count >= 1\nASSERT testid:card visible\nCAPTURE unused: url\n",
+        );
+        let codes: Vec<&str> = lints.iter().map(|lint| lint.code).collect();
+        assert_eq!(codes, [
+            "unasserted-http-status",
+            "redundant-presence",
+            "unused-capture"
+        ]);
+    }
+
+    #[test]
+    fn a_capture_between_two_checks_breaks_the_presence_pair() {
+        let source = "VISIT /\nASSERT testid:card count >= 1\nCAPTURE n: url\nASSERT testid:card visible\nVISIT {{n}}\n";
         assert_eq!(lint(source), Vec::new());
     }
 
     #[test]
     fn lints_come_back_in_line_order() {
         let source =
-            "VISIT /\n[Captures]\nunused: testid:x text\n\nVISIT /b\nSCREENSHOT a\nSCREENSHOT a\n";
+            "VISIT /\nCAPTURE unused: testid:x text\n\nVISIT /b\nSCREENSHOT a\nSCREENSHOT a\n";
         let lints = lint(source);
         assert_eq!(lints.len(), 2);
-        assert_eq!(lints[0].line, 3);
-        assert_eq!(lints[1].line, 7);
+        assert_eq!(lints[0].line, 2);
+        assert_eq!(lints[1].line, 6);
         assert_eq!(lints[1].severity, Severity::Error);
     }
 }

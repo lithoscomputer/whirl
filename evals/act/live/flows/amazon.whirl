@@ -4,10 +4,8 @@ user-agent: chrome
 
 # precheck: the home page and its search box are present.
 VISIT https://www.amazon.com/
-[Asserts]
-role:searchbox "Search Amazon" visible
+ASSERT role:searchbox "Search Amazon" visible
 
 # Type into the site search box.
 ACT "type wireless mouse into the Amazon search box" @60s
-[Asserts]
-role:searchbox "Search Amazon" value == "wireless mouse"
+ASSERT role:searchbox "Search Amazon" value == "wireless mouse"

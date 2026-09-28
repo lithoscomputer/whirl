@@ -1,0 +1,13 @@
+# Sign in.
+VISIT /login
+PAGE /login
+[Asserts] # the form
+role:heading "Sign in" visible
+[Captures]
+next: url
+
+HTTP GET /api/health
+[Asserts]
+status == 200
+
+VISIT {{next}}

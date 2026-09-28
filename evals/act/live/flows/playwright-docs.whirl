@@ -4,11 +4,9 @@ user-agent: chrome
 
 # precheck: the docs page and its sidebar are present.
 VISIT https://playwright.dev/docs/intro
-[Asserts]
-role:heading "Installation" visible
-role:link "Writing tests" count >= 1
+ASSERT role:heading "Installation" visible
+ASSERT role:link "Writing tests" count >= 1
 
 # Open a page from the docs sidebar.
 ACT "open the Writing tests page from the sidebar" @60s
-[Asserts]
-url contains /docs/writing-tests
+ASSERT url contains /docs/writing-tests

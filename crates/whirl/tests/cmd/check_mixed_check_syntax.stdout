@@ -1,0 +1,16 @@
+{
+  "diagnostics": [
+    {
+      "code": "mixed-check-syntax",
+      "column": 1,
+      "expected": [],
+      "length": 9,
+      "line": 5,
+      "message": "this file has an ASSERT or CAPTURE line on line 2, so it cannot also have sections; run `whirl fmt` to rewrite the sections as lines",
+      "path": "mixed.whirl",
+      "severity": "error"
+    }
+  ],
+  "exitCode": 2,
+  "version": 1
+}

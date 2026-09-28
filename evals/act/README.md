@@ -2,7 +2,7 @@
 
 These evals compare language models on `ACT` (SPEC section 7.4) for
 accuracy, cost, and speed. Each task is an ordinary `.whirl` flow: `ACT` is
-the step under test, and `[Asserts]` grades it. Whirl's JSON report records
+the step under test, and its `ASSERT` lines grade it. Whirl's JSON report records
 the rest.
 
 ## Run
@@ -96,8 +96,7 @@ model: {{model}}
 # Choose from a dropdown that is not a select element.
 VISIT /custom-dropdown/
 ACT "choose Canada from the country dropdown" @60s
-[Asserts]
-testid:selected-country text == Canada
+ASSERT testid:selected-country text == Canada
 ```
 
 A live flow uses absolute URLs and starts with an entry whose comment

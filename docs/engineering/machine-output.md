@@ -12,6 +12,7 @@ Schemas: [check](check.schema.json), [run report](report.schema.json).
 | Code | Meaning |
 | --- | --- |
 | `parse-error` | Invalid flow syntax; `expected` lists alternatives when available |
+| `mixed-check-syntax` | A file uses both `[Asserts]` or `[Captures]` sections and `ASSERT` or `CAPTURE` lines |
 | `input-selection` | Missing input path or no selected flow files |
 | `input-io` | An input could not be read |
 | `setup-io` | A setup flow could not be found or read |
@@ -30,6 +31,7 @@ Schemas: [check](check.schema.json), [run report](report.schema.json).
 | `unasserted-http-status` | An independent HTTP entry has no status assertion; warning |
 | `act-without-model` | A file uses `ACT` without a `model` option |
 | `unknown-model` | The `model` option names a model the catalog cannot route |
+| `sections-deprecated` | A deprecated `[Asserts]` or `[Captures]` section; `whirl fmt` rewrites it; warning |
 | `filter-type` | A check's subject, filters, predicate, and literal expected value cannot work together, such as `text toHex` or `status == "200"` |
 
 Locations use 1-based Unicode character positions, not bytes or UTF-16 units.
