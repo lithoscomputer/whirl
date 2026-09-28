@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Snapshot element</title>
+<style>
+  html, body { margin: 0; background: white; }
+  #target { position: absolute; left: 10px; top: 10px; width: 20px; height: 20px; background: #0088ff; }
+  #dot { position: absolute; left: 0; top: 0; width: 5px; height: 2px; background: #0088ff; }
+  #outside { position: absolute; left: 50px; top: 10px; width: 10px; height: 10px; background: white; }
+  #inner { height: 100px; background: linear-gradient(#0088ff, #ff8800); }
+</style>
+<div id="outside" data-testid="outside"></div>
+<div id="target" data-testid="target"><div id="dot" data-testid="dot"></div></div>
+<script>
+  // The target is a solid 20x20 box. Its 5x2 dot is 10 of its 400 pixels.
+  const query = new URLSearchParams(location.search);
+  const target = document.getElementById("target");
+  const outside = document.getElementById("outside");
+  const dot = document.getElementById("dot");
+  const current = () => document.getElementById("target");
+  if (query.has("outside")) outside.style.background = "black";
+  if (query.has("dot")) dot.style.background = `#${query.get("dot") || "000000"}`;
+  if (query.has("wide")) target.style.width = "21px";
+  if (query.has("tall")) target.style.height = "300px";
+  if (query.has("offscreen")) target.style.top = "2000px";
+  if (query.has("hidden")) target.style.display = "none";
+  if (query.has("missing")) target.remove();
+  if (query.has("scrollbox")) {
+    target.style.overflow = "auto";
+    const inner = document.createElement("div");
+    inner.id = "inner";
+    target.append(inner);
+  }
+  if (query.has("dup")) {
+    const copy = target.cloneNode(true);
+    copy.id = "copy";
+    copy.style.left = "40px";
+    document.body.append(copy);
+  }
+  if (query.has("late")) {
+    target.remove();
+    setTimeout(() => document.body.append(target), 300);
+  }
+  // Activity outside the crop that never settles.
+  if (query.has("animate")) {
+    let frame = 0;
+    setInterval(() => { outside.style.background = ++frame % 2 ? "red" : "blue"; }, 30);
+  }
+  // A target whose own pixels never repeat within a step.
+  if (query.has("flicker")) {
+    let frame = 0;
+    setInterval(() => { current().style.background = `rgb(0, 0, ${++frame % 256})`; }, 30);
+  }
+  // An identical target replaced faster than a capture completes, for the
+  // first second: early captures must find it again, and a slow machine
+  // still gets a stable target before the step's time runs out.
+  if (query.has("replace")) {
+    const swaps = setInterval(() => {
+      const old = current();
+      old.replaceWith(old.cloneNode(true));
+    }, 30);
+    setTimeout(() => clearInterval(swaps), 1000);
+  }
+  // Remove the target after the step has compared stable frames.
+  if (query.has("vanish")) setTimeout(() => current().remove(), 1000);
+  // Move the target by one pixel on every animation frame after the step
+  // has compared stable frames, so Playwright never finds it stable.
+  if (query.has("drift")) {
+    setTimeout(() => {
+      let frame = 0;
+      const step = () => {
+        current().style.left = `${10 + (++frame % 2)}px`;
+        requestAnimationFrame(step);
+      };
+      requestAnimationFrame(step);
+    }, 1000);
+  }
+</script>
+</html>

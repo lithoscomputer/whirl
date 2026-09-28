@@ -144,6 +144,9 @@ pub(crate) struct StepReport {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SnapshotReport {
+    /// The element target's locator text; absent for a full-page capture.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) target:          Option<String>,
     pub(crate) masks:           Vec<String>,
     pub(crate) max_diff:        String,
     pub(crate) pixel_threshold: String,

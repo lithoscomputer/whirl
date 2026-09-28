@@ -14,6 +14,7 @@ use crate::lang::ast::{
     self, BrowserKind, DialogPolicy, DurationLit, File, FileOption, OptionValue, ReducedMotion,
     Value, Viewport,
 };
+use crate::lang::fmt::render_snapshot_target;
 use crate::report::model::{
     ActReport, CaptureValue, EntryReport, FileReport, ReportViewport, RuntimeMetadata, SETUP_ENTRY,
     SnapshotReport, Status, StepError, StepKind, StepReport, Timing,
@@ -794,12 +795,25 @@ impl FlowExec<'_> {
                     .to_string_lossy()
                     .into_owned(),
             },
-            K::Snapshot { name, options } => {
+            K::Snapshot {
+                name,
+                target,
+                options,
+            } => {
                 let settings = self.options.snapshot.with_options(
                     options.iter().map(|line| (&line.option, line.line)),
                     &mut self.vars,
                 )?;
-                let report = settings.report(&self.vars);
+                // A target has no default engine (SPEC 6.1), so interpolation
+                // changes only its values.
+                let target_wire = target
+                    .as_ref()
+                    .map(|target| self.locator(target, None))
+                    .transpose()?;
+                let target_text = target.as_ref().map(|target| {
+                    render_step_text(&render_snapshot_target(target), &mut self.vars)
+                });
+                let report = settings.report(target_text.as_deref(), &self.vars);
                 let baseline = artifacts::snapshot_baseline_path(
                     self.run.canonical,
                     &name.text,
@@ -807,24 +821,25 @@ impl FlowExec<'_> {
                 );
                 // The shim's snapshot writer creates the baseline directory.
                 StepCommand::Snapshot {
-                    baseline_path: baseline.to_string_lossy().into_owned(),
-                    actual_path: self
+                    baseline_path:   baseline.to_string_lossy().into_owned(),
+                    actual_path:     self
                         .run
                         .abs_dir
                         .join(artifacts::snapshot_actual_file(&name.text))
                         .to_string_lossy()
                         .into_owned(),
-                    diff_path: self
+                    diff_path:       self
                         .run
                         .abs_dir
                         .join(artifacts::snapshot_diff_file(&name.text))
                         .to_string_lossy()
                         .into_owned(),
-                    update: self.run.flags.update_snapshots,
-                    masks: settings.masks.clone(),
+                    update:          self.run.flags.update_snapshots,
+                    target:          target_wire,
+                    masks:           settings.masks.clone(),
                     pixel_threshold: settings.threshold.value(),
-                    max_diff: settings.max_diff_wire(),
-                    report,
+                    max_diff:        settings.max_diff_wire(),
+                    report:          Box::new(report),
                 }
             }
             K::Eval { script } => StepCommand::EvalAction {
@@ -1026,7 +1041,7 @@ impl FlowExec<'_> {
         let title = render_step_text(node.raw_text(), &mut self.vars);
 
         let snapshot = match &prepared {
-            PreparedStep::Command(StepCommand::Snapshot { report, .. }) => Some(report.clone()),
+            PreparedStep::Command(StepCommand::Snapshot { report, .. }) => Some((**report).clone()),
             _ => None,
         };
         let line_budget = line_budget_ms(node, &self.options);
