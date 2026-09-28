@@ -933,7 +933,7 @@ fn split_timeout(tokens: &mut Vec<RawToken>) -> Option<DurationLit> {
     Some(duration)
 }
 
-const ACTION_KEYWORDS: [&str; 28] = [
+const ACTION_KEYWORDS: [&str; 29] = [
     "HTTP",
     "RESPONSE",
     "MOCK",
@@ -960,6 +960,7 @@ const ACTION_KEYWORDS: [&str; 28] = [
     "SNAPSHOT",
     "EVAL",
     "ACT",
+    "GOAL",
     "EXTRACT",
     "STORE",
 ];
@@ -1414,6 +1415,9 @@ fn parse_action_body(
             script: one_value(tokens, keyword_span)?,
         },
         "ACT" => parse_act(tokens, keyword_span)?,
+        "GOAL" => ActionKind::Goal {
+            goal: one_value(tokens, keyword_span)?,
+        },
         "EXTRACT" => parse_extract(tokens, keyword_span)?,
         other => {
             return Err(
@@ -1425,9 +1429,6 @@ fn parse_action_body(
     Ok((kind, timeout))
 }
 
-/// `ACT "instruction"` or `ACT locator "instruction"` (SPEC 7.4). The scope
-/// takes prefixed segments only, as in `ASSERT`: a region has no
-/// natural default engine.
 /// Parses `EXTRACT name [locator] "instruction"` (SPEC 7.6). The schema
 /// lines follow in [`Parser::parse_extract_schema`].
 fn parse_extract(mut tokens: Vec<RawToken>, keyword_span: Span) -> Result<ActionKind, LineError> {
@@ -1450,6 +1451,9 @@ fn parse_extract(mut tokens: Vec<RawToken>, keyword_span: Span) -> Result<Action
     })
 }
 
+/// `ACT "instruction"` or `ACT locator "instruction"` (SPEC 7.4). The scope
+/// takes prefixed segments only, as in `ASSERT`: a region has no
+/// natural default engine.
 fn parse_act(tokens: Vec<RawToken>, keyword_span: Span) -> Result<ActionKind, LineError> {
     if tokens.len() < 2 {
         return Ok(ActionKind::Act {
@@ -4815,6 +4819,23 @@ ASSERT status == 202
         assert_eq!(lit(&judges[1].claim), "no error shows");
         assert!(matches!(entry.checks[3], CheckStep::Capture(_)));
         assert!(file.uses_judge() && file.uses_ai());
+    }
+
+    #[test]
+    fn goal_takes_one_value_and_a_timeout() {
+        let file = parse("VISIT /\nGOAL \"buy {{item}}\" @180s\nASSERT url exists\n");
+        let action = &only_entry(&file).actions[1];
+        let ActionKind::Goal { goal } = &action.kind else {
+            panic!("expected GOAL, got {:?}", action.kind);
+        };
+        assert_eq!(goal.segments.len(), 2);
+        assert_eq!(action.timeout.map(DurationLit::millis), Some(180_000));
+        assert!(file.uses_goal() && file.uses_ai() && !file.uses_act());
+        assert_eq!(
+            parse_err("VISIT /\nGOAL \"a\" \"b\"\n").message,
+            "expected end of line"
+        );
+        assert_eq!(parse_err("VISIT /\nGOAL\n").message, "expected a value");
     }
 
     #[test]

@@ -219,3 +219,13 @@ if __name__ == "__main__":
         self.assertEqual(eval_act.classify(file_report(path, "passed", [entry("J.", "passed", [unsure])]), "m").task, "judge-address")
         self.assertEqual(eval_act.classify(file_report(path, "passed", [entry("J.", "passed", [unsure])]), "m").outcome, "pass")
         self.assertEqual(eval_act.classify(file_report(path, "passed", [entry("J.", "passed", [step()])]), "m").outcome, "fail")
+
+    def test_goal_steps_count_and_an_impossible_task_passes_on_goal_impossible(self):
+        goal = {"model": "m", "actions": [], "cache": "miss", "usage": {"modelCalls": 4, "inputTokens": 4000, "outputTokens": 80, "costUsdMicros": 9}}
+        gave_up = step("failed", "goal-impossible", duration_ms=5000)
+        gave_up["goal"] = goal
+        path = "x/goal-gift-card.impossible.whirl"
+        result = eval_act.classify(file_report(path, "failed", [entry("Buy.", "failed", [gave_up])]), "m")
+        self.assertEqual(result.task, "goal-gift-card")
+        self.assertEqual(result.outcome, "pass")
+        self.assertEqual((result.model_calls, result.duration_ms, result.cost_usd_micros), (4, 5000, 9))

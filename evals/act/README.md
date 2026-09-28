@@ -1,11 +1,13 @@
 # ACT evals
 
-These evals compare language models on `ACT` (SPEC section 7.4), `ai:`
-targets (SPEC section 6.3), `EXTRACT` (SPEC section 7.6), and `JUDGE` (SPEC
-section 9.8) for accuracy, cost, and speed. The `ai-target-*` tasks use `ai:`
-instead of `ACT`, the `extract-*` tasks use `EXTRACT`, and the `judge-*` tasks
-use `JUDGE`. Some `judge-*` claims only the screenshot shows, such as a color
-or a canvas chart. Each task is an ordinary `.whirl` flow: `ACT` is
+These evals compare language models on `ACT` (SPEC section 7.4), `GOAL`
+(SPEC section 7.7), `ai:` targets (SPEC section 6.3), `EXTRACT` (SPEC section
+7.6), and `JUDGE` (SPEC section 9.8) for accuracy, cost, and speed. The
+`ai-target-*` tasks use `ai:` instead of `ACT`, the `extract-*` tasks use
+`EXTRACT`, the `judge-*` tasks use `JUDGE`, and the `goal-*` tasks use `GOAL`.
+Some `judge-*` claims only the screenshot shows, such as a color or a canvas
+chart. `goal-heal-checkout` has a committed AI cache whose second line no
+longer fits the page, so the model plans the rest of the goal from there. Each task is an ordinary `.whirl` flow: `ACT` is
 the step under test, and its `ASSERT` lines grade it. Whirl's JSON report records
 the rest.
 
@@ -24,7 +26,7 @@ $ mise run eval:act -- --summarize              # summarize existing runs only
 ```
 
 A session calls real models and costs money. Check it first with
-`--preview`. A local session is about 760 runs per model.
+`--preview`. A local session is about 800 runs per model.
 
 `-n` is a target: the script runs only the runs each model and task still
 need, one pass over the tasks at a time. Repeating a command resumes an
@@ -80,8 +82,10 @@ fit several elements: it passes only when the step fails with `strictness`.
 A task whose file name ends in `.judge-false.whirl` expects `JUDGE` to answer
 `no`: it passes only when the step fails with `judge-false`. A task whose file
 name ends in `.unsure.whirl` expects `JUDGE` to answer `unsure`: it passes
-only when the flow passes with the warning `judge-unsure`. Times, calls,
-tokens, and costs sum the task's `ACT`, `ai:`, `EXTRACT`, and `JUDGE` steps.
+only when the flow passes with the warning `judge-unsure`. A task whose file
+name ends in `.impossible.whirl` expects `GOAL` to answer `impossible`: it
+passes only when the step fails with `goal-impossible`. Times, calls, tokens,
+and costs sum the task's `ACT`, `GOAL`, `ai:`, `EXTRACT`, and `JUDGE` steps.
 
 ## Results
 

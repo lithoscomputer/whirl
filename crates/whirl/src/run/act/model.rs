@@ -23,7 +23,7 @@ use serde::Deserialize;
 use serde_json::{Value as Json, json};
 
 use crate::lang::lint::ModelFacts;
-use crate::run::act::decision::{ActInference, inference_schema};
+use crate::run::act::decision::{ActInference, GoalInference, goal_schema, inference_schema};
 use crate::run::act::prompt;
 
 /// Sends every model call to one OpenAI-compatible server (SPEC 13).
@@ -159,6 +159,13 @@ pub(crate) struct JudgeReply {
     pub(crate) usage:  Usage,
 }
 
+/// One `GOAL` answer, and what the call used.
+#[derive(Debug)]
+pub(crate) struct GoalReply {
+    pub(crate) answer: Result<GoalInference, serde_json::Error>,
+    pub(crate) usage:  Usage,
+}
+
 /// The text an instruction wants typed, and what the call used.
 #[derive(Debug)]
 pub(crate) struct TextReply {
@@ -207,6 +214,30 @@ impl ModelClient {
             .structured(model, system, user, "Act", inference_schema(), deadline)
             .await?;
         Ok(ModelReply {
+            answer: serde_json::from_value(object),
+            usage,
+        })
+    }
+
+    /// Asks the model for the next step toward a goal (SPEC 7.7). The
+    /// call, with its retries, ends by `deadline`.
+    pub(crate) async fn goal_step(
+        &self,
+        model: &str,
+        user: &str,
+        deadline: Instant,
+    ) -> Result<GoalReply, lithos_llm::Error> {
+        let (object, usage) = self
+            .structured(
+                model,
+                &prompt::goal_system_prompt(),
+                user,
+                "Goal",
+                goal_schema(),
+                deadline,
+            )
+            .await?;
+        Ok(GoalReply {
             answer: serde_json::from_value(object),
             usage,
         })

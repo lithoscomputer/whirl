@@ -1,5 +1,6 @@
 //! The AI cache (SPEC 12.1): one committed JSON file next to each flow
-//! that records what its `ai:` targets and `ACT` lines resolved to.
+//! that records what its `ai:` targets, `ACT` lines, and `GOAL` lines
+//! resolved to.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -40,7 +41,7 @@ pub(crate) fn cache_path(flow: &Path) -> PathBuf {
     flow.with_file_name(name)
 }
 
-/// One action an `ACT` line ran, as the cache holds it.
+/// One action an `ACT` or `GOAL` line ran, as the cache holds it.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct CachedAction {
@@ -63,6 +64,12 @@ pub(crate) enum CacheEntry {
         fingerprint: Fingerprint,
     },
     Act {
+        line:       String,
+        occurrence: u32,
+        model:      String,
+        actions:    Vec<CachedAction>,
+    },
+    Goal {
         line:       String,
         occurrence: u32,
         model:      String,
@@ -92,6 +99,14 @@ impl CacheEntry {
                 occurrence: *occurrence,
                 target:     None,
             },
+            Self::Goal {
+                line, occurrence, ..
+            } => CacheKey {
+                kind:       EntryKind::Goal,
+                line:       line.clone(),
+                occurrence: *occurrence,
+                target:     None,
+            },
         }
     }
 }
@@ -101,6 +116,7 @@ impl CacheEntry {
 pub(crate) enum EntryKind {
     AiTarget,
     Act,
+    Goal,
 }
 
 /// What names an entry: its kind, its authored line, the line's
@@ -294,8 +310,14 @@ pub(crate) fn file_keys(file: &File) -> Vec<CacheKey> {
     };
     for entry in &file.entries {
         for action in &entry.actions {
-            if matches!(action.kind, ActionKind::Act { .. }) {
-                keys.push(key(EntryKind::Act, action.line, &action.text, None));
+            match action.kind {
+                ActionKind::Act { .. } => {
+                    keys.push(key(EntryKind::Act, action.line, &action.text, None));
+                }
+                ActionKind::Goal { .. } => {
+                    keys.push(key(EntryKind::Goal, action.line, &action.text, None));
+                }
+                _ => {}
             }
             targets(action.line, &action.text, action.kind.locators(), &mut keys);
         }

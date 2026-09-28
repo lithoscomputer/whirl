@@ -56,6 +56,7 @@ pub(crate) fn lint_file_with(file: &File, external_uses: &HashSet<String>) -> Ve
     ai_counts(file, &mut lints);
     extract_rules(file, &mut lints);
     judge_alone(file, &mut lints);
+    goal_unchecked(file, &mut lints);
     lints.sort_by_key(|lint| (lint.line, lint.column));
     lints
 }
@@ -175,6 +176,7 @@ pub(crate) fn lint_act(file: &File, facts: impl Fn(&str) -> ModelFacts) -> Vec<L
         .flat_map(|entry| {
             let actions = entry.actions.iter().filter_map(|action| match action.kind {
                 ActionKind::Act { .. } => Some((action.span, "ACT")),
+                ActionKind::Goal { .. } => Some((action.span, "GOAL")),
                 ActionKind::Extract { .. } => Some((action.span, "EXTRACT")),
                 _ => None,
             });
@@ -209,6 +211,26 @@ pub(crate) fn lint_act(file: &File, facts: impl Fn(&str) -> ModelFacts) -> Vec<L
         })
         .into_iter()
         .collect()
+}
+
+/// The model decides when a `GOAL` is done, so the `GOAL` must be the last
+/// action of an entry with an `ASSERT` that checks the result (SPEC 7.7).
+fn goal_unchecked(file: &File, lints: &mut Vec<Lint>) {
+    for entry in &file.entries {
+        let last = entry.actions.len().saturating_sub(1);
+        let checked = entry.asserts().next().is_some();
+        for (index, action) in entry.actions.iter().enumerate() {
+            if matches!(action.kind, ActionKind::Goal { .. }) && (index != last || !checked) {
+                lints.push(lint_at(
+                    file,
+                    Severity::Error,
+                    "goal-unchecked",
+                    action.span,
+                    "an ASSERT must follow GOAL, before any other action, to check that the goal was reached".to_owned(),
+                ));
+            }
+        }
+    }
 }
 
 /// `JUDGE` does not wait for the state it judges, so an entry needs an
@@ -325,6 +347,7 @@ fn interacts(kind: &ActionKind) -> bool {
             | ActionKind::Upload { .. }
             | ActionKind::Drop { .. }
             | ActionKind::Act { .. }
+            | ActionKind::Goal { .. }
             | ActionKind::Eval { .. }
     )
 }
@@ -874,7 +897,9 @@ fn collect_action_refs<'a>(action: &'a Action, refs: &mut Vec<VarRef<'a>>) {
                 collect_locator_refs(target, line, refs);
             }
         }
-        ActionKind::Eval { script } => collect_value_refs(script, line, refs),
+        ActionKind::Eval { script } | ActionKind::Goal { goal: script } => {
+            collect_value_refs(script, line, refs);
+        }
         ActionKind::Act { scope, instruction }
         | ActionKind::Extract {
             scope, instruction, ..
@@ -1523,6 +1548,41 @@ mod tests {
         assert_eq!(
             lints[0].message,
             "JUDGE needs a `model` option naming the language model to ask"
+        );
+    }
+
+    #[test]
+    fn goal_is_the_last_action_of_an_entry_with_an_assert() {
+        let lint_codes = |source: &str| -> Vec<(&'static str, u32)> {
+            lint(source)
+                .iter()
+                .map(|lint| (lint.code, lint.line))
+                .collect()
+        };
+        assert_eq!(
+            lint_codes(
+                "[Options]\nmodel: m\nVISIT /\nGOAL \"buy a mug\"\nASSERT testid:cart text == 1\n"
+            ),
+            []
+        );
+        assert_eq!(
+            lint_codes(
+                "[Options]\nmodel: m\nVISIT /\nGOAL \"buy a mug\"\nCLICK Checkout\nASSERT url exists\n"
+            ),
+            [("goal-unchecked", 4)]
+        );
+        assert_eq!(
+            lint_codes(
+                "[Options]\nmodel: m\nVISIT /\nGOAL \"buy a mug\"\nCAPTURE u: url\n\nVISIT {{u}}\n"
+            ),
+            [("goal-unchecked", 4)]
+        );
+        let lints = lint_act_source("VISIT /\nGOAL \"buy a mug\"\nASSERT url exists\n");
+        assert_eq!(lints.len(), 1);
+        assert_eq!(lints[0].code, "act-without-model");
+        assert_eq!(
+            lints[0].message,
+            "GOAL needs a `model` option naming the language model to ask"
         );
     }
 

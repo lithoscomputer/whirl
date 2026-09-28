@@ -482,6 +482,9 @@ fn render_action(action: &Action) -> String {
         ActionKind::Eval { script } => {
             format!("EVAL {}", render_value(script, ValueCtx::Plain, is_final))
         }
+        ActionKind::Goal { goal } => {
+            format!("GOAL {}", render_value(goal, ValueCtx::Plain, is_final))
+        }
         ActionKind::Act { scope, instruction } => match scope {
             Some(scope) => format!(
                 "ACT {} {}",
@@ -1294,7 +1297,7 @@ mod tests {
                     scrub_snapshot_option(&mut option.option);
                 }
             }
-            ActionKind::Eval { script } => scrub_value(script),
+            ActionKind::Eval { script } | ActionKind::Goal { goal: script } => scrub_value(script),
             ActionKind::Act { scope, instruction } => {
                 if let Some(scope) = scope {
                     scrub_locator(scope);
@@ -1521,6 +1524,15 @@ HTTP GET "@10s"
         assert_eq!(
             fmt("VISIT /\nEXTRACT order   \"the total\"\n{ \"type\":  \"number\" }\n"),
             "VISIT /\nEXTRACT order \"the total\"\n{ \"type\":  \"number\" }\n"
+        );
+    }
+
+    #[test]
+    fn goal_round_trips() {
+        assert_round_trip("VISIT /\nGOAL \"buy {{item}}\" @180s\nASSERT url exists\n");
+        assert_eq!(
+            fmt("VISIT /\nGOAL    \"buy a mug\"\nASSERT url exists\n"),
+            "VISIT /\nGOAL \"buy a mug\"\nASSERT url exists\n"
         );
     }
 

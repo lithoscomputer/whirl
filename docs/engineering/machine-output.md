@@ -30,7 +30,7 @@ Schemas: [check](check.schema.json), [run report](report.schema.json).
 | `unused-capture` | A capture is never read; warning |
 | `redundant-presence` | The following assertion requires presence; warning |
 | `unasserted-http-status` | An independent HTTP entry has no status assertion; warning |
-| `act-without-model` | A file uses `ACT`, `ai:`, `EXTRACT`, or `JUDGE` without a `model` option |
+| `act-without-model` | A file uses `ACT`, `GOAL`, `ai:`, `EXTRACT`, or `JUDGE` without a `model` option |
 | `unknown-model` | The `model` option names a model the catalog cannot route |
 | `ai-count` | An `ai:` target is counted; it names one element |
 | `cache-invalid` | A flow's AI cache is not a valid version 1 file; path is the cache file |
@@ -42,6 +42,7 @@ Schemas: [check](check.schema.json), [run report](report.schema.json).
 | `judge-without-images` | A file uses `JUDGE`, and the catalog says its model does not accept images |
 | `judge-images-unknown` | A file uses `JUDGE`, and the catalog does not say whether its model accepts images; warning |
 | `judge-alone` | An entry has `JUDGE` and no `ASSERT` that waits for the state it judges; warning |
+| `goal-unchecked` | A `GOAL` is not the last action of its entry, or its entry has no `ASSERT` |
 | `filter-type` | A check's subject, filters, predicate, and literal expected value cannot work together, such as `text toHex` or `status == "200"` |
 
 Locations use 1-based Unicode character positions, not bytes or UTF-16 units.
@@ -97,7 +98,18 @@ reason. It passes with the warning `judge-unsure` when the model answers
 `unsure`. A model error is `judge-model`. It has a `judge` object: `model`,
 the `verdict` (`yes`, `no`, or `unsure`) and the masked `reason`, both absent
 when the step ended before the model answered, and `usage` in the shape of
-the `act` usage. A file that ran `MOCK`
+the `act` usage.
+
+A `GOAL` step (SPEC 7.7) fails with `goal-impossible` when the model answers
+`impossible` (`actual` is the model's reason), `goal-limit` when the answer
+after 20 actions is not `done`, and `timeout` when its time runs out. A model
+error is `goal-model`, and an answer that `ACT` would reject is
+`act-invalid-decision`. It has a `goal` object in the shape of the `act`
+object without `planner`: `model`; `actions`, each with its `line`,
+`description`, `plannedBy` (`llm` or `cache`), and `error` for an action that
+failed and that the model planned past; `end` (`done` or `impossible`) and
+the masked `reason` when the model ended the goal; `cache`; `cached` for a
+heal; and `usage`. A file that ran `MOCK`
 lines has `mocks`: each with its `line`, `method`, resolved `url`, and
 `hits`, the number of requests it served. Codes are stable; message text may
 change and must not be parsed. Secret masking covers diagnostic action logs in

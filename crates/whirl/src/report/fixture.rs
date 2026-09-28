@@ -31,6 +31,7 @@ fn step(
         ai: None,
         extract: None,
         judge: None,
+        goal: None,
     }
 }
 

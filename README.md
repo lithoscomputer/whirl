@@ -175,6 +175,17 @@ Set the provider's key, such as `ANTHROPIC_API_KEY`. The model's choice can
 change between runs, so assert the result. `{{env.NAME}}` values in an
 instruction reach the model only as placeholders. See [ACT](SPEC.md#74-act).
 
+`GOAL` lets the model run several actions, one at a time, until it says the
+goal is done. Follow it with an `ASSERT` that checks the result:
+
+```whirl
+GOAL "add two blue mugs to the cart and open the cart"
+ASSERT testid:cart-badge text == 2
+```
+
+A `GOAL` runs at most 20 actions within 2 minutes. `@duration` changes the
+time. See [GOAL](SPEC.md#77-goal).
+
 An `ai:` segment names one element in words, wherever a locator goes:
 
 ```whirl
@@ -182,9 +193,9 @@ CLICK ai:"the Add to cart button for the first product"
 ASSERT role:dialog >> ai:"the order total" text == "$42.00"
 ```
 
-Whirl writes what each `ai:` target and `ACT` line resolved to in
-`<flow>.whirl-cache.json`, next to the flow. Commit it. Later runs replay it
-without a model call, and a step whose page changed heals with a warning:
+Whirl writes what each `ai:` target, `ACT` line, and `GOAL` line resolved to
+in `<flow>.whirl-cache.json`, next to the flow. Commit it. Later runs replay
+it without a model call, and a step whose page changed heals with a warning:
 
 ```console
 $ whirl --cache=update flows/   # resolve with the model and write the cache

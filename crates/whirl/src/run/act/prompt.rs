@@ -6,7 +6,8 @@
 //! its `buildExtractSystemPrompt` and `buildExtractUserPrompt`, the `JUDGE`
 //! prompt (SPEC 9.8), adapted from the evidence rules of its verifier
 //! (`packages/core/lib/v3/verifier/prompts/fusedOutcome.ts`) and the YES/NO
-//! evaluator of `packages/core/lib/v3LegacyEvaluator.ts`, and the
+//! evaluator of `packages/core/lib/v3LegacyEvaluator.ts`, the `GOAL`
+//! prompt (SPEC 7.7), adapted from its `buildOperatorSystemPrompt`, and the
 //! text-argument prompt of its Jev path (browserbase/stagehand#2953).
 //!
 //! Whirl's changes: element IDs are Playwright AI-snapshot refs rather than
@@ -119,6 +120,79 @@ pub(crate) fn judge_system_prompt() -> String {
          holds, and no when the evidence shows it does not. Answer unsure when the evidence is \
          missing, cut off, or ambiguous.",
     )
+}
+
+/// The system prompt of every `GOAL` call (SPEC 7.7). Whirl answers with
+/// a schema instead of tools, and it has no navigation, so the prompt
+/// names the three answers and leaves out the tools.
+pub(crate) fn goal_system_prompt() -> String {
+    collapse_whitespace(
+        "You are a general-purpose agent whose job is to accomplish the user's goal across \
+         multiple model calls by running actions on the page.
+
+         You will be given a goal, a list of steps that have been taken so far, and a \
+         hierarchical accessibility tree of the page as it is now. Your job is to determine if \
+         either the user's goal has been completed or if there are still steps that need to be \
+         taken.
+
+         Answer with status act and one action when steps remain, with status done when the \
+         goal is complete, or with status impossible when the goal cannot be achieved on this \
+         page. Give a short reason. Set action to null unless the status is act.
+
+         Important guidelines:
+         1. Break down complex actions into individual atomic steps.
+         2. Use only one action at a time, such as a single click on a specific element, \
+         typing into a single input field, or selecting a single option.
+         3. Avoid combining multiple actions in one step.
+         4. If a step failed, look at the page as it is now and try another way.
+         5. You cannot go to a URL, go back, or reload the page.
+         6. Only answer done when the goal is genuinely complete, and impossible when it is \
+         genuinely impossible to achieve.
+
+         Each element in the accessibility tree has a ref in square brackets, like [ref=e12] or \
+         [ref=f1e3]. Copy the ref value exactly into elementId, without the brackets or the \
+         `ref=` prefix. For example, if the tree shows [ref=e12], return elementId \"e12\".",
+    )
+}
+
+/// The user message of a `GOAL` call: the goal, how to answer an action,
+/// the steps so far, and the snapshot.
+pub(crate) fn goal_message(
+    goal: &str,
+    placeholders: &[String],
+    steps: &[String],
+    snapshot: &str,
+) -> String {
+    let methods = method_list(ActMethod::ALL);
+    let mut message = format!(
+        "Goal: {goal}
+
+  For an action, provide the element and a method such as {methods}. Remember that to users, \
+         buttons and links look the same in most cases.
+  When choosing non-left click actions, provide right or middle as the argument
+  {DRAG_RULE}
+  {SCROLL_RULES}
+  If the step is a key press, e.g., 'press enter', 'press a', 'press space', etc., always \
+         choose the press method with the appropriate key as argument — e.g. 'a', 'Enter', \
+         'Space'. Capitalize the first character like 'Enter', 'Tab', 'Escape' only for special \
+         keys.
+  To choose an option of a 'select' element, choose the selectOptionFromDropdown method with \
+         the exact text of the option. To choose from any other dropdown, click it to open it \
+         first, and choose the option in the next step.
+"
+    );
+    message.push_str(&variables_prompt(placeholders));
+    let steps = if steps.is_empty() {
+        "none".to_owned()
+    } else {
+        steps
+            .iter()
+            .enumerate()
+            .map(|(index, step)| format!("{}. {step}", index + 1))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    message + "\nSteps taken so far:\n" + &steps + "\nAccessibility Tree: \n" + snapshot + "\n"
 }
 
 /// The text of a `JUDGE` call's user message: the claim, its
@@ -362,6 +436,28 @@ mod tests {
         assert!(prompt.contains(DRAG_RULE));
         assert!(prompt.contains(SCROLL_RULES));
         assert!(!prompt.contains("variables"));
+    }
+
+    #[test]
+    fn the_goal_message_lists_the_steps_so_far_and_the_rules() {
+        let message = goal_message(
+            "sign in as %env.USER%",
+            &["%env.USER%".to_owned()],
+            &[
+                "FILL role:textbox Email \"%env.USER%\"".to_owned(),
+                "CLICK role:button Go (failed: timeout)".to_owned(),
+            ],
+            "- button \"Sign in\" [ref=e2]",
+        );
+        assert!(message.starts_with("Goal: sign in as %env.USER%\n"));
+        assert!(message.contains(DRAG_RULE));
+        assert!(message.contains("the following variables to be used in the action: %env.USER%"));
+        assert!(message.contains(
+            "Steps taken so far:\n1. FILL role:textbox Email \"%env.USER%\"\n2. CLICK role:button Go (failed: timeout)\n"
+        ));
+        assert!(message.ends_with("Accessibility Tree: \n- button \"Sign in\" [ref=e2]\n"));
+        assert!(goal_message("x", &[], &[], "").contains("Steps taken so far:\nnone\n"));
+        assert!(!goal_system_prompt().contains('\n'));
     }
 
     #[test]

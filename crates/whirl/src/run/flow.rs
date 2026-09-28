@@ -16,9 +16,9 @@ use crate::lang::ast::{
 };
 use crate::lang::fmt::render_snapshot_target;
 use crate::report::model::{
-    ActReport, AiReport, CaptureValue, EntryReport, ExtractReport, FileReport, JudgeReport,
-    MockReport, ReportViewport, RuntimeMetadata, SETUP_ENTRY, SnapshotReport, Status, StepError,
-    StepKind, StepReport, StepWarning, Timing,
+    ActReport, AiReport, CaptureValue, EntryReport, ExtractReport, FileReport, GoalReport,
+    JudgeReport, MockReport, ReportViewport, RuntimeMetadata, SETUP_ENTRY, SnapshotReport, Status,
+    StepError, StepKind, StepReport, StepWarning, Timing,
 };
 use crate::run::act::{ActPlanner, Instruction, ModelClient};
 use crate::run::artifacts;
@@ -33,6 +33,7 @@ mod act_step;
 mod ai_step;
 mod check_step;
 mod extract_step;
+mod goal_step;
 mod judge_step;
 mod snapshot;
 use snapshot::SnapshotSettings;
@@ -493,6 +494,9 @@ fn line_budget_ms(node: StepNode<'_>, options: &ResolvedOptions) -> u64 {
         StepNode::Action(action) if matches!(action.kind, ast::ActionKind::Visit { .. }) => {
             options.nav_timeout_ms
         }
+        StepNode::Action(action) if matches!(action.kind, ast::ActionKind::Goal { .. }) => {
+            goal_step::DEFAULT_TIMEOUT_MS
+        }
         _ => options.step_timeout_ms,
     }
 }
@@ -579,6 +583,8 @@ enum PreparedStep {
     },
     /// An `EXTRACT` line (SPEC 7.6).
     Extract(extract_step::ExtractPlan),
+    /// A `GOAL` line (SPEC 7.7).
+    Goal(goal_step::GoalPlan),
     /// A `JUDGE` line (SPEC 9.8).
     Judge(judge_step::JudgePlan),
     /// A check with a subject, evaluated in Rust (SPEC 9).
@@ -675,6 +681,9 @@ impl FlowExec<'_> {
                         .map(|scope| self.locator(scope, None))
                         .transpose()?,
                     schema:      schema.as_ref().map(ast::ExtractSchema::json),
+                })),
+                ast::ActionKind::Goal { goal } => Ok(PreparedStep::Goal(goal_step::GoalPlan {
+                    goal: Instruction::try_new(goal, &mut self.vars)?,
                 })),
                 _ => self.build_action(action).map(PreparedStep::Command),
             },
@@ -955,6 +964,7 @@ impl FlowExec<'_> {
             },
             K::Act { .. } => unreachable!("prepare_step routes ACT to the act runner"),
             K::Extract { .. } => unreachable!("prepare_step routes EXTRACT to its runner"),
+            K::Goal { .. } => unreachable!("prepare_step routes GOAL to its runner"),
             K::Store { scope, key, value } => StepCommand::Store {
                 scope: scope.keyword().to_owned(),
                 key:   self.resolve(key)?,
@@ -1097,6 +1107,7 @@ struct StepRun {
     ai:          Option<AiReport>,
     extract:     Option<ExtractReport>,
     judge:       Option<JudgeReport>,
+    goal:        Option<GoalReport>,
     warnings:    Vec<StepWarning>,
 }
 
@@ -1111,6 +1122,7 @@ impl StepRun {
             ai: None,
             extract: None,
             judge: None,
+            goal: None,
             warnings: Vec::new(),
         }
     }
@@ -1191,6 +1203,7 @@ impl FlowExec<'_> {
         let span = debug_span!("step", line = node.line(), step_kind = ?node.kind());
         let mut extract = None;
         let mut judge = None;
+        let mut goal = None;
         let (end, act, mut spend) = match prepared {
             None => {
                 let budget = act_step::ActBudget {
@@ -1255,6 +1268,23 @@ impl FlowExec<'_> {
                 extract = report;
                 (end, None, ai_step::AiSpend::default())
             }
+            Some(PreparedStep::Goal(plan)) => {
+                let budget = act_step::ActBudget {
+                    timeout_ms,
+                    entry_capped,
+                    entry_budget_ms,
+                };
+                let (end, report, warnings) = self
+                    .run_goal(node, plan, &title, budget, client, state)
+                    .instrument(span)
+                    .await;
+                goal = report;
+                let spend = ai_step::AiSpend {
+                    warnings,
+                    ..ai_step::AiSpend::default()
+                };
+                (end, None, spend)
+            }
             Some(PreparedStep::Judge(plan)) => {
                 let budget = act_step::ActBudget {
                     timeout_ms,
@@ -1315,6 +1345,7 @@ impl FlowExec<'_> {
             ai,
             extract,
             judge,
+            goal,
             warnings: spend.warnings,
         }
     }
@@ -1457,6 +1488,7 @@ impl FlowExec<'_> {
                     ai:          None,
                     extract:     None,
                     judge:       None,
+                    goal:        None,
                 });
                 continue;
             }
@@ -1477,6 +1509,7 @@ impl FlowExec<'_> {
                 ai: run.ai,
                 extract: run.extract,
                 judge: run.judge,
+                goal: run.goal,
             });
             if status != Status::Passed {
                 entry_status = status;
@@ -1545,6 +1578,7 @@ fn skipped_entry(file: &File, entry: &ast::Entry, vars: &VarStore) -> EntryRepor
             ai:          None,
             extract:     None,
             judge:       None,
+            goal:        None,
         })
         .collect();
     EntryReport {
@@ -1594,6 +1628,7 @@ impl EntryReport {
             ai:          None,
             extract:     None,
             judge:       None,
+            goal:        None,
         });
         self
     }
@@ -1635,7 +1670,7 @@ fn start_flow_params(run: &FlowRun<'_>, options: &ResolvedOptions) -> StartFlowP
             .har
             .then(|| wire_path(&run.abs_dir.join(artifacts::NETWORK_HAR))),
         trace:              run.flags.trace,
-        open_shadow_roots:  run.file.uses_act(),
+        open_shadow_roots:  run.file.uses_act() || run.file.uses_goal(),
         mocks:              run.file.uses_mock(),
     }
 }
