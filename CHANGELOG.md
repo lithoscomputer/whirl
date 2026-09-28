@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.17.0 (2026-09-28)
+
 - Add `JUDGE [locator] "claim"`, a check line that asks the model option's language model whether a claim about the page holds, as in `JUDGE testid:summary "the total matches the sum of the line items"`. The model sees the AI snapshot and a settled screenshot of the viewport or of the element. `yes` passes, `no` fails with `judge-false` and the model's reason, and `unsure` passes with the warning `judge-unsure`. `JUDGE` runs once and never uses the AI cache. A run whose files use `JUDGE` stops before any flow when the model's provider has no credentials. `whirl check` reports a model that does not accept images (`judge-without-images`), warns when the catalog does not know (`judge-images-unknown`), and warns about an entry with no `ASSERT` before its `JUDGE` (`judge-alone`). Reports show the verdict, the reason, and what the call cost.
 - Add `judge-*` tasks to the evals, with claims that only the screenshot shows and tasks that expect `no` or `unsure`.
 - Move the browser shim to protocol 7; `whirl install` provisions the matching bundle.
