@@ -253,6 +253,58 @@ fn bare_segments(text: &str, column: u32) -> Result<Vec<ValueSegment>, LineError
     Ok(segments)
 }
 
+/// Splits one line of JSON into interpolation segments (SPEC 7.3, 11), as
+/// the runner reads it: `\{{` writes a literal `{{`, and inside a string a
+/// backslash escapes the next character, so `\\{{name}}` is an escaped
+/// backslash before a reference.
+fn json_segments(text: &str, column: u32) -> Result<Vec<ValueSegment>, LineError> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut segments = Vec::new();
+    let mut literal = String::new();
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut pos = 0;
+    while pos < chars.len() {
+        let ch = chars[pos];
+        if ch == '\\'
+            && !escaped
+            && chars.get(pos + 1) == Some(&'{')
+            && chars.get(pos + 2) == Some(&'{')
+        {
+            literal.push_str("{{");
+            pos += 3;
+            continue;
+        }
+        if ch == '{' && chars.get(pos + 1) == Some(&'{') {
+            if !literal.is_empty() {
+                segments.push(ValueSegment::Literal(mem::take(&mut literal)));
+            }
+            let at = column + u32::try_from(pos).unwrap_or(u32::MAX);
+            let (segment, used) = scan_var_ref(&chars[pos..], at)?;
+            segments.push(segment);
+            pos += used;
+            continue;
+        }
+        literal.push(ch);
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+        } else if ch == '"' {
+            in_string = true;
+        }
+        pos += 1;
+    }
+    if !literal.is_empty() || segments.is_empty() {
+        segments.push(ValueSegment::Literal(literal));
+    }
+    Ok(segments)
+}
+
 /// Scans a `{{name}}` or `{{env.NAME}}` reference starting at `{{`.
 /// Returns the segment and the number of characters consumed.
 fn scan_var_ref(chars: &[char], column: u32) -> Result<(ValueSegment, usize), LineError> {
@@ -565,7 +617,7 @@ impl Cursor {
                 format!("invalid JSON literal: {error}"),
             ));
         }
-        let segments = bare_segments(&text, column)?;
+        let segments = json_segments(&text, column)?;
         Ok(JsonLiteral {
             value: Value {
                 segments: merge_literals(segments),
@@ -2505,14 +2557,22 @@ fn structural_line(line: &str) -> bool {
         || CHECK_KEYWORDS.contains(&first)
 }
 
-fn multiline_value(lines: &[&str], start: usize, text: &str) -> Result<Value, LineError> {
+/// A body that spans lines, split line by line with `split`:
+/// [`json_segments`] for a JSON body and [`bare_segments`] for a fenced one.
+/// A JSON string cannot hold a line break, so no string crosses a line.
+fn multiline_value(
+    lines: &[&str],
+    start: usize,
+    text: &str,
+    split: fn(&str, u32) -> Result<Vec<ValueSegment>, LineError>,
+) -> Result<Value, LineError> {
     let mut segments = Vec::new();
     for (offset, line) in text.split('\n').enumerate() {
         if offset > 0 {
             segments.push(ValueSegment::Literal("\n".to_owned()));
         }
         let line_no = u32::try_from(start + offset + 1).unwrap_or(u32::MAX);
-        match bare_segments(line, 1) {
+        match split(line, 1) {
             Ok(line_segments) => segments.extend(line_segments),
             Err(error) => {
                 return Err(error.at_source(
@@ -2761,6 +2821,27 @@ pub(crate) fn parse_file(path: &Path, source: &str) -> Result<File, ParseError> 
             index += 1;
         }
     }
+    if parser.awaiting_visit() {
+        let mock = parser
+            .current
+            .as_ref()
+            .and_then(|entry| entry.actions.last())
+            .expect("an entry of MOCK lines has an action");
+        return Err(ParseError {
+            code:        ParseErrorCode::Syntax,
+            path:        path.to_path_buf(),
+            line:        mock.line,
+            column:      mock.span.column,
+            len:         mock.span.len,
+            source_line: lines
+                .get(usize::try_from(mock.line.saturating_sub(1)).unwrap_or(0))
+                .copied()
+                .unwrap_or_default()
+                .to_owned(),
+            message:     "MOCK lines must be followed by VISIT".to_owned(),
+            expected:    vec!["MOCK".to_owned(), "VISIT".to_owned()],
+        });
+    }
     if let Some(entry) = parser.current.take() {
         parser.entries.push(entry);
     }
@@ -2972,13 +3053,20 @@ impl Parser {
                 index += 1;
                 continue;
             }
-            if structural_line(line) {
+            // A JSON array body starts with `[`, as a section header does.
+            let section = matches!(
+                trimmed
+                    .split(|ch: char| ch.is_whitespace() || ch == '#')
+                    .next(),
+                Some("[Options]" | "[Asserts]" | "[Captures]")
+            );
+            let json_start = trimmed.starts_with('{') || (trimmed.starts_with('[') && !section);
+            if !json_start && structural_line(line) {
                 break;
             }
 
             if body.is_some() {
-                let duplicate_body =
-                    trimmed == "```" || trimmed.starts_with('{') || trimmed.starts_with('[');
+                let duplicate_body = trimmed == "```" || json_start;
                 let header_after_body = trimmed
                     .split_whitespace()
                     .next()
@@ -3032,7 +3120,7 @@ impl Parser {
                 };
                 let text = lines[index + 1..close].join("\n");
                 let value_start = (index + 1).min(lines.len().saturating_sub(1));
-                let value = multiline_value(lines, value_start, &text)
+                let value = multiline_value(lines, value_start, &text, bare_segments)
                     .map_err(|error| into_parse_error(path, error, 0, line))?;
                 body = Some(HttpBody {
                     kind: HttpBodyKind::Text,
@@ -3046,7 +3134,7 @@ impl Parser {
                 continue;
             }
 
-            if trimmed.starts_with('{') || trimmed.starts_with('[') {
+            if json_start {
                 let end = json_body_end(lines, index)
                     .map_err(|error| into_parse_error(path, error, 0, line))?;
                 let text = lines[index..=end].join("\n");
@@ -3069,7 +3157,7 @@ impl Parser {
                     .at_source(u32::try_from(error_line).unwrap_or(u32::MAX), source);
                     return Err(into_parse_error(path, local, 0, source));
                 }
-                let value = multiline_value(lines, index, &text)
+                let value = multiline_value(lines, index, &text, json_segments)
                     .map_err(|error| into_parse_error(path, error, 0, line))?;
                 body = Some(HttpBody {
                     kind: HttpBodyKind::Json,
@@ -3317,6 +3405,12 @@ impl Parser {
         })
     }
 
+    /// True when the current entry holds only `MOCK` lines, before the
+    /// file's first `VISIT`: it needs a `VISIT` next (SPEC 4).
+    fn awaiting_visit(&self) -> bool {
+        !self.seen_visit && self.current.is_some() && !self.in_http_entry()
+    }
+
     /// Parses an `ASSERT` or `CAPTURE` line after its keyword (SPEC 9,
     /// 10).
     fn handle_check_line(
@@ -3339,6 +3433,13 @@ impl Parser {
             | State::Checks
             | State::Asserts
             | State::Captures => {}
+        }
+        if self.awaiting_visit() {
+            return Err(LineError::new(
+                keyword_span,
+                format!("`{keyword}` needs an earlier VISIT"),
+            )
+            .expecting(["MOCK", "VISIT"]));
         }
         if let Some(line) = self.first_section {
             return Err(mixed_check_syntax(keyword_span, "keyword", line));
@@ -3466,6 +3567,12 @@ impl Parser {
                     .expect("the Actions state always has a current entry");
                 entry.actions.push(action);
             } else {
+                if self.awaiting_visit() {
+                    return Err(
+                        LineError::new(first_span, "MOCK lines must be followed by VISIT")
+                            .expecting(["MOCK", "VISIT"]),
+                    );
+                }
                 if let Some(entry) = self.current.take() {
                     self.entries.push(entry);
                 }
@@ -3514,6 +3621,10 @@ impl Parser {
                 if self.in_http_entry() {
                     return Err(LineError::new(first.span, "an HTTP entry cannot have PAGE")
                         .expecting(["ASSERT", "CAPTURE", "an action"]));
+                }
+                if self.awaiting_visit() {
+                    return Err(LineError::new(first.span, "`PAGE` needs an earlier VISIT")
+                        .expecting(["MOCK", "VISIT"]));
                 }
                 let (check, timeout) = parse_page_body(first.span, cursor)?;
                 let (text, span) = cursor.content(content_start);
@@ -4664,6 +4775,88 @@ ASSERT status == 202
         }
         let error = parse_err("MOCK GET /a failed\n# note\nX-Test: yes\n");
         assert_eq!(error.line, 3);
+    }
+
+    #[test]
+    fn http_and_mock_bodies_can_be_json_arrays() {
+        let file = parse("HTTP POST /a\n[1, {{n}}]\nMOCK GET /b 200\n[\n  \"x\"\n]\nVISIT /\n");
+        let ActionKind::Http { body, .. } = &file.entries[0].actions[0].kind else {
+            panic!("expected HTTP");
+        };
+        let body = body.as_ref().expect("JSON body");
+        assert_eq!(body.kind, HttpBodyKind::Json);
+        assert_eq!(body.text, "[1, {{n}}]");
+        let ActionKind::Mock {
+            response: MockResponse::Fulfill { body, .. },
+            ..
+        } = &file.entries[1].actions[0].kind
+        else {
+            panic!("expected a fulfilling mock");
+        };
+        assert_eq!(
+            body.as_ref().map(|body| body.text.as_str()),
+            Some("[\n  \"x\"\n]")
+        );
+
+        let sections = parse("HTTP GET /a\n[Asserts]\nstatus == 200\n");
+        assert_eq!(sections.entries[0].sections.len(), 1);
+    }
+
+    #[test]
+    fn a_backslash_before_a_reference_in_a_json_string_is_an_escaped_backslash() {
+        let file = parse("HTTP POST /a\n{\"a\": \"\\\\{{x}}\", \"b\": \"\\{{y}}\"}\n");
+        let ActionKind::Http { body, .. } = &file.entries[0].actions[0].kind else {
+            panic!("expected HTTP");
+        };
+        assert_eq!(body.as_ref().expect("JSON body").value.segments, vec![
+            ValueSegment::Literal("{\"a\": \"\\\\".to_owned()),
+            ValueSegment::Var("x".to_owned()),
+            ValueSegment::Literal("\", \"b\": \"{{y}}\"}".to_owned()),
+        ]);
+
+        let AssertBody::Check(CheckLine {
+            predicate:
+                PredicateSpec::Compare {
+                    expected: Operand::Json(literal),
+                    ..
+                },
+            ..
+        }) = only_assert("url == [\"\\\\{{x}}\"]")
+        else {
+            panic!("expected a JSON literal");
+        };
+        assert_eq!(literal.value.segments, vec![
+            ValueSegment::Literal("[\"\\\\".to_owned()),
+            ValueSegment::Var("x".to_owned()),
+            ValueSegment::Literal("\"]".to_owned()),
+        ]);
+    }
+
+    #[test]
+    fn mock_lines_need_a_visit_after_them() {
+        for (source, message) in [
+            ("MOCK GET /a 204\n", "MOCK lines must be followed by VISIT"),
+            (
+                "MOCK GET /a 204\nHTTP GET /b\nVISIT /\n",
+                "MOCK lines must be followed by VISIT",
+            ),
+            (
+                "MOCK GET /a 204\nASSERT url == x\nVISIT /\n",
+                "`ASSERT` needs an earlier VISIT",
+            ),
+            ("MOCK GET /a 204\nPAGE /\n", "`PAGE` needs an earlier VISIT"),
+        ] {
+            assert_eq!(parse_err(source).message, message, "{source}");
+        }
+        let error = parse_err("MOCK GET /a 204\n# the end\n");
+        assert_eq!((error.line, error.column), (1, 1));
+        assert_eq!(
+            parse("HTTP GET /b\nMOCK GET /a 204\nVISIT /\n")
+                .entries
+                .len(),
+            2
+        );
+        assert_eq!(parse("VISIT /\nPAGE /\nMOCK GET /a 204\n").entries.len(), 2);
     }
 
     #[test]

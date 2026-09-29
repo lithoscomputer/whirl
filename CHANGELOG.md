@@ -3,6 +3,10 @@
 ## Unreleased
 
 - When Chromium refuses a screenshot for a moment ("Unable to capture screenshot"), as it can on a busy machine, take it again within the step's time. `SNAPSHOT`, `SCREENSHOT`, and `JUDGE` failed with a runtime error instead.
+- Define the complete syntax of a `.whirl` file in SPEC section 17, as a parsing expression grammar that Whirl's tests run against the parser. It replaces the EBNF grammar, which left out tokens, white space, and where each kind of locator ends. Section 17.1 lists the value rules that the grammar leaves out, such as valid regexes and JSONPath queries.
+- Accept a JSON array as the body of an `HTTP` or `MOCK` line, as the SPEC allows. A body line that starts with `[` was read as a section header, so every array body was a parse error.
+- Report `MOCK` lines that no `VISIT` follows before the file's first `VISIT` as a parse error: a file of only `MOCK` lines, or `MOCK` lines followed by `HTTP`, `PAGE`, or a check line. The first browser entry must start with `VISIT` after any `MOCK` lines, and a check before it had no page to read.
+- In a JSON body or JSON literal, read `\\{{name}}` inside a string as an escaped backslash before the reference, as the run already did. `whirl check` did not see the reference, and a JSON literal in a text comparison compared the wrong text.
 
 ## 0.20.0 (2026-09-28)
 
