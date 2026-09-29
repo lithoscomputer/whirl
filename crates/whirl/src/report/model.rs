@@ -135,6 +135,18 @@ pub(crate) struct StepReport {
     /// What an `ACT` step asked and did (SPEC 7.4).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) act:         Option<ActReport>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) snapshot:    Option<SnapshotReport>,
+}
+
+/// Effective snapshot options. Numeric text retains units and permits secret
+/// masking.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SnapshotReport {
+    pub(crate) masks:           Vec<String>,
+    pub(crate) max_diff:        String,
+    pub(crate) pixel_threshold: String,
 }
 
 /// An `ACT` step's model, the actions it ran, and what the model calls

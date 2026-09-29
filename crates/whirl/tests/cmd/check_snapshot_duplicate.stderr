@@ -1,0 +1,3 @@
+snapshot.whirl:4:1: error: duplicate or conflicting snapshot-max-diff option
+  snapshot-max-diff: 1%
+  ^^^^^^^^^^^^^^^^^^
