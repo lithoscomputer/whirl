@@ -36,7 +36,7 @@ before and after idea 1 (`2026-09-28-live-before-settle.md` and
 `vantech-journal` took 1.08 model calls instead of 2.0, since the model no
 longer read the page before it finished loading; a model step's p50 time
 grew by 0.7-1.6 s, as real pages keep loading longer. `apartments` failed its
-precheck on every run, and `bidnet` and `amazon` on some, before any model
+precheck on every run (it has since been removed), and `bidnet` and `amazon` on some, before any model
 step.
 
 ## Kept
