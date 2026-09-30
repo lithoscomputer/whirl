@@ -399,10 +399,20 @@ impl Cursor {
         }
     }
 
+    /// True when a comment starts at the cursor: a `#` at the start of the
+    /// line or after white space (SPEC 3). Inside a token, `#` is text.
+    fn at_comment(&self) -> bool {
+        self.peek() == Some('#')
+            && self
+                .pos
+                .checked_sub(1)
+                .is_none_or(|before| self.chars[before].is_whitespace())
+    }
+
     /// The trailing comment at the cursor, if the rest of the line is one.
     fn take_comment(&mut self) -> Option<Comment> {
         self.skip_ws();
-        if self.peek() != Some('#') {
+        if !self.at_comment() {
             return None;
         }
         let column = self.column();
@@ -419,7 +429,7 @@ impl Cursor {
     /// True when only whitespace or a comment remains.
     fn at_line_end(&mut self) -> bool {
         self.skip_ws();
-        matches!(self.peek(), None | Some('#'))
+        self.peek().is_none() || self.at_comment()
     }
 
     fn span_from(&self, start: usize) -> Span {
@@ -431,10 +441,10 @@ impl Cursor {
     }
 
     /// Scans the next token, or `None` at the end of the line or at a
-    /// comment (SPEC 3.1). Bare runs end at whitespace, `"`, or `#`. A
-    /// quoted string joins only a bare run that ends in `:`, and nothing
-    /// joins a closing quote. A bare token that starts with `@` is a step
-    /// timeout.
+    /// comment (SPEC 3.1). Bare runs end at whitespace or `"`; a `#` inside
+    /// a token is text. A quoted string joins only a bare run that ends in
+    /// `:` or `:~`, and nothing joins a closing quote. A bare token that
+    /// starts with `@` is a step timeout.
     fn next_token(&mut self) -> Result<Option<RawToken>, LineError> {
         if self.at_line_end() {
             return Ok(None);
@@ -456,7 +466,6 @@ impl Cursor {
         }
         if let Some(ch) = self.peek()
             && !ch.is_whitespace()
-            && ch != '#'
         {
             let span = Span {
                 line:   self.line_no,
@@ -494,7 +503,7 @@ impl Cursor {
         let start = self.pos;
         let column = self.column();
         while let Some(ch) = self.peek() {
-            if ch.is_whitespace() || ch == '"' || ch == '#' {
+            if ch.is_whitespace() || ch == '"' {
                 break;
             }
             self.pos += 1;
@@ -729,7 +738,7 @@ impl Cursor {
         }
         let mut flags = RegexFlags::default();
         while let Some(ch) = self.peek() {
-            if ch.is_whitespace() || ch == '#' {
+            if ch.is_whitespace() {
                 break;
             }
             let column = self.column();
@@ -2524,18 +2533,11 @@ struct Parser {
 
 /// True when a line starts with the `[Options]` header.
 fn is_options_header(trimmed: &str) -> bool {
-    trimmed
-        .split(|ch: char| ch.is_whitespace() || ch == '#')
-        .next()
-        == Some("[Options]")
+    trimmed.split_whitespace().next() == Some("[Options]")
 }
 
 fn structural_line(line: &str) -> bool {
-    let first = line
-        .trim_start()
-        .split(|ch: char| ch.is_whitespace() || ch == '#')
-        .next()
-        .unwrap_or_default();
+    let first = line.split_whitespace().next().unwrap_or_default();
     first.starts_with('[')
         || first == "PAGE"
         || ACTION_KEYWORDS.contains(&first)
@@ -4282,6 +4284,35 @@ ASSERT alert:* text contains "Added to cart"
             panic!("expected FILL");
         };
         assert_eq!(lit(&value), "a # b");
+    }
+
+    #[test]
+    fn a_hash_inside_a_token_is_text() {
+        let ActionKind::Visit { url } = action_kind("VISIT /docs#install") else {
+            panic!("expected VISIT");
+        };
+        assert_eq!(lit(&url), "/docs#install");
+        let ActionKind::Click { target, .. } = action_kind("CLICK css:#submit") else {
+            panic!("expected CLICK");
+        };
+        let SegmentKind::Css(selector) = &target.segments[0].kind else {
+            panic!("expected a css segment");
+        };
+        assert_eq!(lit(selector), "#submit");
+        // A comment starts only at a `#` after white space (SPEC 3).
+        let file = parse("VISIT /\nCLICK Save # a note\n");
+        assert_eq!(file.comments.len(), 1);
+        for (line, message) in [
+            (
+                "FILL Note \"a\"#b",
+                "expected white space after the closing quote",
+            ),
+            ("ASSERT url matches /a/i#b", "invalid regex flag `#`"),
+            ("CLICK #submit", "expected a locator"),
+        ] {
+            let error = parse_err(&format!("VISIT /\n{line}\n"));
+            assert_eq!(error.message, message, "{line}");
+        }
     }
 
     #[test]

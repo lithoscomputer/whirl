@@ -8,9 +8,9 @@
 //! line with one space before `#`.
 //!
 //! The formatter never removes quotes whose removal would change the
-//! parse (SPEC 3.1): a value that would start with `@`, a keyword, a
-//! colon or `>>` in unprefixed locator text, or a lone `*` role name stays
-//! quoted, as does any value with whitespace, `"`, `#`, or characters that
+//! parse (SPEC 3.1): a value that would start with `@` or `#`, a keyword,
+//! a colon or `>>` in unprefixed locator text, or a lone `*` role name
+//! stays quoted, as does any value with whitespace, `"`, or characters that
 //! need escapes. Formatting is idempotent, and re-parsing the output yields
 //! a structurally identical file.
 
@@ -57,11 +57,11 @@ enum ValueCtx {
 }
 
 /// True when a character can sit in a bare token without changing the
-/// parse. Whitespace, `"`, and `#` end a bare token; `\` and `{` take
-/// part in escapes and interpolation; control characters need `\u{...}`
-/// escapes, which only quoted values have.
+/// parse. Whitespace and `"` end a bare token; `\` and `{` take part in
+/// escapes and interpolation; control characters need `\u{...}` escapes,
+/// which only quoted values have.
 fn bare_safe_char(ch: char) -> bool {
-    !ch.is_whitespace() && !ch.is_control() && !matches!(ch, '"' | '#' | '\\' | '{')
+    !ch.is_whitespace() && !ch.is_control() && !matches!(ch, '"' | '\\' | '{')
 }
 
 /// The bare spelling of a value, or `None` when no bare spelling parses
@@ -100,7 +100,9 @@ fn bare_changes_parse(text: &str, ctx: ValueCtx) -> bool {
         ValueCtx::RoleName => text == "*" || text.starts_with('~'),
         ValueCtx::Exact => text.starts_with('~'),
         ValueCtx::RoleSubstring => text == "*",
-        _ if text.starts_with('@') => true,
+        // A bare token that starts with `@` is a timeout, and one that
+        // starts with `#` is a comment (SPEC 3).
+        _ if text.starts_with(['@', '#']) => true,
         ValueCtx::Plain => false,
         ValueCtx::Operand => text.starts_with('['),
         ValueCtx::Page => text == "matches",
@@ -1504,6 +1506,14 @@ CAPTURE email: frame:"#payment iframe" >> label:Email value
         assert_eq!(
             fmt("VISIT /\nCLICK button:~\"Sign\"\nCLICK label:~\"mail\"\n"),
             "VISIT /\nCLICK button:~Sign\nCLICK label:~mail\n"
+        );
+    }
+
+    #[test]
+    fn a_hash_inside_a_value_needs_no_quotes() {
+        assert_eq!(
+            fmt("VISIT \"/docs#install\"\nCLICK css:\"#submit\"\nFILL Note \"#1\" # a note\n"),
+            "VISIT /docs#install\nCLICK css:#submit\nFILL Note \"#1\" # a note\n"
         );
     }
 

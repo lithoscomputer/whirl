@@ -59,9 +59,10 @@ $ whirl --report-junit report.xml flows/
   actions are one line. An independent `HTTP` request can also own the header
   and body lines defined in section 7.3; the complete request is one action.
   A `SNAPSHOT` owns the comparison option lines below it (section 7).
-- `#` starts a comment. A comment runs to the end of the line. A `#` inside a
-  quoted string, a regex literal, a JSON body, or a fenced HTTP body is literal
-  text.
+- A `#` at the start of a line, or after white space, starts a comment. A
+  comment runs to the end of the line. A `#` inside a token is text, as in
+  `VISIT /docs#install` or `css:#submit`, and so is a `#` inside a quoted
+  string, a regex literal, a JSON body, or a fenced HTTP body.
 - Blank lines are ignored outside HTTP bodies.
 - Keywords (`VISIT`, `PAGE`, `ASSERT`, checks, prefixes) are case-sensitive.
 
@@ -70,7 +71,7 @@ $ whirl --report-junit report.xml flows/
 A **value** is written in one of two forms:
 
 - **Quoted**: `"..."` with backslash escapes `\"`, `\\`, `\n`, `\t`, and `\u{XXXX}`.
-- **Bare**: a single token with no whitespace, no `"`, and no `#`. A bare value cannot start with `@`: a bare token that starts with `@` is always a step timeout, which must end its line (section 12). Quote a value such as `"@60s"` or `"@brynary"`. Option lines, HTTP header lines, `MOCK` lines, and snapshot settings take no timeout, so there a bare `@` token is an error. Otherwise bare and quoted forms are interchangeable, with three reservations:
+- **Bare**: a single token with no whitespace and no `"`, which does not start with `#`. A bare value cannot start with `@`: a bare token that starts with `@` is always a step timeout, which must end its line (section 12). Quote a value such as `"@60s"` or `"@brynary"`. Option lines, HTTP header lines, `MOCK` lines, and snapshot settings take no timeout, so there a bare `@` token is an error. Otherwise bare and quoted forms are interchangeable, with three reservations:
   - In a typed comparison (section 9.6), a bare typed literal and its quoted form differ: `42` is a number and `"42"` is a string.
   - In `snapshot-mask`, only bare `none` clears the mask list.
   - Right after `SCROLL`, a bare `down`, `up`, `left`, `right`, or `to` is the motion. Quote it to match the text: `SCROLL "down"`.
@@ -1774,19 +1775,21 @@ ws      = _{ !NL ~ WHITE_SPACE }
 comment =  { "#" ~ (!NL ~ ANY)* }
 // Blank lines and comment lines.
 gap     = _{ (ws* ~ comment? ~ NL)* }
-// The end of a line, and the blank and comment lines after it.
-eol     = _{ ws* ~ comment? ~ (NL ~ gap | EOI) }
+// The end of a line, and the blank and comment lines after it. A comment
+// starts at a `#` at the start of a line or after white space.
+eol     = _{ (ws+ ~ comment)? ~ ws* ~ (NL ~ gap | EOI) }
 // The end of a line that can hold a step timeout (12).
 tail    = _{ (ws+ ~ timeout)? ~ eol }
 // The end of a keyword or other fixed word.
-kw_end  = _{ &(WHITE_SPACE | "#" | EOI) }
+kw_end  = _{ &(WHITE_SPACE | EOI) }
 
 // ---------------------------------------------------------------- Tokens and values (3.1, 11)
 
 // A value is one token: a quoted string, a bare run, or a bare run that
 // ends in `:` or `:~` joined to a quoted string, such as
-// `label:"First name"`. A bare value cannot start with `@`.
-token  = @{ quoted ~ !"\"" | !"@" ~ (joined | bare ~ !"\"") }
+// `label:"First name"`. A bare value cannot start with `@`, and a `#`
+// inside a token is text.
+token  = @{ quoted ~ !"\"" | !("@" | "#") ~ (joined | bare ~ !"\"") }
 joined = _{ (!(":" ~ "~"? ~ "\"") ~ bare_char)* ~ ":" ~ "~"? ~ quoted ~ !"\"" }
 value  = _{ token }
 // The value after a prefix such as `css:`.
@@ -1794,7 +1797,7 @@ part   = _{ quoted ~ !"\"" | joined | bare ~ !"\"" }
 // The value after `json:` or `xpath:`: one bare run or one quoted string.
 single = _{ quoted ~ !"\"" | bare ~ !"\"" }
 bare   = _{ bare_char+ }
-bare_char = _{ "\\{" | var_ref | !("{{" | "\"" | "#" | WHITE_SPACE) ~ ANY }
+bare_char = _{ "\\{" | var_ref | !("{{" | "\"" | WHITE_SPACE) ~ ANY }
 quoted = _{ "\"" ~ ("\\" ~ escape | var_ref | !("\"" | "\\" | "{{" | NL) ~ ANY)* ~ "\"" }
 escape = _{ "\"" | "\\" | "n" | "t" | "{" | "u{" ~ scalar ~ "}" }
 // The hex digits of a Unicode scalar value, with any leading zeros.
@@ -1843,7 +1846,7 @@ engine_segment = @{ ("label" | "placeholder" | "text" | "alt" | "title") ~ ":" ~
 frame_segment  = @{ "frame:" ~ part }
 ai_segment     = @{ "ai:" ~ part }
 nth_segment    = @{ "nth:" ~ "-"? ~ ASCII_DIGIT+ ~ kw_end }
-unprefixed     = @{ quoted ~ !"\"" | !(">>" ~ kw_end | "@") ~ (!":" ~ bare_char)+ ~ !(":" | "\"") }
+unprefixed     = @{ quoted ~ !"\"" | !(">>" ~ kw_end | "@" | "#") ~ (!":" ~ bare_char)+ ~ !(":" | "\"") }
 element        = _{ role_segment | engine_segment }
 // The ARIA roles that Playwright accepts, except generic, none, and
 // presentation. Reverse alphabetical order tries a longer name, such as

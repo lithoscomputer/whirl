@@ -4159,7 +4159,7 @@ fn element_snapshots_use_the_selected_tab_and_nested_cross_origin_frames() {
         .map(|step| step["snapshot"]["target"].clone())
         .collect();
     assert_eq!(failed, [serde_json::json!(
-        "frame:\"#outer\" >> frame:\"#inner\" >> testid:target"
+        "frame:#outer >> frame:#inner >> testid:target"
     )]);
 }
 

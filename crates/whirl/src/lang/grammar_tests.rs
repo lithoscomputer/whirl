@@ -506,6 +506,23 @@ const EDGE_CASES: &[&str] = &[
     "VISIT /\nCAPTURE a: link:text text\n",
     "VISIT /\nSNAPSHOT a region:*\nsnapshot-mask: banner:* >> nth:0\n",
     "VISIT /\nSNAPSHOT a\nsnapshot-mask: ai:x\n",
+    // A `#` starts a comment only at the start of a line or after white
+    // space.
+    "VISIT /docs#install\n",
+    "VISIT /\nASSERT url == https://example.com/#/cart\n",
+    "VISIT /\nCLICK css:#submit\n",
+    "VISIT /\nCLICK Save#note\n",
+    "VISIT /\nCLICK \"a\"#b\n",
+    "VISIT /\nCLICK #submit\n",
+    "VISIT /\nFILL x #1\n",
+    "VISIT /\nFILL x \"#1\" # a note\n",
+    "VISIT /\t# a note\n",
+    "VISIT /\nASSERT url matches /a/i#b\n",
+    "VISIT /\nASSERT eval x == [1]#b\n",
+    "[Options]#b\nVISIT /\n",
+    "HTTP GET /x\nX-Id: a#b\nX-Other: a # b\n",
+    "VISIT /\nSNAPSHOT a\nsnapshot-mask: css:#clock\n",
+    "VISIT /\nSTORE local k#1 v#2\n",
     // Tokens that join, and values that start with `@`.
     "VISIT /\nCLICK css:a:\"b\"\n",
     "VISIT /\nASSERT response:r json:a:\"b\" == 1\n",
