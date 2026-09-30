@@ -1,5 +1,5 @@
 ---
-status: draft
+status: accepted
 ---
 
 # Store effective settings in recordings and write one bundle per flow
