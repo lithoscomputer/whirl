@@ -1,6 +1,8 @@
 // Wire contract between the Rust binary and this shim.
 // Shapes follow docs/engineering/shim-protocol.md exactly.
 
+import type { BlockedHost } from "./host-glob.js";
+
 export type ErrorKind =
 	| "timeout"
 	| "strictness"
@@ -278,6 +280,8 @@ export interface StartFlowParams {
 	readonly storageStatePath: string | null;
 	readonly dialogs: "dismiss" | "accept";
 	readonly allowHosts: readonly string[] | null;
+	/** Hosts to block even when `allowHosts` allows them (SPEC 5). */
+	readonly blockHosts: readonly string[] | null;
 	readonly navTimeoutMs: number;
 	readonly userAgent: string | null;
 	readonly reducedMotion: "reduce" | "no-preference" | null;
@@ -296,7 +300,8 @@ export interface EndFlowParams {
 }
 
 export interface EndFlowResult {
-	readonly blockedHosts: readonly string[];
+	/** Every blocked host with the rule that blocked it, sorted by host. */
+	readonly blockedHosts: readonly BlockedHost[];
 	readonly videoPath: string | null;
 	/** Why the shim skipped a requested recording, or null. */
 	readonly videoSkipped: string | null;

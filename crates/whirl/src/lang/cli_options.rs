@@ -14,7 +14,7 @@ use crate::lang::parse::{OPTION_KEYS, parse_command_line_option};
 /// The option keys whose values form a list. More than one command-line
 /// value for such a key forms a list that replaces the file's list, and an
 /// empty value clears it (SPEC 13).
-const LIST_KEYS: [&str; 2] = ["allow-hosts", "snapshot-mask"];
+const LIST_KEYS: [&str; 3] = ["allow-hosts", "block-hosts", "snapshot-mask"];
 
 /// A flag that sets one option, such as `--browser NAME` (SPEC 13).
 #[derive(Clone, Copy, Debug)]
@@ -124,6 +124,7 @@ impl CliOptions {
     /// key that the command line sets.
     pub(crate) fn apply(&self, file: &mut File) {
         for (key, options) in &self.settings {
+            file.command_line_keys.push(key);
             file.options.retain(|line| line.option.key() != *key);
             file.options.extend(options.iter().map(|option| OptionLine {
                 option: option.clone(),
@@ -176,18 +177,21 @@ fn lines_of(written: &Written) -> Result<Vec<FileOption>, CliOptionError> {
             written.origin
         )));
     }
-    // One `allow-hosts` line holds the whole list.
-    if let [FileOption::AllowHosts(_), ..] = options.as_slice() {
-        let hosts = options
-            .into_iter()
+    // One host line holds the whole list.
+    let hosts = || {
+        options
+            .iter()
             .flat_map(|option| match option {
-                FileOption::AllowHosts(hosts) => hosts,
+                FileOption::AllowHosts(hosts) | FileOption::BlockHosts(hosts) => hosts.clone(),
                 _ => Vec::new(),
             })
-            .collect();
-        return Ok(vec![FileOption::AllowHosts(hosts)]);
-    }
-    Ok(options)
+            .collect()
+    };
+    Ok(match options.first() {
+        Some(FileOption::AllowHosts(_)) => vec![FileOption::AllowHosts(hosts())],
+        Some(FileOption::BlockHosts(_)) => vec![FileOption::BlockHosts(hosts())],
+        _ => options,
+    })
 }
 
 /// A flag's value as one quoted Whirl value, so that its text is taken

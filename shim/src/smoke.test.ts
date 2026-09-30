@@ -19,6 +19,7 @@ test("the driver runs a flow against a data: URL in chromium", {
 			storageStatePath: null,
 			dialogs: "dismiss",
 			allowHosts: null,
+			blockHosts: null,
 			navTimeoutMs: 30000,
 			userAgent: null,
 			reducedMotion: null,

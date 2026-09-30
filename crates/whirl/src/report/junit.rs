@@ -28,9 +28,14 @@ pub(crate) fn render(report: &RunReport) -> String {
             .into_iter()
             .map(|warning| format!("warning: {warning}"))
             .chain(
-                file.blocked_hosts
-                    .iter()
+                file.blocked_host_lines()
+                    .into_iter()
                     .map(|host| format!("blocked host: {host}")),
+            )
+            .chain(
+                file.inactive_setting_lines()
+                    .into_iter()
+                    .map(|setting| format!("inactive setting: {setting} (BrowserSim only)")),
             )
             .collect();
         if !lines.is_empty() {

@@ -56,18 +56,20 @@ pub(crate) fn sample_report() -> RunReport {
 
 fn passed_file() -> FileReport {
     FileReport {
-        timing:        Timing::default(),
-        source_sha256: None,
-        roles:         None,
-        runtime:       None,
-        path:          "flows/pass.whirl".to_owned(),
-        status:        Status::Passed,
-        duration_ms:   1_200,
-        artifacts_dir: "whirl-artifacts/flows/pass".to_owned(),
-        blocked_hosts: vec!["cdn.example.com".to_owned()],
-        warnings:      vec!["SCREENSHOT overview skipped: page crashed".to_owned()],
-        artifacts:     vec!["whirl-artifacts/flows/pass/video.webm".to_owned()],
-        entries:       vec![EntryReport {
+        timing:             Timing::default(),
+        source_sha256:      None,
+        roles:              None,
+        runtime:            None,
+        path:               "flows/pass.whirl".to_owned(),
+        status:             Status::Passed,
+        duration_ms:        1_200,
+        artifacts_dir:      "whirl-artifacts/flows/pass".to_owned(),
+        blocked_hosts:      vec!["cdn.example.com".to_owned()],
+        blocked_host_rules: Vec::new(),
+        settings:           Vec::new(),
+        warnings:           vec!["SCREENSHOT overview skipped: page crashed".to_owned()],
+        artifacts:          vec!["whirl-artifacts/flows/pass/video.webm".to_owned()],
+        entries:            vec![EntryReport {
             name:        "Log in.".to_owned(),
             line:        2,
             status:      Status::Passed,
@@ -79,24 +81,26 @@ fn passed_file() -> FileReport {
             captures:    vec![("next_url".to_owned(), CaptureValue::string("/dashboard"))],
             artifacts:   Vec::new(),
         }],
-        mocks:         Vec::new(),
+        mocks:              Vec::new(),
     }
 }
 
 fn failed_file(fill_text: &str, actual_value: &str) -> FileReport {
     FileReport {
-        timing:        Timing::default(),
-        source_sha256: None,
-        roles:         None,
-        runtime:       None,
-        path:          "flows/fail.whirl".to_owned(),
-        status:        Status::Failed,
-        duration_ms:   800,
-        artifacts_dir: "whirl-artifacts/flows/fail".to_owned(),
-        blocked_hosts: Vec::new(),
-        warnings:      Vec::new(),
-        artifacts:     Vec::new(),
-        entries:       vec![
+        timing:             Timing::default(),
+        source_sha256:      None,
+        roles:              None,
+        runtime:            None,
+        path:               "flows/fail.whirl".to_owned(),
+        status:             Status::Failed,
+        duration_ms:        800,
+        artifacts_dir:      "whirl-artifacts/flows/fail".to_owned(),
+        blocked_hosts:      Vec::new(),
+        blocked_host_rules: Vec::new(),
+        settings:           Vec::new(),
+        warnings:           Vec::new(),
+        artifacts:          Vec::new(),
+        entries:            vec![
             EntryReport {
                 name:        "Fill the form.".to_owned(),
                 line:        2,
@@ -137,24 +141,26 @@ fn failed_file(fill_text: &str, actual_value: &str) -> FileReport {
                 artifacts:   Vec::new(),
             },
         ],
-        mocks:         Vec::new(),
+        mocks:              Vec::new(),
     }
 }
 
 fn setup_failed_file() -> FileReport {
     FileReport {
-        timing:        Timing::default(),
-        source_sha256: None,
-        roles:         None,
-        runtime:       None,
-        path:          "flows/setup.whirl".to_owned(),
-        status:        Status::Failed,
-        duration_ms:   10,
-        artifacts_dir: "whirl-artifacts/flows/setup".to_owned(),
-        blocked_hosts: Vec::new(),
-        warnings:      Vec::new(),
-        artifacts:     Vec::new(),
-        entries:       vec![EntryReport {
+        timing:             Timing::default(),
+        source_sha256:      None,
+        roles:              None,
+        runtime:            None,
+        path:               "flows/setup.whirl".to_owned(),
+        status:             Status::Failed,
+        duration_ms:        10,
+        artifacts_dir:      "whirl-artifacts/flows/setup".to_owned(),
+        blocked_hosts:      Vec::new(),
+        blocked_host_rules: Vec::new(),
+        settings:           Vec::new(),
+        warnings:           Vec::new(),
+        artifacts:          Vec::new(),
+        entries:            vec![EntryReport {
             name:        SETUP_ENTRY.to_owned(),
             line:        0,
             status:      Status::Failed,
@@ -163,24 +169,26 @@ fn setup_failed_file() -> FileReport {
             captures:    Vec::new(),
             artifacts:   Vec::new(),
         }],
-        mocks:         Vec::new(),
+        mocks:              Vec::new(),
     }
 }
 
 fn error_file() -> FileReport {
     FileReport {
-        timing:        Timing::default(),
-        source_sha256: None,
-        roles:         None,
-        runtime:       None,
-        path:          "flows/crash.whirl".to_owned(),
-        status:        Status::Error,
-        duration_ms:   50,
-        artifacts_dir: "whirl-artifacts/flows/crash".to_owned(),
-        blocked_hosts: Vec::new(),
-        warnings:      Vec::new(),
-        artifacts:     Vec::new(),
-        entries:       vec![EntryReport {
+        timing:             Timing::default(),
+        source_sha256:      None,
+        roles:              None,
+        runtime:            None,
+        path:               "flows/crash.whirl".to_owned(),
+        status:             Status::Error,
+        duration_ms:        50,
+        artifacts_dir:      "whirl-artifacts/flows/crash".to_owned(),
+        blocked_hosts:      Vec::new(),
+        blocked_host_rules: Vec::new(),
+        settings:           Vec::new(),
+        warnings:           Vec::new(),
+        artifacts:          Vec::new(),
+        entries:            vec![EntryReport {
             name:        SETUP_ENTRY.to_owned(),
             line:        0,
             status:      Status::Error,
@@ -201,6 +209,6 @@ fn error_file() -> FileReport {
             captures:    Vec::new(),
             artifacts:   Vec::new(),
         }],
-        mocks:         Vec::new(),
+        mocks:              Vec::new(),
     }
 }

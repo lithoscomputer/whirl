@@ -623,6 +623,8 @@ fn synthetic_outcome(job: &FlowJob, status: Status, message: &str) -> FlowOutcom
             duration_ms: 0,
             artifacts_dir: job.report_dir.to_string_lossy().into_owned(),
             blocked_hosts: Vec::new(),
+            blocked_host_rules: Vec::new(),
+            settings: Vec::new(),
             warnings: Vec::new(),
             artifacts: Vec::new(),
             entries: vec![EntryReport {

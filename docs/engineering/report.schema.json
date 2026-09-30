@@ -68,6 +68,78 @@
               "type": "string"
             }
           },
+          "blockedHostRules": {
+            "type": "array",
+            "description": "The rule that blocked each host of blockedHosts (SPEC 5). Absent when no host was blocked, and in older reports.",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "host",
+                "option",
+                "glob"
+              ],
+              "properties": {
+                "host": {
+                  "type": "string"
+                },
+                "option": {
+                  "enum": [
+                    "allow-hosts",
+                    "block-hosts"
+                  ]
+                },
+                "glob": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The block-hosts glob that matched; null when no allow-hosts glob matched."
+                }
+              }
+            }
+          },
+          "settings": {
+            "type": "array",
+            "description": "Every option with the value the file ran with and its source (SPEC 14). Secret values are masked. Absent when the file's options failed to resolve, and in older reports.",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "key",
+                "value",
+                "source",
+                "active"
+              ],
+              "properties": {
+                "key": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": [
+                    "string",
+                    "array",
+                    "null"
+                  ],
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Text, a list for a list option, or null when unset."
+                },
+                "source": {
+                  "enum": [
+                    "default",
+                    "file",
+                    "command-line"
+                  ]
+                },
+                "active": {
+                  "type": "boolean",
+                  "description": "False for a setting that ordinary runs validate but do not apply, such as browsersim-origin."
+                }
+              }
+            }
+          },
           "warnings": {
             "type": "array",
             "items": {

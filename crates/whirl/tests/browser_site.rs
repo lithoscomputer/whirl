@@ -1097,6 +1097,178 @@ fn allow_hosts_blocks_a_server_side_redirect_to_a_cross_host_target() {
     );
 }
 
+/// Each blocked host of a file in a JSON report, with its rule as
+/// `option glob`.
+fn blocked_host_rules(report: &serde_json::Value, file: usize) -> Vec<String> {
+    report["files"][file]["blockedHostRules"]
+        .as_array()
+        .map(|rules| {
+            rules
+                .iter()
+                .map(|rule| {
+                    format!(
+                        "{} {} {}",
+                        rule["host"].as_str().expect("a host"),
+                        rule["option"].as_str().expect("an option"),
+                        rule["glob"].as_str().unwrap_or("-")
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[test]
+fn block_hosts_blocks_its_matches_and_wins_over_allow_hosts() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    let base = server.base();
+    // cross.html fetches from localhost; the page itself is on 127.0.0.1.
+    let flow = |options: &str, expected: &str| {
+        format!(
+            "[Options]\nbase: {base}\n{options}\n\n\
+             VISIT /cross.html\nASSERT css:\"#fetch-result\" text == {expected}\n"
+        )
+    };
+    // Without allow-hosts, block-hosts blocks only its matches.
+    dir.file(
+        "block-only.whirl",
+        &flow("block-hosts: localhost", "blocked"),
+    );
+    dir.file(
+        "no-match.whirl",
+        &flow("block-hosts: *.localhost", "fetched"),
+    );
+    // A block wins over an allowance.
+    dir.file(
+        "both.whirl",
+        &flow("allow-hosts: localhost\nblock-hosts: local*", "blocked"),
+    );
+    let output = run_whirl(&dir, &[
+        "--report-json",
+        "report.json",
+        "block-only.whirl",
+        "no-match.whirl",
+        "both.whirl",
+    ]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+    let report: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(dir.path.join("report.json")).expect("report exists"),
+    )
+    .expect("valid JSON report");
+    assert_eq!(blocked_host_rules(&report, 0), [
+        "localhost block-hosts localhost"
+    ]);
+    assert!(blocked_host_rules(&report, 1).is_empty());
+    assert_eq!(blocked_host_rules(&report, 2), [
+        "localhost block-hosts local*"
+    ]);
+    assert!(
+        stdout.contains("blocked host: localhost (block-hosts local*)"),
+        "stdout:\n{stdout}"
+    );
+
+    // A block wins over the base host's implicit allowance too: the page
+    // itself cannot load, and neither can an HTTP entry to its host.
+    dir.file(
+        "base.whirl",
+        &format!("[Options]\nbase: {base}\nallow-hosts: localhost\nblock-hosts: 127.0.0.1\n\nVISIT /cross.html\n"),
+    );
+    dir.file(
+        "http.whirl",
+        &format!(
+            "[Options]\nbase: {base}\nblock-hosts: 127.0.0.1\n\n\
+             HTTP GET /ping.txt\nASSERT status == 200\n"
+        ),
+    );
+    let output = run_whirl(&dir, &[
+        "--report-json",
+        "blocked.json",
+        "base.whirl",
+        "http.whirl",
+    ]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 1, "stdout:\n{stdout}");
+    let report: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(dir.path.join("blocked.json")).expect("report exists"),
+    )
+    .expect("valid JSON report");
+    for file in 0..2 {
+        assert_eq!(report["files"][file]["status"], "failed");
+        assert_eq!(blocked_host_rules(&report, file), [
+            "127.0.0.1 block-hosts 127.0.0.1"
+        ]);
+    }
+    assert!(
+        stdout.contains("HTTP host 127.0.0.1 is blocked by block-hosts 127.0.0.1"),
+        "stdout:\n{stdout}"
+    );
+}
+
+#[test]
+fn browsersim_settings_are_inactive_and_settings_mask_secrets() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    let secret = "agent-secret-5d1e";
+    dir.file(
+        "flow.whirl",
+        &format!(
+            "[Options]\nbase: {base}\nbrowsersim-origin: recorded\n\
+             user-agent: {{{{env.WHIRL_TEST_AGENT}}}}\n\n\
+             VISIT /cross.html\nASSERT eval \"navigator.userAgent\" == {{{{env.WHIRL_TEST_AGENT}}}}\n",
+            base = server.base()
+        ),
+    );
+    let output = run_whirl_env(
+        &dir,
+        &[
+            "-O",
+            "step-timeout=7s",
+            "--report-json",
+            "report.json",
+            "--report-html",
+            "report.html",
+            "flow.whirl",
+        ],
+        &[("WHIRL_TEST_AGENT", secret)],
+    );
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+    assert!(
+        stdout.contains("inactive setting: browsersim-origin: recorded (BrowserSim only)"),
+        "stdout:\n{stdout}"
+    );
+    let json = fs::read_to_string(dir.path.join("report.json")).expect("report exists");
+    let html = fs::read_to_string(dir.path.join("report.html")).expect("HTML exists");
+    for (name, text) in [("stdout", &stdout), ("JSON", &json), ("HTML", &html)] {
+        assert!(
+            !text.contains(secret),
+            "the {name} output exposes the secret"
+        );
+    }
+    let report: serde_json::Value = serde_json::from_str(&json).expect("valid JSON report");
+    let settings = report["files"][0]["settings"]
+        .as_array()
+        .expect("settings is an array");
+    let setting = |key: &str| {
+        settings
+            .iter()
+            .find(|setting| setting["key"] == key)
+            .unwrap_or_else(|| panic!("no {key} setting in {settings:?}"))
+    };
+    assert_eq!(setting("browsersim-origin")["value"], "recorded");
+    assert_eq!(setting("browsersim-origin")["source"], "file");
+    assert_eq!(setting("browsersim-origin")["active"], false);
+    assert_eq!(setting("step-timeout")["value"], "7s");
+    assert_eq!(setting("step-timeout")["source"], "command-line");
+    assert_eq!(setting("browser")["value"], "chromium");
+    assert_eq!(setting("browser")["source"], "default");
+    assert_eq!(setting("user-agent")["source"], "file");
+    assert_eq!(setting("user-agent")["active"], true);
+    assert!(html.contains("Inactive setting: browsersim-origin: recorded"));
+}
+
 #[test]
 fn command_line_options_apply_to_every_flow_and_replace_or_clear_lists() {
     let server = SiteServer::start();
@@ -2685,7 +2857,9 @@ fn html_missing_screenshot_does_not_turn_a_pass_into_a_failure() {
     assert!(html.contains("data-status=\"passed\""));
     assert!(html.contains("Screenshot unavailable:"));
     assert!(html.contains("Recording unavailable."));
-    assert!(html.contains("Blocked hosts: a.example, b.example"));
+    assert!(html.contains(
+        "Blocked hosts: a.example (not in allow-hosts), b.example (block-hosts *.example)"
+    ));
 }
 
 #[test]

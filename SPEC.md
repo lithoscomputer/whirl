@@ -141,6 +141,7 @@ The `[Options]` section holds `key: value` lines. White space must follow the co
 | `entry-timeout` | duration | none | Cap on an entry's total time across all of its lines |
 | `nav-timeout` | duration | `30s` | Navigation timeout for `VISIT` |
 | `allow-hosts` | glob list | all hosts | Hosts the browser may reach; requests to others are aborted |
+| `block-hosts` | glob list | no hosts | Hosts the browser may not reach, even when `allow-hosts` allows them |
 | `dialogs` | `dismiss` \| `accept` | `dismiss` | Automatic response to alert, confirm, and prompt dialogs |
 | `reduced-motion` | `reduce` \| `no-preference` | engine default | What the page's `prefers-reduced-motion` media query reports |
 | `storage` | file path | none | Saved storage state loaded into each file's browser context |
@@ -150,8 +151,17 @@ The `[Options]` section holds `key: value` lines. White space must follow the co
 | `snapshot-mask` | explicit locator or `none` | no masks | Mask matching elements in every `SNAPSHOT`; repeated lines form a list |
 | `snapshot-max-diff` | pixel count or percentage | `0` | Maximum different pixels allowed in a `SNAPSHOT` |
 | `snapshot-pixel-threshold` | number from 0 to 1 | `0.2` | Color distance above which a pixel counts as different |
+| `browsersim-origin` | `build` \| `recorded` | `build` | The origin a page sees when BrowserSim replays a recording; inactive in ordinary runs |
 
-`allow-hosts` takes one or more host globs (`allow-hosts: example.com *.example.com`). Globs match the request's hostname only — scheme and port are ignored — and `*.example.com` does not match the apex `example.com`; list both to cover both. The `base` host is always allowed. Whirl aborts requests to any other host, including fetch/XHR, WebSockets, and subresources, and the reports list every blocked host. Service workers are disabled when `allow-hosts` is set, because they can bypass request routing. IP-literal hosts match textually; `data:` and `blob:` URLs have no host and are always allowed. Without the option, all hosts are allowed.
+`allow-hosts` and `block-hosts` each take one or more host globs (`allow-hosts: example.com *.example.com`). Globs match the request's hostname only — scheme, port, and path are ignored — and `*.example.com` does not match the apex `example.com`; list both to cover both. With `allow-hosts`, the `base` host is always allowed, and Whirl aborts requests to any other host, including fetch/XHR, WebSockets, subresources, and independent `HTTP` requests. Without it, all hosts are allowed. `block-hosts` aborts the requests to the hosts it matches in the same way. An explicit block wins over an allowance, including the `base` host's:
+
+```whirl
+[Options]
+base: http://localhost:3000
+block-hosts: analytics.example.com *.analytics.example.com
+```
+
+The reports list every blocked host with the rule that blocked it: the `block-hosts` glob that matched, or `allow-hosts` when no glob of that list matched. Service workers are disabled when either option is set, because they can bypass request routing. IP-literal hosts match textually; `data:` and `blob:` URLs have no host and are always allowed.
 
 `storage` names a Playwright storageState JSON file, resolved relative to the `.whirl` file. Each browser context starts from that saved state (cookies and local storage) instead of empty, so flows can skip UI login. Produce the file with `--save-state`, which writes the final context state of a successful run — typically of a dedicated login flow. `--load-state` supplies the same kind of file from the command line (section 13).
 
@@ -171,6 +181,8 @@ All other values are literal strings, including unknown names such as `chorme`.
 Quote a value that contains spaces. Quoted and unquoted forms have the same
 meaning: `chrome` and `"chrome"` both select the alias. Alias resolution happens
 after option interpolation and CLI overrides; `--user-agent chrome` works too.
+
+Keys that start with `browsersim-` configure BrowserSim, a recording engine that ordinary runs do not use. An ordinary run validates them and does not apply them. The console output and the reports list each one that the file or the command line sets as inactive. `browsersim-origin` chooses the origin that a page sees when BrowserSim replays a recording: `build`, the default, is the origin of the build under test, and `recorded` is the origin the recording captured. Any other `browsersim-` key is unknown.
 
 `model` names a language model in the form `provider/model`, such as
 `anthropic/claude-sonnet-5` or `openai/gpt-5.6-luna`, from the model catalog
@@ -557,7 +569,7 @@ header names are rejected.
 supported. These requests fail the action without contacting the server.
 
 Relative paths resolve against `base`. Only HTTP and HTTPS URLs without embedded
-credentials are accepted. `allow-hosts` applies. Redirects and failed requests are
+credentials are accepted. `allow-hosts` and `block-hosts` apply. Redirects and failed requests are
 never retried or followed automatically; assert a 3xx, 4xx, or 5xx like any other
 response. The step timeout covers receiving the entire response, with a 1 MiB
 body limit. HTTP requests are cancelled if their flow closes. Browser CORS rules
@@ -861,10 +873,10 @@ sent. A request that a `failed` mock served has no response, so `RESPONSE`
 fails on it (section 7.2).
 
 A mocked request never reaches the network, so Whirl serves it even when
-`allow-hosts` does not allow its host, and does not report that host as
-blocked. A file that uses `MOCK` runs with service workers disabled, as with
-`allow-hosts`, because a service worker can answer requests before a mock sees
-them. The URL, header values, and body support interpolation, which happens
+`allow-hosts` or `block-hosts` blocks its host, and does not report that host
+as blocked. A file that uses `MOCK` runs with service workers disabled, as
+with the host options, because a service worker can answer requests before a
+mock sees them. The URL, header values, and body support interpolation, which happens
 when the line runs.
 
 Reports list each mock with its method, URL, and the number of requests it
@@ -1635,7 +1647,7 @@ still launches no browser.
 - An unknown key, a value of the wrong form, a comment, and `-O setup=` are
   usage errors, found before any browser starts.
 - For a key with one value, the last `-O` value wins.
-- For a list key, `allow-hosts` or `snapshot-mask`, the `-O` values form one
+- For a list key, `allow-hosts`, `block-hosts`, or `snapshot-mask`, the `-O` values form one
   list that replaces the file's list: `-O allow-hosts=a.example
   -O allow-hosts=b.example` allows those two hosts and not the file's. An
   empty value, as in `-O allow-hosts=`, clears the list. An empty value
@@ -1687,12 +1699,13 @@ Whirl parses and lints every input file before it launches any browser: a parse 
 - Default console output: one line per file with pass/fail and duration, then a failure detail block per failed entry: file, line, the failing step, expected versus actual, and the artifact paths.
 - The JUnit report maps one file to one test suite and one entry to one test case. An entry is named by the comment line directly above it — the nearest comment line with no other content line between it and the entry's first action (`# Log in.`) — falling back to its first action line and line number. A failure before the first entry — option resolution, storage loading, or browser launch — reports as a synthetic test case named `[setup]` in that file's suite: an `<error>` for runtime errors, a `<failure>` otherwise. The JSON report carries the same synthetic entry, and masking applies to it like any other output.
 - The JSON report is version 2. Version 2 differs from version 1 only in the shape of captures (below). The report includes `workingDirectory`, `whirlVersion`, `platform`, and `architecture`. Files whose browser context starts include `runtime`: browser engine, viewport, the actual user agent string (with section 11's masking), and actual browser, Node, and Playwright versions. Unavailable user agent and version fields are null. Each step error has a stable `code`, separate from its human-readable message. Additive fields do not change the report version; readers must ignore unknown fields. See [machine-readable output](docs/engineering/machine-output.md) for schemas and codes.
+- Each file whose options resolved lists its settings in the JSON report: every option key with the value the file ran with, masked (section 11), and its source: the default, the file, or the command line (section 13). A `browsersim-` setting is marked inactive. The HTML report shows the same list. `blockedHostRules` gives the rule behind each blocked host (section 5).
 - The JSON report is the machine-readable superset: per-step timing, captures, and artifact paths. Each capture is written as its type and value, such as `{"type": "number", "value": 42}`. Bytes are written as Base64, dates as RFC 3339 text, and numbers with their exact JSON text. A capture with a value sourced from `env.*` keeps its type and has its value masked.
 - Artifacts: each flow writes to `<out>/<flow path without the .whirl extension>/`, where `<out>` is the `--out` directory. The mirrored path is the flow file's canonical path (made absolute, symlinks resolved) relative to the current working directory, so parallel flows never collide, and overlapping inputs or symlinked duplicates of one file resolve to one flow, run once, and write to one directory. A flow outside the working directory writes to `<file stem>-<hash>/` instead, where `<hash>` is the first 16 hex digits of the SHA-256 of the canonical path, so absolute paths and `..` segments never escape the output directory. Because all inputs are known before the run starts, Whirl verifies that no two flows map to the same directory; a collision is a runtime error. Names inside are fixed: screenshots by their given name, `snapshot-<name>-actual.png` and `snapshot-<name>-diff.png`, `failure.png`, `trace.zip`, `video.webm`, and `network.har`. Duplicate `SCREENSHOT` names or duplicate `SNAPSHOT` names within one flow are a lint error; the two keywords have separate name spaces, because their artifact files never collide.
 
 ### 14.1 HTML reports
 
-`--report-html evidence.html` writes a standalone HTML file after the run, including failed runs. It renders the same masked results as the other reports: file and entry outcomes, steps and timings, failures with expected and actual values, captures, warnings, blocked hosts, and browser environment details. The report embeds available PNG screenshots and, with `--video`, WebM recordings from the current run. It opens offline and can be moved without its output directory. Trace and HAR paths are shown as text; these files are not embedded.
+`--report-html evidence.html` writes a standalone HTML file after the run, including failed runs. It renders the same masked results as the other reports: file and entry outcomes, steps and timings, failures with expected and actual values, captures, warnings, blocked hosts with their rules, settings, and browser environment details. The report embeds available PNG screenshots and, with `--video`, WebM recordings from the current run. It opens offline and can be moved without its output directory. Trace and HAR paths are shown as text; these files are not embedded.
 
 Test outcomes and media availability are separate. A missing or unreadable recording never changes a passed test to failed, and a recording never makes a failed test pass. The report explains absent or invalid media. Whirl reads only listed media artifacts inside their flow's artifact directory. A media read failure during embedding or an output write failure is a runtime error (exit 3). HTML output is written to a temporary file and replaces its destination only after generation succeeds. Its parent directory must exist. The HTML destination must not conflict with an input, another requested report, or a recorded artifact.
 
@@ -1863,13 +1876,15 @@ name      = @{ attr_name ~ kw_end }
 // ---------------------------------------------------------------- Options (5)
 
 options     = { ws* ~ "[Options]" ~ eol ~ option_line* }
-option_line = { ws* ~ (allow_hosts | snapshot_setting | option) ~ eol }
+option_line = { ws* ~ (host_list | snapshot_setting | option) ~ eol }
 option      = { option_key ~ ":" ~ ws+ ~ value }
+// `browsersim-origin` comes before `browser`, which is its prefix.
 option_key  = {
-    "base" | "browser" | "viewport" | "step-timeout" | "entry-timeout" | "nav-timeout"
-  | "dialogs" | "reduced-motion" | "storage" | "user-agent" | "setup" | "model"
+    "base" | "browsersim-origin" | "browser" | "viewport" | "step-timeout"
+  | "entry-timeout" | "nav-timeout" | "dialogs" | "reduced-motion" | "storage"
+  | "user-agent" | "setup" | "model"
 }
-allow_hosts = { "allow-hosts:" ~ (ws+ ~ value)+ }
+host_list   = { ("allow-hosts" | "block-hosts") ~ ":" ~ (ws+ ~ value)+ }
 
 // Snapshot settings, in [Options] and below a SNAPSHOT (7).
 snapshot_setting         = { snapshot_mask | snapshot_max_diff | snapshot_pixel_threshold }

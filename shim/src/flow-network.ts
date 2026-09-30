@@ -1,5 +1,6 @@
 import type { BrowserContext, Page, Request, Response } from "@playwright/test";
-import { createHostAllowlist } from "./host-glob.js";
+import type { BlockedHost, BlockedHostLog } from "./host-glob.js";
+import { describeBlockedHost } from "./host-glob.js";
 import type { HttpParams, RequestRead, ResponseRead } from "./protocol.js";
 import { ShimError } from "./protocol.js";
 import { Deadline, pollUntilPass, shortErrorMessage } from "./step-util.js";
@@ -54,19 +55,18 @@ export class FlowNetwork {
 	readonly #httpNames = new Set<string>();
 	readonly #bodies = new Map<NamedResponse, Promise<Buffer>>();
 	private readonly httpRequests = new Set<AbortController>();
-	private readonly allowedHost: (hostname: string) => boolean;
-	private readonly blockedHosts: Set<string>;
+	private readonly hostPolicy: (hostname: string) => BlockedHost | null;
+	private readonly blockedHosts: BlockedHostLog;
 	#requests: Request[] = [];
 	#overflow = false;
 
 	constructor(
 		context: BrowserContext,
-		allowHosts: readonly string[] | null,
-		blockedHosts: Set<string>,
+		hostPolicy: (hostname: string) => BlockedHost | null,
+		blockedHosts: BlockedHostLog,
 	) {
 		this.#context = context;
-		this.allowedHost =
-			allowHosts === null ? () => true : createHostAllowlist(allowHosts);
+		this.hostPolicy = hostPolicy;
 		this.blockedHosts = blockedHosts;
 		context.on("request", this.#onRequest);
 		context.once("close", () => {
@@ -119,11 +119,12 @@ export class FlowNetwork {
 				"HTTP needs an HTTP or HTTPS URL without embedded credentials",
 			);
 		}
-		if (!this.allowedHost(target.hostname)) {
-			this.blockedHosts.add(target.hostname);
+		const blocked = this.hostPolicy(target.hostname);
+		if (blocked !== null) {
+			this.blockedHosts.record(blocked);
 			throw new ShimError(
 				"action",
-				`HTTP host ${target.hostname} is blocked by allow-hosts`,
+				`HTTP host ${target.hostname} is blocked by ${describeBlockedHost(blocked)}`,
 			);
 		}
 		target.hash = "";

@@ -1,4 +1,4 @@
-unknownkey.whirl:3:1: error: unknown option key `frobs`
-  frobs: 3
-  ^^^^^
+privacy.whirl:2:1: error: unknown option key `browsersim-privacy-field`
+  browsersim-privacy-field: accessToken
+  ^^^^^^^^^^^^^^^^^^^^^^^^
   expected one of: base, browser, viewport, step-timeout, entry-timeout, nav-timeout, allow-hosts, block-hosts, dialogs, reduced-motion, storage, user-agent, setup, model, snapshot-mask, snapshot-max-diff, snapshot-pixel-threshold, browsersim-origin

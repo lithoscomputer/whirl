@@ -12,14 +12,14 @@ use tracing::{Instrument as _, debug, debug_span, info_span};
 
 use crate::check;
 use crate::lang::ast::{
-    self, BrowserKind, DialogPolicy, DurationLit, File, FileOption, OptionSource, OptionValue,
-    ReducedMotion, Value, Viewport,
+    self, BrowserKind, BrowserSimOrigin, DialogPolicy, DurationLit, File, FileOption, OptionSource,
+    OptionValue, ReducedMotion, Value, Viewport,
 };
 use crate::lang::fmt::render_snapshot_target;
 use crate::report::model::{
-    ActReport, AiReport, CaptureValue, EntryReport, ExtractReport, FileReport, GoalReport,
-    JudgeReport, MockReport, ReportViewport, RuntimeMetadata, SETUP_ENTRY, SnapshotReport, Status,
-    StepError, StepKind, StepReport, StepWarning, Timing,
+    ActReport, AiReport, BlockedHostRule, CaptureValue, EntryReport, ExtractReport, FileReport,
+    GoalReport, JudgeReport, MockReport, ReportViewport, RuntimeMetadata, SETUP_ENTRY,
+    SnapshotReport, Status, StepError, StepKind, StepReport, StepWarning, Timing,
 };
 use crate::run::act::{ActPlanner, Instruction, JudgeAnswer, ModelClient};
 use crate::run::artifacts;
@@ -36,6 +36,7 @@ mod check_step;
 mod extract_step;
 mod goal_step;
 mod judge_step;
+mod settings;
 mod snapshot;
 use snapshot::SnapshotSettings;
 
@@ -97,28 +98,33 @@ fn url_host(url: &str) -> Option<String> {
 /// command line's options are already in the file's option lines.
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ResolvedOptions {
-    snapshot:         SnapshotSettings,
-    base:             Option<String>,
-    browser:          BrowserKind,
-    viewport:         Viewport,
-    step_timeout_ms:  u64,
-    entry_timeout_ms: Option<u64>,
-    nav_timeout_ms:   u64,
-    /// With the `base` host already appended when set (SPEC 5).
-    allow_hosts:      Option<Vec<String>>,
-    dialogs:          DialogPolicy,
+    snapshot:          SnapshotSettings,
+    base:              Option<String>,
+    browser:           BrowserKind,
+    viewport:          Viewport,
+    step_timeout_ms:   u64,
+    entry_timeout_ms:  Option<u64>,
+    nav_timeout_ms:    u64,
+    /// As the options set it; [`ResolvedOptions::shim_allow_hosts`] adds
+    /// the `base` host (SPEC 5).
+    allow_hosts:       Option<Vec<String>>,
+    /// Hosts blocked even when `allow_hosts` allows them (SPEC 5).
+    block_hosts:       Option<Vec<String>>,
+    dialogs:           DialogPolicy,
     /// The `prefers-reduced-motion` value the page sees; the engine
     /// default when unset (SPEC 5).
-    reduced_motion:   Option<ReducedMotion>,
+    reduced_motion:    Option<ReducedMotion>,
     /// Resolved relative to the `.whirl` file (SPEC 5).
-    storage:          Option<PathBuf>,
-    headed:           bool,
+    storage:           Option<PathBuf>,
+    headed:            bool,
     /// Browser user agent string; the engine default when unset (SPEC 5).
-    user_agent:       Option<String>,
+    user_agent:        Option<String>,
     /// The `setup` flow, resolved relative to the `.whirl` file (SPEC 5).
-    setup:            Option<PathBuf>,
+    setup:             Option<PathBuf>,
     /// The model `ACT` asks (SPEC 5, 7.4).
-    model:            Option<String>,
+    model:             Option<String>,
+    /// Validated and inactive: only BrowserSim replay uses it (SPEC 5).
+    browsersim_origin: BrowserSimOrigin,
 }
 
 /// A failure while resolving options at file start. Reported as the
@@ -197,6 +203,8 @@ impl ResolvedOptions {
         let mut entry_timeout_ms = None;
         let mut nav_timeout_ms = DEFAULT_NAV_TIMEOUT_MS;
         let mut allow_hosts: Option<Vec<String>> = None;
+        let mut block_hosts: Option<Vec<String>> = None;
+        let mut browsersim_origin = BrowserSimOrigin::default();
         let mut dialogs = DialogPolicy::Dismiss;
         let mut reduced_motion = None;
         let mut storage: Option<PathBuf> = None;
@@ -228,12 +236,13 @@ impl ResolvedOptions {
                 FileOption::NavTimeout(value) => {
                     nav_timeout_ms = resolve_duration(value, "nav-timeout", line, vars)?;
                 }
-                FileOption::AllowHosts(values) => {
-                    let mut hosts = Vec::with_capacity(values.len());
-                    for value in values {
-                        hosts.push(vars.resolve(value)?);
-                    }
-                    allow_hosts = Some(hosts);
+                FileOption::AllowHosts(values) => allow_hosts = Some(resolve_all(values, vars)?),
+                FileOption::BlockHosts(values) => block_hosts = Some(resolve_all(values, vars)?),
+                FileOption::BrowserSimOrigin(value) => {
+                    browsersim_origin =
+                        resolve_option(value, "browsersim-origin", line, vars, |text| {
+                            text.parse::<BrowserSimOrigin>().ok()
+                        })?;
                 }
                 FileOption::Dialogs(value) => {
                     dialogs = resolve_option(value, "dialogs", line, vars, |text| {
@@ -272,13 +281,6 @@ impl ResolvedOptions {
             }
         }
 
-        // The base host is always allowed (SPEC 5).
-        if let (Some(hosts), Some(base)) = (allow_hosts.as_mut(), base.as_deref())
-            && let Some(host) = url_host(base)
-        {
-            hosts.push(host);
-        }
-
         // The CLI rejects `--load-state` with a `storage` option.
         if let Some(path) = &flags.load_state {
             storage = Some(path.clone());
@@ -293,6 +295,7 @@ impl ResolvedOptions {
             entry_timeout_ms,
             nav_timeout_ms,
             allow_hosts,
+            block_hosts,
             dialogs,
             reduced_motion,
             storage,
@@ -300,13 +303,42 @@ impl ResolvedOptions {
             user_agent,
             setup: setup.map(|path| resolve_beside_file(canonical, &path)),
             model,
+            browsersim_origin,
         })
+    }
+
+    /// The `allow-hosts` list the shim enforces: the `base` host is always
+    /// allowed (SPEC 5).
+    fn shim_allow_hosts(&self) -> Option<Vec<String>> {
+        let mut hosts = self.allow_hosts.clone()?;
+        if let Some(host) = self.base.as_deref().and_then(url_host) {
+            hosts.push(host);
+        }
+        Some(hosts)
     }
 
     /// Apply the validated setup handoff before creating a browser context.
     fn use_setup(&mut self, setup: &SetupHandoff) {
         self.storage = Some(setup.storage_path.clone());
     }
+}
+
+/// A duration in milliseconds as a Whirl duration: seconds when whole,
+/// else milliseconds (SPEC 3.1).
+fn render_duration_ms(ms: u64) -> String {
+    if ms.is_multiple_of(1000) {
+        format!("{}s", ms / 1000)
+    } else {
+        format!("{ms}ms")
+    }
+}
+
+/// Resolves every value of a list option.
+fn resolve_all(values: &[Value], vars: &mut VarStore) -> Result<Vec<String>, OptionsError> {
+    values
+        .iter()
+        .map(|value| vars.resolve(value).map_err(OptionsError::from))
+        .collect()
 }
 
 /// Resolves a duration option value.
@@ -1655,7 +1687,8 @@ fn start_flow_params(run: &FlowRun<'_>, options: &ResolvedOptions) -> StartFlowP
         },
         storage_state_path: options.storage.as_deref().map(wire_path),
         dialogs:            options.dialogs.as_str().to_owned(),
-        allow_hosts:        options.allow_hosts.clone(),
+        allow_hosts:        options.shim_allow_hosts(),
+        block_hosts:        options.block_hosts.clone(),
         nav_timeout_ms:     options.nav_timeout_ms,
         user_agent:         options.user_agent.clone(),
         reduced_motion:     options
@@ -1729,19 +1762,21 @@ pub(crate) async fn run_flow(run: &FlowRun<'_>, client: &mut ShimClient) -> Flow
     async {
         let started = Instant::now();
         let mut report = FileReport {
-            timing:        Timing::default(),
-            source_sha256: None,
-            roles:         None,
-            runtime:       None,
-            path:          run.file.path.to_string_lossy().into_owned(),
-            status:        Status::Passed,
-            duration_ms:   0,
-            artifacts_dir: run.report_dir.to_string_lossy().into_owned(),
-            blocked_hosts: Vec::new(),
-            warnings:      Vec::new(),
-            artifacts:     Vec::new(),
-            mocks:         Vec::new(),
-            entries:       Vec::new(),
+            timing:             Timing::default(),
+            source_sha256:      None,
+            roles:              None,
+            runtime:            None,
+            path:               run.file.path.to_string_lossy().into_owned(),
+            status:             Status::Passed,
+            duration_ms:        0,
+            artifacts_dir:      run.report_dir.to_string_lossy().into_owned(),
+            blocked_hosts:      Vec::new(),
+            blocked_host_rules: Vec::new(),
+            settings:           Vec::new(),
+            warnings:           Vec::new(),
+            artifacts:          Vec::new(),
+            mocks:              Vec::new(),
+            entries:            Vec::new(),
         };
         let finish = |mut report: FileReport,
                       vars: &VarStore,
@@ -1778,6 +1813,7 @@ pub(crate) async fn run_flow(run: &FlowRun<'_>, client: &mut ShimClient) -> Flow
                 if let Some(setup) = run.setup {
                     options.use_setup(setup);
                 }
+                report.settings = settings::report(run.file, &options, &vars);
                 options
             }
             Err(error) => {
@@ -1912,7 +1948,20 @@ pub(crate) async fn run_flow(run: &FlowRun<'_>, client: &mut ShimClient) -> Flow
             };
             match client.end_flow(&end).await {
                 Ok(result) => {
-                    report.blocked_hosts = result.blocked_hosts;
+                    report.blocked_hosts = result
+                        .blocked_hosts
+                        .iter()
+                        .map(|blocked| blocked.host.clone())
+                        .collect();
+                    report.blocked_host_rules = result
+                        .blocked_hosts
+                        .into_iter()
+                        .map(|blocked| BlockedHostRule {
+                            host:   blocked.host,
+                            option: blocked.option,
+                            glob:   blocked.glob,
+                        })
+                        .collect();
                     report_mocks(&mut report, &exec.mocks, &result.mocks);
                     if trace_path.is_some()
                         && let Some(entry) = report.entries.iter_mut().find(|entry| {

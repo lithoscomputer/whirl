@@ -128,6 +128,18 @@ the recording's frames per second (60 or the `--video-fps` value on Chromium,
 25 elsewhere); it is absent without a recording and in older reports. A failure
 before context startup has no runtime object.
 
+Each file whose options resolved has `settings`: one object for every option
+key, in the order of SPEC section 5, with the `value` the file ran with (text,
+a list, or null when unset), its `source` (`default`, `file`, or
+`command-line`), and `active`, which is false for a `browsersim-*` setting that
+ordinary runs validate but do not apply. Values use the text form and are
+masked like other output (SPEC 11); `allow-hosts` lists the configured hosts
+without the implicit `base` host. `blockedHosts` lists each blocked hostname,
+and `blockedHostRules` gives the rule behind each one: its `option`
+(`allow-hosts` or `block-hosts`) and the `block-hosts` `glob` that matched, or
+null when no `allow-hosts` glob matched. Both new fields are absent in older
+reports.
+
 ## Saved reports and run records
 
 ```sh

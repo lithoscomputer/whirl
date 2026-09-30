@@ -216,6 +216,18 @@ pub(crate) enum DialogPolicy {
     Accept,
 }
 
+/// Values of the `browsersim-origin` option (SPEC 5): the origin a page
+/// sees when BrowserSim replays a recording. Ordinary runs validate it and
+/// leave it inactive.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum BrowserSimOrigin {
+    /// The origin of the build that the replay targets.
+    #[default]
+    Build,
+    /// The origin the recording captured.
+    Recorded,
+}
+
 /// A `WIDTHxHEIGHT` viewport size in CSS pixels (SPEC 3.1).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct Viewport {
@@ -243,6 +255,9 @@ pub(crate) enum FileOption {
     EntryTimeout(OptionValue<DurationLit>),
     NavTimeout(OptionValue<DurationLit>),
     AllowHosts(Vec<Value>),
+    /// `block-hosts: glob...`, hosts to block even when `allow-hosts`
+    /// allows them (SPEC 5).
+    BlockHosts(Vec<Value>),
     Dialogs(OptionValue<DialogPolicy>),
     ReducedMotion(OptionValue<ReducedMotion>),
     Storage(Value),
@@ -253,6 +268,9 @@ pub(crate) enum FileOption {
     /// `model: provider/model`, the language model `ACT` asks (SPEC 5,
     /// 7.4).
     Model(Value),
+    /// `browsersim-origin: build | recorded`, a BrowserSim setting that
+    /// ordinary runs leave inactive (SPEC 5).
+    BrowserSimOrigin(OptionValue<BrowserSimOrigin>),
 }
 
 impl FileOption {
@@ -267,12 +285,14 @@ impl FileOption {
             Self::EntryTimeout(_) => "entry-timeout",
             Self::NavTimeout(_) => "nav-timeout",
             Self::AllowHosts(_) => "allow-hosts",
+            Self::BlockHosts(_) => "block-hosts",
             Self::Dialogs(_) => "dialogs",
             Self::ReducedMotion(_) => "reduced-motion",
             Self::Storage(_) => "storage",
             Self::UserAgent(_) => "user-agent",
             Self::Setup(_) => "setup",
             Self::Model(_) => "model",
+            Self::BrowserSimOrigin(_) => "browsersim-origin",
         }
     }
 }
@@ -1213,14 +1233,17 @@ impl Entry {
 /// A parsed `.whirl` file.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct File {
-    pub(crate) path:           PathBuf,
-    pub(crate) options:        Vec<OptionLine>,
-    pub(crate) entries:        Vec<Entry>,
+    pub(crate) path:              PathBuf,
+    pub(crate) options:           Vec<OptionLine>,
+    pub(crate) entries:           Vec<Entry>,
     /// Every comment in the file, in source order.
-    pub(crate) comments:       Vec<Comment>,
+    pub(crate) comments:          Vec<Comment>,
     /// The line of the `[Options]` header, when the source has one (it
     /// may be present even with zero option lines).
-    pub(crate) options_header: Option<u32>,
+    pub(crate) options_header:    Option<u32>,
+    /// The option keys that the command line set, including a list it
+    /// cleared, which leaves no option line (SPEC 13).
+    pub(crate) command_line_keys: Vec<&'static str>,
 }
 
 impl File {

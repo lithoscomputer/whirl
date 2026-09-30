@@ -33,6 +33,16 @@ impl Default for SnapshotSettings {
 }
 
 impl SnapshotSettings {
+    /// Each mask as its locator text, for reports.
+    pub(super) fn mask_text(&self) -> &[String] {
+        &self.mask_text
+    }
+
+    /// The `snapshot-max-diff` value as resolved, for reports.
+    pub(super) fn max_diff_text(&self) -> &str {
+        &self.max_diff_text
+    }
+
     pub(super) fn with_options<'a>(
         &self,
         options: impl Iterator<Item = (&'a SnapshotOption, u32)>,

@@ -1025,7 +1025,7 @@ fn collect_setup_refs(file: &File) -> Vec<VarRef<'_>> {
             | FileOption::UserAgent(value)
             | FileOption::Setup(value)
             | FileOption::Model(value) => values.push((value, line.line)),
-            FileOption::AllowHosts(globs) => {
+            FileOption::AllowHosts(globs) | FileOption::BlockHosts(globs) => {
                 values.extend(globs.iter().map(|glob| (glob, line.line)));
             }
             FileOption::Browser(_)
@@ -1034,7 +1034,8 @@ fn collect_setup_refs(file: &File) -> Vec<VarRef<'_>> {
             | FileOption::EntryTimeout(_)
             | FileOption::NavTimeout(_)
             | FileOption::Dialogs(_)
-            | FileOption::ReducedMotion(_) => {}
+            | FileOption::ReducedMotion(_)
+            | FileOption::BrowserSimOrigin(_) => {}
         }
     }
     for (value, line) in values {

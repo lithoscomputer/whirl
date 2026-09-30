@@ -52,7 +52,7 @@ fn eval_step(script: &str, timeout_ms: u64) -> StepRequest {
 async fn hello_start_flow_and_end_flow_round_trip() {
     let mut client = spawn_fake_shim();
     let hello = client.hello().await.expect("hello should succeed");
-    assert_eq!(hello.protocol, 8);
+    assert_eq!(hello.protocol, 9);
     assert_eq!(hello.playwright_version, "0.0.0-fake");
 
     let start = StartFlowParams {
@@ -65,6 +65,7 @@ async fn hello_start_flow_and_end_flow_round_trip() {
         storage_state_path: None,
         dialogs:            "dismiss".to_owned(),
         allow_hosts:        None,
+        block_hosts:        None,
         nav_timeout_ms:     30_000,
         user_agent:         None,
         reduced_motion:     None,
@@ -86,7 +87,13 @@ async fn hello_start_flow_and_end_flow_round_trip() {
         })
         .await
         .expect("endFlow should succeed");
-    assert_eq!(end.blocked_hosts, vec!["a.example", "b.example"]);
+    let hosts: Vec<&str> = end
+        .blocked_hosts
+        .iter()
+        .map(|blocked| blocked.host.as_str())
+        .collect();
+    assert_eq!(hosts, ["a.example", "b.example"]);
+    assert_eq!(end.blocked_hosts[1].glob.as_deref(), Some("*.example"));
     assert_eq!(end.video_path, None);
     assert_eq!(end.video_skipped, None);
     assert_eq!(end.video_blank, None);
