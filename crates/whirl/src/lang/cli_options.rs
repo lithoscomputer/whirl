@@ -16,6 +16,9 @@ use crate::lang::parse::{OPTION_KEYS, parse_command_line_option};
 /// empty value clears it (SPEC 13).
 const LIST_KEYS: [&str; 3] = ["allow-hosts", "block-hosts", "snapshot-mask"];
 
+/// The list keys whose items are host globs.
+const HOST_KEYS: [&str; 2] = ["allow-hosts", "block-hosts"];
+
 /// A flag that sets one option, such as `--browser NAME` (SPEC 13).
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct OptionFlag<'a> {
@@ -53,9 +56,9 @@ struct Argument {
 
 impl CliOptions {
     /// Validates `-O` arguments and option flags. `pairs` are the
-    /// `key=value` texts of `-O` in order. A flag's value is one literal
-    /// value, as if quoted; a `-O` value has the syntax of the value in a
-    /// `key: value` line.
+    /// `key=value` texts of `-O` in order. Each value is one literal item,
+    /// as if quoted, except a `snapshot-mask` value, which is a locator
+    /// written as in a file (SPEC 13).
     pub(crate) fn try_new(
         pairs: &[String],
         flags: &[OptionFlag<'_>],
@@ -75,9 +78,24 @@ impl CliOptions {
                     "-O setup: a setup flow belongs to its file; set it in [Options]".to_owned(),
                 ));
             }
+            let is_list = LIST_KEYS.contains(&key);
+            if value.is_empty() && !is_list {
+                return Err(CliOptionError(format!("-O {pair}: expected a value")));
+            }
+            if HOST_KEYS.contains(&key) && value.contains(char::is_whitespace) {
+                return Err(CliOptionError(format!(
+                    "-O {pair}: a host glob cannot contain white space; give each host its own -O"
+                )));
+            }
+            // An empty list value stays empty: it clears the list.
+            let syntax = if key == "snapshot-mask" || value.is_empty() {
+                value.to_owned()
+            } else {
+                quote(value)
+            };
             let value = Argument {
-                syntax: value.to_owned(),
-                label:  format!("-O {pair}"),
+                syntax,
+                label: format!("-O {pair}"),
             };
             match written.iter_mut().find(|known| known.key == key) {
                 Some(known) => known.values.push(value),
@@ -194,8 +212,9 @@ fn lines_of(written: &Written) -> Result<Vec<FileOption>, CliOptionError> {
     })
 }
 
-/// A flag's value as one quoted Whirl value, so that its text is taken
-/// literally: no interpolation, comments, or list splitting (SPEC 3.1).
+/// A command-line value as one quoted Whirl value, so that its text is
+/// taken literally: no interpolation, comments, or list splitting (SPEC
+/// 3.1).
 fn quote(value: &str) -> String {
     let mut quoted = String::with_capacity(value.len() + 2);
     quoted.push('"');
@@ -262,8 +281,12 @@ mod tests {
     #[test]
     fn list_values_replace_the_file_list_and_an_empty_value_clears_it() {
         let file = "[Options]\nallow-hosts: a.example\nVISIT /\n";
-        let cli = options(&["allow-hosts=b.example *.b.example", "allow-hosts=c.example"])
-            .expect("valid");
+        let cli = options(&[
+            "allow-hosts=b.example",
+            "allow-hosts=*.b.example",
+            "allow-hosts=c.example",
+        ])
+        .expect("valid");
         let lines = applied(file, &cli);
         let [(FileOption::AllowHosts(hosts), OptionSource::CommandLine)] = lines.as_slice() else {
             panic!("expected one command-line allow-hosts line: {lines:?}");
@@ -274,6 +297,7 @@ mod tests {
         let cleared = applied(file, &options(&["allow-hosts="]).expect("valid"));
         assert!(cleared.is_empty(), "{cleared:?}");
         assert!(error(&["allow-hosts=", "allow-hosts=a.example"]).contains("empty value clears"));
+        assert!(error(&["block-hosts=a.example b.example"]).contains("its own -O"));
     }
 
     #[test]
@@ -296,9 +320,21 @@ mod tests {
             error(&["browser=netscape"]).starts_with("-O browser=netscape: invalid option value")
         );
         assert!(error(&["step-timeout=soon"]).contains("a duration"));
-        assert!(error(&["browser="]).contains("expected a value"));
+        assert_eq!(error(&["base="]), "-O base=: expected a value");
         assert!(error(&["setup=login.whirl"]).starts_with("-O setup:"));
-        assert!(error(&["base=http://a.example #x"]).contains("comment"));
+    }
+
+    #[test]
+    fn a_value_is_literal_text() {
+        let cli = options(&["user-agent=Whirl/1 (test) {{x}} # \"q\""]).expect("valid");
+        let lines = applied("VISIT /\n", &cli);
+        let [(FileOption::UserAgent(value), _)] = lines.as_slice() else {
+            panic!("expected a user-agent line: {lines:?}");
+        };
+        assert_eq!(
+            value.as_literal().as_deref(),
+            Some("Whirl/1 (test) {{x}} # \"q\"")
+        );
     }
 
     #[test]

@@ -1640,21 +1640,24 @@ command line. `whirl check` applies `-O` before its lints, so
 `-O model=anthropic/claude-sonnet-5` satisfies a file that uses `ACT`, and it
 still launches no browser.
 
-- The text after the first `=` is the value of a `key: value` line, with the
-  forms, quotes, and `{{name}}` references of section 5, as in
-  `-O 'snapshot-mask=text:"Sign in"'`. Quote a value with white space for the
-  shell as well.
-- An unknown key, a value of the wrong form, a comment, and `-O setup=` are
-  usage errors, found before any browser starts.
+- The text after the first `=` is one literal value, as if quoted: white
+  space, `#`, and `{{` are part of it, as in
+  `-O 'user-agent=Whirl/1 (test)'`. It has the forms and validation of
+  section 5. A `snapshot-mask` value is the exception: it is a locator,
+  written as in a file, as in `-O 'snapshot-mask=text:"Sign in"'`.
+- An unknown key, a value of the wrong form, an empty value for a key with
+  one value, and `-O setup=` are usage errors, found before any browser
+  starts.
 - For a key with one value, the last `-O` value wins.
-- For a list key, `allow-hosts`, `block-hosts`, or `snapshot-mask`, the `-O` values form one
-  list that replaces the file's list: `-O allow-hosts=a.example
-  -O allow-hosts=b.example` allows those two hosts and not the file's. An
+- For a list key, `allow-hosts`, `block-hosts`, or `snapshot-mask`, each
+  `-O` gives one item, and the items form one list that replaces the file's
+  list: `-O allow-hosts=a.example -O allow-hosts=b.example` allows those two
+  hosts and not the file's. A host glob cannot contain white space. An
   empty value, as in `-O allow-hosts=`, clears the list. An empty value
   cannot be combined with other values for its key.
 - `--base`, `--browser`, `--step-timeout`, `--entry-timeout`, and
   `--user-agent` set the option of the same name. Their value is literal, as
-  if quoted, and has the same validation. A flag and `-O` for the same key
+  for `-O`, and has the same validation. A flag and `-O` for the same key
   are a usage error, even when the values agree.
 - A path from `-O storage=` resolves against the working directory, and it
   cannot be combined with `--load-state`.
