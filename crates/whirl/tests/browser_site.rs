@@ -251,6 +251,11 @@ fn respond(mut request: tiny_http::Request) {
         .is_some_and(|extension| extension.eq_ignore_ascii_case("html"))
     {
         "text/html; charset=utf-8"
+    } else if Path::new(path)
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("js"))
+    {
+        "text/javascript; charset=utf-8"
     } else {
         "text/plain; charset=utf-8"
     };
@@ -4710,4 +4715,168 @@ ASSERT css:"#b" text == down
         entries.contains(&("http://mock.test/api/down".to_owned(), -1)),
         "{entries:?}"
     );
+}
+
+#[test]
+fn shared_state_fixture_restores_and_saves_binary_databases_and_session_storage() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    let mut state: serde_json::Value =
+        serde_json::from_str(include_str!("../../../state/fixtures/full.state.json"))
+            .expect("the shared fixture is JSON");
+    state["origins"][0]["origin"] = server.base().into();
+    state["pages"][0]["origins"][0]["origin"] = server.base().into();
+    state["cookies"][0]["domain"] = "127.0.0.1".into();
+    state["cookies"][0]["secure"] = false.into();
+    let before = serde_json::to_string(&state).expect("state is JSON");
+    dir.file("input.state.json", &before);
+    dir.file("state.whirl", "VISIT /shared-state.html\nASSERT css:\"#storage\" text == \"Ada/prepared\"\nASSERT css:\"#database\" text == \"Ada/11,22,33,44/true/true\"\nCLICK \"Change\"\nASSERT css:\"#storage\" text == \"Grace/changed\"\nVISIT /shared-state.html\nASSERT css:\"#storage\" text == \"Grace/changed\"\n");
+    let output = run_whirl(&dir, &[
+        "--base",
+        &server.base(),
+        "--load-state",
+        "input.state.json",
+        "--save-state",
+        "output.state.json",
+        "state.whirl",
+    ]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    let saved: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(dir.path.join("output.state.json")).expect("state was saved"),
+    )
+    .expect("state is JSON");
+    assert_eq!(saved["format"], "whirl-state");
+    assert_eq!(saved["metadata"], state["metadata"]);
+    let origin = saved["origins"]
+        .as_array()
+        .expect("origins are an array")
+        .iter()
+        .find(|item| item["origin"] == server.base())
+        .expect("app state was captured");
+    assert_eq!(origin["indexedDB"][0]["stores"][0]["nextKey"], 51);
+    assert_eq!(
+        origin["indexedDB"][0]["stores"][0]["records"],
+        state["origins"][0]["indexedDB"][0]["stores"][0]["records"]
+    );
+    assert_eq!(
+        fs::read_to_string(dir.path.join("input.state.json")).expect("input exists"),
+        before
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            fs::metadata(dir.path.join("output.state.json"))
+                .expect("state exists")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
+}
+
+#[test]
+fn shared_state_restores_main_session_storage_at_each_origin() {
+    let first = SiteServer::start();
+    let second = SiteServer::start();
+    let dir = TestDir::new();
+    let state = serde_json::json!({"format":"whirl-state","version":1,"redacted":false,"cookies":[],
+        "origins":[{"origin":first.base(),"localStorage":[{"name":"account","value":"one"}]},{"origin":second.base(),"localStorage":[{"name":"account","value":"two"}]}],
+        "pages":[{"id":"main","origins":[{"origin":first.base(),"sessionStorage":[{"name":"tab","value":"first"}]},{"origin":second.base(),"sessionStorage":[{"name":"tab","value":"second"}]}]}]});
+    dir.file("input.state.json", &state.to_string());
+    dir.file("state.whirl", &format!("VISIT {}/shared-state.html\nASSERT css:\"#storage\" text == \"one/first\"\nVISIT {}/shared-state.html\nASSERT css:\"#storage\" text == \"two/second\"\n", first.base(), second.base()));
+    let output = run_whirl(&dir, &[
+        "--load-state",
+        "input.state.json",
+        "--save-state",
+        "output.state.json",
+        "state.whirl",
+    ]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    let saved: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(dir.path.join("output.state.json")).expect("state was saved"),
+    )
+    .expect("state is JSON");
+    assert_eq!(saved["pages"][0]["origins"], state["pages"][0]["origins"]);
+}
+
+#[test]
+fn invalid_shared_state_fails_before_browser_launch() {
+    let dir = TestDir::new();
+    dir.file(
+        "input.state.json",
+        r#"{"format":"whirl-state","version":99,"secret":"private-cookie"}"#,
+    );
+    dir.file("state.whirl", "VISIT https://app.test/\n");
+    let output = run_whirl_env(
+        &dir,
+        &["--load-state", "input.state.json", "state.whirl"],
+        &[("PLAYWRIGHT_BROWSERS_PATH", "/missing-whirl-browser")],
+    );
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 3, "{stdout}");
+    assert!(stdout.contains("Invalid state"), "{stdout}");
+    assert!(!stdout.contains("private-cookie"), "{stdout}");
+    assert!(!stdout.contains("Executable doesn't exist"), "{stdout}");
+}
+
+#[test]
+fn saved_state_output_cannot_overwrite_its_flow() {
+    let dir = TestDir::new();
+    let source = "VISIT https://app.test/\n";
+    dir.file("state.whirl", source);
+    let output = run_whirl(&dir, &["--save-state", "state.whirl", "state.whirl"]);
+    assert_eq!(exit_code(&output), 4, "{}", stdout_text(&output));
+    assert_eq!(
+        fs::read_to_string(dir.path.join("state.whirl")).expect("flow exists"),
+        source
+    );
+}
+
+#[test]
+fn shared_state_expiry_and_redaction_are_reported_without_values() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file("input.state.json", r#"{"format":"whirl-state","version":1,"redacted":true,"origins":[],"cookies":[{"name":"sid","value":"private-cookie","domain":"127.0.0.1","hostOnly":true,"path":"/","expires":1,"httpOnly":true,"secure":false,"sameSite":null}]}"#);
+    dir.file(
+        "state.whirl",
+        "VISIT /login.html\nASSERT css:\"#status\" text == \"logged out\"\n",
+    );
+    let output = run_whirl(&dir, &[
+        "--base",
+        &server.base(),
+        "--load-state",
+        "input.state.json",
+        "state.whirl",
+    ]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "{stdout}");
+    assert!(stdout.contains("skipped 1 expired cookie"), "{stdout}");
+    assert!(stdout.contains("redacted values"), "{stdout}");
+    assert!(!stdout.contains("private-cookie"), "{stdout}");
+}
+
+#[test]
+fn shared_state_export_bypasses_service_workers() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file(
+        "state.whirl",
+        "VISIT /shared-state-sw.html\nASSERT css:\"#status\" text == \"Controlled\"\n",
+    );
+    let output = run_whirl(&dir, &[
+        "--base",
+        &server.base(),
+        "--save-state",
+        "output.state.json",
+        "state.whirl",
+    ]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    let saved: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(dir.path.join("output.state.json")).expect("state was saved"),
+    )
+    .expect("state is JSON");
+    assert_eq!(saved["cookies"], serde_json::json!([]));
+    assert_eq!(saved["origins"][0]["localStorage"], serde_json::json!([]));
 }

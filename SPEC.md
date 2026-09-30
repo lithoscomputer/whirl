@@ -163,7 +163,15 @@ block-hosts: analytics.example.com *.analytics.example.com
 
 The reports list every blocked host with the rule that blocked it: the `block-hosts` glob that matched, or `allow-hosts` when no glob of that list matched. Service workers are disabled when either option is set, because they can bypass request routing. IP-literal hosts match textually; `data:` and `blob:` URLs have no host and are always allowed.
 
-`storage` names a Playwright storageState JSON file, resolved relative to the `.whirl` file. Each browser context starts from that saved state (cookies and local storage) instead of empty, so flows can skip UI login. Produce the file with `--save-state`, which writes the final context state of a successful run — typically of a dedicated login flow. `--load-state` supplies the same kind of file from the command line (section 13).
+`storage` names a `*.state.json` file in the shared Whirl/BrowserSim format, resolved relative to the `.whirl` file. Each file starts in a fresh context. State is validated and restored before application code runs. Produce it with `--save-state` after a successful login flow, or supply it with `--load-state` (section 13).
+
+The file has `format: "whirl-state"`, `version: 1`, `redacted`, `cookies`, and `origins`. Optional `pages` scopes session storage by page ID and origin. Optional `metadata` is descriptive and never controls restoration. [The JSON schema](state/whirl-state.schema.json) describes the structure; runtime validation also checks identities, cookie restrictions, and IndexedDB records. Old formats and unknown versions are rejected.
+
+Cookies have a normalized domain, explicit `hostOnly`, path, HTTP-only and Secure flags, nullable `sameSite`, and `expires` in Unix seconds (`null` for session cookies). Expired cookies are skipped and counted. Storage origins are canonical HTTP(S) origins. Each origin can contain `localStorage` name/value pairs and IndexedDB databases. Each page origin can contain `sessionStorage` pairs. A present storage field is a complete capture of that area; `[]` means captured empty, and an absent field means not captured.
+
+IndexedDB state includes database/store/index definitions, records, and the captured `nextKey` for auto-increment stores, including deleted-key history. JSON, `undefined`, ArrayBuffer, typed arrays, and DataView are supported. Binary records retain type, offsets, and shared buffer identity within a record. Other structured values fail capture instead of being coerced. The main page's session storage is seeded once; later navigations and reloads retain application changes.
+
+The first adapters support page ID `main`. Other IDs and partitioned cookies fail before application code runs. Whirl restores multiple origins. BrowserSim restores one application origin and rejects files containing other storage origins. Native runs do not remap origins. BrowserSim replay can explicitly remap the recorded application origin while preserving cookie restrictions. The shared format can represent richer scopes for future adapters.
 
 `setup` names another `.whirl` file, resolved relative to this one, whose final state this file starts from: Whirl runs the setup flow first, in its own context, saves that context's cookies and storage, and starts this file's context from the saved state, the way `storage` would. The two options cannot be combined. The setup flow is an ordinary flow with its own options, so it runs and debugs on its own, and it may not name a `setup` of its own. It can use HTTP entries before its first `VISIT`, or contain only HTTP entries. Every file that names the same setup flow in one invocation shares one run of it: ten flows that need a signed-in session sign in once. The saved state lives only for the invocation. The setup flow's captures are readable in the dependent file as `{{setup.name}}` (section 11). When the setup flow fails, its dependents do not start and each reports the failure as its `[setup]` case (section 12). The path must be literal: it is resolved before any variable exists.
 
@@ -1664,9 +1672,12 @@ still launches no browser.
 
 `--out` names a directory; Whirl creates it when needed. Supplying both `--out` and `--artifacts` is a usage error.
 
-`--load-state` and `--save-state` read and write Whirl's state format: the
-Playwright storageState JSON file that the `storage` option also names
-(section 5), with the context's cookies and each origin's local storage.
+`--load-state` and `--save-state` read and write the shared `whirl-state`
+version 1 format that the `storage` option also names (section 5). Saved
+files include context cookies, captured local/IndexedDB origins, and the
+main page's session storage. Writes are atomic and use owner-only file
+permissions (`0600` on Unix). State output cannot overwrite an input or a
+report destination, including symlink and hard-link aliases.
 `--load-state` starts every file's browser context from the file. A file whose
 options include `storage` or `setup` already chooses its starting state, so
 `--load-state` with such a file is a usage error. `--save-state` needs a
