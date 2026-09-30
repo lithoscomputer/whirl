@@ -154,17 +154,9 @@ struct RunArgs {
     #[arg(long, value_name = "REPORT", conflicts_with = "paths")]
     rerun_failed: Option<PathBuf>,
 
-    /// Override the `base` option.
-    #[arg(long, value_name = "URL")]
-    base: Option<String>,
-
-    /// Override the `browser` option.
+    /// Set the `browser` option, as `-O browser=NAME` does.
     #[arg(long, value_name = "NAME")]
     browser: Option<String>,
-
-    /// Override the `step-timeout` option.
-    #[arg(long, value_name = "DURATION")]
-    step_timeout: Option<String>,
 
     /// Run with a visible browser window.
     #[arg(long)]
@@ -259,12 +251,20 @@ struct RunArgs {
     #[arg(long, value_name = "PATH", hide = true)]
     save_storage: Option<PathBuf>,
 
-    /// Override the `entry-timeout` option.
-    #[arg(long, value_name = "DURATION")]
+    /// Removed; use -O base=URL.
+    #[arg(long, value_name = "URL", hide = true)]
+    base: Option<String>,
+
+    /// Removed; use -O step-timeout=DURATION.
+    #[arg(long, value_name = "DURATION", hide = true)]
+    step_timeout: Option<String>,
+
+    /// Removed; use -O entry-timeout=DURATION.
+    #[arg(long, value_name = "DURATION", hide = true)]
     entry_timeout: Option<String>,
 
-    /// Override the user agent: chrome, firefox, safari, or a literal string.
-    #[arg(long, value_name = "UA")]
+    /// Removed; use -O user-agent=UA.
+    #[arg(long, value_name = "UA", hide = true)]
     user_agent: Option<String>,
 }
 
@@ -868,22 +868,15 @@ fn fmt_command(check: bool, paths: &[PathBuf]) -> Exit {
     exit
 }
 
-/// Builds the options that `-O` and the option flags set (SPEC 5, 13).
-/// A malformed value, an unknown key, or two forms of one setting is a
-/// usage error.
+/// Builds the options that `-O` and `--browser` set (SPEC 5, 13). A
+/// malformed value, an unknown key, or both forms of `browser` is a usage
+/// error.
 fn build_options(args: &RunArgs) -> Result<CliOptions, UsageError> {
-    let flags = [
-        ("--base", "base", &args.base),
-        ("--browser", "browser", &args.browser),
-        ("--step-timeout", "step-timeout", &args.step_timeout),
-        ("--entry-timeout", "entry-timeout", &args.entry_timeout),
-        ("--user-agent", "user-agent", &args.user_agent),
-    ]
-    .map(|(flag, key, value)| OptionFlag {
-        flag,
-        key,
-        value: value.as_deref(),
-    });
+    let flags = [OptionFlag {
+        flag:  "--browser",
+        key:   "browser",
+        value: args.browser.as_deref(),
+    }];
     let options = CliOptions::try_new(&args.options, &flags).map_err(|error| UsageError {
         message: error.to_string(),
     })?;
@@ -917,7 +910,7 @@ fn build_base_vars(args: &RunArgs) -> Result<Vec<(String, String)>, UsageError> 
     Ok(entries)
 }
 
-/// Rejects the removed state flags, which have no alias (SPEC 13).
+/// Rejects the removed flags, which have no alias (SPEC 13).
 fn check_removed_flags(args: &RunArgs) -> Result<(), UsageError> {
     let removed = [
         (args.storage.is_some(), "--storage", "--load-state"),
@@ -925,6 +918,22 @@ fn check_removed_flags(args: &RunArgs) -> Result<(), UsageError> {
             args.save_storage.is_some(),
             "--save-storage",
             "--save-state",
+        ),
+        (args.base.is_some(), "--base", "-O base=URL"),
+        (
+            args.step_timeout.is_some(),
+            "--step-timeout",
+            "-O step-timeout=DURATION",
+        ),
+        (
+            args.entry_timeout.is_some(),
+            "--entry-timeout",
+            "-O entry-timeout=DURATION",
+        ),
+        (
+            args.user_agent.is_some(),
+            "--user-agent",
+            "-O user-agent=UA",
         ),
     ];
     match removed.into_iter().find(|(present, ..)| *present) {
@@ -1591,6 +1600,8 @@ mod tests {
         let path = file.to_str().expect("utf-8 path");
         assert_eq!(run_cli(&["run", "--storage", "s.json", path]), 4);
         assert_eq!(run_cli(&["run", "--save-storage", "s.json", path]), 4);
+        assert_eq!(run_cli(&["run", "--base", "http://x.test", path]), 4);
+        assert_eq!(run_cli(&["run", "--user-agent", "Whirl/1", path]), 4);
     }
 
     #[test]
@@ -1650,14 +1661,14 @@ mod tests {
     }
 
     #[test]
-    fn an_invalid_step_timeout_flag_is_a_usage_error() {
+    fn an_invalid_step_timeout_option_is_a_usage_error() {
         let dir = TempDir::new();
         let file = dir.file("clean.whirl", "VISIT /login\n");
         assert_eq!(
             run_cli(&[
                 "run",
-                "--step-timeout",
-                "soon",
+                "-O",
+                "step-timeout=soon",
                 file.to_str().expect("utf-8 path")
             ]),
             4

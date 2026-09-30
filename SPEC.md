@@ -180,7 +180,7 @@ are pinned to the bundled Playwright version and may change with a Whirl upgrade
 All other values are literal strings, including unknown names such as `chorme`.
 Quote a value that contains spaces. Quoted and unquoted forms have the same
 meaning: `chrome` and `"chrome"` both select the alias. Alias resolution happens
-after option interpolation and CLI overrides; `--user-agent chrome` works too.
+after option interpolation and CLI overrides; `-O user-agent=chrome` works too.
 
 Keys that start with `browsersim-` configure BrowserSim, a recording engine that ordinary runs do not use. An ordinary run validates them and does not apply them. The console output and the reports list each one that the file or the command line sets as inactive. `browsersim-origin` chooses the origin that a page sees when BrowserSim replays a recording: `build`, the default, is the origin of the build under test, and `recorded` is the origin the recording captured. Any other `browsersim-` key is unknown.
 
@@ -191,7 +191,7 @@ variable, such as `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`. A file that uses
 `ACT` without `model` is a lint error. Without `WHIRL_LLM_ENDPOINT` (section
 13), `whirl check` also reports a literal `model` that the catalog cannot route.
 
-Unknown keys are a parse error. The command line can set every key except `setup` for every file, with `-O key=value` or with a flag of its own, such as `--browser` (section 13). A value from the command line replaces the file's value. `--load-state` is not such a flag: it cannot be combined with `storage` (section 13).
+Unknown keys are a parse error. The command line can set every key except `setup` for every file with `-O key=value`, and `browser` also with `--browser` (section 13). A value from the command line replaces the file's value. `--load-state` is not such a flag: it cannot be combined with `storage` (section 13).
 
 ## 6. Locators
 
@@ -1596,9 +1596,7 @@ nothing and exits with code 1 when any file would change.
 | Flag | Meaning |
 | --- | --- |
 | `--rerun-failed REPORT` | Run only failed or errored files from a JSON report; replaces PATH arguments |
-| `--base URL` | Set the `base` option |
-| `--browser NAME` | Set the `browser` option |
-| `--step-timeout DURATION` | Set the `step-timeout` option |
+| `--browser NAME` | Set the `browser` option, as `-O browser=NAME` does |
 | `--headed` | Run with a visible browser window |
 | `--jobs N` | Worker slots for parallel files |
 | `-O KEY=VALUE` | Set an option for every file (repeatable; see below) |
@@ -1618,8 +1616,6 @@ nothing and exits with code 1 when any file would change.
 | `--har` | Record a .har network log per file into the output directory |
 | `--load-state FILE` | Start each file's browser context from saved browser state |
 | `--save-state FILE` | Write the final browser state after a successful run (single file only) |
-| `--entry-timeout DURATION` | Set the `entry-timeout` option |
-| `--user-agent UA` | Set the `user-agent` option to `chrome`, `firefox`, `safari`, or a literal string |
 | `--jev` | Plan `ACT` with TypeSafe's Jev first, and the `model` option when Jev is unsure (section 7.4) |
 | `--cache MODE` | What to do with each flow's AI cache: `replay` (default), `update`, or `only` (section 12.1) |
 
@@ -1655,10 +1651,12 @@ still launches no browser.
   hosts and not the file's. A host glob cannot contain white space. An
   empty value, as in `-O allow-hosts=`, clears the list. An empty value
   cannot be combined with other values for its key.
-- `--base`, `--browser`, `--step-timeout`, `--entry-timeout`, and
-  `--user-agent` set the option of the same name. Their value is literal, as
-  for `-O`, and has the same validation. A flag and `-O` for the same key
-  are a usage error, even when the values agree.
+- `--browser NAME` sets the `browser` option, with a literal value and the
+  same validation. `--browser` and `-O browser=` together are a usage error,
+  even when the values agree.
+- The removed `--base`, `--step-timeout`, `--entry-timeout`, and
+  `--user-agent` flags are usage errors that name their `-O` form, such as
+  `-O base=URL`.
 - A path from `-O storage=` resolves against the working directory, and it
   cannot be combined with `--load-state`.
 

@@ -413,8 +413,8 @@ fn the_user_agent_option_and_flag_set_navigator_user_agent() {
     );
 
     let output = run_whirl(&dir, &[
-        "--user-agent",
-        "Whirl/1 (flag)",
+        "-O",
+        "user-agent=Whirl/1 (flag)",
         "--report-json",
         "report.json",
         flow,

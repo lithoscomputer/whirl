@@ -1,5 +1,5 @@
 //! Options set on the command line (SPEC 5, 13): repeatable `-O key=value`
-//! arguments and the flags that set one option, such as `--browser`.
+//! arguments and `--browser`, the one flag that sets an option.
 //!
 //! Settings resolve in this order: built-in defaults, then the file's
 //! `[Options]` lines, then the command line. [`CliOptions::apply`] puts the
@@ -19,7 +19,7 @@ const LIST_KEYS: [&str; 3] = ["allow-hosts", "block-hosts", "snapshot-mask"];
 /// The list keys whose items are host globs.
 const HOST_KEYS: [&str; 2] = ["allow-hosts", "block-hosts"];
 
-/// A flag that sets one option, such as `--browser NAME` (SPEC 13).
+/// A flag that sets one option, as `--browser NAME` does (SPEC 13).
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct OptionFlag<'a> {
     pub(crate) flag:  &'static str,
@@ -338,34 +338,27 @@ mod tests {
     }
 
     #[test]
-    fn a_flag_value_is_literal_and_conflicts_with_the_same_key() {
-        let flag = OptionFlag {
-            flag:  "--user-agent",
-            key:   "user-agent",
-            value: Some("Whirl/1 (test) {{x}} # \"q\""),
-        };
-        let cli = CliOptions::try_new(&[], &[flag]).expect("valid");
-        let lines = applied("VISIT /\n", &cli);
-        let [(FileOption::UserAgent(value), _)] = lines.as_slice() else {
-            panic!("expected a user-agent line: {lines:?}");
-        };
-        assert_eq!(
-            value.as_literal().as_deref(),
-            Some("Whirl/1 (test) {{x}} # \"q\"")
-        );
-
-        let pairs = ["user-agent=chrome".to_owned()];
-        let error = CliOptions::try_new(&pairs, &[flag]).expect_err("both forms conflict");
-        assert_eq!(
-            error.to_string(),
-            "--user-agent and -O user-agent both set `user-agent`; use one"
-        );
-        let browser = OptionFlag {
+    fn a_flag_sets_its_option_and_conflicts_with_the_same_key() {
+        let browser = |value| OptionFlag {
             flag:  "--browser",
             key:   "browser",
-            value: Some("netscape"),
+            value: Some(value),
         };
-        let error = CliOptions::try_new(&[], &[browser]).expect_err("invalid flag value");
+        let cli = CliOptions::try_new(&[], &[browser("firefox")]).expect("valid");
+        let lines = applied("[Options]\nbrowser: webkit\nVISIT /\n", &cli);
+        assert_eq!(lines, [(
+            FileOption::Browser(OptionValue::Literal(BrowserKind::Firefox)),
+            OptionSource::CommandLine
+        )]);
+
+        let pairs = ["browser=firefox".to_owned()];
+        let error =
+            CliOptions::try_new(&pairs, &[browser("firefox")]).expect_err("both forms conflict");
+        assert_eq!(
+            error.to_string(),
+            "--browser and -O browser both set `browser`; use one"
+        );
+        let error = CliOptions::try_new(&[], &[browser("netscape")]).expect_err("invalid value");
         assert!(
             error
                 .to_string()
