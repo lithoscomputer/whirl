@@ -287,7 +287,8 @@ fn run_whirl_env(dir: &TestDir, args: &[&str], env: &[(&str, &str)]) -> Output {
         .env("WHIRL_SHIM_JS", shim_js)
         .envs(env.iter().copied())
         .current_dir(&dir.path)
-        .arg("--artifacts")
+        .arg("run")
+        .arg("--out")
         .arg(&artifacts)
         .args(args)
         .output()
@@ -1150,7 +1151,7 @@ fn saved_storage_state_logs_the_second_flow_in() {
     let state = dir.path.join("nested/state.json");
     let state_arg = "nested/state.json";
 
-    // A login flow sets localStorage and a cookie, and --save-storage
+    // A login flow sets localStorage and a cookie, and --save-state
     // writes the final context state.
     dir.file(
         "login.whirl",
@@ -1162,13 +1163,13 @@ ASSERT css:"#status" text == "logged in"
     let output = run_whirl(&dir, &[
         "--base",
         &server.base(),
-        "--save-storage",
+        "--save-state",
         state_arg,
         "login.whirl",
     ]);
     let stdout = stdout_text(&output);
     assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
-    assert!(state.is_file(), "--save-storage should write {state:?}");
+    assert!(state.is_file(), "--save-state should write {state:?}");
 
     // A second flow starts from that state (the `storage` option
     // resolves relative to the .whirl file) and is already logged in
@@ -1184,9 +1185,21 @@ ASSERT css:"#status" text == "logged in"
     let output = run_whirl(&dir, &["reuse.whirl"]);
     let stdout = stdout_text(&output);
     assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
-    // CLI storage paths also resolve against the process working directory.
-    let output = run_whirl(&dir, &["--storage", state_arg, "reuse.whirl"]);
+    // --load-state starts a flow without a `storage` option from the same
+    // state; its path resolves against the process working directory.
+    dir.file(
+        "loaded.whirl",
+        &format!(
+            "[Options]\nbase: {base}\n\n\
+             VISIT /login.html\nASSERT css:\"#status\" text == \"already logged in\"\n",
+            base = server.base()
+        ),
+    );
+    let output = run_whirl(&dir, &["--load-state", state_arg, "loaded.whirl"]);
     assert_eq!(exit_code(&output), 0, "stdout:\n{}", stdout_text(&output));
+    // A file whose `storage` option already chooses its state rejects it.
+    let output = run_whirl(&dir, &["--load-state", state_arg, "reuse.whirl"]);
+    assert_eq!(exit_code(&output), 4, "stdout:\n{}", stdout_text(&output));
 }
 
 #[test]

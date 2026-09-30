@@ -13,8 +13,8 @@ use std::process::ExitCode;
 use std::{fs, io};
 
 use anyhow::Context as _;
-use clap::error::ErrorKind;
-use clap::{Args, Parser, Subcommand};
+use clap::error::{ContextKind, ContextValue, ErrorKind};
+use clap::{Args, CommandFactory as _, Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use tokio::runtime::Runtime;
@@ -66,19 +66,17 @@ impl Exit {
     name = "whirl",
     version,
     about = "Run web UI tests written in plain-text .whirl files",
-    args_conflicts_with_subcommands = true,
-    subcommand_negates_reqs = true
+    arg_required_else_help = true
 )]
 struct Cli {
     #[command(subcommand)]
-    command: Option<Command>,
-
-    #[command(flatten)]
-    run: RunArgs,
+    command: Command,
 }
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Run files in browsers.
+    Run(Box<RunArgs>),
     /// Generate HTML from saved results without running browsers.
     Report(ReportArgs),
     /// Parse and lint files; nothing runs.
@@ -139,8 +137,7 @@ struct ReportArgs {
     working_directory: Option<PathBuf>,
 }
 
-/// Flags for the default run command (SPEC 13). The runner is a later
-/// phase; the flags are accepted now so the surface is stable.
+/// Flags for `whirl run` (SPEC 13).
 #[derive(Clone, Debug, Args)]
 #[command(group(clap::ArgGroup::new("report_context_output").args(["report_json", "report_html"]).multiple(true)))]
 struct RunArgs {
@@ -180,9 +177,13 @@ struct RunArgs {
     #[arg(long, value_name = "PATH")]
     variables_file: Option<PathBuf>,
 
-    /// Artifact output directory.
+    /// Output directory for screenshots, traces, video, and other evidence.
     #[arg(long, value_name = "DIR", default_value = "whirl-artifacts")]
-    artifacts: PathBuf,
+    out: PathBuf,
+
+    /// Deprecated alias for --out.
+    #[arg(long, value_name = "DIR", hide = true, conflicts_with = "out")]
+    artifacts: Option<PathBuf>,
 
     /// Record a Playwright trace per file; saved only when the file fails.
     #[arg(long)]
@@ -232,12 +233,20 @@ struct RunArgs {
     #[arg(long, value_name = "MODE", value_enum, default_value_t = CacheMode::Replay)]
     cache: CacheMode,
 
-    /// Override the `storage` option.
-    #[arg(long, value_name = "PATH")]
+    /// Start each file's browser from this saved state.
+    #[arg(long, value_name = "FILE")]
+    load_state: Option<PathBuf>,
+
+    /// Write the final browser state after a successful run of one file.
+    #[arg(long, value_name = "FILE")]
+    save_state: Option<PathBuf>,
+
+    /// Removed; use --load-state.
+    #[arg(long, value_name = "PATH", hide = true)]
     storage: Option<PathBuf>,
 
-    /// Write the final storage state after a successful run.
-    #[arg(long, value_name = "PATH")]
+    /// Removed; use --save-state.
+    #[arg(long, value_name = "PATH", hide = true)]
     save_storage: Option<PathBuf>,
 
     /// Override the `entry-timeout` option.
@@ -257,25 +266,25 @@ pub fn run(argv: impl IntoIterator<Item = OsString>) -> ExitCode {
 }
 
 fn execute(argv: impl IntoIterator<Item = OsString>) -> u8 {
-    let cli = match Cli::try_parse_from(argv) {
+    let argv: Vec<OsString> = argv.into_iter().collect();
+    let cli = match Cli::try_parse_from(&argv) {
         Ok(cli) => cli,
-        Err(error) => return exit_for_clap_error(&error),
+        Err(error) => return exit_for_clap_error(&error, &argv),
     };
     let exit = match cli.command {
-        Some(Command::Report(args)) => report_command(&args),
-        Some(Command::Check { paths, json }) => check_command(&paths, json),
-        Some(Command::Fmt { check, paths }) => fmt_command(check, &paths),
-        Some(Command::Install { browsers }) => install_command(&browsers),
-        Some(Command::Doctor { browser }) => {
-            match doctor::run(&browser, &mut |line| print_out(line)) {
-                Ok(()) => Exit::Success,
-                Err(error) => {
-                    print_err(&format!("whirl: error: {error:#}"));
-                    Exit::Runtime
-                }
+        Command::Run(args) => run_command(&args),
+        Command::Report(args) => report_command(&args),
+        Command::Check { paths, json } => check_command(&paths, json),
+        Command::Fmt { check, paths } => fmt_command(check, &paths),
+        Command::Install { browsers } => install_command(&browsers),
+        Command::Doctor { browser } => match doctor::run(&browser, &mut |line| print_out(line)) {
+            Ok(()) => Exit::Success,
+            Err(error) => {
+                print_err(&format!("whirl: error: {error:#}"));
+                Exit::Runtime
             }
-        }
-        Some(Command::ShowTrace { path }) => {
+        },
+        Command::ShowTrace { path } => {
             if !path.is_file() {
                 print_err(&format!(
                     "whirl: error: trace '{}' is not a file",
@@ -289,19 +298,55 @@ fn execute(argv: impl IntoIterator<Item = OsString>) -> u8 {
                 Exit::Success
             }
         }
-        None => run_command(&cli.run),
     };
     exit.code()
 }
 
 /// Prints a clap error and maps it to an exit code: help and version are
-/// success; everything else is a usage error (SPEC 13, exit 4).
-fn exit_for_clap_error(error: &clap::Error) -> u8 {
-    let _ = error.print();
-    match error.kind() {
-        ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => Exit::Success.code(),
-        _ => Exit::Usage.code(),
+/// success; everything else is a usage error (SPEC 13, exit 4). Files run
+/// only through `whirl run`, so an invocation without a command that
+/// names files or run flags gets a hint.
+fn exit_for_clap_error(error: &clap::Error, argv: &[OsString]) -> u8 {
+    if let ErrorKind::DisplayHelp | ErrorKind::DisplayVersion = error.kind() {
+        let _ = error.print();
+        return Exit::Success.code();
     }
+    let names: Vec<String> = Cli::command()
+        .get_subcommands()
+        .map(|command| command.get_name().to_owned())
+        .collect();
+    let has_command = argv
+        .iter()
+        .skip(1)
+        .any(|arg| names.iter().any(|name| arg == name.as_str()));
+    let context = |kind| match error.get(kind) {
+        Some(ContextValue::String(text)) => Some(text.clone()),
+        _ => None,
+    };
+    match error.kind() {
+        ErrorKind::InvalidSubcommand
+            if let Some(path) = context(ContextKind::InvalidSubcommand)
+                && (Path::new(&path)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("whirl"))
+                    || Path::new(&path).exists()) =>
+        {
+            print_err(&format!(
+                "whirl: error: '{path}' is not a command\n  tip: run files with `whirl run {path}`"
+            ));
+        }
+        ErrorKind::UnknownArgument
+            if !has_command && let Some(flag) = context(ContextKind::InvalidArg) =>
+        {
+            print_err(&format!(
+                "whirl: error: unexpected argument '{flag}'\n  tip: run files with `whirl run [OPTIONS] <PATH>...`"
+            ));
+        }
+        _ => {
+            let _ = error.print();
+        }
+    }
+    Exit::Usage.code()
 }
 
 #[expect(clippy::print_stdout, reason = "the CLI's stdout boundary")]
@@ -814,7 +859,7 @@ fn build_overrides(args: &RunArgs) -> Result<flow::Overrides, UsageError> {
         step_timeout_ms: duration("--step-timeout", &args.step_timeout)?,
         entry_timeout_ms: duration("--entry-timeout", &args.entry_timeout)?,
         headed: args.headed,
-        storage: args.storage.clone(),
+        load_state: args.load_state.clone(),
         user_agent: args.user_agent.clone(),
     })
 }
@@ -841,15 +886,33 @@ fn build_base_vars(args: &RunArgs) -> Result<Vec<(String, String)>, UsageError> 
     Ok(entries)
 }
 
-/// Rejects `--save-storage` with more than one input flow before parsing,
+/// Rejects the removed state flags, which have no alias (SPEC 13).
+fn check_removed_flags(args: &RunArgs) -> Result<(), UsageError> {
+    let removed = [
+        (args.storage.is_some(), "--storage", "--load-state"),
+        (
+            args.save_storage.is_some(),
+            "--save-storage",
+            "--save-state",
+        ),
+    ];
+    match removed.into_iter().find(|(present, ..)| *present) {
+        Some((_, flag, replacement)) => Err(UsageError {
+            message: format!("{flag} was removed; use {replacement}"),
+        }),
+        None => Ok(()),
+    }
+}
+
+/// Rejects `--save-state` with more than one input flow before parsing,
 /// so the usage error preempts parse errors (SPEC 13). Flows are counted
 /// after canonical-path dedup (SPEC 14); a canonicalization failure is
 /// left for the runner to report as a runtime error.
-fn check_save_storage_inputs(
+fn check_save_state_inputs(
     args: &RunArgs,
     sources: &[(PathBuf, String)],
 ) -> Result<(), UsageError> {
-    if args.save_storage.is_none() {
+    if args.save_state.is_none() {
         return Ok(());
     }
     let inputs: Vec<PathBuf> = sources.iter().map(|(path, _)| path.clone()).collect();
@@ -859,7 +922,7 @@ fn check_save_storage_inputs(
     if flows.len() > 1 {
         return Err(UsageError {
             message: format!(
-                "--save-storage requires a single input file, got {}",
+                "--save-state requires a single input file, got {}",
                 flows.len()
             ),
         });
@@ -904,11 +967,45 @@ fn failed_paths(path: &Path) -> anyhow::Result<Vec<PathBuf>> {
         .collect())
 }
 
-/// The default run command (SPEC 13): parse and lint everything, then
-/// run the files through the worker pool and print the console report.
+/// Rejects `--load-state` for a flow whose options already choose its
+/// starting state: `storage` or `setup` (SPEC 5, 13).
+fn check_load_state_options<'a>(
+    args: &RunArgs,
+    files: impl Iterator<Item = &'a ast::File>,
+) -> Result<(), UsageError> {
+    if args.load_state.is_none() {
+        return Ok(());
+    }
+    for file in files {
+        let key = if file.storage_option().is_some() {
+            "storage"
+        } else if file.setup_option().is_some() {
+            "setup"
+        } else {
+            continue;
+        };
+        return Err(UsageError {
+            message: format!(
+                "--load-state cannot be combined with the `{key}` option of '{}'",
+                file.path.display()
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// `whirl run` (SPEC 13): parse and lint everything, then run the files
+/// through the worker pool and print the console report.
 fn run_command(args: &RunArgs) -> Exit {
     // Usage errors are detected before parsing and preempt everything
     // (SPEC 13).
+    if let Err(error) = check_removed_flags(args) {
+        print_err(&format!("whirl: error: {error}"));
+        return Exit::Usage;
+    }
+    if args.artifacts.is_some() {
+        print_err("whirl: warning: --artifacts is deprecated; use --out");
+    }
     let (overrides, base_vars) = match build_overrides(args)
         .and_then(|overrides| build_base_vars(args).map(|base_vars| (overrides, base_vars)))
     {
@@ -951,7 +1048,7 @@ fn run_command(args: &RunArgs) -> Exit {
         Ok(sources) => sources,
         Err(exit) => return exit,
     };
-    if let Err(error) = check_save_storage_inputs(args, &sources) {
+    if let Err(error) = check_save_state_inputs(args, &sources) {
         print_err(&format!("whirl: error: {error}"));
         return Exit::Usage;
     }
@@ -970,6 +1067,15 @@ fn run_command(args: &RunArgs) -> Exit {
     print_diagnostics(&diagnostics, false, exit);
     if exit != Exit::Success {
         return exit;
+    }
+    let all_files = checked
+        .inputs
+        .iter()
+        .chain(&checked.setups)
+        .map(|input| &input.file);
+    if let Err(error) = check_load_state_options(args, all_files) {
+        print_err(&format!("whirl: error: {error}"));
+        return Exit::Usage;
     }
     let paths = || {
         checked
@@ -1001,14 +1107,14 @@ fn run_command(args: &RunArgs) -> Exit {
             .collect(),
         jobs: args.jobs,
         fail_fast: args.fail_fast,
-        artifacts_dir: args.artifacts.clone(),
+        out_dir: args.artifacts.clone().unwrap_or_else(|| args.out.clone()),
         flags: flow::FlowFlags {
             trace:            args.trace,
             video:            args.video,
             video_fps:        args.video_fps,
             har:              args.har,
             update_snapshots: args.update_snapshots,
-            save_storage:     args.save_storage.clone(),
+            save_state:       args.save_state.clone(),
             cache:            args.cache,
         },
         overrides,
@@ -1043,7 +1149,7 @@ fn run_command(args: &RunArgs) -> Exit {
             let report_exit = write_reports(args, &document);
             run_exit.max(report_exit)
         }
-        Err(error @ runner::RunnerError::SaveStorageManyFiles { .. }) => {
+        Err(error @ runner::RunnerError::SaveStateManyFiles { .. }) => {
             print_err(&format!("whirl: error: {error}"));
             Exit::Usage
         }
@@ -1092,8 +1198,8 @@ fn check_html_path<'a>(
                 args.report_junit.as_deref(),
                 args.report_metadata.as_deref(),
                 args.variables_file.as_deref(),
-                args.save_storage.as_deref(),
-                args.storage.as_deref(),
+                args.save_state.as_deref(),
+                args.load_state.as_deref(),
                 args.rerun_failed.as_deref(),
             ]
             .into_iter()
@@ -1434,14 +1540,55 @@ mod tests {
 
     #[test]
     fn an_unknown_flag_is_a_usage_error() {
-        assert_eq!(run_cli(&["--frobnicate", "x.whirl"]), 4);
+        assert_eq!(run_cli(&["run", "--frobnicate", "x.whirl"]), 4);
+    }
+
+    #[test]
+    fn a_file_without_the_run_command_is_a_usage_error() {
+        let dir = TempDir::new();
+        let file = dir.file("clean.whirl", "VISIT /login\n");
+        let path = file.to_str().expect("utf-8 path");
+        assert_eq!(run_cli(&[path]), 4);
+        assert_eq!(run_cli(&["--headed", path]), 4);
+    }
+
+    #[test]
+    fn the_removed_state_flags_are_usage_errors() {
+        let dir = TempDir::new();
+        let file = dir.file("clean.whirl", "VISIT /login\n");
+        let path = file.to_str().expect("utf-8 path");
+        assert_eq!(run_cli(&["run", "--storage", "s.json", path]), 4);
+        assert_eq!(run_cli(&["run", "--save-storage", "s.json", path]), 4);
+    }
+
+    #[test]
+    fn out_and_its_deprecated_alias_cannot_both_be_given() {
+        let dir = TempDir::new();
+        let file = dir.file("clean.whirl", "VISIT /login\n");
+        let path = file.to_str().expect("utf-8 path");
+        assert_eq!(run_cli(&["run", "--out", "a", "--artifacts", "b", path]), 4);
+    }
+
+    #[test]
+    fn load_state_conflicts_with_a_storage_or_setup_option() {
+        let dir = TempDir::new();
+        let stored = dir.file("stored.whirl", "[Options]\nstorage: s.json\nVISIT /\n");
+        dir.file("login.whirl", "VISIT /\n");
+        let dependent = dir.file(
+            "dependent.whirl",
+            "[Options]\nsetup: login.whirl\nVISIT /\n",
+        );
+        for file in [stored, dependent] {
+            let path = file.to_str().expect("utf-8 path");
+            assert_eq!(run_cli(&["run", "--load-state", "s.json", path]), 4);
+        }
     }
 
     #[test]
     fn run_stops_on_parse_errors_before_the_runner() {
         let dir = TempDir::new();
         let file = dir.file("broken.whirl", "BOGUS line\n");
-        assert_eq!(run_cli(&[file.to_str().expect("utf-8 path")]), 2);
+        assert_eq!(run_cli(&["run", file.to_str().expect("utf-8 path")]), 2);
     }
 
     #[test]
@@ -1449,7 +1596,12 @@ mod tests {
         let dir = TempDir::new();
         let file = dir.file("clean.whirl", "VISIT /login\n");
         assert_eq!(
-            run_cli(&["--browser", "netscape", file.to_str().expect("utf-8 path")]),
+            run_cli(&[
+                "run",
+                "--browser",
+                "netscape",
+                file.to_str().expect("utf-8 path")
+            ]),
             4
         );
     }
@@ -1459,10 +1611,10 @@ mod tests {
         let dir = TempDir::new();
         let file = dir.file("clean.whirl", "VISIT /login\n");
         let path = file.to_str().expect("utf-8 path");
-        assert_eq!(run_cli(&["--video-fps", "30", path]), 4);
-        assert_eq!(run_cli(&["--video", "--video-fps", "0", path]), 4);
-        assert_eq!(run_cli(&["--video", "--video-fps", "61", path]), 4);
-        assert_eq!(run_cli(&["--video", "--video-fps", "fast", path]), 4);
+        assert_eq!(run_cli(&["run", "--video-fps", "30", path]), 4);
+        assert_eq!(run_cli(&["run", "--video", "--video-fps", "0", path]), 4);
+        assert_eq!(run_cli(&["run", "--video", "--video-fps", "61", path]), 4);
+        assert_eq!(run_cli(&["run", "--video", "--video-fps", "fast", path]), 4);
     }
 
     #[test]
@@ -1470,7 +1622,12 @@ mod tests {
         let dir = TempDir::new();
         let file = dir.file("clean.whirl", "VISIT /login\n");
         assert_eq!(
-            run_cli(&["--step-timeout", "soon", file.to_str().expect("utf-8 path")]),
+            run_cli(&[
+                "run",
+                "--step-timeout",
+                "soon",
+                file.to_str().expect("utf-8 path")
+            ]),
             4
         );
     }
@@ -1481,7 +1638,12 @@ mod tests {
         let file = dir.file("broken.whirl", "BOGUS line\n");
         // The usage error preempts the parse error (SPEC 13).
         assert_eq!(
-            run_cli(&["--var", "novalue", file.to_str().expect("utf-8 path")]),
+            run_cli(&[
+                "run",
+                "--var",
+                "novalue",
+                file.to_str().expect("utf-8 path")
+            ]),
             4
         );
     }

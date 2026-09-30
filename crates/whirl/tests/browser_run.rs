@@ -68,7 +68,8 @@ fn run_whirl_env(dir: &TestDir, args: &[&str], env: &[(&str, &str)]) -> Output {
         .env("WHIRL_SHIM_JS", shim_js)
         .envs(env.iter().copied())
         .current_dir(&dir.path)
-        .arg("--artifacts")
+        .arg("run")
+        .arg("--out")
         .arg(&artifacts)
         .args(args)
         .output()
@@ -325,6 +326,43 @@ fn a_hyphenated_screenshot_name_becomes_the_artifact_file_name() {
             .is_file(),
         "the screenshot should be written under the hyphenated name"
     );
+}
+
+#[test]
+fn the_output_directory_defaults_to_whirl_artifacts_and_takes_out_or_its_alias() {
+    let dir = TestDir::new();
+    dir.file(
+        "shot.whirl",
+        "VISIT \"data:text/html,<h1>Hi</h1>\"\nSCREENSHOT page\n",
+    );
+    let shim_js = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../shim/dist/index.js");
+    let cases: [(&[&str], &str); 3] = [
+        (&[], "whirl-artifacts"),
+        (&["--out", "results"], "results"),
+        (&["--artifacts", "legacy"], "legacy"),
+    ];
+    for (args, out) in cases {
+        let output = Command::new(env!("CARGO_BIN_EXE_whirl"))
+            .env("WHIRL_NODE", "node")
+            .env("WHIRL_SHIM_JS", &shim_js)
+            .current_dir(&dir.path)
+            .arg("run")
+            .args(args)
+            .arg("shot.whirl")
+            .output()
+            .expect("the whirl binary should run");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(exit_code(&output), 0, "{args:?}: {stderr}");
+        assert!(
+            dir.path.join(out).join("shot/page.png").is_file(),
+            "{args:?} should write under {out}/"
+        );
+        assert_eq!(
+            stderr.contains("--artifacts is deprecated; use --out"),
+            args.first() == Some(&"--artifacts"),
+            "{args:?}: {stderr}"
+        );
+    }
 }
 
 #[test]

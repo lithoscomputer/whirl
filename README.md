@@ -34,8 +34,8 @@ ASSERT alert:* text contains "Added to cart"
 ```
 
 ```console
-$ whirl flows/checkout.whirl
-$ whirl --report-junit report.xml flows/
+$ whirl run flows/checkout.whirl
+$ whirl run --report-junit report.xml flows/
 ```
 
 ## Why
@@ -100,7 +100,7 @@ ASSERT title contains "Example"
 Run it:
 
 ```console
-$ whirl example.whirl
+$ whirl run example.whirl
 example.whirl passed (0.4s)
 ```
 
@@ -198,9 +198,9 @@ in `<flow>.whirl-cache.json`, next to the flow. Commit it. Later runs replay
 it without a model call, and a step whose page changed heals with a warning:
 
 ```console
-$ whirl --cache=update flows/   # resolve with the model and write the cache
-$ whirl flows/                  # replay; heal a miss with a warning
-$ whirl --cache=only flows/     # fail a miss instead of asking the model
+$ whirl run --cache=update flows/  # resolve with the model and write the cache
+$ whirl run flows/                 # replay; heal a miss with a warning
+$ whirl run --cache=only flows/    # fail a miss instead of asking the model
 ```
 
 See [AI targets](SPEC.md#63-ai-targets) and [the AI cache](SPEC.md#121-the-ai-cache).
@@ -241,12 +241,12 @@ More commands:
 ```console
 $ whirl check flows/        # parse and lint only; nothing runs
 $ whirl check --json flows/ # diagnostics for editors and agents
-$ whirl --rerun-failed report.json --trace
+$ whirl run --rerun-failed report.json --trace
 $ whirl fmt flows/          # rewrite files to the canonical form
-$ whirl --headed flow.whirl # watch the browser
-$ whirl --trace flow.whirl  # save a trace when the flow fails
-$ whirl --video --report-html evidence.html flows/
-$ whirl --video --video-fps 30 flows/  # lighter recordings; Chromium records at 60 by default
+$ whirl run --headed flow.whirl  # watch the browser
+$ whirl run --trace flow.whirl   # save a trace when the flow fails
+$ whirl run --video --report-html evidence.html flows/
+$ whirl run --video --video-fps 30 flows/  # lighter recordings; Chromium records at 60 by default
 $ whirl show-trace whirl-artifacts/flow/trace.zip
 ```
 
@@ -297,8 +297,8 @@ must always match. Masks do not redact other screenshots, traces, or video.
 Create a portable browser test report with recordings and screenshots:
 
 ```console
-$ whirl --video --report-html evidence.html flows/
-$ whirl --video --report-html evidence.html --report-metadata context.json flows/
+$ whirl run --video --report-html evidence.html flows/
+$ whirl run --video --report-html evidence.html --report-metadata context.json flows/
 ```
 
 The HTML opens offline. It shows results, execution checkpoints, failure details,
@@ -309,7 +309,7 @@ and flow descriptions. Metadata paths resolve relative to the metadata file.
 Save JSON and artifacts once, then regenerate HTML without repeating browser actions:
 
 ```console
-$ whirl --video --report-json report.json --artifacts run-artifacts flows/
+$ whirl run --video --report-json report.json --out run-artifacts flows/
 $ whirl report report.json --html evidence.html
 $ whirl report report.json --html evidence.html --metadata revised-context.json
 ```
@@ -337,7 +337,7 @@ in its console output, reports, and trace step titles. `ACT` sends such values
 to its model only as placeholders, but the page snapshot it sends includes any
 text the page shows. Browser-recorded
 artifacts — screenshots, video, HAR files, and saved storage state — can
-still contain secrets the flow typed or received. Treat the artifacts
+still contain secrets the flow typed or received. Treat the output
 directory and HTML reports containing embedded media as sensitive, and prefer
 dedicated test credentials.
 

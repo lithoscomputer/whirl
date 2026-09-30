@@ -31,8 +31,8 @@ pub(crate) struct RunSettings {
     /// Worker slots (SPEC 12); `None` uses the logical CPU count.
     pub(crate) jobs:          Option<usize>,
     pub(crate) fail_fast:     bool,
-    /// The `--artifacts` directory (possibly relative).
-    pub(crate) artifacts_dir: PathBuf,
+    /// The `--out` directory (possibly relative).
+    pub(crate) out_dir:       PathBuf,
     pub(crate) flags:         FlowFlags,
     pub(crate) overrides:     Overrides,
     /// `--variables-file` entries then `--var` flags, in order.
@@ -67,9 +67,9 @@ pub(crate) enum RunnerError {
         "JUDGE needs credentials for the model {model}; set the provider's key, such as ANTHROPIC_API_KEY or OPENAI_API_KEY"
     )]
     JudgeCredentials { model: String },
-    /// A usage error (exit 4): `--save-storage` needs a single file.
-    #[error("--save-storage requires a single input file, got {count}")]
-    SaveStorageManyFiles { count: usize },
+    /// A usage error (exit 4): `--save-state` needs a single file.
+    #[error("--save-state requires a single input file, got {count}")]
+    SaveStateManyFiles { count: usize },
 }
 
 /// One scheduled flow: its parsed file, its artifact directories, and
@@ -250,8 +250,8 @@ impl PreparedRun {
     ) -> Result<Self, RunnerError> {
         let inputs: Vec<PathBuf> = files.iter().map(|file| file.path.clone()).collect();
         let requested = artifacts::dedup_flows(&inputs)?;
-        if settings.flags.save_storage.is_some() && requested.len() > 1 {
-            return Err(RunnerError::SaveStorageManyFiles {
+        if settings.flags.save_state.is_some() && requested.len() > 1 {
+            return Err(RunnerError::SaveStateManyFiles {
                 count: requested.len(),
             });
         }
@@ -268,7 +268,7 @@ impl PreparedRun {
             }
         }
         let planned: Vec<PathBuf> = setup_paths.iter().chain(inputs.iter()).cloned().collect();
-        let flows = artifacts::plan_flows(&settings.artifacts_dir, &cwd, &planned)?;
+        let flows = artifacts::plan_flows(&settings.out_dir, &cwd, &planned)?;
         let setup_canonicals: Vec<PathBuf> = flows
             .iter()
             .take(artifacts::dedup_flows(&setup_paths)?.len())
@@ -319,8 +319,8 @@ impl PreparedRun {
 
         // Normalize CLI paths once, before workers construct wire messages.
         for input in [
-            &mut settings.overrides.storage,
-            &mut settings.flags.save_storage,
+            &mut settings.overrides.load_state,
+            &mut settings.flags.save_state,
         ]
         .into_iter()
         .flatten()

@@ -1,6 +1,6 @@
 # Machine-readable output
 
-`whirl check --json flows/` writes diagnostics to stdout. `whirl --report-json
+`whirl check --json flows/` writes diagnostics to stdout. `whirl run --report-json
 report.json flows/` writes the run report. The check document uses `version: 1`,
 and the run report uses `version: 2`. Consumers must ignore unknown fields.
 Breaking shape changes require a new version.
@@ -175,8 +175,8 @@ version 1 capture as a string.
 ## Rerunning failures
 
 ```sh
-whirl --report-json report.json flows/
-whirl --rerun-failed report.json --trace
+whirl run --report-json report.json flows/
+whirl run --rerun-failed report.json --trace
 ```
 
 Reruns select failed and errored files, resolve relative paths using the report's

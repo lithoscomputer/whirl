@@ -18,6 +18,10 @@
   - A quoted string joins a token only right after a prefix, as in `label:"First name"` or `button:~"Sign in"`. A `json:` or `xpath:` argument follows this rule like any other prefix value; it no longer has a rule of its own.
   - A first token with a prefix after `ACT`, `EXTRACT`, or `JUDGE` starts the scope, so `ACT css:form` alone is an error. `DRAG` needs no quotes on a `to` that is text, and a bare direction or `to` right after `SCROLL` is always the motion.
   - The removed `[Asserts]` and `[Captures]` sections are unknown sections, and `whirl fmt` no longer rewrites them. The `sections-removed` and `mixed-check-syntax` errors are gone.
+- Run files with `whirl run`, as in `whirl run checkout.whirl`. This changes existing scripts:
+  - `whirl checkout.whirl` and `whirl --headed checkout.whirl` are usage errors that say to use `whirl run`. `whirl` alone prints help.
+  - `--out DIR` names the output directory for screenshots, traces, video, and network logs; the default is still `whirl-artifacts/`. `--artifacts` still works, prints a deprecation warning, and cannot be combined with `--out`.
+  - `--load-state FILE` and `--save-state FILE` replace `--storage` and `--save-storage`, which are now usage errors. The state file format does not change. `--load-state` cannot be combined with a file's `storage` or `setup` option; `--storage` silently replaced the file's `storage` option.
 
 ## 0.20.0 (2026-09-28)
 

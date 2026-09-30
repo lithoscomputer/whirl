@@ -60,7 +60,9 @@ pub(crate) struct Overrides {
     pub(crate) step_timeout_ms:  Option<u64>,
     pub(crate) entry_timeout_ms: Option<u64>,
     pub(crate) headed:           bool,
-    pub(crate) storage:          Option<PathBuf>,
+    /// The `--load-state` file; the CLI rejects it together with a
+    /// `storage` or `setup` option (SPEC 13).
+    pub(crate) load_state:       Option<PathBuf>,
     pub(crate) user_agent:       Option<String>,
 }
 
@@ -77,7 +79,7 @@ pub(crate) struct FlowFlags {
     pub(crate) har:              bool,
     pub(crate) update_snapshots: bool,
     /// Set only when this flow is the run's single file.
-    pub(crate) save_storage:     Option<PathBuf>,
+    pub(crate) save_state:       Option<PathBuf>,
     /// The `--cache` mode (SPEC 12.1).
     pub(crate) cache:            CacheMode,
 }
@@ -280,9 +282,8 @@ impl ResolvedOptions {
 
         // `storage` resolves relative to the `.whirl` file — its canonical
         // path, so a symlinked input resolves like `UPLOAD` paths do
-        // (SPEC 5, 14); the `--storage` flag overrides and resolves like any
-        // CLI path.
-        let storage = match &overrides.storage {
+        // (SPEC 5, 14); a `--load-state` file resolves like any CLI path.
+        let storage = match &overrides.load_state {
             Some(flag) => Some(flag.clone()),
             None => storage.map(|path| resolve_beside_file(canonical, &path)),
         };
@@ -1906,7 +1907,7 @@ pub(crate) async fn run_flow(run: &FlowRun<'_>, client: &mut ShimClient) -> Flow
                 save_storage_path: (report.status == Status::Passed)
                     .then(|| {
                         run.flags
-                            .save_storage
+                            .save_state
                             .as_deref()
                             .or(run.state_out)
                             .map(wire_path)

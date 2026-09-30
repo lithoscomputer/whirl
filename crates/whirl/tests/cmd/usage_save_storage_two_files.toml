@@ -1,4 +1,0 @@
-bin.name = "whirl"
-args = ["--save-storage", "state.json", "first.whirl", "second.whirl"]
-fs.sandbox = true
-status.code = 4

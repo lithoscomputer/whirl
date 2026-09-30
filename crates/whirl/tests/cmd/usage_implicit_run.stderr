@@ -1,0 +1,2 @@
+whirl: error: 'checkout.whirl' is not a command
+  tip: run files with `whirl run checkout.whirl`
