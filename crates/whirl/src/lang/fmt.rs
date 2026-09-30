@@ -8,11 +8,11 @@
 //! line with one space before `#`.
 //!
 //! The formatter never removes quotes whose removal would change the
-//! parse (SPEC 3.1): a value that would become a keyword, a
-//! prefix-shaped segment, a `>>` separator, or a final `@duration`
-//! timeout suffix stays quoted, as does any value with whitespace, `"`,
-//! `#`, or characters that need escapes. Formatting is idempotent, and
-//! re-parsing the output yields a structurally identical file.
+//! parse (SPEC 3.1): a value that would start with `@`, a keyword, a
+//! colon or `>>` in unprefixed locator text, or a lone `*` role name stays
+//! quoted, as does any value with whitespace, `"`, `#`, or characters that
+//! need escapes. Formatting is idempotent, and re-parsing the output yields
+//! a structurally identical file.
 
 use std::fmt::Write as _;
 
@@ -30,87 +30,30 @@ use crate::lang::ast::{
 /// bare spellings would change the parse and therefore need quotes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ValueCtx {
-    /// A standalone value with no keyword conflicts: URLs, fill text,
-    /// keys, scripts, check operands, and option values.
+    /// A standalone value: URLs, fill text, keys, scripts, filter
+    /// arguments, and option and header values.
     Plain,
     /// The `PAGE` value; a bare `matches` would start a regex check.
     Page,
-    /// An unprefixed default-engine segment in an action locator; a
-    /// prefix-shaped or `>>` spelling would change the segment kind.
-    ActionDefault,
-    /// A role's accessible name in an action locator.
-    ActionRoleName,
-    /// An unprefixed default-engine segment in a `DRAG` locator, where a
-    /// bare `to` also separates the two locators.
-    DragDefault,
-    /// A role's accessible name in a `DRAG` locator.
-    DragRoleName,
-    /// An unprefixed default-engine segment in a `SCROLL` locator, where a
-    /// bare `to` or direction word would read as the motion.
-    ScrollDefault,
-    /// A role's accessible name in a `SCROLL` locator.
-    ScrollRoleName,
-    /// A role's accessible name in an `ASSERT` locator; a bare check
-    /// keyword would end the locator instead (SPEC 3.1).
-    AssertRoleName,
-    /// A role's accessible name in a `CAPTURE` locator; a bare
-    /// extractor keyword would end the locator instead.
-    CaptureRoleName,
-    /// A value attached to a segment or `file:` prefix; the prefix
+    /// Unprefixed locator text in an action; a colon would make it a
+    /// prefix, and `>>` would be a separator.
+    Unprefixed,
+    /// The first segment right after `SCROLL`, where a bare direction or
+    /// `to` is the motion.
+    ScrollFirst,
+    /// A role's accessible name, matched exactly: a bare `*` means any
+    /// name, and a leading `~` would mark a substring match.
+    RoleName,
+    /// A text prefix's value, matched exactly; a leading `~` would mark a
+    /// substring match.
+    Exact,
+    /// A role's accessible name after `:~`, where `*` would be an error.
+    RoleSubstring,
+    /// A value attached to a prefix such as `css:` or `file:`; the prefix
     /// shields it from keyword and timeout readings.
     Prefixed,
     /// A check's expected value; a bare `[` would start a JSON literal.
     Operand,
-}
-
-/// Every locator-segment prefix spelling (SPEC 6.1).
-const PREFIX_MARKERS: [&str; 16] = [
-    "role:",
-    "role~:",
-    "label:",
-    "label~:",
-    "placeholder:",
-    "placeholder~:",
-    "text:",
-    "text~:",
-    "alt:",
-    "alt~:",
-    "title:",
-    "title~:",
-    "testid:",
-    "css:",
-    "frame:",
-    "nth:",
-];
-
-const STATE_KEYWORDS: [&str; 7] = [
-    "visible",
-    "hidden",
-    "enabled",
-    "disabled",
-    "checked",
-    "unchecked",
-    "focused",
-];
-
-fn is_assert_stop(text: &str) -> bool {
-    STATE_KEYWORDS.contains(&text)
-        || matches!(text, "text" | "value" | "count")
-        || text.starts_with("attr:")
-}
-
-fn is_extractor_stop(text: &str) -> bool {
-    matches!(text, "text" | "value" | "count") || text.starts_with("attr:")
-}
-
-/// The words `SCROLL` reads as its motion. Quoting them in every segment
-/// is simpler than tracking which one ends the locator.
-fn is_scroll_keyword(text: &str) -> bool {
-    text == "to" || ScrollDirection::from_keyword(text).is_some()
-}
-
-fn is_prefix_shaped(text: &str) -> bool {
-    PREFIX_MARKERS.iter().any(|marker| text.starts_with(marker))
 }
 
 /// True when a character can sit in a bare token without changing the
@@ -150,31 +93,21 @@ fn bare_candidate(value: &Value) -> Option<String> {
 /// True when the bare spelling would parse as something other than this
 /// value in its context (SPEC 3.1: `whirl fmt` never removes quotes
 /// whose removal would change the parse).
-fn bare_changes_parse(text: &str, ctx: ValueCtx, is_final: bool) -> bool {
-    if is_final
-        && ctx != ValueCtx::Prefixed
-        && text
-            .strip_prefix('@')
-            .is_some_and(|rest| rest.parse::<DurationLit>().is_ok())
-    {
-        // A final bare token of the form `@duration` is the timeout
-        // suffix (SPEC 3.1); any other `@...` token is an ordinary value.
-        return true;
-    }
+fn bare_changes_parse(text: &str, ctx: ValueCtx) -> bool {
+    let unprefixed = || text.contains(':') || text == ">>";
     match ctx {
-        ValueCtx::Plain | ValueCtx::Prefixed => false,
+        ValueCtx::Prefixed => false,
+        ValueCtx::RoleName => text == "*" || text.starts_with('~'),
+        ValueCtx::Exact => text.starts_with('~'),
+        ValueCtx::RoleSubstring => text == "*",
+        _ if text.starts_with('@') => true,
+        ValueCtx::Plain => false,
         ValueCtx::Operand => text.starts_with('['),
         ValueCtx::Page => text == "matches",
-        ValueCtx::ActionDefault => is_prefix_shaped(text) || text == ">>",
-        ValueCtx::ActionRoleName => text == ">>",
-        ValueCtx::DragDefault => is_prefix_shaped(text) || text == ">>" || text == "to",
-        ValueCtx::DragRoleName => text == ">>" || text == "to",
-        ValueCtx::ScrollDefault => {
-            is_prefix_shaped(text) || text == ">>" || is_scroll_keyword(text)
+        ValueCtx::Unprefixed => unprefixed(),
+        ValueCtx::ScrollFirst => {
+            unprefixed() || text == "to" || ScrollDirection::from_keyword(text).is_some()
         }
-        ValueCtx::ScrollRoleName => text == ">>" || is_scroll_keyword(text),
-        ValueCtx::AssertRoleName => text == ">>" || is_assert_stop(text),
-        ValueCtx::CaptureRoleName => text == ">>" || is_extractor_stop(text),
     }
 }
 
@@ -216,11 +149,10 @@ fn render_quoted(value: &Value) -> String {
 }
 
 /// Renders a value: bare when a bare spelling parses identically in this
-/// context, quoted otherwise. `is_final` marks the line's last token,
-/// where a bare `@...` spelling would become the timeout suffix.
-fn render_value(value: &Value, ctx: ValueCtx, is_final: bool) -> String {
+/// context, quoted otherwise.
+fn render_value(value: &Value, ctx: ValueCtx) -> String {
     match bare_candidate(value) {
-        Some(text) if !bare_changes_parse(&text, ctx, is_final) => text,
+        Some(text) if !bare_changes_parse(&text, ctx) => text,
         _ => render_quoted(value),
     }
 }
@@ -246,56 +178,22 @@ fn render_regex(regex: &Regex) -> String {
     out
 }
 
-/// Which grammar position a locator sits in; it picks the context for
-/// role accessible names.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum LocatorCtx {
-    Action,
-    /// A `DRAG` locator, where a bare `to` is the separator.
-    Drag,
-    /// A `SCROLL` locator, where a bare `to` or direction word is the motion.
-    Scroll,
-    Assert,
-    Capture,
-}
-
-impl LocatorCtx {
-    fn role_name_ctx(self) -> ValueCtx {
-        match self {
-            Self::Action => ValueCtx::ActionRoleName,
-            Self::Drag => ValueCtx::DragRoleName,
-            Self::Scroll => ValueCtx::ScrollRoleName,
-            Self::Assert => ValueCtx::AssertRoleName,
-            Self::Capture => ValueCtx::CaptureRoleName,
-        }
-    }
-
-    fn default_ctx(self) -> ValueCtx {
-        match self {
-            Self::Drag => ValueCtx::DragDefault,
-            Self::Scroll => ValueCtx::ScrollDefault,
-            Self::Action | Self::Assert | Self::Capture => ValueCtx::ActionDefault,
-        }
-    }
-}
-
-/// Renders one locator segment as its token(s).
-fn render_segment(kind: &SegmentKind, ctx: LocatorCtx, is_final: bool) -> String {
+/// Renders one locator segment as its token (SPEC 6.1). `first_ctx` is
+/// the context of unprefixed text in the locator's first segment.
+fn render_segment(kind: &SegmentKind, unprefixed_ctx: ValueCtx) -> String {
+    let prefixed = |value: &Value| render_value(value, ValueCtx::Prefixed);
     match kind {
         SegmentKind::Role {
             substring,
             role,
             name,
-        } => {
-            let marker = if *substring { "role~:" } else { "role:" };
-            match name {
-                Some(name) => format!(
-                    "{marker}{role} {}",
-                    render_value(name, ctx.role_name_ctx(), is_final)
-                ),
-                None => format!("{marker}{role}"),
+        } => match name {
+            Some(name) if *substring => {
+                format!("{role}:~{}", render_value(name, ValueCtx::RoleSubstring))
             }
-        }
+            Some(name) => format!("{role}:{}", render_value(name, ValueCtx::RoleName)),
+            None => format!("{role}:*"),
+        },
         SegmentKind::TextEngine {
             prefix,
             substring,
@@ -308,38 +206,42 @@ fn render_segment(kind: &SegmentKind, ctx: LocatorCtx, is_final: bool) -> String
                 TextPrefix::Alt => "alt",
                 TextPrefix::Title => "title",
             };
-            let marker = if *substring { "~:" } else { ":" };
-            format!(
-                "{name}{marker}{}",
-                render_value(value, ValueCtx::Prefixed, false)
-            )
+            if *substring {
+                format!("{name}:~{}", prefixed(value))
+            } else {
+                format!("{name}:{}", render_value(value, ValueCtx::Exact))
+            }
         }
-        SegmentKind::TestId(value) => {
-            format!("testid:{}", render_value(value, ValueCtx::Prefixed, false))
-        }
-        SegmentKind::Css(value) => {
-            format!("css:{}", render_value(value, ValueCtx::Prefixed, false))
-        }
-        SegmentKind::Frame(value) => {
-            format!("frame:{}", render_value(value, ValueCtx::Prefixed, false))
-        }
+        SegmentKind::TestId(value) => format!("testid:{}", prefixed(value)),
+        SegmentKind::Css(value) => format!("css:{}", prefixed(value)),
+        SegmentKind::Frame(value) => format!("frame:{}", prefixed(value)),
         SegmentKind::Nth(index) => format!("nth:{index}"),
-        SegmentKind::Default(value) => render_value(value, ctx.default_ctx(), is_final),
-        SegmentKind::Ai(value) => format!("ai:{}", render_value(value, ValueCtx::Prefixed, false)),
+        SegmentKind::Default(value) => render_value(value, unprefixed_ctx),
+        SegmentKind::Ai(value) => format!("ai:{}", prefixed(value)),
         SegmentKind::Ref(element) => format!("ref:{element}"),
     }
 }
 
-/// Renders a locator: segments joined by ` >> `. `is_final` marks a
-/// locator that ends its line, where the last token must not read as a
-/// timeout suffix.
-fn render_locator(locator: &Locator, ctx: LocatorCtx, is_final: bool) -> String {
-    let last = locator.segments.len().saturating_sub(1);
+/// Renders a locator: segments joined by ` >> `.
+fn render_locator(locator: &Locator) -> String {
+    render_locator_from(locator, ValueCtx::Unprefixed)
+}
+
+/// Renders a locator whose first segment's unprefixed text sits in
+/// `first_ctx`.
+fn render_locator_from(locator: &Locator, first_ctx: ValueCtx) -> String {
     locator
         .segments
         .iter()
         .enumerate()
-        .map(|(index, segment)| render_segment(&segment.kind, ctx, is_final && index == last))
+        .map(|(index, segment)| {
+            let ctx = if index == 0 {
+                first_ctx
+            } else {
+                ValueCtx::Unprefixed
+            };
+            render_segment(&segment.kind, ctx)
+        })
         .collect::<Vec<_>>()
         .join(" >> ")
 }
@@ -353,14 +255,9 @@ fn push_timeout(out: &mut String, timeout: Option<DurationLit>) {
 
 /// Renders an action line (SPEC 7).
 pub(crate) fn render_action(action: &Action) -> String {
-    let is_final = action.timeout.is_none();
+    let plain = |value: &Value| render_value(value, ValueCtx::Plain);
     let mut out = match &action.kind {
-        ActionKind::Http { method, url, .. } => {
-            format!(
-                "HTTP {method} {}",
-                render_value(url, ValueCtx::Plain, is_final)
-            )
-        }
+        ActionKind::Http { method, url, .. } => format!("HTTP {method} {}", plain(url)),
         ActionKind::Mock {
             method,
             url,
@@ -371,81 +268,44 @@ pub(crate) fn render_action(action: &Action) -> String {
                 MockResponse::Fulfill { status, .. } => status.to_string(),
                 MockResponse::Failed => "failed".to_owned(),
             };
-            format!(
-                "MOCK {method} {} {answer}",
-                render_value(url, ValueCtx::Plain, false)
-            )
+            format!("MOCK {method} {} {answer}", plain(url))
         }
-        ActionKind::Response { name, method, url } => format!(
-            "RESPONSE {} {method} {}",
-            name.text,
-            render_value(url, ValueCtx::Plain, is_final)
-        ),
+        ActionKind::Response { name, method, url } => {
+            format!("RESPONSE {} {method} {}", name.text, plain(url))
+        }
         ActionKind::Popup { name } => format!("POPUP {}", name.text),
-        ActionKind::Tab { name } => format!("TAB {}", name.text),
+        ActionKind::Window { name } => format!("WINDOW {}", name.text),
         ActionKind::Close { name } => format!("CLOSE {}", name.text),
-        ActionKind::Visit { url } => {
-            format!("VISIT {}", render_value(url, ValueCtx::Plain, is_final))
+        ActionKind::Visit { url } => format!("VISIT {}", plain(url)),
+        ActionKind::Click { target, button } => {
+            format!("{} {}", button.keyword(), render_locator(target))
         }
-        ActionKind::Click { target, button } => format!(
-            "{} {}",
-            button.keyword(),
-            render_locator(target, LocatorCtx::Action, is_final)
-        ),
-        ActionKind::Dblclick { target } => format!(
-            "DBLCLICK {}",
-            render_locator(target, LocatorCtx::Action, is_final)
-        ),
-        ActionKind::Fill { target, value } => format!(
-            "FILL {} {}",
-            render_locator(target, LocatorCtx::Action, false),
-            render_value(value, ValueCtx::Plain, is_final)
-        ),
-        ActionKind::Type { target, text } => format!(
-            "TYPE {} {}",
-            render_locator(target, LocatorCtx::Action, false),
-            render_value(text, ValueCtx::Plain, is_final)
-        ),
-        ActionKind::Press { target: None, key } => {
-            format!("PRESS {}", render_value(key, ValueCtx::Plain, is_final))
+        ActionKind::Dblclick { target } => format!("DBLCLICK {}", render_locator(target)),
+        ActionKind::Fill { target, value } => {
+            format!("FILL {} {}", render_locator(target), plain(value))
         }
+        ActionKind::Type { target, text } => {
+            format!("TYPE {} {}", render_locator(target), plain(text))
+        }
+        ActionKind::Press { target: None, key } => format!("PRESS {}", plain(key)),
         ActionKind::Press {
             target: Some(target),
             key,
-        } => format!(
-            "PRESS {} {}",
-            render_locator(target, LocatorCtx::Action, false),
-            render_value(key, ValueCtx::Plain, is_final)
-        ),
-        ActionKind::Check { target } => {
-            format!(
-                "CHECK {}",
-                render_locator(target, LocatorCtx::Action, is_final)
-            )
+        } => format!("PRESS {} {}", render_locator(target), plain(key)),
+        ActionKind::Check { target } => format!("CHECK {}", render_locator(target)),
+        ActionKind::Uncheck { target } => format!("UNCHECK {}", render_locator(target)),
+        ActionKind::Select { target, option } => {
+            format!("SELECT {} {}", render_locator(target), plain(option))
         }
-        ActionKind::Uncheck { target } => format!(
-            "UNCHECK {}",
-            render_locator(target, LocatorCtx::Action, is_final)
-        ),
-        ActionKind::Select { target, option } => format!(
-            "SELECT {} {}",
-            render_locator(target, LocatorCtx::Action, false),
-            render_value(option, ValueCtx::Plain, is_final)
-        ),
-        ActionKind::Hover { target } => {
-            format!(
-                "HOVER {}",
-                render_locator(target, LocatorCtx::Action, is_final)
-            )
-        }
+        ActionKind::Hover { target } => format!("HOVER {}", render_locator(target)),
         ActionKind::Drag { source, target } => format!(
             "DRAG {} to {}",
-            render_locator(source, LocatorCtx::Drag, false),
-            render_locator(target, LocatorCtx::Drag, is_final)
+            render_locator(source),
+            render_locator(target)
         ),
         ActionKind::ScrollIntoView { target } => format!(
             "SCROLL {}",
-            render_locator(target, LocatorCtx::Scroll, is_final)
+            render_locator_from(target, ValueCtx::ScrollFirst)
         ),
         ActionKind::Scroll { target, motion } => {
             let motion = match motion {
@@ -455,46 +315,31 @@ pub(crate) fn render_action(action: &Action) -> String {
             match target {
                 Some(target) => format!(
                     "SCROLL {} {motion}",
-                    render_locator(target, LocatorCtx::Scroll, false)
+                    render_locator_from(target, ValueCtx::ScrollFirst)
                 ),
                 None => format!("SCROLL {motion}"),
             }
         }
         ActionKind::Upload { target, path } => format!(
             "UPLOAD {} file:{}",
-            render_locator(target, LocatorCtx::Action, false),
-            render_value(path, ValueCtx::Prefixed, false)
+            render_locator(target),
+            render_value(path, ValueCtx::Prefixed)
         ),
         ActionKind::Drop { target, path } => format!(
             "DROP {} file:{}",
-            render_locator(target, LocatorCtx::Action, false),
-            render_value(path, ValueCtx::Prefixed, false)
+            render_locator(target),
+            render_value(path, ValueCtx::Prefixed)
         ),
         ActionKind::Screenshot { name } => format!("SCREENSHOT {}", name.text),
         ActionKind::Snapshot { name, target, .. } => match target {
-            Some(target) => format!(
-                "SNAPSHOT {} {}",
-                name.text,
-                render_locator(target, LocatorCtx::Action, is_final)
-            ),
+            Some(target) => format!("SNAPSHOT {} {}", name.text, render_locator(target)),
             None => format!("SNAPSHOT {}", name.text),
         },
-        ActionKind::Eval { script } => {
-            format!("EVAL {}", render_value(script, ValueCtx::Plain, is_final))
-        }
-        ActionKind::Goal { goal } => {
-            format!("GOAL {}", render_value(goal, ValueCtx::Plain, is_final))
-        }
+        ActionKind::Eval { script } => format!("EVAL {}", plain(script)),
+        ActionKind::Goal { goal } => format!("GOAL {}", plain(goal)),
         ActionKind::Act { scope, instruction } => match scope {
-            Some(scope) => format!(
-                "ACT {} {}",
-                render_locator(scope, LocatorCtx::Action, false),
-                render_value(instruction, ValueCtx::Plain, is_final)
-            ),
-            None => format!(
-                "ACT {}",
-                render_value(instruction, ValueCtx::Plain, is_final)
-            ),
+            Some(scope) => format!("ACT {} {}", render_locator(scope), plain(instruction)),
+            None => format!("ACT {}", instruction_text(instruction)),
         },
         ActionKind::Extract {
             name,
@@ -505,33 +350,29 @@ pub(crate) fn render_action(action: &Action) -> String {
             Some(scope) => format!(
                 "EXTRACT {} {} {}",
                 name.text,
-                render_locator(scope, LocatorCtx::Action, false),
-                render_value(instruction, ValueCtx::Plain, is_final)
+                render_locator(scope),
+                plain(instruction)
             ),
-            None => format!(
-                "EXTRACT {} {}",
-                name.text,
-                render_value(instruction, ValueCtx::Plain, is_final)
-            ),
+            None => format!("EXTRACT {} {}", name.text, instruction_text(instruction)),
         },
-        ActionKind::Store { scope, key, value } => format!(
-            "STORE {} {} {}",
-            scope.keyword(),
-            render_value(key, ValueCtx::Plain, false),
-            render_value(value, ValueCtx::Plain, is_final)
-        ),
+        ActionKind::Store { scope, key, value } => {
+            format!("STORE {} {} {}", scope.keyword(), plain(key), plain(value))
+        }
     };
     push_timeout(&mut out, action.timeout);
     out
 }
 
+/// An instruction with no scope. A bare colon would start a scope, so
+/// the value stays quoted then (SPEC 7.4).
+fn instruction_text(instruction: &Value) -> String {
+    render_value(instruction, ValueCtx::Unprefixed)
+}
+
 /// Renders a `PAGE` line (SPEC 8).
 fn render_page(page: &Page) -> String {
-    let is_final = page.timeout.is_none();
     let mut out = match &page.check {
-        PageCheck::Value(value) => {
-            format!("PAGE {}", render_value(value, ValueCtx::Page, is_final))
-        }
+        PageCheck::Value(value) => format!("PAGE {}", render_value(value, ValueCtx::Page)),
         PageCheck::Matches(regex) => format!("PAGE matches {}", render_regex(regex)),
     };
     push_timeout(&mut out, page.timeout);
@@ -561,7 +402,7 @@ fn is_typed_literal(text: &str) -> bool {
 
 /// Renders an expected value. Quotes stay on a value whose bare form is
 /// a typed literal, and a JSON literal stays as written (SPEC 13).
-fn render_operand(operand: &Operand, is_final: bool) -> String {
+fn render_operand(operand: &Operand) -> String {
     match operand {
         Operand::Json(literal) => literal.text.clone(),
         Operand::Value(value) => {
@@ -575,17 +416,17 @@ fn render_operand(operand: &Operand, is_final: bool) -> String {
             if keeps_quotes {
                 render_quoted(value)
             } else {
-                render_value(value, ValueCtx::Operand, is_final)
+                render_value(value, ValueCtx::Operand)
             }
         }
     }
 }
 
 /// Renders `[not] predicate` (SPEC 9.4).
-fn render_predicate(negated: bool, predicate: &PredicateSpec, is_final: bool) -> String {
+fn render_predicate(negated: bool, predicate: &PredicateSpec) -> String {
     let body = match predicate {
         PredicateSpec::Compare { kind, expected } => {
-            format!("{} {}", kind.name(), render_operand(expected, is_final))
+            format!("{} {}", kind.name(), render_operand(expected))
         }
         PredicateSpec::Matches(regex) => format!("matches {}", render_regex(regex)),
         PredicateSpec::Word(kind) => kind.name().to_owned(),
@@ -593,22 +434,17 @@ fn render_predicate(negated: bool, predicate: &PredicateSpec, is_final: bool) ->
     if negated { format!("not {body}") } else { body }
 }
 
-/// Renders one filter; `is_final` marks the line's last token.
-fn render_filter(filter: &FilterSpec, is_final: bool) -> String {
+/// Renders one filter.
+fn render_filter(filter: &FilterSpec) -> String {
     let mut out = filter.kind.name().to_owned();
-    let last = filter.args.len().saturating_sub(1);
-    for (index, arg) in filter.args.iter().enumerate() {
+    for arg in &filter.args {
         match arg {
             FilterArg::Value(value) if out.ends_with(':') => {
-                out.push_str(&render_value(value, ValueCtx::Prefixed, false));
+                out.push_str(&render_value(value, ValueCtx::Prefixed));
             }
             FilterArg::Value(value) => {
                 out.push(' ');
-                out.push_str(&render_value(
-                    value,
-                    ValueCtx::Plain,
-                    is_final && index == last,
-                ));
+                out.push_str(&render_value(value, ValueCtx::Plain));
             }
             FilterArg::Regex(regex) => {
                 out.push(' ');
@@ -631,20 +467,17 @@ fn render_extractor(extractor: &Extractor) -> String {
     }
 }
 
-/// Renders a subject (SPEC 9.2); `is_final` marks it as the line's last
-/// token, which only an `eval` script can be.
-fn render_subject(subject: &Subject, ctx: LocatorCtx, is_final: bool) -> String {
+/// Renders a subject (SPEC 9.2).
+fn render_subject(subject: &Subject) -> String {
     match subject {
         Subject::Element { locator, extractor } => format!(
             "{} {}",
-            render_locator(locator, ctx, false),
+            render_locator(locator),
             render_extractor(extractor)
         ),
         Subject::Url => "url".to_owned(),
         Subject::Title => "title".to_owned(),
-        Subject::Eval(script) => {
-            format!("eval {}", render_value(script, ValueCtx::Plain, is_final))
-        }
+        Subject::Eval(script) => format!("eval {}", render_value(script, ValueCtx::Plain)),
         Subject::Response { name: None, field } => render_response_field(field),
         Subject::Response {
             name: Some(name),
@@ -664,52 +497,41 @@ fn render_request_field(field: &RequestField) -> String {
         RequestField::Body => "body".to_owned(),
         RequestField::Bytes => "bytes".to_owned(),
         RequestField::Header(value) => {
-            format!("header:{}", render_value(value, ValueCtx::Prefixed, false))
+            format!("header:{}", render_value(value, ValueCtx::Prefixed))
         }
-        RequestField::Json(value) => {
-            format!("json:{}", render_value(value, ValueCtx::Prefixed, false))
-        }
-        RequestField::Xpath(value) => {
-            format!("xpath:{}", render_value(value, ValueCtx::Prefixed, false))
-        }
+        RequestField::Json(value) => format!("json:{}", render_value(value, ValueCtx::Prefixed)),
+        RequestField::Xpath(value) => format!("xpath:{}", render_value(value, ValueCtx::Prefixed)),
     }
 }
 
-/// Renders `subject { filter }`; `is_final` marks the last token.
-fn render_chain(
-    subject: &Subject,
-    filters: &[FilterSpec],
-    ctx: LocatorCtx,
-    is_final: bool,
-) -> String {
-    let mut out = render_subject(subject, ctx, is_final && filters.is_empty());
-    let last = filters.len().saturating_sub(1);
-    for (index, filter) in filters.iter().enumerate() {
+/// Renders `subject { filter }`.
+fn render_chain(subject: &Subject, filters: &[FilterSpec]) -> String {
+    let mut out = render_subject(subject);
+    for filter in filters {
         out.push(' ');
-        out.push_str(&render_filter(filter, is_final && index == last));
+        out.push_str(&render_filter(filter));
     }
     out
 }
 
-fn render_check(check: &CheckLine, is_final: bool) -> String {
+fn render_check(check: &CheckLine) -> String {
     format!(
         "{} {}",
-        render_chain(&check.subject, &check.filters, LocatorCtx::Assert, false),
-        render_predicate(check.negated, &check.predicate, is_final)
+        render_chain(&check.subject, &check.filters),
+        render_predicate(check.negated, &check.predicate)
     )
 }
 
 /// Renders an `ASSERT` line (SPEC 9).
 fn render_assert(assert: &Assert) -> String {
-    let is_final = assert.timeout.is_none();
     let mut out = match &assert.body {
-        AssertBody::TabClosed { name } => format!("ASSERT tab:{} closed", name.text),
+        AssertBody::WindowClosed { name } => format!("ASSERT window:{} closed", name.text),
         AssertBody::ElementState { locator, state } => format!(
             "ASSERT {} {}",
-            render_locator(locator, LocatorCtx::Assert, false),
+            render_locator(locator),
             state_check_text(*state)
         ),
-        AssertBody::Check(check) => format!("ASSERT {}", render_check(check, is_final)),
+        AssertBody::Check(check) => format!("ASSERT {}", render_check(check)),
     };
     push_timeout(&mut out, assert.timeout);
     out
@@ -722,30 +544,24 @@ fn render_response_field(field: &ResponseField) -> String {
         ResponseField::Body => "body".to_owned(),
         ResponseField::Bytes => "bytes".to_owned(),
         ResponseField::Header(value) => {
-            format!("header:{}", render_value(value, ValueCtx::Prefixed, false))
+            format!("header:{}", render_value(value, ValueCtx::Prefixed))
         }
-        ResponseField::Json(value) => {
-            format!("json:{}", render_value(value, ValueCtx::Prefixed, false))
-        }
+        ResponseField::Json(value) => format!("json:{}", render_value(value, ValueCtx::Prefixed)),
         ResponseField::Xpath(value) => {
-            format!("xpath:{}", render_value(value, ValueCtx::Prefixed, false))
+            format!("xpath:{}", render_value(value, ValueCtx::Prefixed))
         }
     }
 }
 
 /// Renders a `JUDGE` line (SPEC 9.8).
 fn render_judge(judge: &Judge) -> String {
-    let is_final = judge.timeout.is_none();
     let mut out = match &judge.scope {
         Some(scope) => format!(
             "JUDGE {} {}",
-            render_locator(scope, LocatorCtx::Action, false),
-            render_value(&judge.claim, ValueCtx::Plain, is_final)
+            render_locator(scope),
+            render_value(&judge.claim, ValueCtx::Plain)
         ),
-        None => format!(
-            "JUDGE {}",
-            render_value(&judge.claim, ValueCtx::Plain, is_final)
-        ),
+        None => format!("JUDGE {}", instruction_text(&judge.claim)),
     };
     push_timeout(&mut out, judge.timeout);
     out
@@ -753,13 +569,7 @@ fn render_judge(judge: &Judge) -> String {
 
 /// Renders a `CAPTURE` line (SPEC 10).
 fn render_capture(capture: &Capture) -> String {
-    let is_final = capture.timeout.is_none();
-    let chain = render_chain(
-        &capture.subject,
-        &capture.filters,
-        LocatorCtx::Capture,
-        is_final,
-    );
+    let chain = render_chain(&capture.subject, &capture.filters);
     let mut out = format!("CAPTURE {}: {chain}", capture.name.text);
     push_timeout(&mut out, capture.timeout);
     out
@@ -768,7 +578,7 @@ fn render_capture(capture: &Capture) -> String {
 fn render_option_value<T>(value: &OptionValue<T>, literal: impl Fn(&T) -> String) -> String {
     match value {
         OptionValue::Literal(typed) => literal(typed),
-        OptionValue::Interpolated(value) => render_value(value, ValueCtx::Plain, false),
+        OptionValue::Interpolated(value) => render_value(value, ValueCtx::Plain),
     }
 }
 
@@ -776,16 +586,17 @@ fn viewport_text(viewport: Viewport) -> String {
     format!("{}x{}", viewport.width, viewport.height)
 }
 
-/// Renders a `SNAPSHOT` target locator for reports (SPEC 7).
+/// Renders a locator for reports and the AI cache, such as a `SNAPSHOT`
+/// target or a generated locator (SPEC 6, 12.1).
 pub(crate) fn render_snapshot_target(target: &Locator) -> String {
-    render_locator(target, LocatorCtx::Action, true)
+    render_locator(target)
 }
 
 /// Renders a snapshot setting at either scope (SPEC 5, 7).
 pub(crate) fn render_snapshot_option(option: &SnapshotOption) -> String {
     let value = match option {
         SnapshotOption::Mask(None) => "none".to_owned(),
-        SnapshotOption::Mask(Some(locator)) => render_locator(locator, LocatorCtx::Action, true),
+        SnapshotOption::Mask(Some(locator)) => render_locator(locator),
         SnapshotOption::MaxDiff(value) => render_option_value(value, ToString::to_string),
         SnapshotOption::PixelThreshold(value) => render_option_value(value, ToString::to_string),
     };
@@ -793,7 +604,7 @@ pub(crate) fn render_snapshot_option(option: &SnapshotOption) -> String {
 }
 
 fn render_option(option: &FileOption) -> String {
-    let plain = |value: &Value| render_value(value, ValueCtx::Plain, false);
+    let plain = |value: &Value| render_value(value, ValueCtx::Plain);
     match option {
         FileOption::Snapshot(option) => render_snapshot_option(option),
         FileOption::Base(value) => format!("base: {}", plain(value)),
@@ -908,7 +719,7 @@ fn entry_region(entry: &Entry) -> Region {
                     text:        format!(
                         "{}: {}",
                         header.name,
-                        render_value(&header.value, ValueCtx::Plain, false)
+                        render_value(&header.value, ValueCtx::Plain)
                     ),
                 });
             }
@@ -1003,25 +814,9 @@ pub(crate) fn format_file(file: &File) -> String {
     for entry in &file.entries {
         regions.push(entry_region(entry));
     }
-    // The formatter drops `[Asserts]` and `[Captures]` headers, so a
-    // comment after a header keeps the header's line on its own.
-    let comments: Vec<Comment> = file
+    place_comments(&mut regions, &file.comments);
+    let inline: Vec<&Comment> = file
         .comments
-        .iter()
-        .map(|comment| {
-            let on_section = file
-                .entries
-                .iter()
-                .flat_map(|entry| &entry.sections)
-                .any(|section| section.line == comment.line);
-            Comment {
-                own_line: comment.own_line || on_section,
-                ..comment.clone()
-            }
-        })
-        .collect();
-    place_comments(&mut regions, &comments);
-    let inline: Vec<&Comment> = comments
         .iter()
         .filter(|comment| !comment.own_line)
         .collect();
@@ -1279,7 +1074,7 @@ mod tests {
                 scrub_value(key);
             }
             ActionKind::Popup { name }
-            | ActionKind::Tab { name }
+            | ActionKind::Window { name }
             | ActionKind::Close { name }
             | ActionKind::Screenshot { name } => scrub_ident(name),
             ActionKind::Snapshot {
@@ -1352,7 +1147,6 @@ mod tests {
                 PageCheck::Matches(regex) => scrub_regex(regex),
             }
         }
-        entry.sections.clear();
         for check in &mut entry.checks {
             match check {
                 CheckStep::Assert(assert) => scrub_assert(assert),
@@ -1375,7 +1169,7 @@ mod tests {
         assert.span = ZERO;
         assert.text = String::new();
         match &mut assert.body {
-            AssertBody::TabClosed { name } => scrub_ident(name),
+            AssertBody::WindowClosed { name } => scrub_ident(name),
             AssertBody::ElementState { locator, .. } => scrub_locator(locator),
             AssertBody::Check(check) => {
                 scrub_subject(&mut check.subject);
@@ -1441,7 +1235,7 @@ mod tests {
     #[test]
     fn act_round_trips_with_and_without_a_scope() {
         assert_round_trip("VISIT /\nACT \"add the first product to the cart\" @60s\n");
-        assert_round_trip("VISIT /\nACT css:form >> role:group \"click Buy\"\n");
+        assert_round_trip("VISIT /\nACT css:form >> group:* \"click Buy\"\n");
         assert_eq!(
             fmt("VISIT /\nACT   css:form   \"click Buy\"\n"),
             "VISIT /\nACT css:form \"click Buy\"\n"
@@ -1453,22 +1247,22 @@ mod tests {
     /// Valid sources covering every construct; each must round-trip.
     const FIXTURES: [&str; 21] = [
         // The SPEC section 2 example.
-        "# checkout.whirl \u{2014} buy a widget as a signed-in user.\n[Options]\nbase: https://shop.example.com\nviewport: 1280x800\n\n# Log in.\nVISIT /login\n\nFILL \"Email\" alice@example.com\nFILL \"Password\" {{env.TEST_PASSWORD}}\nCLICK role:button \"Sign in\"\nPAGE /dashboard\nASSERT role:heading \"Welcome back\" visible\nASSERT testid:user-menu text == Alice\n\n# Find a product.\nFILL placeholder:\"Search products\" widget\nPRESS Enter\nASSERT url contains \"q=widget\"\nASSERT testid:result-card count >= 1\nCAPTURE first_product: testid:result-card >> nth:1 >> role:link attr:href\n\n# Add it to the cart.\nVISIT {{first_product}}\nCLICK \"Add to cart\"\nASSERT testid:cart-badge text == 1\nASSERT role:alert text contains \"Added to cart\"\n",
+        "# checkout.whirl \u{2014} buy a widget as a signed-in user.\n[Options]\nbase: https://shop.example.com\nviewport: 1280x800\n\n# Log in.\nVISIT /login\n\nFILL \"Email\" alice@example.com\nFILL \"Password\" {{env.TEST_PASSWORD}}\nCLICK button:\"Sign in\"\nPAGE /dashboard\nASSERT heading:\"Welcome back\" visible\nASSERT testid:user-menu text == Alice\n\n# Find a product.\nFILL placeholder:\"Search products\" widget\nPRESS Enter\nASSERT url contains \"q=widget\"\nASSERT testid:result-card count >= 1\nCAPTURE first_product: testid:result-card >> nth:1 >> link:* attr:href\n\n# Add it to the cart.\nVISIT {{first_product}}\nCLICK \"Add to cart\"\nASSERT testid:cart-badge text == 1\nASSERT alert:* text contains \"Added to cart\"\n",
         // Every option key, including interpolated values.
         "[Options]\nbase: https://example.com\nbrowser: webkit\nviewport: 800x600\nstep-timeout: 5s\nentry-timeout: 90s\nnav-timeout: 45s\nallow-hosts: example.com *.example.com\ndialogs: accept\nreduced-motion: reduce\nstorage: auth/state.json\nuser-agent: \"Mozilla/5.0 (Whirl)\"\nsetup: sign-in.whirl\nVISIT /\n",
         "[Options]\nbrowser: {{engine}}\nviewport: {{size}}\nstep-timeout: {{t}}\nVISIT /\n",
         // Every action form.
-        "VISIT /a\nCLICK \"Add to cart\"\nRIGHTCLICK \"report.pdf\"\nMIDDLECLICK role:link Docs\nDBLCLICK text~:\"added\"\nFILL \"Email\" alice@example.com\nTYPE \"Code\" 424242\nPRESS Enter\nPRESS label:Search \"Control+A\"\nCHECK \"Remember me\"\nUNCHECK role:checkbox \"Spam\"\nSELECT \"Country\" \"United States\"\nHOVER testid:menu\nDRAG \"Write spec\" to testid:done\nDRAG \"to\" to role:listitem \"to\"\nSCROLL testid:feed\nSCROLL down\nSCROLL role:dialog Filters up\nSCROLL to 50%\nSCROLL testid:board to 33.5%\nSCROLL \"down\"\nSCROLL \"to\" left\nUPLOAD \"Avatar\" file:images/cat.png\nDROP \"Drop files here\" file:reports/q3.csv\nDROP testid:dropzone file:{{report}}\nSCREENSHOT overview\nSNAPSHOT header\nEVAL \"window.scrollTo(0, 0)\"\nSTORE local onboarding:done yes\nSTORE local \"welcome seen\" {{env.SEEN}}\nSTORE session draft hi\nSTORE cookie chat_version v1\nVISIT /u/{{setup.user_id}}\n",
+        "VISIT /a\nCLICK \"Add to cart\"\nRIGHTCLICK \"report.pdf\"\nMIDDLECLICK link:Docs\nDBLCLICK text:~\"added\"\nFILL \"Email\" alice@example.com\nTYPE \"Code\" 424242\nPRESS Enter\nPRESS label:Search \"Control+A\"\nCHECK \"Remember me\"\nUNCHECK checkbox:\"Spam\"\nSELECT \"Country\" \"United States\"\nHOVER testid:menu\nDRAG \"Write spec\" to testid:done\nDRAG \"to\" to listitem:\"to\"\nSCROLL testid:feed\nSCROLL down\nSCROLL dialog:Filters up\nSCROLL to 50%\nSCROLL testid:board to 33.5%\nSCROLL \"down\"\nSCROLL \"to\" left\nUPLOAD \"Avatar\" file:images/cat.png\nDROP \"Drop files here\" file:reports/q3.csv\nDROP testid:dropzone file:{{report}}\nSCREENSHOT overview\nSNAPSHOT header\nEVAL \"window.scrollTo(0, 0)\"\nSTORE local onboarding:done yes\nSTORE local \"welcome seen\" {{env.SEEN}}\nSTORE session draft hi\nSTORE cookie chat_version v1\nVISIT /u/{{setup.user_id}}\n",
         // Timeout suffixes on every step kind.
         "VISIT / @45s\nCLICK go @60s\nPAGE /done @2s\nASSERT testid:x visible @2500ms\nASSERT url == / @1s\nCAPTURE n: testid:x text @3s\nCAPTURE m: testid:x text regex /x(y)?/ @3s\n",
         // Every assert form and operator.
         "VISIT /\nASSERT testid:a visible\nASSERT testid:a hidden\nASSERT testid:a enabled\nASSERT testid:a disabled\nASSERT testid:a checked\nASSERT testid:a unchecked\nASSERT testid:a focused\nASSERT testid:a text == x\nASSERT testid:a text != x\nASSERT testid:a text contains x\nASSERT testid:a text matches /Order #\\w+/i\nASSERT testid:a value == 0\nASSERT testid:a attr:aria-expanded == true\nASSERT testid:a attr:data-state != open\nASSERT testid:a count == 3\nASSERT testid:a count != 3\nASSERT testid:a count < 3\nASSERT testid:a count <= 3\nASSERT testid:a count > 3\nASSERT testid:a count >= 3\nASSERT url == https://x/\nASSERT url matches /a.b/ism\nASSERT title contains Check\n",
         // Every capture form.
-        "VISIT /\nCAPTURE a: testid:x text\nCAPTURE b: label:Amount value\nCAPTURE c: css:\".row\" count\nCAPTURE d: role:link \"Docs\" attr:href\nCAPTURE e: url\nCAPTURE f: title\nCAPTURE g: eval \"document.title\"\nCAPTURE h: testid:x text regex /Order #(\\w+)/\n",
+        "VISIT /\nCAPTURE a: testid:x text\nCAPTURE b: label:Amount value\nCAPTURE c: css:\".row\" count\nCAPTURE d: link:\"Docs\" attr:href\nCAPTURE e: url\nCAPTURE f: title\nCAPTURE g: eval \"document.title\"\nCAPTURE h: testid:x text regex /Order #(\\w+)/\n",
         // Locator shapes: chains, nth, every prefix and substring form.
-        "VISIT /\nCLICK role:button \"Sign in\"\nCLICK role~:button \"sign\"\nCLICK label:Email >> nth:2\nCLICK label~:mail\nCLICK placeholder:Search\nCLICK placeholder~:sea\nCLICK text:Go\nCLICK text~:go\nCLICK alt:Logo\nCLICK alt~:logo\nCLICK title:Info\nCLICK title~:info\nCLICK testid:cart >> css:\".x > .y\" >> nth:1\n",
+        "VISIT /\nCLICK button:\"Sign in\"\nCLICK button:~\"sign\"\nCLICK label:Email >> nth:2\nCLICK label:~mail\nCLICK placeholder:Search\nCLICK placeholder:~sea\nCLICK text:Go\nCLICK text:~go\nCLICK alt:Logo\nCLICK alt:~logo\nCLICK title:Info\nCLICK title:~info\nCLICK testid:cart >> css:\".x > .y\" >> nth:1\n",
         // Quotes the parse depends on.
-        "VISIT /\nCLICK \"css:foo\"\nCLICK \"role:button\"\nCLICK \"nth:2\"\nCLICK \">>\"\nFILL Email \"@60s\"\nFILL Email \"@60x\"\nPAGE \"matches\"\nASSERT role:button \"visible\" visible\nASSERT role:button \"count\" text == \"@5s\"\nCAPTURE x: role:link \"text\" text\n",
+        "VISIT /\nCLICK \"css:foo\"\nCLICK \"role:button\"\nCLICK \"nth:2\"\nCLICK \">>\"\nFILL Email \"@60s\"\nFILL Email \"@60x\"\nPAGE \"matches\"\nASSERT button:\"visible\" visible\nASSERT button:\"count\" text == \"@5s\"\nCAPTURE x: link:\"text\" text\n",
         // Values that are safe to bare.
         "VISIT \"/dashboard\"\nFILL \"Email\" \"alice\"\nPAGE \"/x\"\nASSERT url == \"q\"\n",
         // Escapes and interpolation.
@@ -1484,9 +1278,9 @@ mod tests {
         "VISIT /\n",
         "[Options]\nVISIT /\n",
         // PRESS one-argument vs two-argument forms.
-        "VISIT /\nPRESS Enter\nPRESS \"Control+A\"\nPRESS label:Search Enter\nPRESS role:textbox \"Query\" Enter\n",
+        "VISIT /\nPRESS Enter\nPRESS \"Control+A\"\nPRESS label:Search Enter\nPRESS textbox:\"Query\" Enter\n",
         // Default-engine values that stay bare.
-        "VISIT /\nCLICK Save\nFILL Email alice\nUPLOAD Avatar file:cat.png\nDROP Dropzone file:cat.png\nDROP file:zone file:cat.png\nSELECT Country France\n",
+        "VISIT /\nCLICK Save\nFILL Email alice\nUPLOAD Avatar file:cat.png\nDROP Dropzone file:cat.png\nDROP \"file:zone\" file:cat.png\nSELECT Country France\n",
         // Attached prefix values that need quotes.
         "VISIT /\nCLICK css:\".a .b\" >> text:\"Add to cart\"\nCLICK label:\"First name\"\nUPLOAD \"Avatar\" file:\"my cat.png\"\nDROP \"Drop files here\" file:\"my cat.png\"\nDROP \"css:.zone\" file:\"@5s\"\n",
         // Capture names and eval edge spellings.
@@ -1510,7 +1304,7 @@ Content-Type: application/json
 {"name":"Ada"}
 ASSERT status == 201
 HTTP GET /
-X-Value: @10s
+X-Value: "@10s"
 HTTP GET "@10s"
 "#,
         );
@@ -1550,7 +1344,7 @@ HTTP GET "@10s"
     #[test]
     fn ai_targets_round_trip() {
         assert_round_trip(
-            "VISIT /\nCLICK role:dialog >> ai:\"the second email field\"\nASSERT ai:total text == 1\nCAPTURE t: ai:\"the {{x}} total\" text\n",
+            "VISIT /\nCLICK dialog:* >> ai:\"the second email field\"\nASSERT ai:total text == 1\nCAPTURE t: ai:\"the {{x}} total\" text\n",
         );
         assert_eq!(
             fmt("VISIT /\nCLICK ai:\"buy\"\n"),
@@ -1559,24 +1353,10 @@ HTTP GET "@10s"
     }
 
     #[test]
-    fn rewrites_sections_as_check_lines() {
-        assert_eq!(
-            fmt(
-                "VISIT /\nPAGE /\n[Asserts] # checks\nurl == /\n# before cap\n[Captures]\nc: url\n"
-            ),
-            "VISIT /\nPAGE /\n# checks\nASSERT url == /\n# before cap\nCAPTURE c: url\n"
-        );
-        assert_eq!(
-            fmt("HTTP GET /api\n[Asserts]\nstatus == 200 @5s\n"),
-            "HTTP GET /api\nASSERT status == 200 @5s\n"
-        );
-    }
-
-    #[test]
     fn collapses_spacing_to_single_spaces() {
         assert_eq!(
-            fmt("VISIT    /login\nCLICK   role:button    \"Sign in\"   @5s\n"),
-            "VISIT /login\nCLICK role:button \"Sign in\" @5s\n"
+            fmt("VISIT    /login\nCLICK   button:\"Sign in\"   @5s\n"),
+            "VISIT /login\nCLICK button:\"Sign in\" @5s\n"
         );
     }
 
@@ -1621,20 +1401,18 @@ HTTP GET "@10s"
     #[test]
     fn scroll_keeps_quotes_on_words_it_reads_as_its_motion() {
         assert_eq!(
-            fmt(
-                "VISIT /\nSCROLL \"feed\" down\nSCROLL \"right\"\nSCROLL role:region \"up\" to 100%\n"
-            ),
-            "VISIT /\nSCROLL feed down\nSCROLL \"right\"\nSCROLL role:region \"up\" to 100%\n"
+            fmt("VISIT /\nSCROLL \"feed\" down\nSCROLL \"right\"\nSCROLL region:\"up\" to 100%\n"),
+            "VISIT /\nSCROLL feed down\nSCROLL \"right\"\nSCROLL region:up to 100%\n"
         );
     }
 
     #[test]
-    fn drag_keeps_quotes_on_a_to_that_is_text() {
+    fn drag_needs_no_quotes_on_a_to_that_is_text() {
+        // DRAG reads left to right, so only the `to` after the first
+        // locator separates them (SPEC 7).
         assert_eq!(
-            fmt(
-                "VISIT /\nDRAG \"Card\" to \"Done\"\nDRAG \"to\" to role:region \"to\"\nCLICK \"to\"\n"
-            ),
-            "VISIT /\nDRAG Card to Done\nDRAG \"to\" to role:region \"to\"\nCLICK to\n"
+            fmt("VISIT /\nDRAG \"Card\" to \"Done\"\nDRAG \"to\" to region:\"to\"\nCLICK \"to\"\n"),
+            "VISIT /\nDRAG Card to Done\nDRAG to to region:to\nCLICK to\n"
         );
     }
 
@@ -1679,7 +1457,7 @@ CAPTURE header: response:order header:{{header_name}}
     #[test]
     fn named_tabs_round_trip() {
         assert_round_trip(
-            "VISIT /\nCLICK Pay\nPOPUP payment @30s\nTAB payment\nCLOSE payment\nASSERT tab:payment closed @5s\nTAB main\n",
+            "VISIT /\nCLICK Pay\nPOPUP payment @30s\nWINDOW payment\nCLOSE payment\nASSERT window:payment closed @5s\nWINDOW main\n",
         );
     }
 
@@ -1697,14 +1475,14 @@ CAPTURE email: frame:"#payment iframe" >> label:Email value
 
     #[test]
     fn snapshot_options_preserve_comments_order_units_and_meaning() {
-        let source = "[Options]\nsnapshot-mask: testid:clock\nsnapshot-max-diff: 0.125%\n\nVISIT /\nSNAPSHOT first @2s # headline\n# local masks\nsnapshot-mask: role:button \"Buy now\" # inline\nsnapshot-mask: frame:iframe >> css:.price\nsnapshot-pixel-threshold: 2e-1\nSNAPSHOT second\nsnapshot-mask: none\nsnapshot-max-diff: 0\n";
+        let source = "[Options]\nsnapshot-mask: testid:clock\nsnapshot-max-diff: 0.125%\n\nVISIT /\nSNAPSHOT first @2s # headline\n# local masks\nsnapshot-mask: button:\"Buy now\" # inline\nsnapshot-mask: frame:iframe >> css:.price\nsnapshot-pixel-threshold: 2e-1\nSNAPSHOT second\nsnapshot-mask: none\nsnapshot-max-diff: 0\n";
         assert_round_trip(source);
         assert_eq!(fmt(source), source);
     }
 
     #[test]
     fn snapshot_targets_round_trip_with_options_and_timeouts() {
-        let source = "[Options]\nsnapshot-mask: testid:clock\n\nVISIT /\nSNAPSHOT cart testid:cart @10s\nsnapshot-mask: testid:cart >> testid:delivery-estimate\nsnapshot-max-diff: 0.5%\nSNAPSHOT payment frame:\"#payment iframe\" >> testid:payment-form\nsnapshot-mask: none\nSNAPSHOT buy role:button \"Buy now\" >> nth:0\nSNAPSHOT row testid:{{row_id}}\nSNAPSHOT total text:\"Order total\"\n";
+        let source = "[Options]\nsnapshot-mask: testid:clock\n\nVISIT /\nSNAPSHOT cart testid:cart @10s\nsnapshot-mask: testid:cart >> testid:delivery-estimate\nsnapshot-max-diff: 0.5%\nSNAPSHOT payment frame:\"#payment iframe\" >> testid:payment-form\nsnapshot-mask: none\nSNAPSHOT buy button:\"Buy now\" >> nth:0\nSNAPSHOT row testid:{{row_id}}\nSNAPSHOT total text:\"Order total\"\n";
         assert_round_trip(source);
         assert_eq!(fmt(source), source);
         assert_eq!(
@@ -1720,34 +1498,45 @@ CAPTURE email: frame:"#payment iframe" >> label:Email value
     }
 
     #[test]
-    fn keeps_quotes_on_final_duration_shaped_values() {
-        let source = "VISIT /\nFILL Email \"@60s\"\n";
+    fn keeps_quotes_on_values_that_would_read_as_a_substring_marker() {
+        let source = "VISIT /\nCLICK button:\"~x\"\nCLICK text:\"~x\"\nCLICK button:~\"*\"\nCLICK button:~~x\nCLICK css:~x\n";
         assert_eq!(fmt(source), source);
-        // A timeout suffix takes the final position, so the value can
-        // go bare.
         assert_eq!(
-            fmt("VISIT /\nFILL Email \"@60s\" @5s\n"),
-            "VISIT /\nFILL Email @60s @5s\n"
+            fmt("VISIT /\nCLICK button:~\"Sign\"\nCLICK label:~\"mail\"\n"),
+            "VISIT /\nCLICK button:~Sign\nCLICK label:~mail\n"
         );
-        // A final `@` token that is not a valid duration is an ordinary
-        // value (SPEC 3.1), so its quotes are not required.
+    }
+
+    #[test]
+    fn keeps_quotes_on_values_that_start_with_an_at_sign() {
+        // A bare value cannot start with `@` (SPEC 3.1), wherever it sits.
+        let source = "VISIT /\nFILL Email \"@60s\"\nFILL Email \"@60s\" @5s\nFILL Email \"@60x\"\n";
+        assert_eq!(fmt(source), source);
+        // Behind a prefix, the `@` does not start the token.
         assert_eq!(
-            fmt("VISIT /\nFILL Email \"@60x\"\n"),
-            "VISIT /\nFILL Email @60x\n"
+            fmt("VISIT /\nCLICK css:\"@x\"\n"),
+            "VISIT /\nCLICK css:@x\n"
         );
     }
 
     #[test]
     fn keeps_quotes_on_keyword_shaped_values() {
-        let source = "VISIT /\nPAGE \"matches\"\nASSERT role:button \"visible\" visible\nCAPTURE x: role:link \"text\" text\n";
+        let source =
+            "VISIT /\nCLICK \"Note: x\"\nCLICK \">>\"\nCLICK button:\"*\"\nPAGE \"matches\"\n";
         assert_eq!(fmt(source), source);
+        // A role name is part of its token, so a keyword cannot end the
+        // locator early (SPEC 6.1).
+        assert_eq!(
+            fmt("VISIT /\nASSERT button:\"visible\" visible\nCAPTURE x: link:\"text\" text\n"),
+            "VISIT /\nASSERT button:visible visible\nCAPTURE x: link:text text\n"
+        );
     }
 
     #[test]
     fn unquotes_role_names_without_keyword_conflicts() {
         assert_eq!(
-            fmt("VISIT /\nCLICK role:button \"Save\"\nASSERT role:alert \"Saved\" visible\n"),
-            "VISIT /\nCLICK role:button Save\nASSERT role:alert Saved visible\n"
+            fmt("VISIT /\nCLICK button:\"Save\"\nASSERT alert:\"Saved\" visible\n"),
+            "VISIT /\nCLICK button:Save\nASSERT alert:Saved visible\n"
         );
     }
 

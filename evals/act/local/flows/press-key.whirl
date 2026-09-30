@@ -5,4 +5,4 @@ model: {{model}}
 # Press a key in a field to submit its form.
 VISIT /press-key/
 ACT "press Enter in the search field" @60s
-ASSERT role:heading "Results for widgets" visible
+ASSERT heading:"Results for widgets" visible

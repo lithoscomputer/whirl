@@ -8,13 +8,13 @@ use pest::iterators::Pair;
 use pest_vm::Vm;
 
 use crate::lang::ast::{CheckStep, File};
-use crate::lang::parse::{ParseError, parse_file, reject_sections};
+use crate::lang::parse::{ParseError, parse_file};
 
 const REPO: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
 
 /// Parse errors from the rules of SPEC section 17.1, which the grammar
 /// leaves out: the grammar accepts these files.
-const RULES_OUTSIDE_THE_GRAMMAR: [&str; 15] = [
+const RULES_OUTSIDE_THE_GRAMMAR: [&str; 16] = [
     "invalid option value",
     "duplicate or conflicting",
     "invalid regex in Unicode mode",
@@ -28,6 +28,7 @@ const RULES_OUTSIDE_THE_GRAMMAR: [&str; 15] = [
     "invalid bytes literal",
     "expected a percent from 0% to 100%",
     "expected an index after",
+    "the step timeout is too long",
     "number out of range",
     "recursion limit exceeded",
 ];
@@ -129,8 +130,7 @@ fn outside_the_grammar(error: &ParseError) -> bool {
 /// do.
 fn mismatch(grammar: &Vm, sample: &Sample) -> Option<String> {
     let source = sample.source.as_str();
-    let parsed = parse_file(Path::new(&sample.name), source)
-        .and_then(|file| reject_sections(&file, source).map(|()| file));
+    let parsed = parse_file(Path::new(&sample.name), source);
     match (parsed, grammar.parse("file", source)) {
         (Ok(file), Ok(mut pairs)) => {
             let expected = parser_steps(&file);
@@ -267,7 +267,7 @@ fn the_grammar_matches_the_parser_on_the_repository_samples() {
 }
 
 /// Tokens that sit at the edges of the grammar.
-const TRICKY_TOKENS: [&str; 34] = [
+const TRICKY_TOKENS: [&str; 35] = [
     ">>",
     "to",
     "@5s",
@@ -282,8 +282,8 @@ const TRICKY_TOKENS: [&str; 34] = [
     "{",
     "/x/",
     "/x/i",
-    "role:button",
-    "role:b\"n\"",
+    "button:*",
+    "button:\"n\"",
     "nth:0",
     "nth:-1",
     "frame:f",
@@ -302,6 +302,7 @@ const TRICKY_TOKENS: [&str; 34] = [
     "down",
     "#",
     "attr:x",
+    "window:x",
 ];
 
 /// Characters that sit at the edges of the grammar.
@@ -464,6 +465,75 @@ fn the_grammar_matches_the_parser_on_edge_cases() {
 /// Inputs near the edges of the grammar. Most start with `VISIT /` so that
 /// the line after it is the one under test.
 const EDGE_CASES: &[&str] = &[
+    // Role prefixes and strict prefixes.
+    "VISIT /\nCLICK button:\"Sign in\"\n",
+    "VISIT /\nCLICK button:Submit >> css:x\n",
+    "VISIT /\nCLICK button:~Sign\n",
+    "VISIT /\nCLICK button~:Sign\n",
+    "VISIT /\nCLICK label~:Email\n",
+    "VISIT /\nCLICK button:~*\n",
+    "VISIT /\nCLICK button:~*x\n",
+    "VISIT /\nCLICK button:~\"*\"\n",
+    "VISIT /\nCLICK button:~\"Sign in\"\n",
+    "VISIT /\nCLICK button:\"~Sign\"\n",
+    "VISIT /\nCLICK button:~~Sign\n",
+    "VISIT /\nCLICK button:~\n",
+    "VISIT /\nCLICK label:~\"First name\" >> text:~\n",
+    "VISIT /\nCLICK text:~~x\n",
+    "VISIT /\nCLICK css:~x\n",
+    "VISIT /\nCLICK testid:~x\n",
+    "VISIT /\nVISIT a:~\"x\"\n",
+    "VISIT /\nVISIT a~\"x\"\n",
+    "VISIT /\nCLICK dialog:* >> button:OK\n",
+    "VISIT /\nCLICK button:\"*\"\n",
+    "VISIT /\nCLICK button:*x\n",
+    "VISIT /\nCLICK button:\n",
+    "VISIT /\nCLICK button:a:b\n",
+    "VISIT /\nCLICK alertdialog:* >> alert:*\n",
+    "VISIT /\nCLICK buttons:x\n",
+    "VISIT /\nCLICK role:button\n",
+    "VISIT /\nCLICK generic:x\n",
+    "VISIT /\nCLICK testid~:x\n",
+    "VISIT /\nCLICK https://example.com\n",
+    "VISIT /\nCLICK \"https://example.com\"\n",
+    "VISIT /\nCLICK Note:\n",
+    "VISIT /\nCLICK \">>\"\n",
+    "VISIT /\nCLICK a >> >> b\n",
+    "VISIT /\nFILL a >> x\n",
+    "VISIT /\nFILL textbox:Email ada@example.com\n",
+    "VISIT /\nASSERT button:visible visible\n",
+    "VISIT /\nASSERT heading:\"Welcome back\" visible >> x\n",
+    "VISIT /\nCAPTURE a: link:text text\n",
+    "VISIT /\nSNAPSHOT a region:*\nsnapshot-mask: banner:* >> nth:0\n",
+    "VISIT /\nSNAPSHOT a\nsnapshot-mask: ai:x\n",
+    // Tokens that join, and values that start with `@`.
+    "VISIT /\nCLICK css:a:\"b\"\n",
+    "VISIT /\nASSERT response:r json:a:\"b\" == 1\n",
+    "VISIT /\nCLICK label:\"a\"b\n",
+    "VISIT /\nFILL x @a:\"b\"\n",
+    "VISIT /\nFILL x \"@a\" @5s\n",
+    "VISIT /\nCLICK css:@x\n",
+    "HTTP GET /x\nX-Id: @x\n",
+    "HTTP GET /x\nX-Id: \"@x\"\n",
+    "[Options]\nuser-agent: \"@bot\"\n\nVISIT /\n",
+    // Scopes, DRAG, and SCROLL read left to right.
+    "VISIT /\nACT css:a css:b\n",
+    "VISIT /\nACT css:form\n",
+    "VISIT /\nACT \"css:form\"\n",
+    "VISIT /\nACT https://x\n",
+    "VISIT /\nJUDGE region:Cart \"the total is right\" @5s\n",
+    "VISIT /\nEXTRACT e dialog:* \"the total\"\n",
+    "VISIT /\nDRAG to to testid:done\n",
+    "VISIT /\nSCROLL down >> x\n",
+    "VISIT /\nSCROLL x >> down\n",
+    "VISIT /\nSCROLL list:Filters down\n",
+    "VISIT /\nPRESS textbox:* Enter\n",
+    "VISIT /\nPRESS css:x\n",
+    // Windows.
+    "VISIT /\nCLICK x\nPOPUP pay\nWINDOW pay\nASSERT window:pay closed @30s\nWINDOW main\n",
+    "VISIT /\nTAB main\n",
+    "VISIT /\nASSERT tab:pay closed\n",
+    "VISIT /\nASSERT window:\"pay\" closed\n",
     // Files and lines.
     "",
     "# a comment\n",
@@ -568,12 +638,12 @@ const EDGE_CASES: &[&str] = &[
     "VISIT /\nCLICK a >>\n",
     "VISIT /\nCLICK css:a>>css:b\n",
     "VISIT /\nCLICK css:a >> css:b\n",
-    "VISIT /\nCLICK role:button nth:0\n",
-    "VISIT /\nCLICK role:button Submit >> css:x\n",
-    "VISIT /\nCLICK role:button >> css:x\n",
+    "VISIT /\nCLICK button:nth:0\n",
+    "VISIT /\nCLICK button:Submit >> css:x\n",
+    "VISIT /\nCLICK button:* >> css:x\n",
     "VISIT /\nCLICK role:button\"x\"\n",
     "VISIT /\nCLICK role:{{x}}\n",
-    "VISIT /\nCLICK role~:button x\n",
+    "VISIT /\nCLICK button:~x\n",
     "VISIT /\nCLICK role:button.x\n",
     "VISIT /\nCLICK nth:0\n",
     "VISIT /\nCLICK css:a >> nth:0 >> nth:-1\n",
@@ -588,20 +658,20 @@ const EDGE_CASES: &[&str] = &[
     "VISIT /\nCLICK css:a >> ai:\"x\"\n",
     "VISIT /\nCLICK label:\n",
     "VISIT /\nCLICK label:\"\"\n",
-    "VISIT /\nCLICK label~:x\n",
+    "VISIT /\nCLICK label:~x\n",
     "VISIT /\nCLICK testid~:x\n",
     "VISIT /\nCLICK text:a\"b c\"\n",
     "VISIT /\nCLICK \"text:a\"\n",
     "VISIT /\nCLICK @5s\n",
     "VISIT /\nCLICK x @5s\n",
     "VISIT /\nCLICK css:a css:b\n",
-    "VISIT /\nCLICK role:button to\n",
+    "VISIT /\nCLICK button:to\n",
     // Actions.
     "VISIT /\nFILL x\n",
     "VISIT /\nFILL x y\n",
-    "VISIT /\nFILL role:textbox x\n",
-    "VISIT /\nFILL role:textbox Email x\n",
-    "VISIT /\nFILL role:textbox Email x @5s\n",
+    "VISIT /\nFILL textbox:* x\n",
+    "VISIT /\nFILL textbox:Email x\n",
+    "VISIT /\nFILL textbox:Email x @5s\n",
     "VISIT /\nFILL x @5s\n",
     "VISIT /\nFILL a >> b v\n",
     "VISIT /\nFILL a >>\n",
@@ -610,7 +680,7 @@ const EDGE_CASES: &[&str] = &[
     "VISIT /\nFILL @5s x\n",
     "VISIT /\nPRESS Enter\n",
     "VISIT /\nPRESS Enter @5s\n",
-    "VISIT /\nPRESS role:textbox Enter\n",
+    "VISIT /\nPRESS textbox:* Enter\n",
     "VISIT /\nPRESS a b c\n",
     "VISIT /\nPRESS\n",
     "VISIT /\nPRESS @5s\n",
@@ -618,7 +688,7 @@ const EDGE_CASES: &[&str] = &[
     "VISIT /\nDRAG to to b\n",
     "VISIT /\nDRAG a to to b\n",
     "VISIT /\nDRAG \"to\" to b\n",
-    "VISIT /\nDRAG role:listitem to css:x\n",
+    "VISIT /\nDRAG listitem:* to css:x\n",
     "VISIT /\nDRAG a to\n",
     "VISIT /\nDRAG a to @5s\n",
     "VISIT /\nDRAG a b\n",
@@ -628,8 +698,8 @@ const EDGE_CASES: &[&str] = &[
     "VISIT /\nSCROLL x down\n",
     "VISIT /\nSCROLL \"down\"\n",
     "VISIT /\nSCROLL down x\n",
-    "VISIT /\nSCROLL role:list down\n",
-    "VISIT /\nSCROLL role:list Filters down\n",
+    "VISIT /\nSCROLL list:* down\n",
+    "VISIT /\nSCROLL list:Filters down\n",
     "VISIT /\nSCROLL to 50%\n",
     "VISIT /\nSCROLL x to 50%\n",
     "VISIT /\nSCROLL x to 150%\n",
@@ -638,7 +708,7 @@ const EDGE_CASES: &[&str] = &[
     "VISIT /\nSCROLL to\n",
     "VISIT /\nSCROLL x to\n",
     "VISIT /\nSCROLL down @5s\n",
-    "VISIT /\nSCROLL role:button up >> css:x\n",
+    "VISIT /\nSCROLL button:up >> css:x\n",
     "VISIT /\nSCROLL a down >> b\n",
     "VISIT /\nSCROLL x\n",
     "VISIT /\nSCROLL to 50% x\n",
@@ -648,7 +718,7 @@ const EDGE_CASES: &[&str] = &[
     "VISIT /\nUPLOAD file:a\n",
     "VISIT /\nUPLOAD x file:\n",
     "VISIT /\nUPLOAD x file:\"a b\"\n",
-    "VISIT /\nUPLOAD role:button file:a\n",
+    "VISIT /\nUPLOAD button:* file:a\n",
     "VISIT /\nDROP x file:a b\n",
     "VISIT /\nSTORE local k v\n",
     "VISIT /\nSTORE local @5s v\n",
@@ -659,7 +729,7 @@ const EDGE_CASES: &[&str] = &[
     "VISIT /\nPOPUP 1a\n",
     "VISIT /\nPOPUP \"a\"\n",
     "VISIT /\nSCREENSHOT a b\n",
-    "VISIT /\nTAB main @5s\n",
+    "VISIT /\nWINDOW main @5s\n",
     "VISIT /\nRESPONSE r GET /x\n",
     "VISIT /\nRESPONSE r get /x\n",
     "VISIT /\nRESPONSE r GET\n",
@@ -683,7 +753,7 @@ const EDGE_CASES: &[&str] = &[
     "VISIT /\nACT form \"x\"\n",
     "VISIT /\nACT css:form\n",
     "VISIT /\nACT css:a css:b\n",
-    "VISIT /\nACT role:dialog x y\n",
+    "VISIT /\nACT dialog:x y\n",
     "VISIT /\nACT\n",
     "VISIT /\nJUDGE \"x\"\n",
     "VISIT /\nJUDGE css:a \"x\" @5s\n",
@@ -760,17 +830,17 @@ const EDGE_CASES: &[&str] = &[
     "VISIT /\nASSERT url == @5s\n",
     "VISIT /\nASSERT url == @5s @5s\n",
     "VISIT /\nASSERT url == x @5s @5s\n",
-    "VISIT /\nASSERT tab:a closed\n",
+    "VISIT /\nASSERT window:a closed\n",
     "VISIT /\nASSERT tab:a open\n",
     "VISIT /\nASSERT tab:\"a\" closed\n",
     "VISIT /\nASSERT css:a visible\n",
     "VISIT /\nASSERT css:a visible == x\n",
     "VISIT /\nASSERT css:a not visible\n",
-    "VISIT /\nASSERT role:button visible visible\n",
-    "VISIT /\nASSERT role:button \"visible\" visible\n",
-    "VISIT /\nASSERT role:button @5s visible\n",
-    "VISIT /\nASSERT role:button @5s\n",
-    "VISIT /\nASSERT role:button text text == x\n",
+    "VISIT /\nASSERT button:* visible visible\n",
+    "VISIT /\nASSERT button:\"visible\" visible\n",
+    "VISIT /\nASSERT button:@5s visible\n",
+    "VISIT /\nASSERT button:* @5s\n",
+    "VISIT /\nASSERT button:* text text == x\n",
     "VISIT /\nASSERT css:a attr:aria-x == y\n",
     "VISIT /\nASSERT css:a attr:9x == y\n",
     "VISIT /\nASSERT css:a attr:\"x\" == y\n",
@@ -832,14 +902,14 @@ const EDGE_CASES: &[&str] = &[
     "VISIT /\nCAPTURE 1a: url\n",
     "VISIT /\nCAPTURE a: css:a text @5s\n",
     "VISIT /\nCAPTURE a: css:a visible\n",
-    "VISIT /\nCAPTURE a: role:button visible text\n",
+    "VISIT /\nCAPTURE a: button:visible text\n",
     "VISIT /\nCAPTURE a: url @5s x\n",
     "VISIT /\nCAPTURE a:\"x\"\n",
     "VISIT /\nCAPTURE a:testid:x text\n",
     // Checks in an HTTP entry.
     "HTTP GET /x\nASSERT status == 200\nCAPTURE a: json:$.a\nASSERT header:x == y\n",
     "HTTP GET /x\nASSERT url == x\n",
-    "HTTP GET /x\nASSERT tab:a closed\n",
+    "HTTP GET /x\nASSERT window:a closed\n",
     "HTTP GET /x\nASSERT status\"x\" == 1\n",
     "HTTP GET /x\nCAPTURE a:status\n",
 ];

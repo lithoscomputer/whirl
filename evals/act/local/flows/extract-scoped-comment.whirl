@@ -4,6 +4,6 @@ model: {{model}}
 
 # EXTRACT: a scope limits the page to one comment.
 VISIT /reply-to-author/
-ASSERT role:heading Discussion visible
+ASSERT heading:Discussion visible
 EXTRACT comment css:article >> nth:2 "the comment text" @60s
 ASSERT extract:comment == "We shipped this last year."

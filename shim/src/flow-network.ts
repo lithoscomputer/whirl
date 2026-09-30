@@ -234,7 +234,7 @@ export class FlowNetwork {
 				) {
 					throw new ShimError(
 						"action",
-						"the tab closed before its response could be selected",
+						"the window closed before its response could be selected",
 					);
 				}
 				selected = this.#requests.find(
@@ -245,7 +245,7 @@ export class FlowNetwork {
 				);
 				return {
 					pass: selected !== undefined,
-					actual: `no ${method} ${expectedUrl} request from the selected tab in this entry`,
+					actual: `no ${method} ${expectedUrl} request from the selected window in this entry`,
 				};
 			},
 			{

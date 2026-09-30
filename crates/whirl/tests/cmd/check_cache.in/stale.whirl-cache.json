@@ -7,7 +7,7 @@
       "occurrence": 1,
       "target": "ai:\"the buy button\"",
       "model": "gpt-test",
-      "locator": "role:button Buy",
+      "locator": "button:Buy",
       "fingerprint": {
         "role": "button",
         "name": "Buy"

@@ -4,5 +4,5 @@ model: {{model}}
 
 # JUDGE: a false claim about the whole viewport.
 VISIT /judge-dashboard/
-ASSERT role:heading Dashboard visible
+ASSERT heading:Dashboard visible
 JUDGE "the page shows no error message" @60s

@@ -1,7 +1,0 @@
-VISIT /login
-[Asserts]
-role:heading "Sign in" visible
-[Captures]
-next: url
-
-VISIT {{next}}

@@ -14,9 +14,9 @@ base: https://shop.example.com
 VISIT /login
 FILL "Email" alice@example.com
 FILL "Password" {{env.TEST_PASSWORD}}
-CLICK role:button "Sign in"
+CLICK button:"Sign in"
 PAGE /dashboard
-ASSERT role:heading "Welcome back" visible
+ASSERT heading:"Welcome back" visible
 ASSERT testid:user-menu text == Alice
 
 # Find a product.
@@ -24,13 +24,13 @@ FILL placeholder:"Search products" widget
 PRESS Enter
 ASSERT url contains "q=widget"
 ASSERT testid:result-card count >= 1
-CAPTURE first_product: testid:result-card >> nth:0 >> role:link attr:href
+CAPTURE first_product: testid:result-card >> nth:0 >> link:* attr:href
 
 # Add it to the cart.
 VISIT {{first_product}}
 CLICK "Add to cart"
 ASSERT testid:cart-badge text == 1
-ASSERT role:alert text contains "Added to cart"
+ASSERT alert:* text contains "Added to cart"
 ```
 
 ```console
@@ -45,8 +45,8 @@ $ whirl --report-junit report.xml flows/
   branching is two files.
 - **No waits in the language.** Actions auto-wait for their target and
   assertions retry until they pass or time out. There is no `SLEEP`.
-- **Semantic locators first.** `role:button "Sign in"` and `label:"Email"`
-  up front; raw CSS is the visually distinct escape hatch.
+- **Semantic locators first.** `button:"Sign in"` and `label:"Email"` up
+  front; raw CSS is the visually distinct escape hatch.
 - **Plain text.** Flows review well in a diff and are easy for people and
   machines to write.
 
@@ -93,7 +93,7 @@ Write a flow:
 ```whirl
 # example.whirl
 VISIT https://example.com
-ASSERT role:heading "Example Domain" visible
+ASSERT heading:"Example Domain" visible
 ASSERT title contains "Example"
 ```
 
@@ -119,7 +119,7 @@ ASSERT status == 201
 CAPTURE user_id: json:$.id
 
 VISIT /users/{{user_id}}
-ASSERT role:heading Ada visible
+ASSERT heading:Ada visible
 ```
 
 The status check is explicit. Whirl does not treat 2xx as implicit success.
@@ -190,7 +190,7 @@ An `ai:` segment names one element in words, wherever a locator goes:
 
 ```whirl
 CLICK ai:"the Add to cart button for the first product"
-ASSERT role:dialog >> ai:"the order total" text == "$42.00"
+ASSERT dialog:* >> ai:"the order total" text == "$42.00"
 ```
 
 Whirl writes what each `ai:` target, `ACT` line, and `GOAL` line resolved to
@@ -278,7 +278,7 @@ snapshot-max-diff: 0.5%
 ```
 
 A locator after the name captures only that element. It must match exactly one
-element, and every segment needs a prefix, such as `testid:` or `role:`. An
+element, and every segment needs a prefix, such as `testid:` or `region:`. An
 element snapshot checks what the element looks like and its size. It does not
 check where the element is on the page; use a full-page snapshot for that.
 

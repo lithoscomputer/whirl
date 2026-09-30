@@ -7,12 +7,12 @@ VISIT /checkout
 ASSERT testid:user text == {{setup.email}}
 
 # A missing address must show a validation error.
-CLICK role:button "Place order"
-ASSERT role:alert text == "Enter a shipping address"
-ASSERT role:status text == ""
+CLICK button:"Place order"
+ASSERT alert:* text == "Enter a shipping address"
+ASSERT status:* text == ""
 
 # Correct the address and complete the order.
 FILL "Shipping address" "123 Example Street"
-CLICK role:button "Place order"
-ASSERT role:alert hidden
-ASSERT role:status text == "Order confirmed. Ship to 123 Example Street"
+CLICK button:"Place order"
+ASSERT alert:* hidden
+ASSERT status:* text == "Order confirmed. Ship to 123 Example Street"

@@ -699,7 +699,7 @@ impl FlowExec<'_> {
                 Ok(PreparedStep::Command(StepCommand::Page { expect }))
             }
             StepNode::Assert(assert) => match &assert.body {
-                ast::AssertBody::TabClosed { name } => {
+                ast::AssertBody::WindowClosed { name } => {
                     Ok(PreparedStep::Command(StepCommand::Assert {
                         spec: wire::tab_closed_wire(name),
                     }))
@@ -778,7 +778,7 @@ impl FlowExec<'_> {
             K::Popup { name } => StepCommand::Popup {
                 name: name.text.clone(),
             },
-            K::Tab { name } => StepCommand::Tab {
+            K::Window { name } => StepCommand::Tab {
                 name: name.text.clone(),
             },
             K::Close { name } => StepCommand::Close {

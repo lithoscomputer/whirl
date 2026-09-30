@@ -133,7 +133,8 @@ pub(crate) enum TextPrefix {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum SegmentKind {
-    /// `role:TYPE` / `role~:TYPE` with an optional accessible name.
+    /// An ARIA role prefix such as `button:NAME`, or its `~` form. A
+    /// `None` name is `*`, which matches any name (SPEC 6.1).
     Role {
         substring: bool,
         role:      String,
@@ -459,7 +460,7 @@ pub(crate) enum ActionKind {
     Popup {
         name: Ident,
     },
-    Tab {
+    Window {
         name: Ident,
     },
     Close {
@@ -755,7 +756,7 @@ impl ActionKind {
             | Self::Response { .. }
             | Self::Mock { .. }
             | Self::Popup { .. }
-            | Self::Tab { .. }
+            | Self::Window { .. }
             | Self::Close { .. }
             | Self::Visit { .. }
             | Self::Screenshot { .. }
@@ -790,7 +791,7 @@ impl ActionKind {
             | Self::Response { .. }
             | Self::Mock { .. }
             | Self::Popup { .. }
-            | Self::Tab { .. }
+            | Self::Window { .. }
             | Self::Close { .. }
             | Self::Visit { .. }
             | Self::Screenshot { .. }
@@ -822,7 +823,7 @@ impl ActionKind {
             | Self::Response { .. }
             | Self::Mock { .. }
             | Self::Popup { .. }
-            | Self::Tab { .. }
+            | Self::Window { .. }
             | Self::Close { .. }
             | Self::Visit { .. }
             | Self::Screenshot { .. }
@@ -865,7 +866,7 @@ pub(crate) struct Assert {
 /// The forms of an `ASSERT` line (SPEC 9.1, 17).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum AssertBody {
-    TabClosed {
+    WindowClosed {
         name: Ident,
     },
     ElementState {
@@ -1132,13 +1133,9 @@ pub(crate) struct Judge {
 /// the order written (SPEC 4).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Entry {
-    pub(crate) actions:  Vec<Action>,
-    pub(crate) page:     Option<Page>,
-    pub(crate) checks:   Vec<CheckStep>,
-    /// The spans of the entry's deprecated `[Asserts]` and `[Captures]`
-    /// section headers, in source order (SPEC 4). `whirl fmt` drops them
-    /// and writes each check as an `ASSERT` or `CAPTURE` line.
-    pub(crate) sections: Vec<Span>,
+    pub(crate) actions: Vec<Action>,
+    pub(crate) page:    Option<Page>,
+    pub(crate) checks:  Vec<CheckStep>,
 }
 
 impl Entry {

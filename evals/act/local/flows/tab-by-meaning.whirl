@@ -5,4 +5,4 @@ model: {{model}}
 # No tab says "invoices"; the Billing tab holds them.
 VISIT /tab-by-meaning/
 ACT "show me my invoices" @60s
-ASSERT role:tab Billing attr:aria-selected == "true"
+ASSERT tab:Billing attr:aria-selected == "true"

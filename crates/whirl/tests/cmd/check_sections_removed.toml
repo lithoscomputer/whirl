@@ -1,4 +1,0 @@
-bin.name = "whirl"
-args = ["check", "old.whirl"]
-fs.sandbox = true
-status.code = 2

@@ -317,7 +317,7 @@ fn llm_planner() -> String {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ActActionReport {
-    /// The action as a Whirl line, such as `CLICK role:button "Sign in"`.
+    /// The action as a Whirl line, such as `CLICK button:"Sign in"`.
     pub(crate) line:        String,
     /// The model's description of the element.
     pub(crate) description: String,

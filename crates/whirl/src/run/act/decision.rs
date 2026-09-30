@@ -458,7 +458,7 @@ impl PlannedAction {
         })
     }
 
-    /// The action as a Whirl line, such as `CLICK role:button "Sign in"`.
+    /// The action as a Whirl line, such as `CLICK button:"Sign in"`.
     /// Placeholders stay placeholders, so no secret reaches a report.
     pub(crate) fn line(&self) -> String {
         let with = |verb: &str, target: &Target, argument: &ArgText| {
@@ -755,10 +755,7 @@ mod tests {
             panic!("expected an action, got {decision:?}");
         };
         assert_eq!(then, FollowUp::Done);
-        assert_eq!(
-            action.line(),
-            r#"FILL role:textbox "Email" "ada@example.com""#
-        );
+        assert_eq!(action.line(), r#"FILL textbox:"Email" "ada@example.com""#);
         assert_eq!(action.command(&instruction("x")), StepCommand::Fill {
             locator: json!([{"type": "ref", "ref": "e4"}]),
             value:   "ada@example.com".to_owned(),
@@ -795,7 +792,7 @@ mod tests {
         assert!(!read_back.matches(""));
         assert_eq!(
             read_back.mismatch(&action, "55512"),
-            r#"after FILL role:textbox "Email" "5551234567", the field holds "55512""#
+            r#"after FILL textbox:"Email" "5551234567", the field holds "55512""#
         );
         let click = perform(click_answer("e5"), &instruction);
         assert_eq!(click.fill_read_back(&instruction), None);
@@ -826,7 +823,7 @@ mod tests {
         assert!(read_back.matches("hunter2"));
         assert_eq!(
             read_back.mismatch(&action, "hunt"),
-            r#"after FILL role:textbox "Email" "%secret1%", the field does not hold the filled value"#
+            r#"after FILL textbox:"Email" "%secret1%", the field does not hold the filled value"#
         );
     }
 
@@ -841,14 +838,14 @@ mod tests {
     fn typed_text_copied_from_a_quoted_string_keeps_the_authors_characters() {
         let instruction = instruction("type \"AbC 123\" into the \"Search\" box");
         let action = perform(fill("abc 123"), &instruction);
-        assert_eq!(action.line(), r#"FILL role:textbox "Email" "AbC 123""#);
+        assert_eq!(action.line(), r#"FILL textbox:"Email" "AbC 123""#);
         let select = json!({
             "action": {"elementId": "e4", "description": "", "method": "selectOptionFromDropdown", "arguments": ["abc 123"]},
             "twoStep": false
         });
         assert_eq!(
             perform(select, &instruction).line(),
-            r#"SELECT role:textbox "Email" "abc 123""#
+            r#"SELECT textbox:"Email" "abc 123""#
         );
     }
 
@@ -898,18 +895,10 @@ mod tests {
     #[test]
     fn a_click_argument_names_the_mouse_button() {
         for (arguments, line, button) in [
-            (&[][..], r#"CLICK role:button "Sign in""#, "left"),
-            (&["left"][..], r#"CLICK role:button "Sign in""#, "left"),
-            (
-                &["right"][..],
-                r#"RIGHTCLICK role:button "Sign in""#,
-                "right",
-            ),
-            (
-                &["middle"][..],
-                r#"MIDDLECLICK role:button "Sign in""#,
-                "middle",
-            ),
+            (&[][..], r#"CLICK button:"Sign in""#, "left"),
+            (&["left"][..], r#"CLICK button:"Sign in""#, "left"),
+            (&["right"][..], r#"RIGHTCLICK button:"Sign in""#, "right"),
+            (&["middle"][..], r#"MIDDLECLICK button:"Sign in""#, "middle"),
         ] {
             let Ok(ActDecision::Perform { action, .. }) =
                 snapshot().decide(click_with(arguments), &instruction("x"))
@@ -951,10 +940,7 @@ mod tests {
         else {
             panic!("expected an action");
         };
-        assert_eq!(
-            action.line(),
-            r#"DRAG role:textbox "Email" to role:button "Sign in""#
-        );
+        assert_eq!(action.line(), r#"DRAG textbox:"Email" to button:"Sign in""#);
         assert_eq!(action.command(&instruction("x")), StepCommand::Drag {
             locator: json!([{"type": "ref", "ref": "e4"}]),
             target:  json!([{"type": "ref", "ref": "e5"}]),
@@ -1006,37 +992,37 @@ mod tests {
             (
                 "scrollIntoView",
                 &[][..],
-                r#"SCROLL role:list "Feed""#,
+                r#"SCROLL list:"Feed""#,
                 json!({"type": "intoView"}),
             ),
             (
                 "scrollTo",
                 &["50%"][..],
-                r#"SCROLL role:list "Feed" to 50%"#,
+                r#"SCROLL list:"Feed" to 50%"#,
                 json!({"type": "position", "percent": 50.0}),
             ),
             (
                 "nextChunk",
                 &[][..],
-                r#"SCROLL role:list "Feed" down"#,
+                r#"SCROLL list:"Feed" down"#,
                 json!({"type": "chunk", "direction": "down"}),
             ),
             (
                 "prevChunk",
                 &[][..],
-                r#"SCROLL role:list "Feed" up"#,
+                r#"SCROLL list:"Feed" up"#,
                 json!({"type": "chunk", "direction": "up"}),
             ),
             (
                 "scrollLeft",
                 &[][..],
-                r#"SCROLL role:list "Feed" left"#,
+                r#"SCROLL list:"Feed" left"#,
                 json!({"type": "chunk", "direction": "left"}),
             ),
             (
                 "scrollRight",
                 &[][..],
-                r#"SCROLL role:list "Feed" right"#,
+                r#"SCROLL list:"Feed" right"#,
                 json!({"type": "chunk", "direction": "right"}),
             ),
         ] {
@@ -1093,9 +1079,9 @@ mod tests {
             });
             let action = perform(answer, &instruction("x"));
             let expected = if arguments.contains(&"right") {
-                "RIGHTCLICK role:button \"Sign in\""
+                "RIGHTCLICK button:\"Sign in\""
             } else {
-                "CLICK role:button \"Sign in\""
+                "CLICK button:\"Sign in\""
             };
             assert_eq!(action.line(), expected, "{arguments:?}");
         }
@@ -1105,7 +1091,7 @@ mod tests {
         });
         assert_eq!(
             perform(answer, &instruction("x")).line(),
-            "HOVER role:button \"Sign in\""
+            "HOVER button:\"Sign in\""
         );
     }
 

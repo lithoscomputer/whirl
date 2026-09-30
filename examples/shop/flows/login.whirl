@@ -5,7 +5,7 @@ base: http://127.0.0.1:4173
 VISIT /login
 FILL Email demo@example.com
 FILL Password demo-password
-CLICK role:button "Sign in"
+CLICK button:"Sign in"
 PAGE /checkout
-ASSERT role:heading Checkout visible
+ASSERT heading:Checkout visible
 CAPTURE email: testid:user text
