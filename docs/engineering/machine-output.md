@@ -13,6 +13,7 @@ Schemas: [check](check.schema.json), [run report](report.schema.json).
 | --- | --- |
 | `parse-error` | Invalid flow syntax; `expected` lists alternatives when available |
 | `input-selection` | Missing input path or no selected flow files |
+| `invalid-option` | A `-O` argument has an unknown key, an invalid value, or the wrong form; exit 4 |
 | `input-io` | An input could not be read |
 | `setup-io` | A setup flow could not be found or read |
 | `nested-setup` | A setup flow names another setup |
@@ -45,7 +46,8 @@ Schemas: [check](check.schema.json), [run report](report.schema.json).
 
 Locations use 1-based Unicode character positions, not bytes or UTF-16 units.
 `length` is the source span length on that line. Input and I/O diagnostics may
-have null locations. `expected` is an array, empty when there are no alternatives.
+have null locations, and so does a lint about an option set with `-O`, which
+is not on a line of the file. `expected` is an array, empty when there are no alternatives.
 Warnings do not change exit status. Successful checks emit an empty diagnostics
 array. Argument syntax errors, such as an unknown flag, still use CLI usage text.
 

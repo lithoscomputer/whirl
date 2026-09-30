@@ -20,10 +20,10 @@ use crate::lang::ast::{
     Action, ActionKind, Assert, AssertBody, BrowserKind, Capture, CheckLine, CheckStep, Comment,
     DialogPolicy, DurationLit, Entry, ExtractSchema, Extractor, File, FileOption, FilterArg,
     FilterSpec, HttpBody, HttpBodyKind, HttpHeader, Ident, JsonLiteral, Judge, Locator,
-    LocatorSegment, MockResponse, MouseButton, Operand, OptionLine, OptionValue, Page, PageCheck,
-    Percent, PredicateSpec, ReducedMotion, Regex, RegexFlags, RequestField, ResponseField,
-    ScrollDirection, ScrollMotion, SegmentKind, Span, StateCheck, StoreScope, Subject, TextPrefix,
-    Value, ValueSegment, Viewport, chain_type,
+    LocatorSegment, MockResponse, MouseButton, Operand, OptionLine, OptionSource, OptionValue,
+    Page, PageCheck, Percent, PredicateSpec, ReducedMotion, Regex, RegexFlags, RequestField,
+    ResponseField, ScrollDirection, ScrollMotion, SegmentKind, Span, StateCheck, StoreScope,
+    Subject, TextPrefix, Value, ValueSegment, Viewport, chain_type,
 };
 
 /// A parse diagnostic (SPEC 16): file, line, column, the source line, a
@@ -2377,7 +2377,7 @@ fn validate_snapshot_option<'a>(
     Ok(())
 }
 
-const OPTION_KEYS: [&str; 16] = [
+pub(crate) const OPTION_KEYS: [&str; 16] = [
     "base",
     "browser",
     "viewport",
@@ -2413,6 +2413,37 @@ fn option_shape<T>(
         },
         None => Ok(OptionValue::Interpolated(value)),
     }
+}
+
+/// Parses the value of an option set on the command line with the syntax
+/// of a `key: value` line in `[Options]` (SPEC 5, 13). The value is on
+/// line 0, which marks it as coming from the command line. The error
+/// holds the message and the expected alternatives.
+pub(crate) fn parse_command_line_option(key: &str, value: &str) -> Result<FileOption, String> {
+    let describe = |error: LineError| match error.expected.as_slice() {
+        [] => error.message,
+        [only] => format!("{}; expected {only}", error.message),
+        [first @ .., last] => format!(
+            "{}; expected {}, or {last}",
+            error.message,
+            first.join(", ")
+        ),
+    };
+    if value.contains(['\n', '\r']) {
+        return Err("a value must be one line".to_owned());
+    }
+    let line = format!("{key}: {value}");
+    let mut cursor = Cursor::new(&line, 0);
+    let first = cursor
+        .next_token()
+        .map_err(describe)?
+        .ok_or_else(|| "expected a value".to_owned())?;
+    let option = parse_option_line(&first, &mut cursor).map_err(describe)?;
+    cursor.skip_ws();
+    if cursor.at_comment() {
+        return Err("a `#` after white space starts a comment; quote the value".to_owned());
+    }
+    Ok(option)
 }
 
 /// Parses one `key: value` line in `[Options]` (SPEC 5).
@@ -3475,6 +3506,7 @@ impl Parser {
                     option,
                     line: line_no,
                     span,
+                    source: OptionSource::File,
                 });
                 Ok(())
             }

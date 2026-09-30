@@ -255,6 +255,28 @@ pub(crate) enum FileOption {
     Model(Value),
 }
 
+impl FileOption {
+    /// The option's key, as a `key: value` line writes it (SPEC 5).
+    pub(crate) fn key(&self) -> &'static str {
+        match self {
+            Self::Snapshot(option) => option.key(),
+            Self::Base(_) => "base",
+            Self::Browser(_) => "browser",
+            Self::Viewport(_) => "viewport",
+            Self::StepTimeout(_) => "step-timeout",
+            Self::EntryTimeout(_) => "entry-timeout",
+            Self::NavTimeout(_) => "nav-timeout",
+            Self::AllowHosts(_) => "allow-hosts",
+            Self::Dialogs(_) => "dialogs",
+            Self::ReducedMotion(_) => "reduced-motion",
+            Self::Storage(_) => "storage",
+            Self::UserAgent(_) => "user-agent",
+            Self::Setup(_) => "setup",
+            Self::Model(_) => "model",
+        }
+    }
+}
+
 impl Locator {
     /// The description of the locator's `ai:` segment, when it has one
     /// (SPEC 6.3).
@@ -388,8 +410,19 @@ pub(crate) struct LocatorUse<'a> {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct OptionLine {
     pub(crate) option: FileOption,
+    /// The line in the file, or 0 for an option set on the command line.
     pub(crate) line:   u32,
     pub(crate) span:   Span,
+    pub(crate) source: OptionSource,
+}
+
+/// Where an option's value comes from (SPEC 5, 13).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum OptionSource {
+    /// A line in the file's `[Options]` section.
+    File,
+    /// `-O key=value` or a flag that sets the option, such as `--browser`.
+    CommandLine,
 }
 
 /// An action line (SPEC 7).

@@ -1,0 +1,5 @@
+bin.name = "whirl"
+args = ["check", "--json", "-O", "storage=app.state.json", "account.whirl"]
+fs.base = "options.in"
+fs.sandbox = true
+status.code = 2

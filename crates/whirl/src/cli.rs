@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use tokio::runtime::Runtime;
 
+use crate::lang::cli_options::{CliOptions, OptionFlag};
 use crate::lang::lint::{
     Lint, ModelFacts, Severity, lint_act, lint_file_with, lint_setup_refs, setup_capture_uses,
 };
@@ -83,10 +84,14 @@ enum Command {
     Check {
         /// Write versioned JSON diagnostics to stdout.
         #[arg(long)]
-        json:  bool,
+        json:    bool,
+        /// Set an option for every file, as in `-O browser=firefox`
+        /// (repeatable).
+        #[arg(short = 'O', value_name = "KEY=VALUE")]
+        options: Vec<String>,
         /// Files to check; directories recurse to *.whirl.
         #[arg(required = true, value_name = "PATH")]
-        paths: Vec<PathBuf>,
+        paths:   Vec<PathBuf>,
     },
     /// Rewrite files to the canonical form.
     Fmt {
@@ -176,6 +181,11 @@ struct RunArgs {
     /// Load variables from a file.
     #[arg(long, value_name = "PATH")]
     variables_file: Option<PathBuf>,
+
+    /// Set an option for every file, as in `-O browser=firefox`
+    /// (repeatable).
+    #[arg(short = 'O', value_name = "KEY=VALUE")]
+    options: Vec<String>,
 
     /// Output directory for screenshots, traces, video, and other evidence.
     #[arg(long, value_name = "DIR", default_value = "whirl-artifacts")]
@@ -274,7 +284,11 @@ fn execute(argv: impl IntoIterator<Item = OsString>) -> u8 {
     let exit = match cli.command {
         Command::Run(args) => run_command(&args),
         Command::Report(args) => report_command(&args),
-        Command::Check { paths, json } => check_command(&paths, json),
+        Command::Check {
+            paths,
+            json,
+            options,
+        } => check_command(&paths, json, &options),
         Command::Fmt { check, paths } => fmt_command(check, &paths),
         Command::Install { browsers } => install_command(&browsers),
         Command::Doctor { browser } => match doctor::run(&browser, &mut |line| print_out(line)) {
@@ -443,11 +457,20 @@ fn parse_inputs(sources: Vec<(PathBuf, String)>) -> (Vec<ParsedInput>, Vec<Parse
 
 /// Renders a lint diagnostic in the parse-error style (SPEC 16): file,
 /// line, column, the source line, and a caret under the offending token.
+/// A lint about an option set on the command line (line 0) has no source
+/// line.
 fn render_lint(lint: &Lint, source: &str) -> String {
     let severity = match lint.severity {
         Severity::Error => "error",
         Severity::Warning => "warning",
     };
+    if lint.line == 0 {
+        return format!(
+            "{}: {severity}: {} (in an option set on the command line)",
+            lint.path.display(),
+            lint.message
+        );
+    }
     let location = format!("{}:{}:{}", lint.path.display(), lint.line, lint.column);
     let line_index = usize::try_from(lint.line.saturating_sub(1)).unwrap_or(0);
     let source_line = source
@@ -508,6 +531,7 @@ impl Diagnostic {
     }
 
     fn lint(lint: &Lint, source: &str) -> Self {
+        let located = lint.line > 0;
         Self {
             code:     lint.code,
             severity: if lint.severity == Severity::Warning {
@@ -516,9 +540,9 @@ impl Diagnostic {
                 "error"
             },
             path:     Some(lint.path.clone()),
-            line:     Some(lint.line),
-            column:   Some(lint.column),
-            length:   Some(lint.len),
+            line:     located.then_some(lint.line),
+            column:   located.then_some(lint.column),
+            length:   located.then_some(lint.len),
             message:  lint.message.clone(),
             expected: Vec::new(),
             rendered: render_lint(lint, source),
@@ -579,17 +603,22 @@ struct CheckedInputs {
     setups: Vec<ParsedInput>,
 }
 
-/// Parses and lints every input and every `setup` flow they name,
-/// printing all diagnostics. Returns the parsed files and the worst
+/// Parses and lints every input and every `setup` flow they name, with
+/// the command line's options in place (SPEC 13), printing all
+/// diagnostics. Returns the parsed files and the worst
 /// outcome: [`Exit::ParseLint`] when any parse error or lint error was
 /// found, [`Exit::Runtime`] when a setup file cannot be read, and
 /// [`Exit::Success`] otherwise (lint warnings never change the exit
 /// code, SPEC 16).
 fn check_inputs(
     sources: Vec<(PathBuf, String)>,
+    options: &CliOptions,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> (CheckedInputs, Exit) {
-    let (inputs, parse_errors) = parse_inputs(sources);
+    let (mut inputs, parse_errors) = parse_inputs(sources);
+    for input in &mut inputs {
+        options.apply(&mut input.file);
+    }
     for error in &parse_errors {
         diagnostics.push(Diagnostic::parse(error));
     }
@@ -629,7 +658,10 @@ fn check_inputs(
         }
         match fs::read_to_string(&path) {
             Ok(source) => match parse_file(&path, &source) {
-                Ok(file) => setups.push(ParsedInput { file, source }),
+                Ok(mut file) => {
+                    options.apply(&mut file);
+                    setups.push(ParsedInput { file, source });
+                }
                 Err(error) => {
                     diagnostics.push(Diagnostic::parse(&error));
                     exit = exit.max(Exit::ParseLint);
@@ -752,8 +784,19 @@ fn cache_diagnostics(file: &ast::File) -> (Vec<Diagnostic>, bool) {
 }
 
 /// `whirl check`: parse and lint only; nothing runs (SPEC 13).
-fn check_command(paths: &[PathBuf], json: bool) -> Exit {
+fn check_command(paths: &[PathBuf], json: bool, pairs: &[String]) -> Exit {
     let mut diagnostics = Vec::new();
+    let options = match CliOptions::try_new(pairs, &[]) {
+        Ok(options) => options,
+        Err(error) => {
+            diagnostics.push(Diagnostic::environment(
+                "invalid-option",
+                format!("whirl: error: {error}"),
+            ));
+            print_diagnostics(&diagnostics, json, Exit::Usage);
+            return Exit::Usage;
+        }
+    };
     let exit = match expand_paths(paths) {
         Err(error) => {
             diagnostics.push(Diagnostic::environment(
@@ -770,7 +813,7 @@ fn check_command(paths: &[PathBuf], json: bool) -> Exit {
                 ));
                 Exit::Runtime
             }
-            Ok(sources) => check_inputs(sources, &mut diagnostics).1,
+            Ok(sources) => check_inputs(sources, &options, &mut diagnostics).1,
         },
     };
     print_diagnostics(&diagnostics, json, exit);
@@ -825,43 +868,31 @@ fn fmt_command(check: bool, paths: &[PathBuf]) -> Exit {
     exit
 }
 
-/// Builds the command-line option overrides (SPEC 5, 13). A malformed
-/// flag value is a usage error.
-fn build_overrides(args: &RunArgs) -> Result<flow::Overrides, UsageError> {
-    let duration = |flag: &'static str, value: &Option<String>| {
-        value
-            .as_deref()
-            .map(|text| {
-                text.parse::<ast::DurationLit>()
-                    .map(ast::DurationLit::millis)
-                    .map_err(|_| UsageError {
-                        message: format!(
-                            "invalid {flag} value '{text}': expected e.g. 500ms or 10s"
-                        ),
-                    })
-            })
-            .transpose()
-    };
-    let browser = args
-        .browser
-        .as_deref()
-        .map(|text| {
-            text.parse::<ast::BrowserKind>().map_err(|_| UsageError {
-                message: format!(
-                    "invalid --browser value '{text}': expected chromium, firefox, or webkit"
-                ),
-            })
-        })
-        .transpose()?;
-    Ok(flow::Overrides {
-        base: args.base.clone(),
-        browser,
-        step_timeout_ms: duration("--step-timeout", &args.step_timeout)?,
-        entry_timeout_ms: duration("--entry-timeout", &args.entry_timeout)?,
-        headed: args.headed,
-        load_state: args.load_state.clone(),
-        user_agent: args.user_agent.clone(),
-    })
+/// Builds the options that `-O` and the option flags set (SPEC 5, 13).
+/// A malformed value, an unknown key, or two forms of one setting is a
+/// usage error.
+fn build_options(args: &RunArgs) -> Result<CliOptions, UsageError> {
+    let flags = [
+        ("--base", "base", &args.base),
+        ("--browser", "browser", &args.browser),
+        ("--step-timeout", "step-timeout", &args.step_timeout),
+        ("--entry-timeout", "entry-timeout", &args.entry_timeout),
+        ("--user-agent", "user-agent", &args.user_agent),
+    ]
+    .map(|(flag, key, value)| OptionFlag {
+        flag,
+        key,
+        value: value.as_deref(),
+    });
+    let options = CliOptions::try_new(&args.options, &flags).map_err(|error| UsageError {
+        message: error.to_string(),
+    })?;
+    if args.load_state.is_some() && options.sets("storage") {
+        return Err(UsageError {
+            message: "--load-state and -O storage both set the starting state; use one".to_owned(),
+        });
+    }
+    Ok(options)
 }
 
 /// Loads `--variables-file` entries then `--var` flags, in order
@@ -1006,8 +1037,8 @@ fn run_command(args: &RunArgs) -> Exit {
     if args.artifacts.is_some() {
         print_err("whirl: warning: --artifacts is deprecated; use --out");
     }
-    let (overrides, base_vars) = match build_overrides(args)
-        .and_then(|overrides| build_base_vars(args).map(|base_vars| (overrides, base_vars)))
+    let (options, base_vars) = match build_options(args)
+        .and_then(|options| build_base_vars(args).map(|base_vars| (options, base_vars)))
     {
         Ok(prepared) => prepared,
         Err(error) => {
@@ -1063,7 +1094,7 @@ fn run_command(args: &RunArgs) -> Exit {
         return Exit::Usage;
     }
     let mut diagnostics = Vec::new();
-    let (checked, exit) = check_inputs(sources, &mut diagnostics);
+    let (checked, exit) = check_inputs(sources, &options, &mut diagnostics);
     print_diagnostics(&diagnostics, false, exit);
     if exit != Exit::Success {
         return exit;
@@ -1116,8 +1147,9 @@ fn run_command(args: &RunArgs) -> Exit {
             update_snapshots: args.update_snapshots,
             save_state:       args.save_state.clone(),
             cache:            args.cache,
+            headed:           args.headed,
+            load_state:       args.load_state.clone(),
         },
-        overrides,
         base_vars,
         jev: args.jev,
     };

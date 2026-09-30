@@ -245,6 +245,8 @@ $ whirl run --rerun-failed report.json --trace
 $ whirl fmt flows/          # rewrite files to the canonical form
 $ whirl run --headed flow.whirl  # watch the browser
 $ whirl run --trace flow.whirl   # save a trace when the flow fails
+$ whirl run -O browser=firefox -O step-timeout=15s flows/  # override options
+$ whirl run --out results flows/  # write evidence to results/, not whirl-artifacts/
 $ whirl run --video --report-html evidence.html flows/
 $ whirl run --video --video-fps 30 flows/  # lighter recordings; Chromium records at 60 by default
 $ whirl show-trace whirl-artifacts/flow/trace.zip

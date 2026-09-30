@@ -31,6 +31,9 @@ Options:
       --variables-file <PATH>
           Load variables from a file
 
+  -O <KEY=VALUE>
+          Set an option for every file, as in `-O browser=firefox` (repeatable)
+
       --out <DIR>
           Output directory for screenshots, traces, video, and other evidence
           

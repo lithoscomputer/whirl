@@ -20,9 +20,7 @@ use crate::run::act::{
     ActPlanner, JevClient, JevPlanner, JevSetupError, LlmPlanner, ModelClient, ModelSetupError,
 };
 use crate::run::artifacts::{self, ArtifactsError, Flow};
-use crate::run::flow::{
-    FlowFlags, FlowOutcome, FlowRun, Overrides, SetupHandoff, run_flow, setup_path_for,
-};
+use crate::run::flow::{FlowFlags, FlowOutcome, FlowRun, SetupHandoff, run_flow, setup_path_for};
 use crate::run::shim::{ShimClient, ShimError, ShimLaunch, resolve_launch};
 
 /// Everything a run needs beyond its parsed files.
@@ -34,7 +32,6 @@ pub(crate) struct RunSettings {
     /// The `--out` directory (possibly relative).
     pub(crate) out_dir:       PathBuf,
     pub(crate) flags:         FlowFlags,
-    pub(crate) overrides:     Overrides,
     /// `--variables-file` entries then `--var` flags, in order.
     pub(crate) base_vars:     Vec<(String, String)>,
     /// Hashes of the exact source bytes that the CLI parsed, keyed by input
@@ -319,7 +316,7 @@ impl PreparedRun {
 
         // Normalize CLI paths once, before workers construct wire messages.
         for input in [
-            &mut settings.overrides.load_state,
+            &mut settings.flags.load_state,
             &mut settings.flags.save_state,
         ]
         .into_iter()
@@ -588,7 +585,6 @@ impl Worker {
             report_dir: &job.report_dir,
             abs_dir: &job.abs_dir,
             flags: &settings.flags,
-            overrides: &settings.overrides,
             base_vars: &settings.base_vars,
             setup,
             state_out: job.state_out.as_deref(),

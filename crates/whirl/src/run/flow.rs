@@ -3,7 +3,7 @@
 //! budgeting (SPEC 12), failure artifacts, and the per-file report.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::{self, Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value as Json, json};
@@ -12,8 +12,8 @@ use tracing::{Instrument as _, debug, debug_span, info_span};
 
 use crate::check;
 use crate::lang::ast::{
-    self, BrowserKind, DialogPolicy, DurationLit, File, FileOption, OptionValue, ReducedMotion,
-    Value, Viewport,
+    self, BrowserKind, DialogPolicy, DurationLit, File, FileOption, OptionSource, OptionValue,
+    ReducedMotion, Value, Viewport,
 };
 use crate::lang::fmt::render_snapshot_target;
 use crate::report::model::{
@@ -51,21 +51,6 @@ pub(crate) const DEFAULT_VIEWPORT: Viewport = Viewport {
 /// Budget for the best-effort failure screenshot (SPEC 12).
 const FAILURE_SCREENSHOT_TIMEOUT_MS: u64 = 5_000;
 
-/// Command-line overrides of file options (SPEC 5: the flag beats the
-/// file option). Durations are already parsed to milliseconds.
-#[derive(Clone, Debug, Default)]
-pub(crate) struct Overrides {
-    pub(crate) base:             Option<String>,
-    pub(crate) browser:          Option<BrowserKind>,
-    pub(crate) step_timeout_ms:  Option<u64>,
-    pub(crate) entry_timeout_ms: Option<u64>,
-    pub(crate) headed:           bool,
-    /// The `--load-state` file; the CLI rejects it together with a
-    /// `storage` or `setup` option (SPEC 13).
-    pub(crate) load_state:       Option<PathBuf>,
-    pub(crate) user_agent:       Option<String>,
-}
-
 /// The frame rate of Chromium recordings without `--video-fps` (SPEC 13).
 pub(crate) const DEFAULT_VIDEO_FPS: u8 = 60;
 
@@ -82,6 +67,11 @@ pub(crate) struct FlowFlags {
     pub(crate) save_state:       Option<PathBuf>,
     /// The `--cache` mode (SPEC 12.1).
     pub(crate) cache:            CacheMode,
+    /// `--headed`: show the browser window.
+    pub(crate) headed:           bool,
+    /// The `--load-state` file; the CLI rejects it together with a
+    /// `storage` or `setup` option (SPEC 13).
+    pub(crate) load_state:       Option<PathBuf>,
 }
 
 /// The hostname of a URL, textually: scheme and userinfo stripped, cut
@@ -103,8 +93,8 @@ fn url_host(url: &str) -> Option<String> {
     (!host.is_empty()).then(|| host.to_owned())
 }
 
-/// A file's options after resolution at file start (SPEC 5, 11), with
-/// command-line overrides applied.
+/// A file's options after resolution at file start (SPEC 5, 11). The
+/// command line's options are already in the file's option lines.
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ResolvedOptions {
     snapshot:         SnapshotSettings,
@@ -137,12 +127,22 @@ struct ResolvedOptions {
 enum OptionsError {
     #[error("{0}")]
     Var(#[from] VarError),
-    #[error("line {line}: invalid {key} value '{value}'")]
+    #[error("{}: invalid {key} value '{value}'", option_place(*.line))]
     InvalidValue {
         key:   &'static str,
         value: String,
         line:  u32,
     },
+}
+
+/// Where an option line is, for messages: its line, or `-O` for an option
+/// set on the command line (line 0).
+fn option_place(line: u32) -> String {
+    if line == 0 {
+        "-O".to_owned()
+    } else {
+        format!("line {line}")
+    }
 }
 
 /// Resolves one typed option value: a literal passes through; an
@@ -169,16 +169,16 @@ fn resolve_option<T: Clone>(
 
 /// Resolves a file's options at file start (SPEC 5, 11): only
 /// variables-file entries, `--var` flags, and `{{env.NAME}}` are
-/// available; command-line flags override file options; the `base` host
-/// is appended to `allow-hosts` when that option is set. `canonical` is
-/// the flow's canonical path (SPEC 14): the `storage` path resolves
-/// relative to it, like `UPLOAD` paths and snapshot baselines.
+/// available; the `base` host is appended to `allow-hosts` when that
+/// option is set. `canonical` is the flow's canonical path (SPEC 14): a
+/// file's `storage` path resolves relative to it, like `UPLOAD` paths and
+/// snapshot baselines.
 impl ResolvedOptions {
     fn try_new(
         file: &File,
         canonical: &Path,
         vars: &mut VarStore,
-        overrides: &Overrides,
+        flags: &FlowFlags,
     ) -> Result<Self, OptionsError> {
         let snapshot = SnapshotSettings::default().with_options(
             file.options.iter().filter_map(|line| {
@@ -199,7 +199,7 @@ impl ResolvedOptions {
         let mut allow_hosts: Option<Vec<String>> = None;
         let mut dialogs = DialogPolicy::Dismiss;
         let mut reduced_motion = None;
-        let mut storage: Option<String> = None;
+        let mut storage: Option<PathBuf> = None;
         let mut user_agent: Option<String> = None;
         let mut setup: Option<String> = None;
         let mut model: Option<String> = None;
@@ -249,28 +249,27 @@ impl ResolvedOptions {
                         |text| text.parse::<ReducedMotion>().ok(),
                     )?);
                 }
-                FileOption::Storage(value) => storage = Some(vars.resolve(value)?),
+                FileOption::Storage(value) => {
+                    let path = vars.resolve(value)?;
+                    // A file's path resolves beside the file — its
+                    // canonical path, so a symlinked input resolves like
+                    // `UPLOAD` paths do; a command-line path resolves
+                    // against the working directory (SPEC 5, 13, 14).
+                    storage = Some(match option.source {
+                        OptionSource::File => resolve_beside_file(canonical, &path),
+                        OptionSource::CommandLine => {
+                            path::absolute(&path).map_err(|_| OptionsError::InvalidValue {
+                                key: "storage",
+                                value: path.clone(),
+                                line,
+                            })?
+                        }
+                    });
+                }
                 FileOption::UserAgent(value) => user_agent = Some(vars.resolve(value)?),
                 FileOption::Setup(value) => setup = Some(vars.resolve(value)?),
                 FileOption::Model(value) => model = Some(vars.resolve(value)?),
             }
-        }
-
-        // Command-line overrides (SPEC 5, 13).
-        if let Some(flag) = &overrides.base {
-            base = Some(flag.clone());
-        }
-        if let Some(flag) = overrides.browser {
-            browser = flag;
-        }
-        if let Some(flag) = overrides.step_timeout_ms {
-            step_timeout_ms = flag;
-        }
-        if let Some(flag) = overrides.entry_timeout_ms {
-            entry_timeout_ms = Some(flag);
-        }
-        if let Some(flag) = &overrides.user_agent {
-            user_agent = Some(flag.clone());
         }
 
         // The base host is always allowed (SPEC 5).
@@ -280,13 +279,10 @@ impl ResolvedOptions {
             hosts.push(host);
         }
 
-        // `storage` resolves relative to the `.whirl` file — its canonical
-        // path, so a symlinked input resolves like `UPLOAD` paths do
-        // (SPEC 5, 14); a `--load-state` file resolves like any CLI path.
-        let storage = match &overrides.load_state {
-            Some(flag) => Some(flag.clone()),
-            None => storage.map(|path| resolve_beside_file(canonical, &path)),
-        };
+        // The CLI rejects `--load-state` with a `storage` option.
+        if let Some(path) = &flags.load_state {
+            storage = Some(path.clone());
+        }
 
         Ok(Self {
             snapshot,
@@ -300,7 +296,7 @@ impl ResolvedOptions {
             dialogs,
             reduced_motion,
             storage,
-            headed: overrides.headed,
+            headed: flags.headed,
             user_agent,
             setup: setup.map(|path| resolve_beside_file(canonical, &path)),
             model,
@@ -396,7 +392,6 @@ pub(crate) struct FlowRun<'a> {
     /// The same directory, absolute, for shim commands.
     pub(crate) abs_dir:    &'a Path,
     pub(crate) flags:      &'a FlowFlags,
-    pub(crate) overrides:  &'a Overrides,
     /// `--variables-file` entries then `--var` flags, in order.
     pub(crate) base_vars:  &'a [(String, String)],
     /// The finished `setup` flow this file starts from, when it has one
@@ -1775,23 +1770,23 @@ pub(crate) async fn run_flow(run: &FlowRun<'_>, client: &mut ShimClient) -> Flow
 
         // Option resolution (SPEC 11): a failure here fails the file before
         // any entry, as the `[setup]` entry of a failed run (exit 1).
-        let options =
-            match ResolvedOptions::try_new(run.file, run.canonical, &mut vars, run.overrides) {
-                Ok(mut options) => {
-                    // A dependent file starts from its setup flow's saved state
-                    // (SPEC 12); lint rejects `setup` together with `storage`.
-                    if let Some(setup) = run.setup {
-                        options.use_setup(setup);
-                    }
-                    options
+        let options = match ResolvedOptions::try_new(run.file, run.canonical, &mut vars, run.flags)
+        {
+            Ok(mut options) => {
+                // A dependent file starts from its setup flow's saved state
+                // (SPEC 12); lint rejects `setup` together with `storage`.
+                if let Some(setup) = run.setup {
+                    options.use_setup(setup);
                 }
-                Err(error) => {
-                    let message = vars.mask(&error.to_string());
-                    report.entries.push(setup_entry(Status::Failed, message));
-                    report.status = Status::Failed;
-                    return finish(report, &vars, Vec::new());
-                }
-            };
+                options
+            }
+            Err(error) => {
+                let message = vars.mask(&error.to_string());
+                report.entries.push(setup_entry(Status::Failed, message));
+                report.status = Status::Failed;
+                return finish(report, &vars, Vec::new());
+            }
+        };
 
         if let Err(error) = fs::create_dir_all(run.abs_dir).await {
             let message = format!(
@@ -2025,7 +2020,7 @@ mod tests {
         let file = parse("VISIT /a\nCLICK \"Go\"\nASSERT title == x\n");
         let entry = &file.entries[0];
         let mut vars = VarStore::new();
-        let options = ResolvedOptions::try_new(&file, &file.path, &mut vars, &Overrides::default())
+        let options = ResolvedOptions::try_new(&file, &file.path, &mut vars, &FlowFlags::default())
             .expect("options resolve");
         let steps = entry_steps(entry);
         assert_eq!(line_budget_ms(steps[0], &options), DEFAULT_NAV_TIMEOUT_MS);
@@ -2040,7 +2035,7 @@ mod tests {
         let file = parse("[Options]\nstorage: st.json\nVISIT /a\n");
         let mut vars = VarStore::new();
         let canonical = Path::new("/real/dir/flow.whirl");
-        let options = ResolvedOptions::try_new(&file, canonical, &mut vars, &Overrides::default())
+        let options = ResolvedOptions::try_new(&file, canonical, &mut vars, &FlowFlags::default())
             .expect("options resolve");
         assert_eq!(options.storage, Some(PathBuf::from("/real/dir/st.json")));
     }
@@ -2049,7 +2044,7 @@ mod tests {
     fn a_duration_suffix_overrides_the_line_budget() {
         let file = parse("VISIT /a @2s\nCLICK \"Go\" @500ms\n");
         let mut vars = VarStore::new();
-        let options = ResolvedOptions::try_new(&file, &file.path, &mut vars, &Overrides::default())
+        let options = ResolvedOptions::try_new(&file, &file.path, &mut vars, &FlowFlags::default())
             .expect("options resolve");
         let steps = entry_steps(&file.entries[0]);
         assert_eq!(line_budget_ms(steps[0], &options), 2_000);

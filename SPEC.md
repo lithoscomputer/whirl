@@ -179,7 +179,7 @@ variable, such as `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`. A file that uses
 `ACT` without `model` is a lint error. Without `WHIRL_LLM_ENDPOINT` (section
 13), `whirl check` also reports a literal `model` that the catalog cannot route.
 
-Unknown keys are a parse error. When section 13 defines a corresponding command-line flag, that flag overrides the file option. `--load-state` is not such a flag: it cannot be combined with `storage` (section 13).
+Unknown keys are a parse error. The command line can set every key except `setup` for every file, with `-O key=value` or with a flag of its own, such as `--browser` (section 13). A value from the command line replaces the file's value. `--load-state` is not such a flag: it cannot be combined with `storage` (section 13).
 
 ## 6. Locators
 
@@ -1557,7 +1557,8 @@ on the next passing run.
 
 ```
 whirl run [OPTIONS] <PATH>...    Run files; directories recurse to *.whirl
-whirl check [--json] <PATH>...   Parse and lint only; nothing runs
+whirl check [--json] [-O KEY=VALUE]... <PATH>...
+                                 Parse and lint only; nothing runs
 whirl install [BROWSER]...       Provision the shim bundle and selected browsers
 whirl doctor [--browser NAME]    Check the runtime and browser; print repair commands
 whirl show-trace <PATH>          Open a trace with the private runtime
@@ -1583,11 +1584,12 @@ nothing and exits with code 1 when any file would change.
 | Flag | Meaning |
 | --- | --- |
 | `--rerun-failed REPORT` | Run only failed or errored files from a JSON report; replaces PATH arguments |
-| `--base URL` | Override the `base` option |
-| `--browser NAME` | Override the `browser` option |
-| `--step-timeout DURATION` | Override the `step-timeout` option |
+| `--base URL` | Set the `base` option |
+| `--browser NAME` | Set the `browser` option |
+| `--step-timeout DURATION` | Set the `step-timeout` option |
 | `--headed` | Run with a visible browser window |
 | `--jobs N` | Worker slots for parallel files |
+| `-O KEY=VALUE` | Set an option for every file (repeatable; see below) |
 | `--var k=v` | Define a variable (repeatable) |
 | `--variables-file PATH` | Load variables from a file |
 | `--out DIR` | Output directory for the run's screenshots, traces, video, and network logs (default `whirl-artifacts/`, relative to the working directory) |
@@ -1604,8 +1606,8 @@ nothing and exits with code 1 when any file would change.
 | `--har` | Record a .har network log per file into the output directory |
 | `--load-state FILE` | Start each file's browser context from saved browser state |
 | `--save-state FILE` | Write the final browser state after a successful run (single file only) |
-| `--entry-timeout DURATION` | Override the entry-timeout option |
-| `--user-agent UA` | Override the user-agent option with `chrome`, `firefox`, `safari`, or a literal string |
+| `--entry-timeout DURATION` | Set the `entry-timeout` option |
+| `--user-agent UA` | Set the `user-agent` option to `chrome`, `firefox`, `safari`, or a literal string |
 | `--jev` | Plan `ACT` with TypeSafe's Jev first, and the `model` option when Jev is unsure (section 7.4) |
 | `--cache MODE` | What to do with each flow's AI cache: `replay` (default), `update`, or `only` (section 12.1) |
 
@@ -1618,6 +1620,32 @@ Exit codes:
 | 2 | Parse or lint error |
 | 3 | Runtime error (browser or shim failure) |
 | 4 | Usage error |
+
+`-O key=value` sets an option (section 5) for every file that runs, setup
+flows included, on `whirl run` and `whirl check`. Settings resolve in this
+order: the built-in default, then the file's `[Options]` line, then the
+command line. `whirl check` applies `-O` before its lints, so
+`-O model=anthropic/claude-sonnet-5` satisfies a file that uses `ACT`, and it
+still launches no browser.
+
+- The text after the first `=` is the value of a `key: value` line, with the
+  forms, quotes, and `{{name}}` references of section 5, as in
+  `-O 'snapshot-mask=text:"Sign in"'`. Quote a value with white space for the
+  shell as well.
+- An unknown key, a value of the wrong form, a comment, and `-O setup=` are
+  usage errors, found before any browser starts.
+- For a key with one value, the last `-O` value wins.
+- For a list key, `allow-hosts` or `snapshot-mask`, the `-O` values form one
+  list that replaces the file's list: `-O allow-hosts=a.example
+  -O allow-hosts=b.example` allows those two hosts and not the file's. An
+  empty value, as in `-O allow-hosts=`, clears the list. An empty value
+  cannot be combined with other values for its key.
+- `--base`, `--browser`, `--step-timeout`, `--entry-timeout`, and
+  `--user-agent` set the option of the same name. Their value is literal, as
+  if quoted, and has the same validation. A flag and `-O` for the same key
+  are a usage error, even when the values agree.
+- A path from `-O storage=` resolves against the working directory, and it
+  cannot be combined with `--load-state`.
 
 `--out` names a directory; Whirl creates it when needed. Supplying both `--out` and `--artifacts` is a usage error.
 
@@ -1740,7 +1768,7 @@ Rust source, configuration, and project setup follow the [Brynary Rust Style Gui
 
 ## 16. Errors
 
-- **JSON diagnostics.** `whirl check --json` writes one version 1 JSON document to stdout, containing `exitCode` and `diagnostics`, with no diagnostic text on stderr. Each diagnostic includes a stable code, severity, path, line, column, length, message, and expected alternatives. Positions are 1-based Unicode character positions; locations unavailable for input or I/O errors are null. CLI argument syntax errors still use the ordinary usage message.
+- **JSON diagnostics.** `whirl check --json` writes one version 1 JSON document to stdout, containing `exitCode` and `diagnostics`, with no diagnostic text on stderr. Each diagnostic includes a stable code, severity, path, line, column, length, message, and expected alternatives. Positions are 1-based Unicode character positions; locations unavailable for input or I/O errors are null, and so are the locations of a diagnostic about an option set with `-O`. An invalid `-O` argument is the diagnostic `invalid-option` (exit 4). Other CLI argument syntax errors still use the ordinary usage message.
 - **Parse errors** (exit 2) are reported with file, line, column, a caret under the offending token, and the expected alternatives. `whirl check` surfaces them without launching a browser. Lint warnings do not change the exit code. Whirl warns about a capture that is never used, about an HTTP entry without a `status` check, and about a `count >= 1` assert directly followed by a check on the same locator, only when the following check requires at least one element. A `hidden` check or a count comparison that accepts zero does not make the presence check redundant. `whirl check` reports a check whose types cannot work, such as `text toHex` or `url > 3`, as the error `filter-type`. It reports an invalid literal regex, JSONPath, or XPath as a parse error.
 - **Test failures** (exit 1) report the failing step the same way, plus expected versus actual and the artifacts. Check failures use the codes of section 9.7.
 - **Warnings** do not change a step's status or the exit code. Each has a stable code in the JSON report: `unused-mock` (section 7.5); `cache-miss`, `healed`, `uncached`, `cache-secret`, and `cache-unstable` (section 12.1). `whirl check` reports `cache-stale-entry` as a warning and `cache-invalid`, `ai-count`, `unknown-extract`, `duplicate-extract`, `extract-schema-unsupported`, `judge-without-images`, and `goal-unchecked` as errors, and `extract-unsettled`, `judge-alone`, and `judge-images-unknown` as warnings. A `JUDGE` that answers `unsure` is the step warning `judge-unsure`, and one that answers `no` fails with `judge-false`.

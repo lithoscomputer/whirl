@@ -1098,6 +1098,87 @@ fn allow_hosts_blocks_a_server_side_redirect_to_a_cross_host_target() {
 }
 
 #[test]
+fn command_line_options_apply_to_every_flow_and_replace_or_clear_lists() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    // cross.html fetches from localhost. The first file allows it and sets
+    // its own user agent; the second file's list blocks it. The flows
+    // check the user agent that `--var ua` names.
+    let body = "VISIT /cross.html\nASSERT css:\"#fetch-result\" text != waiting\n\
+                ASSERT eval \"navigator.userAgent\" == {{ua}}\n";
+    let base = server.base();
+    dir.file(
+        "first.whirl",
+        &format!(
+            "[Options]\nbase: {base}\nallow-hosts: localhost\nuser-agent: from-file\n\n{body}"
+        ),
+    );
+    dir.file(
+        "second.whirl",
+        &format!("[Options]\nbase: {base}\nallow-hosts: example.invalid\n\n{body}"),
+    );
+    let blocked = |report: &serde_json::Value| -> Vec<Vec<String>> {
+        let files = report["files"].as_array().expect("files is an array");
+        files
+            .iter()
+            .map(|file| {
+                file["blockedHosts"]
+                    .as_array()
+                    .expect("blockedHosts is an array")
+                    .iter()
+                    .map(|host| host.as_str().expect("a host").to_owned())
+                    .collect()
+            })
+            .collect()
+    };
+
+    // The last user agent wins over the file's in both flows, and the
+    // `-O` host list replaces the files' lists: localhost is blocked in
+    // the first flow too.
+    let output = run_whirl(&dir, &[
+        "--var",
+        "ua=from-cli",
+        "-O",
+        "user-agent=overridden",
+        "-O",
+        "user-agent=from-cli",
+        "-O",
+        "allow-hosts=example.invalid",
+        "--report-json",
+        "replaced.json",
+        "first.whirl",
+        "second.whirl",
+    ]);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{}", stdout_text(&output));
+    let report: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(dir.path.join("replaced.json")).expect("report exists"),
+    )
+    .expect("valid JSON report");
+    assert_eq!(blocked(&report), [["localhost"], ["localhost"]]);
+
+    // An empty value clears the lists: localhost is allowed in the second
+    // flow too.
+    let output = run_whirl(&dir, &[
+        "--var",
+        "ua=again",
+        "-O",
+        "user-agent=again",
+        "-O",
+        "allow-hosts=",
+        "--report-json",
+        "cleared.json",
+        "first.whirl",
+        "second.whirl",
+    ]);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{}", stdout_text(&output));
+    let report: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(dir.path.join("cleared.json")).expect("report exists"),
+    )
+    .expect("valid JSON report");
+    assert_eq!(blocked(&report), [Vec::<String>::new(), Vec::new()]);
+}
+
+#[test]
 fn cross_host_requests_pass_without_allow_hosts() {
     let server = SiteServer::start();
     let dir = TestDir::new();

@@ -22,6 +22,7 @@
   - `whirl checkout.whirl` and `whirl --headed checkout.whirl` are usage errors that say to use `whirl run`. `whirl` alone prints help.
   - `--out DIR` names the output directory for screenshots, traces, video, and network logs; the default is still `whirl-artifacts/`. `--artifacts` still works, prints a deprecation warning, and cannot be combined with `--out`.
   - `--load-state FILE` and `--save-state FILE` replace `--storage` and `--save-storage`, which are now usage errors. The state file format does not change. `--load-state` cannot be combined with a file's `storage` or `setup` option; `--storage` silently replaced the file's `storage` option.
+- Set any option but `setup` for every file from the command line with `-O key=value`, on `whirl run` and `whirl check`, as in `whirl run -O browser=firefox -O step-timeout=15s flows/`. A value has the syntax of the file's `key: value` line and the same validation, and an invalid key or value is a usage error before any browser starts. For `allow-hosts` and `snapshot-mask`, the `-O` values form a list that replaces the file's list, and an empty value, as in `-O allow-hosts=`, clears it. `--base`, `--browser`, `--step-timeout`, `--entry-timeout`, and `--user-agent` share this validation, and supplying one of them together with `-O` for the same key is a usage error. `whirl check` applies `-O` before its lints, so `-O model=…` satisfies a file that uses `ACT`.
 
 ## 0.20.0 (2026-09-28)
 
