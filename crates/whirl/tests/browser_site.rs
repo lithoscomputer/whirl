@@ -4751,8 +4751,8 @@ fn shared_state_fixture_restores_and_saves_binary_databases_and_session_storage(
     dir.file("input.state.json", &before);
     dir.file("state.whirl", "VISIT /shared-state.html\nASSERT css:\"#storage\" text == \"Ada/prepared\"\nASSERT css:\"#database\" text == \"Ada/11,22,33,44/true/true\"\nCLICK \"Change\"\nASSERT css:\"#storage\" text == \"Grace/changed\"\nVISIT /shared-state.html\nASSERT css:\"#storage\" text == \"Grace/changed\"\n");
     let output = run_whirl(&dir, &[
-        "--base",
-        &server.base(),
+        "-O",
+        &server.base_option(),
         "--load-state",
         "input.state.json",
         "--save-state",
@@ -4863,8 +4863,8 @@ fn shared_state_expiry_and_redaction_are_reported_without_values() {
         "VISIT /login.html\nASSERT css:\"#status\" text == \"logged out\"\n",
     );
     let output = run_whirl(&dir, &[
-        "--base",
-        &server.base(),
+        "-O",
+        &server.base_option(),
         "--load-state",
         "input.state.json",
         "state.whirl",
@@ -4885,8 +4885,8 @@ fn shared_state_export_bypasses_service_workers() {
         "VISIT /shared-state-sw.html\nASSERT css:\"#status\" text == \"Controlled\"\n",
     );
     let output = run_whirl(&dir, &[
-        "--base",
-        &server.base(),
+        "-O",
+        &server.base_option(),
         "--save-state",
         "output.state.json",
         "state.whirl",
