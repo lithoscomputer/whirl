@@ -1232,7 +1232,7 @@ Filter arguments are values (section 3.1) and support interpolation. Regex argum
 
 An expression that selects nodes gives a node set. An empty node set fails `exists`. Expressions such as `string(…)`, `count(…)`, and `boolean(…)` give a string, a number, and a boolean. A whole number is an integer, so `count(//li)` gives `3`; any other number is a float. NaN and infinity give a filter error.
 
-A `json:` or `xpath:` argument is one bare token or one quoted value. JSONPath strings use single quotes, as in `json:$[?@.sku=='A-1']`. Quote the whole argument when it contains spaces or double quotes: `json:"$[?@.name == 'Ada Lovelace']"`. A quote inside a bare argument, such as `json:$["a"]`, is a parse error (section 3.1).
+A `json:` or `xpath:` argument is a value like any other prefix's (section 3.1). JSONPath strings use single quotes, as in `json:$[?@.sku=='A-1']`. Quote the whole argument when it contains spaces or double quotes: `json:"$[?@.name == 'Ada Lovelace']"`. A quote inside a bare argument, such as `json:$["a"]`, is a parse error (section 3.1).
 
 A filter that cannot work on its input gives a **filter error**. Examples are `toInt` on `abc`, `regex` with no match, invalid Base64, invalid JSON, an index outside a list, and `first` on an empty list. A missing value passes through filters without running them.
 
@@ -1794,8 +1794,6 @@ joined = _{ (!(":" ~ "~"? ~ "\"") ~ bare_char)* ~ ":" ~ "~"? ~ quoted ~ !"\"" }
 value  = _{ token }
 // The value after a prefix such as `css:`.
 part   = _{ quoted ~ !"\"" | joined | bare ~ !"\"" }
-// The value after `json:` or `xpath:`: one bare run or one quoted string.
-single = _{ quoted ~ !"\"" | bare ~ !"\"" }
 bare   = _{ bare_char+ }
 bare_char = _{ "\\{" | var_ref | !("{{" | "\"" | WHITE_SPACE) ~ ANY }
 quoted = _{ "\"" ~ ("\\" ~ escape | var_ref | !("\"" | "\\" | "{{" | NL) ~ ANY)* ~ "\"" }
@@ -1964,8 +1962,8 @@ response_subject = { response_ref ~ ws+ ~ response_field }
 response_ref     = @{ "response:" ~ attr_name ~ kw_end }
 response_field   = { ("status" | "location" | "body" | "bytes") ~ kw_end | json_query | xpath_query | header_field }
 header_field     = @{ "header:" ~ part }
-json_query       = @{ "json:" ~ single }
-xpath_query      = @{ "xpath:" ~ single }
+json_query       = @{ "json:" ~ part }
+xpath_query      = @{ "xpath:" ~ part }
 url              = @{ "url" ~ kw_end }
 title            = @{ "title" ~ kw_end }
 eval_subject     = { "eval" ~ kw_end ~ ws+ ~ value }

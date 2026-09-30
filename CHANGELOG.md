@@ -15,7 +15,7 @@
   - A bare value cannot start with `@`: a bare `@` token is always the step timeout and must end its line. Quote a value such as `"@60s"`.
   - A `name: value` line needs a space after the colon, in options, `CAPTURE` lines, headers, and snapshot settings: `base:x` is an error.
   - The `~` of a substring match follows the colon, for roles and text prefixes alike: `text~:Added` is now `text:~Added`.
-  - A quoted string joins a token only right after a prefix, as in `label:"First name"` or `button:~"Sign in"`.
+  - A quoted string joins a token only right after a prefix, as in `label:"First name"` or `button:~"Sign in"`. A `json:` or `xpath:` argument follows this rule like any other prefix value; it no longer has a rule of its own.
   - A first token with a prefix after `ACT`, `EXTRACT`, or `JUDGE` starts the scope, so `ACT css:form` alone is an error. `DRAG` needs no quotes on a `to` that is text, and a bare direction or `to` right after `SCROLL` is always the motion.
   - The removed `[Asserts]` and `[Captures]` sections are unknown sections, and `whirl fmt` no longer rewrites them. The `sections-removed` and `mixed-check-syntax` errors are gone.
 

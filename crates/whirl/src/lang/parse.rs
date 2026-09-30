@@ -1416,30 +1416,21 @@ fn parse_response_field_token(token: RawToken) -> Result<ResponseField, LineErro
     Ok(ResponseField::Header(value))
 }
 
-/// The argument of a `json:` or `xpath:` token: one bare token or one
-/// quoted value (SPEC 9.5). The lexer drops quote characters inside a
-/// joined token, so `json:$["a"]` would silently become `$[a]`.
-fn prefixed_single(token: RawToken, prefix: &str) -> Result<Value, LineError> {
+/// The argument of a `json:` or `xpath:` token (SPEC 9.5), which joins a
+/// quoted string like any other prefix value.
+fn prefixed_value(token: RawToken, prefix: &str) -> Result<Value, LineError> {
     let span = token.span;
-    let rest = strip_prefix_token(token, prefix.len()).ok_or_else(|| {
-        LineError::new(span, format!("`{prefix}` needs an argument")).expecting(["a query"])
-    })?;
-    if rest.parts.len() > 1 {
-        return Err(LineError::new(
-            span,
-            format!(
-                "a `{prefix}` argument must be one bare token or one quoted value; \
-                 use single quotes inside it, or quote the whole argument"
-            ),
-        ));
-    }
-    rest.into_value()
+    strip_prefix_token(token, prefix.len())
+        .ok_or_else(|| {
+            LineError::new(span, format!("`{prefix}` needs an argument")).expecting(["a query"])
+        })?
+        .into_value()
 }
 
 /// A `json:PATH` argument, with a literal path checked here (SPEC 9.5).
 fn json_path_value(token: RawToken) -> Result<Value, LineError> {
     let span = token.span;
-    let value = prefixed_single(token, "json:")?;
+    let value = prefixed_value(token, "json:")?;
     if let Some(literal) = value.as_literal() {
         JsonQuery::parse(&literal).map_err(|message| LineError::new(span, message))?;
     }
@@ -1450,7 +1441,7 @@ fn json_path_value(token: RawToken) -> Result<Value, LineError> {
 /// 9.5).
 fn xpath_value(token: RawToken) -> Result<Value, LineError> {
     let span = token.span;
-    let value = prefixed_single(token, "xpath:")?;
+    let value = prefixed_value(token, "xpath:")?;
     if let Some(literal) = value.as_literal() {
         XpathQuery::parse(&literal).map_err(|message| LineError::new(span, message))?;
     }
@@ -3844,6 +3835,16 @@ mod tests {
             error.message
         );
         only_check("response:r json:\"$[?@.name == 'Ada Lovelace']\" count == 1");
+        // A quote joins the argument after a colon, as after any prefix.
+        let check = only_check("response:r json:$[?@.time=='12:\"00 am']\" exists");
+        let Subject::Response {
+            field: ResponseField::Json(path),
+            ..
+        } = check.subject
+        else {
+            panic!("expected a JSONPath field");
+        };
+        assert_eq!(path.as_literal().as_deref(), Some("$[?@.time=='12:00 am']"));
     }
 
     #[test]
