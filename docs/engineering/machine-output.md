@@ -195,7 +195,7 @@ whirl run --rerun-failed report.json --trace
 
 Reruns select failed and errored files, resolve relative paths using the report's
 working directory, and execute each whole file plus its setup. Reports do not
-store executable configuration or secret values. Supply the original `--base`,
+store executable configuration or secret values. Supply the original `-O` options,
 `--browser`, variable flags, and environment again when needed. Move a report
 freely, but update file paths if the project itself has moved.
 

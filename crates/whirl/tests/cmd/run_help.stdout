@@ -10,14 +10,8 @@ Options:
       --rerun-failed <REPORT>
           Rerun whole failed or errored files from a JSON report
 
-      --base <URL>
-          Override the `base` option
-
       --browser <NAME>
-          Override the `browser` option
-
-      --step-timeout <DURATION>
-          Override the `step-timeout` option
+          Set the `browser` option, as `-O browser=NAME` does
 
       --headed
           Run with a visible browser window
@@ -87,12 +81,6 @@ Options:
 
       --save-state <FILE>
           Write the final browser state after a successful run of one file
-
-      --entry-timeout <DURATION>
-          Override the `entry-timeout` option
-
-      --user-agent <UA>
-          Override the user agent: chrome, firefox, safari, or a literal string
 
   -h, --help
           Print help (see a summary with '-h')
