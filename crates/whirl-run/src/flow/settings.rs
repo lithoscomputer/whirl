@@ -7,7 +7,7 @@ use whirl_lang::ast::File;
 use whirl_report::model::{SettingReport, SettingSource, SettingValue};
 
 use super::{ResolvedOptions, render_duration_ms};
-use crate::run::vars::VarStore;
+use crate::vars::VarStore;
 
 /// Every setting of the file with its resolved value, masked with the
 /// flow's secrets (SPEC 11), and where its value came from. `browsersim-*`

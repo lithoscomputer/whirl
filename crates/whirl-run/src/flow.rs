@@ -25,9 +25,9 @@ use whirl_shim::{
     StepOutcome, StepRequest, VideoParams, ViewportParams, wire,
 };
 
-use crate::run::artifacts;
-use crate::run::cache::{self, CacheMode};
-use crate::run::vars::{VarError, VarStore};
+use crate::artifacts;
+use crate::cache::{self, CacheMode};
+use crate::vars::{VarError, VarStore};
 
 mod act_step;
 mod ai_step;
@@ -56,22 +56,22 @@ pub(crate) const DEFAULT_VIDEO_FPS: u8 = 60;
 
 /// Run-wide flags the flow needs (SPEC 13).
 #[derive(Clone, Debug, Default)]
-pub(crate) struct FlowFlags {
-    pub(crate) trace:            bool,
-    pub(crate) video:            bool,
+pub struct FlowFlags {
+    pub trace:            bool,
+    pub video:            bool,
     /// The `--video-fps` flag; honored on Chromium only.
-    pub(crate) video_fps:        Option<u8>,
-    pub(crate) har:              bool,
-    pub(crate) update_snapshots: bool,
+    pub video_fps:        Option<u8>,
+    pub har:              bool,
+    pub update_snapshots: bool,
     /// Set only when this flow is the run's single file.
-    pub(crate) save_state:       Option<PathBuf>,
+    pub save_state:       Option<PathBuf>,
     /// The `--cache` mode (SPEC 12.1).
-    pub(crate) cache:            CacheMode,
+    pub cache:            CacheMode,
     /// `--headed`: show the browser window.
-    pub(crate) headed:           bool,
+    pub headed:           bool,
     /// The `--load-state` file; the CLI rejects it together with a
     /// `storage` or `setup` option (SPEC 13).
-    pub(crate) load_state:       Option<PathBuf>,
+    pub load_state:       Option<PathBuf>,
 }
 
 /// The hostname of a URL, textually: scheme and userinfo stripped, cut
@@ -380,7 +380,7 @@ fn resolve_beside_file(flow_path: &Path, relative: &str) -> PathBuf {
 /// The path of a file's `setup` flow as written, resolved against the
 /// file's own directory (SPEC 5). `None` without a literal `setup`
 /// option; lint rejects an interpolated one.
-pub(crate) fn setup_path_for(file: &File) -> Option<PathBuf> {
+pub fn setup_path_for(file: &File) -> Option<PathBuf> {
     let line = file.setup_option()?;
     let FileOption::Setup(value) = &line.option else {
         return None;

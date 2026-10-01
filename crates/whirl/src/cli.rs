@@ -26,9 +26,9 @@ use whirl_lang::{
 };
 use whirl_report::model::Status;
 use whirl_report::{ReportMetadata, aggregate, console, html, json, junit};
+use whirl_run::cache::{self, CacheMode};
+use whirl_run::{FlowFlags, RunSettings, RunnerError};
 
-use crate::run::cache::{self, CacheMode};
-use crate::run::{artifacts, flow, runner, vars};
 use crate::{doctor, install, telemetry};
 
 /// Outcome of one invocation, ordered by SPEC 13 precedence: `max` of two
@@ -230,8 +230,8 @@ struct RunArgs {
     jev: bool,
 
     /// What to do with each flow's AI cache.
-    #[arg(long, value_name = "MODE", value_enum, default_value_t = CacheMode::Replay)]
-    cache: CacheMode,
+    #[arg(long, value_name = "MODE", value_enum, default_value_t = CacheModeArg::Replay)]
+    cache: CacheModeArg,
 
     /// Start each file's browser from this saved state.
     #[arg(long, value_name = "FILE")]
@@ -264,6 +264,30 @@ struct RunArgs {
     /// Removed; use -O user-agent=UA.
     #[arg(long, value_name = "UA", hide = true)]
     user_agent: Option<String>,
+}
+
+/// The `--cache` flag's values (SPEC 12.1), as clap parses them. The
+/// runner's [`CacheMode`] carries the same three modes without the
+/// argument-parser derive.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, clap::ValueEnum)]
+enum CacheModeArg {
+    /// Replay hits; resolve misses with the model; never write.
+    #[default]
+    Replay,
+    /// As `replay`, then write the cache of each file that passed.
+    Update,
+    /// Fail a miss instead of asking the model.
+    Only,
+}
+
+impl From<CacheModeArg> for CacheMode {
+    fn from(mode: CacheModeArg) -> Self {
+        match mode {
+            CacheModeArg::Replay => Self::Replay,
+            CacheModeArg::Update => Self::Update,
+            CacheModeArg::Only => Self::Only,
+        }
+    }
 }
 
 /// Runs the CLI for the given argv (including the program name) and
@@ -635,7 +659,7 @@ fn check_inputs(
     let mut setups: Vec<ParsedInput> = Vec::new();
     let mut setup_of: Vec<(usize, PathBuf)> = Vec::new();
     for (index, input) in inputs.iter().enumerate() {
-        let Some(path) = flow::setup_path_for(&input.file) else {
+        let Some(path) = whirl_run::setup_path_for(&input.file) else {
             continue;
         };
         let Some(canonical) = path.canonicalize().ok() else {
@@ -902,13 +926,13 @@ fn build_base_vars(args: &RunArgs) -> Result<Vec<(String, String)>, UsageError> 
             message: format!("cannot read variables file '{}': {error}", path.display()),
         })?;
         entries.extend(
-            vars::parse_variables_file(&source).map_err(|error| UsageError {
+            whirl_run::parse_variables_file(&source).map_err(|error| UsageError {
                 message: format!("variables file '{}': {error}", path.display()),
             })?,
         );
     }
     for flag in &args.var {
-        entries.push(vars::parse_var_flag(flag).map_err(|error| UsageError {
+        entries.push(whirl_run::parse_var_flag(flag).map_err(|error| UsageError {
             message: format!("--var {flag}: {error}"),
         })?);
     }
@@ -961,7 +985,7 @@ fn check_save_state_inputs(
         return Ok(());
     };
     let inputs: Vec<PathBuf> = sources.iter().map(|(path, _)| path.clone()).collect();
-    let Ok(flows) = artifacts::dedup_flows(&inputs) else {
+    let Ok(flows) = whirl_run::dedup_flows(&inputs) else {
         return Ok(());
     };
     if flows.len() > 1 {
@@ -1156,7 +1180,7 @@ fn run_command(args: &RunArgs) -> Exit {
     if let Some(metadata) = &mut metadata {
         metadata.select(paths());
     }
-    let settings = runner::RunSettings {
+    let settings = RunSettings {
         source_hashes: checked
             .inputs
             .iter()
@@ -1171,14 +1195,14 @@ fn run_command(args: &RunArgs) -> Exit {
         jobs: args.jobs,
         fail_fast: args.fail_fast,
         out_dir: args.artifacts.clone().unwrap_or_else(|| args.out.clone()),
-        flags: flow::FlowFlags {
+        flags: FlowFlags {
             trace:            args.trace,
             video:            args.video,
             video_fps:        args.video_fps,
             har:              args.har,
             update_snapshots: args.update_snapshots,
             save_state:       args.save_state.clone(),
-            cache:            args.cache,
+            cache:            args.cache.into(),
             headed:           args.headed,
             load_state:       args.load_state.clone(),
         },
@@ -1194,7 +1218,7 @@ fn run_command(args: &RunArgs) -> Exit {
             return Exit::Runtime;
         }
     };
-    match runtime.block_on(runner::run_files(&files, &setups, &settings)) {
+    match runtime.block_on(whirl_run::run_files(&files, &setups, &settings)) {
         Ok(report) => {
             print_out(console::render(&report).trim_end());
             if settings.flags.cache != CacheMode::Update
@@ -1213,7 +1237,7 @@ fn run_command(args: &RunArgs) -> Exit {
             let report_exit = write_reports(args, &document);
             run_exit.max(report_exit)
         }
-        Err(error @ runner::RunnerError::SaveStateManyFiles { .. }) => {
+        Err(error @ RunnerError::SaveStateManyFiles { .. }) => {
             print_err(&format!("whirl: error: {error}"));
             Exit::Usage
         }

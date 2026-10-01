@@ -60,7 +60,7 @@ pub(crate) fn snapshot_baseline_path(flow_path: &Path, name: &str, browser: &str
 /// A failure while mapping flows to artifact directories. Both variants
 /// are runtime errors (SPEC 13, exit 3).
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum ArtifactsError {
+pub enum ArtifactsError {
     #[error("cannot resolve '{path}': {source}")]
     Canonicalize { path: PathBuf, source: io::Error },
     #[error(
@@ -91,7 +91,7 @@ pub(crate) struct Flow {
 /// Deduplicates input paths by canonical path, preserving first-seen
 /// order (SPEC 14: overlapping inputs or symlinked duplicates of one
 /// file resolve to one flow, run once).
-pub(crate) fn dedup_flows(inputs: &[PathBuf]) -> Result<Vec<(PathBuf, PathBuf)>, ArtifactsError> {
+pub fn dedup_flows(inputs: &[PathBuf]) -> Result<Vec<(PathBuf, PathBuf)>, ArtifactsError> {
     let mut seen: Vec<(PathBuf, PathBuf)> = Vec::new();
     for input in inputs {
         let canonical = input

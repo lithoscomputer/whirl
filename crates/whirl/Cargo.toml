@@ -9,8 +9,6 @@ description.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-base64.workspace = true
-chrono.workspace = true
 clap = { version = "4.6.6", features = ["derive"] }
 flate2 = "1"
 reqwest = { version = "0.12", default-features = false, features = [
@@ -19,26 +17,26 @@ reqwest = { version = "0.12", default-features = false, features = [
 ] }
 serde.workspace = true
 serde_json.workspace = true
-sha2 = "0.10"
+sha2.workspace = true
 tar = "0.4"
-tempfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
-tracing.workspace = true
 tracing-subscriber = { version = "=0.3.20", default-features = false, features = ["fmt", "registry"] }
-url.workspace = true
 whirl-ai = { path = "../whirl-ai" }
 whirl-check = { path = "../whirl-check" }
 whirl-lang = { path = "../whirl-lang" }
 whirl-report = { path = "../whirl-report" }
+whirl-run = { path = "../whirl-run" }
 whirl-shim = { path = "../whirl-shim" }
-whirl-types = { path = "../whirl-types" }
 zip = { version = "7.2.0", default-features = false, features = [
     "deflate-flate2",
 ] }
 
 [dev-dependencies]
 axum = "0.8"
+base64.workspace = true
+chrono.workspace = true
+tempfile.workspace = true
 tiny_http = "0.12.0"
 # The OpenAI-compatible model twin that ACT acceptance tests run against.
 twin-openai = { git = "https://github.com/lithoscomputer/twins", rev = "73164984026a2901f133140a467195c1d924f244" }
