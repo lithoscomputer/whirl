@@ -10,9 +10,8 @@
 use std::collections::HashMap;
 use std::env;
 
+use whirl_lang::ast::{Span, Value, ValueSegment};
 use whirl_types::{Value as TypedValue, quote as quote_json};
-
-use crate::lang::ast::{Span, Value, ValueSegment};
 
 /// The replacement text for a masked secret (SPEC 11).
 pub(crate) const MASK: &str = "***";
@@ -374,9 +373,10 @@ pub(crate) fn parse_var_flag(flag: &str) -> Result<(String, String), VarsFileErr
 mod tests {
     use std::path::Path;
 
+    use whirl_lang::ast::{ActionKind, File};
+    use whirl_lang::parse_file;
+
     use super::*;
-    use crate::lang::ast::{ActionKind, File};
-    use crate::lang::parse::parse_file;
 
     fn parse(source: &str) -> File {
         parse_file(Path::new("test.whirl"), source)

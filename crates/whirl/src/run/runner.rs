@@ -13,8 +13,8 @@ use std::{env, path, process, thread};
 use tokio::fs;
 use tokio::task::{JoinSet, spawn_blocking};
 use tracing::{Instrument as _, debug, info, info_span, warn};
+use whirl_lang::ast::{File, FileOption};
 
-use crate::lang::ast::{File, FileOption};
 use crate::report::model::{FileReport, FlowRoles, RunReport, SETUP_ENTRY, Status, Timing};
 use crate::run::act::{
     ActPlanner, JevClient, JevPlanner, JevSetupError, LlmPlanner, ModelClient, ModelSetupError,

@@ -5,12 +5,12 @@
 
 use std::time::{Duration, Instant};
 
+use whirl_lang::{parse_action_line, render_action};
+
 use super::act_step::{
     ActBudget, ActLine, Replay, ShimFailure, act_failure, usage_report, warning,
 };
 use super::{EntryState, FlowExec, StepEnd, StepNode};
-use crate::lang::fmt::render_action;
-use crate::lang::parse::parse_action_line;
 use crate::report::model::{ActActionReport, GoalReport, StepError, StepWarning};
 use crate::run::act::{
     ActDecision, GoalStatus, Instruction, ModelClient, PageSnapshot, PlanUsage, PlannedAction,

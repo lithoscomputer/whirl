@@ -11,8 +11,7 @@
 //! error aborts the conversion unchanged.
 
 use serde_json::{Value as Json, json};
-
-use crate::lang::ast::{
+use whirl_lang::ast::{
     DefaultEngine, Extractor, Ident, Locator, LocatorSegment, PageCheck, Regex, ScrollMotion,
     SegmentKind, Span, StateCheck, Subject, TextPrefix, Value, ValueSegment,
 };
@@ -323,11 +322,10 @@ mod tests {
     use std::path::Path;
 
     use serde_json::json;
+    use whirl_lang::ast::{ActionKind, AssertBody, File};
+    use whirl_lang::{parse_file, parse_locator, render_snapshot_target};
 
     use super::*;
-    use crate::lang::ast::{ActionKind, AssertBody, File};
-    use crate::lang::fmt::render_snapshot_target;
-    use crate::lang::parse::{parse_file, parse_locator};
 
     #[test]
     fn generated_locators_read_back_from_the_wire() {

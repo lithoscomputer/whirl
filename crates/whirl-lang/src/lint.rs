@@ -9,42 +9,42 @@ use std::path::PathBuf;
 
 use whirl_types::{Number, PredicateKind, StaticType, ValueType, is_bytes_literal_shape};
 
-use crate::lang::ast::snapshot::SnapshotOption;
-use crate::lang::ast::{
+use crate::ast::snapshot::SnapshotOption;
+use crate::ast::{
     Action, ActionKind, Assert, AssertBody, Capture, CheckLine, CheckStep, Entry, Extractor, File,
     FileOption, FilterArg, FilterSpec, Ident, Locator, MockResponse, Operand, OptionValue,
     PageCheck, PredicateSpec, RequestField, ResponseField, SegmentKind, Span, StateCheck, Subject,
     Value, ValueSegment, chain_type,
 };
-use crate::lang::schema;
+use crate::schema;
 
 /// How serious a lint diagnostic is: an [`Severity::Error`] fails
 /// `whirl check` and `whirl` runs with exit code 2; a
 /// [`Severity::Warning`] is reported without changing the exit code.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Severity {
+pub enum Severity {
     Error,
     Warning,
 }
 
 /// One lint diagnostic, located like a parse error (SPEC 16).
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct Lint {
-    pub(crate) code:     &'static str,
-    pub(crate) severity: Severity,
-    pub(crate) path:     PathBuf,
+pub struct Lint {
+    pub code:     &'static str,
+    pub severity: Severity,
+    pub path:     PathBuf,
     /// 1-based line of the offending token.
-    pub(crate) line:     u32,
+    pub line:     u32,
     /// 1-based character column of the offending token.
-    pub(crate) column:   u32,
+    pub column:   u32,
     /// Length of the offending token in characters.
-    pub(crate) len:      u32,
-    pub(crate) message:  String,
+    pub len:      u32,
+    pub message:  String,
 }
 
 /// Lints a parsed file. `external_uses` names captures read by dependent
 /// files through `setup:`; those captures count as used (SPEC 16).
-pub(crate) fn lint_file_with(file: &File, external_uses: &HashSet<String>) -> Vec<Lint> {
+pub fn lint_file_with(file: &File, external_uses: &HashSet<String>) -> Vec<Lint> {
     let mut lints = Vec::new();
     duplicate_artifact_names(file, &mut lints);
     window_names(file, &mut lints);
@@ -63,7 +63,7 @@ pub(crate) fn lint_file_with(file: &File, external_uses: &HashSet<String>) -> Ve
 }
 
 /// The capture names a file reads as `{{setup.name}}`.
-pub(crate) fn setup_capture_uses(file: &File) -> HashSet<String> {
+pub fn setup_capture_uses(file: &File) -> HashSet<String> {
     collect_setup_refs(file)
         .into_iter()
         .map(|var_ref| var_ref.name.to_owned())
@@ -73,7 +73,7 @@ pub(crate) fn setup_capture_uses(file: &File) -> HashSet<String> {
 /// Lints a file against its parsed `setup` flow (SPEC 12, 16): the setup
 /// flow may not name a setup of its own, and every `{{setup.name}}` the
 /// file reads must be a capture the setup flow takes.
-pub(crate) fn lint_setup_refs(file: &File, setup: &File) -> Vec<Lint> {
+pub fn lint_setup_refs(file: &File, setup: &File) -> Vec<Lint> {
     let mut lints = Vec::new();
     if let (Some(line), Some(nested)) = (file.setup_option(), setup.setup_option()) {
         let message = format!(
@@ -117,7 +117,7 @@ pub(crate) fn lint_setup_refs(file: &File, setup: &File) -> Vec<Lint> {
 
 /// What the model catalog says about one model.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ModelFacts {
+pub enum ModelFacts {
     Unknown,
     Known {
         /// Whether the model accepts images; `None` when the catalog does
@@ -131,7 +131,7 @@ pub(crate) enum ModelFacts {
 /// file that uses `JUDGE` needs a model that accepts images. The caller
 /// looks the model up, because the catalog depends on the environment
 /// (SPEC 13).
-pub(crate) fn lint_act(file: &File, facts: impl Fn(&str) -> ModelFacts) -> Vec<Lint> {
+pub fn lint_act(file: &File, facts: impl Fn(&str) -> ModelFacts) -> Vec<Lint> {
     if let Some(line) = file.model_option() {
         let FileOption::Model(value) = &line.option else {
             return Vec::new();
@@ -1204,7 +1204,7 @@ mod tests {
     use std::path::Path;
 
     use super::*;
-    use crate::lang::parse::parse_file;
+    use crate::parse::parse_file;
 
     fn lint(source: &str) -> Vec<Lint> {
         let file = parse_file(Path::new("test.whirl"), source)

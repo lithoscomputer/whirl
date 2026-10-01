@@ -3,7 +3,8 @@
 //! chooses, a key name, an option the page shows, or text a small model
 //! call copies from the instruction.
 
-use crate::lang::ast::Percent;
+use whirl_lang::ast::Percent;
+
 use crate::run::act::instruction::{Instruction, quoted_strings, same_text};
 
 /// The texts a fill could type: the placeholders and quoted strings in the
@@ -165,8 +166,9 @@ fn fraction(text: &str) -> Option<Percent> {
 
 #[cfg(test)]
 mod tests {
+    use whirl_lang::ast::{Span, Value, ValueSegment};
+
     use super::*;
-    use crate::lang::ast::{Span, Value, ValueSegment};
     use crate::run::vars::VarStore;
 
     fn instruction(segments: Vec<ValueSegment>, vars: &mut VarStore) -> Instruction {

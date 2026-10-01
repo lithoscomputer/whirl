@@ -16,8 +16,8 @@ use whirl_types::{
     is_bytes_literal_shape, quote as quote_json,
 };
 
-use crate::lang::ast::snapshot::{MaxDiff, PixelThreshold, SnapshotOption, SnapshotOptionLine};
-use crate::lang::ast::{
+use crate::ast::snapshot::{MaxDiff, PixelThreshold, SnapshotOption, SnapshotOptionLine};
+use crate::ast::{
     Action, ActionKind, Assert, AssertBody, BrowserKind, BrowserSimOrigin, Capture, CheckLine,
     CheckStep, Comment, DialogPolicy, DurationLit, Entry, ExtractSchema, Extractor, File,
     FileOption, FilterArg, FilterSpec, HttpBody, HttpBodyKind, HttpHeader, Ident, JsonLiteral,
@@ -31,28 +31,28 @@ use crate::lang::ast::{
 /// caret under the offending token, and the expected alternatives.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 #[error("{}", self.render())]
-pub(crate) struct ParseError {
+pub struct ParseError {
     /// The stable diagnostic code (SPEC 16).
-    pub(crate) code:        ParseErrorCode,
-    pub(crate) path:        PathBuf,
+    pub code:        ParseErrorCode,
+    pub path:        PathBuf,
     /// 1-based line of the offending token.
-    pub(crate) line:        u32,
+    pub line:        u32,
     /// 1-based character column of the offending token.
-    pub(crate) column:      u32,
+    pub column:      u32,
     /// Length of the offending token in characters (caret width).
-    pub(crate) len:         u32,
+    pub len:         u32,
     /// The full source line, without its line ending.
-    pub(crate) source_line: String,
-    pub(crate) message:     String,
+    pub source_line: String,
+    pub message:     String,
     /// Expected alternatives, possibly empty.
-    pub(crate) expected:    Vec<String>,
+    pub expected:    Vec<String>,
 }
 
 impl ParseError {
     /// A syntax diagnostic at `span` of `source`, for a rule outside the
     /// grammar that is checked after parsing (SPEC 17.1), such as an
     /// invalid literal regex. It has no expected alternatives.
-    pub(crate) fn at_span(path: &Path, source: &str, span: Span, message: String) -> Self {
+    pub fn at_span(path: &Path, source: &str, span: Span, message: String) -> Self {
         let source_line = source
             .lines()
             .nth(usize::try_from(span.line.saturating_sub(1)).unwrap_or(0))
@@ -72,7 +72,7 @@ impl ParseError {
 
     /// Renders the diagnostic: location and message, the source line, a
     /// caret under the offending token, and the expected alternatives.
-    pub(crate) fn render(&self) -> String {
+    pub fn render(&self) -> String {
         let mut out = String::new();
         let location = format!("{}:{}:{}", self.path.display(), self.line, self.column);
         let _ = writeln!(out, "{location}: error: {}", self.message);
@@ -95,13 +95,13 @@ impl ParseError {
 
 /// The stable code of a parse diagnostic (SPEC 16).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ParseErrorCode {
+pub enum ParseErrorCode {
     /// An ordinary syntax error.
     Syntax,
 }
 
 impl ParseErrorCode {
-    pub(crate) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Syntax => "parse-error",
         }
@@ -876,7 +876,7 @@ pub(crate) const ROLES: [&str; 79] = [
 ];
 
 /// True when `text` names a role prefix, such as `button`.
-pub(crate) fn is_role(text: &str) -> bool {
+pub fn is_role(text: &str) -> bool {
     ROLES.contains(&text)
 }
 
@@ -2342,7 +2342,7 @@ fn validate_snapshot_option<'a>(
     Ok(())
 }
 
-pub(crate) const OPTION_KEYS: [&str; 18] = [
+pub const OPTION_KEYS: [&str; 18] = [
     "base",
     "browser",
     "viewport",
@@ -2716,7 +2716,7 @@ fn json_body_end(lines: &[&str], start: usize) -> Result<usize, LineError> {
 
 /// Parses a locator written on its own, such as one the AI cache holds
 /// (SPEC 12.1). Every segment needs a prefix.
-pub(crate) fn parse_locator(text: &str) -> Result<Locator, String> {
+pub fn parse_locator(text: &str) -> Result<Locator, String> {
     let mut cursor = Cursor::new(text, 1);
     let mut tokens = Vec::new();
     while let Some(token) = cursor.next_token().map_err(|error| error.message)? {
@@ -2732,7 +2732,7 @@ pub(crate) fn parse_locator(text: &str) -> Result<Locator, String> {
 
 /// Parses one action line written on its own, such as one the AI cache
 /// holds (SPEC 12.1).
-pub(crate) fn parse_action_line(text: &str) -> Result<Action, String> {
+pub fn parse_action_line(text: &str) -> Result<Action, String> {
     let mut cursor = Cursor::new(text, 1);
     cursor.skip_ws();
     let start = cursor.pos;
@@ -2758,7 +2758,7 @@ pub(crate) fn parse_action_line(text: &str) -> Result<Action, String> {
 }
 
 /// Parses one `.whirl` source, stopping at the file's first error.
-pub(crate) fn parse_file(path: &Path, source: &str) -> Result<File, ParseError> {
+pub fn parse_file(path: &Path, source: &str) -> Result<File, ParseError> {
     let mut parser = Parser {
         options:        Vec::new(),
         entries:        Vec::new(),
@@ -3580,7 +3580,7 @@ impl Parser {
 mod tests {
     use whirl_types::PredicateKind;
 
-    use crate::lang::ast::DurationUnit;
+    use crate::ast::DurationUnit;
     /// Parses many `.whirl` sources and reports every broken file's first
     /// error, so one `whirl check` run surfaces them all (SPEC 13, 16).
     fn parse_files<'a>(
@@ -3602,7 +3602,7 @@ mod tests {
     }
 
     use super::*;
-    use crate::lang::ast::DefaultEngine;
+    use crate::ast::DefaultEngine;
 
     fn parse(source: &str) -> File {
         parse_file(Path::new("test.whirl"), source).expect("source should parse")

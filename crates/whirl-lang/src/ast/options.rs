@@ -10,7 +10,7 @@ use super::{
 /// that could have come from a secret environment variable.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 #[error("expected {0}")]
-pub(crate) struct InvalidOptionValue(&'static str);
+pub struct InvalidOptionValue(&'static str);
 
 fn decimal(text: &str) -> Option<u64> {
     if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
@@ -53,7 +53,7 @@ impl FromStr for Viewport {
 }
 
 impl BrowserKind {
-    pub(crate) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Chromium => "chromium",
             Self::Firefox => "firefox",
@@ -76,7 +76,7 @@ impl FromStr for BrowserKind {
 }
 
 impl DialogPolicy {
-    pub(crate) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Dismiss => "dismiss",
             Self::Accept => "accept",
@@ -97,7 +97,7 @@ impl FromStr for DialogPolicy {
 }
 
 impl BrowserSimOrigin {
-    pub(crate) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Build => "build",
             Self::Recorded => "recorded",
@@ -118,7 +118,7 @@ impl FromStr for BrowserSimOrigin {
 }
 
 impl ReducedMotion {
-    pub(crate) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Reduce => "reduce",
             Self::NoPreference => "no-preference",

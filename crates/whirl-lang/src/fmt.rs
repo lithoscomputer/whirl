@@ -18,8 +18,8 @@ use std::fmt::Write as _;
 
 use whirl_types::{Number, is_bytes_literal_shape};
 
-use crate::lang::ast::snapshot::SnapshotOption;
-use crate::lang::ast::{
+use crate::ast::snapshot::SnapshotOption;
+use crate::ast::{
     Action, ActionKind, Assert, AssertBody, Capture, CheckLine, CheckStep, Comment, DurationLit,
     DurationUnit, Entry, Extractor, File, FileOption, FilterArg, FilterSpec, HttpBodyKind, Judge,
     Locator, MockResponse, Operand, OptionValue, Page, PageCheck, PredicateSpec, Regex,
@@ -257,7 +257,7 @@ fn push_timeout(out: &mut String, timeout: Option<DurationLit>) {
 }
 
 /// Renders an action line (SPEC 7).
-pub(crate) fn render_action(action: &Action) -> String {
+pub fn render_action(action: &Action) -> String {
     let plain = |value: &Value| render_value(value, ValueCtx::Plain);
     let mut out = match &action.kind {
         ActionKind::Http { method, url, .. } => format!("HTTP {method} {}", plain(url)),
@@ -591,12 +591,12 @@ fn viewport_text(viewport: Viewport) -> String {
 
 /// Renders a locator for reports and the AI cache, such as a `SNAPSHOT`
 /// target or a generated locator (SPEC 6, 12.1).
-pub(crate) fn render_snapshot_target(target: &Locator) -> String {
+pub fn render_snapshot_target(target: &Locator) -> String {
     render_locator(target)
 }
 
 /// Renders a snapshot setting at either scope (SPEC 5, 7).
-pub(crate) fn render_snapshot_option(option: &SnapshotOption) -> String {
+pub fn render_snapshot_option(option: &SnapshotOption) -> String {
     let value = match option {
         SnapshotOption::Mask(None) => "none".to_owned(),
         SnapshotOption::Mask(Some(locator)) => render_locator(locator),
@@ -813,7 +813,7 @@ fn place_comments(regions: &mut [Region], comments: &[Comment]) {
 
 /// Renders a parsed file in canonical form (SPEC 13). The result ends
 /// with a newline; re-parsing it yields a structurally identical file.
-pub(crate) fn format_file(file: &File) -> String {
+pub fn format_file(file: &File) -> String {
     let mut regions: Vec<Region> = Vec::new();
     if let Some(region) = option_region(file) {
         regions.push(region);
@@ -851,9 +851,9 @@ mod tests {
     use std::path::Path;
 
     use super::*;
-    use crate::lang::ast::snapshot::SnapshotOption;
-    use crate::lang::ast::{Ident, LocatorSegment, OptionLine, Span};
-    use crate::lang::parse::parse_file;
+    use crate::ast::snapshot::SnapshotOption;
+    use crate::ast::{Ident, LocatorSegment, OptionLine, Span};
+    use crate::parse::parse_file;
 
     // ---- Structural comparison -------------------------------------
     //

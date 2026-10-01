@@ -21,8 +21,8 @@ use lithos_llm::types::{ContentPart, ErrorKind, ImageContent, MediaSource, Messa
 use lithos_llm::{Client, Request, StructuredCompletion};
 use serde::Deserialize;
 use serde_json::{Value as Json, json};
+use whirl_lang::ModelFacts;
 
-use crate::lang::lint::ModelFacts;
 use crate::run::act::decision::{ActInference, GoalInference, goal_schema, inference_schema};
 use crate::run::act::prompt;
 

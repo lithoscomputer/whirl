@@ -1,0 +1,22 @@
+[package]
+name = "whirl-lang"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The .whirl language: typed AST, parser, canonical formatter, lint rules, and command-line option resolution"
+
+[dependencies]
+serde_json.workspace = true
+thiserror.workspace = true
+whirl-types = { path = "../whirl-types" }
+
+[dev-dependencies]
+# Runs the grammar in SPEC section 17 against the parser.
+pest = "=2.9.2"
+pest_meta = "=2.9.2"
+pest_vm = "=2.9.2"
+
+[lints]
+workspace = true

@@ -1,14 +1,13 @@
 //! Whirl: a CLI that runs web UI tests written in plain-text `.whirl` files.
 //!
-//! This crate hosts the `.whirl` language (AST, parser, and later the
-//! formatter and lint rules), the runner, and the reporters. `SPEC.md` at the
-//! repository root is the product authority for everything in here.
+//! This crate hosts the command-line surface, the check engine, the runner,
+//! and the reporters. The `.whirl` language lives in `whirl-lang`. `SPEC.md`
+//! at the repository root is the product authority for everything in here.
 
 mod check;
 mod cli;
 mod doctor;
 mod install;
-mod lang;
 mod report;
 mod run;
 mod telemetry;

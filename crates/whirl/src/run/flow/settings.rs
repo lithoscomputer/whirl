@@ -2,9 +2,10 @@
 
 use std::path::PathBuf;
 
+use whirl_lang::OPTION_KEYS;
+use whirl_lang::ast::File;
+
 use super::{ResolvedOptions, render_duration_ms};
-use crate::lang::ast::File;
-use crate::lang::parse::OPTION_KEYS;
 use crate::report::model::{SettingReport, SettingSource, SettingValue};
 use crate::run::vars::VarStore;
 

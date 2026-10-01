@@ -7,8 +7,8 @@ use std::{fs, thread};
 use pest::iterators::Pair;
 use pest_vm::Vm;
 
-use crate::lang::ast::{CheckStep, File};
-use crate::lang::parse::{ParseError, parse_file};
+use crate::ast::{CheckStep, File};
+use crate::parse::{ParseError, parse_file};
 
 const REPO: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
 

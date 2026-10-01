@@ -5,8 +5,8 @@ use std::ops::RangeInclusive;
 
 use serde::Deserialize;
 use serde_json::{Value as Json, json};
+use whirl_lang::ast::{MouseButton, Percent, ScrollDirection, ScrollMotion};
 
-use crate::lang::ast::{MouseButton, Percent, ScrollDirection, ScrollMotion};
 use crate::run::act::instruction::{Instruction, UnboundPlaceholder, same_text};
 use crate::run::act::snapshot::{PageSnapshot, Target, quote};
 use crate::run::shim::{StepCommand, wire};
@@ -715,8 +715,9 @@ impl PageSnapshot {
 
 #[cfg(test)]
 mod tests {
+    use whirl_lang::ast::{Span, Value, ValueSegment};
+
     use super::*;
-    use crate::lang::ast::{Span, Value, ValueSegment};
     use crate::run::vars::VarStore;
 
     const SNAPSHOT: &str = "- textbox \"Email\" [ref=e4]\n- button \"Sign in\" [ref=e5]\n";

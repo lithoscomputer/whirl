@@ -7,9 +7,9 @@
 //! every later step (lint, the run, reports) reads one list of options.
 //! Every command that takes `-O` shares this type.
 
-use crate::lang::ast::snapshot::SnapshotOption;
-use crate::lang::ast::{File, FileOption, OptionLine, OptionSource, Span};
-use crate::lang::parse::{OPTION_KEYS, parse_command_line_option};
+use crate::ast::snapshot::SnapshotOption;
+use crate::ast::{File, FileOption, OptionLine, OptionSource, Span};
+use crate::parse::{OPTION_KEYS, parse_command_line_option};
 
 /// The option keys whose values form a list. More than one command-line
 /// value for such a key forms a list that replaces the file's list, and an
@@ -21,21 +21,21 @@ const HOST_KEYS: [&str; 2] = ["allow-hosts", "block-hosts"];
 
 /// A flag that sets one option, as `--browser NAME` does (SPEC 13).
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct OptionFlag<'a> {
-    pub(crate) flag:  &'static str,
-    pub(crate) key:   &'static str,
-    pub(crate) value: Option<&'a str>,
+pub struct OptionFlag<'a> {
+    pub flag:  &'static str,
+    pub key:   &'static str,
+    pub value: Option<&'a str>,
 }
 
 /// A usage error in a command-line option (SPEC 13, exit 4).
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
-pub(crate) struct CliOptionError(String);
+pub struct CliOptionError(String);
 
 /// The options that the command line sets, validated. Each key holds the
 /// lines that replace the file's lines for that key; no lines clear it.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct CliOptions {
+pub struct CliOptions {
     settings: Vec<(&'static str, Vec<FileOption>)>,
 }
 
@@ -59,10 +59,7 @@ impl CliOptions {
     /// `key=value` texts of `-O` in order. Each value is one literal item,
     /// as if quoted, except a `snapshot-mask` value, which is a locator
     /// written as in a file (SPEC 13).
-    pub(crate) fn try_new(
-        pairs: &[String],
-        flags: &[OptionFlag<'_>],
-    ) -> Result<Self, CliOptionError> {
+    pub fn try_new(pairs: &[String], flags: &[OptionFlag<'_>]) -> Result<Self, CliOptionError> {
         let mut written: Vec<Written> = Vec::new();
         for pair in pairs {
             let Some((key, value)) = pair.split_once('=') else {
@@ -134,13 +131,13 @@ impl CliOptions {
     }
 
     /// True when the command line sets `key`.
-    pub(crate) fn sets(&self, key: &str) -> bool {
+    pub fn sets(&self, key: &str) -> bool {
         self.settings.iter().any(|(known, _)| *known == key)
     }
 
     /// Puts the command line's lines in place of the file's lines for each
     /// key that the command line sets.
-    pub(crate) fn apply(&self, file: &mut File) {
+    pub fn apply(&self, file: &mut File) {
         for (key, options) in &self.settings {
             file.command_line_keys.push(key);
             file.options.retain(|line| line.option.key() != *key);
@@ -237,8 +234,8 @@ mod tests {
     use std::path::Path;
 
     use super::*;
-    use crate::lang::ast::{BrowserKind, OptionValue, Value};
-    use crate::lang::parse::parse_file;
+    use crate::ast::{BrowserKind, OptionValue, Value};
+    use crate::parse::parse_file;
 
     fn options(pairs: &[&str]) -> Result<CliOptions, CliOptionError> {
         let pairs: Vec<String> = pairs.iter().map(|pair| (*pair).to_owned()).collect();

@@ -18,14 +18,12 @@ use clap::{Args, CommandFactory as _, Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use tokio::runtime::Runtime;
+use whirl_lang::{
+    CliOptions, Lint, ModelFacts, OptionFlag, ParseError, Severity, ast, format_file, lint_act,
+    lint_file_with, lint_setup_refs, parse_file, setup_capture_uses,
+};
 
 use crate::check::validate_literals;
-use crate::lang::cli_options::{CliOptions, OptionFlag};
-use crate::lang::lint::{
-    Lint, ModelFacts, Severity, lint_act, lint_file_with, lint_setup_refs, setup_capture_uses,
-};
-use crate::lang::parse::{ParseError, parse_file};
-use crate::lang::{ast, fmt};
 use crate::report::metadata::ReportMetadata;
 use crate::report::model::Status;
 use crate::report::{console, html, json, junit};
@@ -855,7 +853,7 @@ fn fmt_command(check: bool, paths: &[PathBuf]) -> Exit {
     }
     let mut exit = Exit::Success;
     for input in &parsed {
-        let formatted = fmt::format_file(&input.file);
+        let formatted = format_file(&input.file);
         if formatted == input.source.replace("\r\n", "\n") {
             continue;
         }

@@ -2988,9 +2988,6 @@ dependencies = [
  "html-escape",
  "lithos-llm",
  "percent-encoding",
- "pest",
- "pest_meta",
- "pest_vm",
  "proptest",
  "quick-junit",
  "regress",
@@ -3009,9 +3006,22 @@ dependencies = [
  "trycmd",
  "twin-openai",
  "url",
+ "whirl-lang",
  "whirl-types",
  "whirl-xpath",
  "zip",
+]
+
+[[package]]
+name = "whirl-lang"
+version = "0.20.0"
+dependencies = [
+ "pest",
+ "pest_meta",
+ "pest_vm",
+ "serde_json",
+ "thiserror",
+ "whirl-types",
 ]
 
 [[package]]

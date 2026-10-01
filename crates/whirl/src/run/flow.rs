@@ -9,12 +9,12 @@ use std::time::{Duration, Instant};
 use serde_json::{Value as Json, json};
 use tokio::fs;
 use tracing::{Instrument as _, debug, debug_span, info_span};
-
-use crate::lang::ast::{
+use whirl_lang::ast::{
     self, BrowserKind, BrowserSimOrigin, DialogPolicy, DurationLit, File, FileOption, OptionSource,
     OptionValue, ReducedMotion, Value, Viewport,
 };
-use crate::lang::fmt::render_snapshot_target;
+use whirl_lang::render_snapshot_target;
+
 use crate::report::model::{
     ActReport, AiReport, BlockedHostRule, CaptureValue, EntryReport, ExtractReport, FileReport,
     GoalReport, JudgeReport, MockReport, ReportViewport, RuntimeMetadata, SETUP_ENTRY,
@@ -2052,9 +2052,10 @@ pub(crate) async fn run_flow(run: &FlowRun<'_>, client: &mut ShimClient) -> Flow
 
 #[cfg(test)]
 mod tests {
+    use whirl_lang::ast::{Span, ValueSegment};
+    use whirl_lang::parse_file;
+
     use super::*;
-    use crate::lang::ast::{Span, ValueSegment};
-    use crate::lang::parse::parse_file;
 
     fn parse(source: &str) -> File {
         parse_file(Path::new("test.whirl"), source)

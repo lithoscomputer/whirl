@@ -32,9 +32,9 @@
 use std::collections::HashMap;
 
 use serde_json::{Map, Value as Json, json};
+use whirl_lang::ast::MouseButton;
 
 use super::client::{JevAnswer, JevQuestion, choice};
-use crate::lang::ast::MouseButton;
 
 /// Each kind of action and how Jev reads it. Naming the kinds Whirl cannot
 /// do keeps such instructions out of the families it can.
