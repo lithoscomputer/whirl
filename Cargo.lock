@@ -2982,7 +2982,6 @@ dependencies = [
  "chrono",
  "clap",
  "flate2",
- "lithos-llm",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -2997,12 +2996,27 @@ dependencies = [
  "trycmd",
  "twin-openai",
  "url",
+ "whirl-ai",
  "whirl-check",
  "whirl-lang",
  "whirl-report",
  "whirl-shim",
  "whirl-types",
  "zip",
+]
+
+[[package]]
+name = "whirl-ai"
+version = "0.20.0"
+dependencies = [
+ "base64 0.22.1",
+ "lithos-llm",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "whirl-lang",
+ "whirl-shim",
 ]
 
 [[package]]

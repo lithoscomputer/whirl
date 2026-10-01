@@ -8,10 +8,9 @@ use std::{fs, io};
 
 use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
+use whirl_ai::Fingerprint;
 use whirl_lang::ast::{ActionKind, AssertBody, CheckLine, CheckStep, File, Locator, Subject};
 use whirl_lang::render_snapshot_target;
-
-use crate::run::act::Fingerprint;
 
 /// The cache file format version (SPEC 12.1).
 const VERSION: u32 = 1;

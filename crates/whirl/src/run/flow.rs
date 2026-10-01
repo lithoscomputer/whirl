@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value as Json, json};
 use tokio::fs;
 use tracing::{Instrument as _, debug, debug_span, info_span};
+use whirl_ai::{ActPlanner, Instruction, JudgeAnswer, ModelClient};
 use whirl_lang::ast::{
     self, BrowserKind, BrowserSimOrigin, DialogPolicy, DurationLit, File, FileOption, OptionSource,
     OptionValue, ReducedMotion, Value, Viewport,
@@ -24,7 +25,6 @@ use whirl_shim::{
     StepOutcome, StepRequest, VideoParams, ViewportParams, wire,
 };
 
-use crate::run::act::{ActPlanner, Instruction, JudgeAnswer, ModelClient};
 use crate::run::artifacts;
 use crate::run::cache::{self, CacheMode};
 use crate::run::vars::{VarError, VarStore};

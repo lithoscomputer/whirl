@@ -16,7 +16,7 @@ use whirl_lang::ast::{Value, ValueSegment};
 /// value as a secret, so [`Variables::secrets`] grows as resolution goes
 /// on. [`Variables::mask`] replaces every recorded secret in a text, so a
 /// text that masks to itself holds no secret.
-pub(crate) trait Variables {
+pub trait Variables {
     /// A failed resolution: an undefined variable or an unset environment
     /// variable. The step that referenced it fails with this error.
     type Error;
@@ -34,7 +34,7 @@ pub(crate) trait Variables {
 
 /// Placeholder names and the secret values they stand for.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(crate) struct SecretBindings {
+pub struct SecretBindings {
     /// `(name, value)` pairs; the name has no `%` delimiters.
     entries: Vec<(String, String)>,
 }
@@ -59,7 +59,7 @@ impl SecretBindings {
     }
 
     /// The placeholders the prompt lists, such as `%env.PASSWORD%`.
-    pub(crate) fn placeholders(&self) -> Vec<String> {
+    pub fn placeholders(&self) -> Vec<String> {
         self.entries
             .iter()
             .map(|(name, _)| format!("%{name}%"))
@@ -116,14 +116,14 @@ fn is_placeholder_name(name: &str) -> bool {
 /// A model argument named a placeholder the instruction never had.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 #[error("the answer uses the unknown placeholder %{name}%")]
-pub(crate) struct UnboundPlaceholder {
+pub struct UnboundPlaceholder {
     pub(crate) name: String,
 }
 
 /// The instruction text the model sees, and the secrets its placeholders
 /// stand for.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct Instruction {
+pub struct Instruction {
     prompt:     String,
     bindings:   SecretBindings,
     /// Each `{{name}}` and `{{setup.name}}` reference the instruction used,
@@ -134,7 +134,7 @@ pub(crate) struct Instruction {
 impl Instruction {
     /// Resolves an `ACT` value (SPEC 11) with masked values replaced by
     /// placeholders. Resolution records env values for masking as usual.
-    pub(crate) fn try_new<V: Variables>(value: &Value, vars: &mut V) -> Result<Self, V::Error> {
+    pub fn try_new<V: Variables>(value: &Value, vars: &mut V) -> Result<Self, V::Error> {
         let mut prompt = String::new();
         let mut bindings = SecretBindings::default();
         let mut references = Vec::new();
@@ -173,7 +173,7 @@ impl Instruction {
     /// `{{env.NAME}}`. Text equal to a variable the instruction used is that
     /// variable's reference. `None` when the text holds a masked value that
     /// no reference names, a `%secretN%` placeholder.
-    pub(crate) fn cache_value(&self, text: &str) -> Option<String> {
+    pub fn cache_value(&self, text: &str) -> Option<String> {
         if let Some((reference, _)) = self.references.iter().find(|(_, value)| value == text) {
             return Some(reference.clone());
         }
@@ -204,11 +204,11 @@ impl Instruction {
         Some(out)
     }
 
-    pub(crate) fn prompt(&self) -> &str {
+    pub fn prompt(&self) -> &str {
         &self.prompt
     }
 
-    pub(crate) fn bindings(&self) -> &SecretBindings {
+    pub fn bindings(&self) -> &SecretBindings {
         &self.bindings
     }
 

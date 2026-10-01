@@ -23,8 +23,8 @@ use serde::Deserialize;
 use serde_json::{Value as Json, json};
 use whirl_lang::ModelFacts;
 
-use crate::run::act::decision::{ActInference, GoalInference, goal_schema, inference_schema};
-use crate::run::act::prompt;
+use crate::decision::{ActInference, GoalInference, goal_schema, inference_schema};
+use crate::prompt;
 
 /// Sends every model call to one OpenAI-compatible server (SPEC 13).
 pub(crate) const ENDPOINT_ENV: &str = "WHIRL_LLM_ENDPOINT";
@@ -41,7 +41,7 @@ fn endpoint_from_env() -> Option<String> {
 /// A failure to build the model client. The run stops with a runtime
 /// error (exit 3).
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum ModelSetupError {
+pub enum ModelSetupError {
     #[error("the model catalog could not be built")]
     Catalog(#[source] Box<CatalogError>),
     #[error("the language model client could not be built")]
@@ -50,13 +50,13 @@ pub(crate) enum ModelSetupError {
 
 /// Which models `whirl check` accepts in the `model` option.
 #[derive(Debug)]
-pub(crate) struct ModelCatalog {
+pub struct ModelCatalog {
     /// `None` in endpoint mode, where the server decides.
     catalog: Option<Catalog>,
 }
 
 impl ModelCatalog {
-    pub(crate) fn from_env() -> Self {
+    pub fn from_env() -> Self {
         let catalog = endpoint_from_env().is_none().then(|| {
             Catalog::builder()
                 .with_builtin()
@@ -68,7 +68,7 @@ impl ModelCatalog {
 
     /// What the catalog says about the model the selector names. In
     /// endpoint mode every model is known and counts as accepting images.
-    pub(crate) fn facts(&self, selector: &str) -> ModelFacts {
+    pub fn facts(&self, selector: &str) -> ModelFacts {
         let Some(catalog) = &self.catalog else {
             return ModelFacts::Known { images: Some(true) };
         };
@@ -99,44 +99,44 @@ pub(crate) struct ModelReply {
 /// One element that an `ai:` target call found (SPEC 6.3).
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct FoundElement {
-    pub(crate) element_id:  String,
-    pub(crate) description: String,
+pub struct FoundElement {
+    pub element_id:  String,
+    pub description: String,
 }
 
 /// Every element an `ai:` target call found.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-pub(crate) struct TargetAnswer {
-    pub(crate) elements: Vec<FoundElement>,
+pub struct TargetAnswer {
+    pub elements: Vec<FoundElement>,
 }
 
 /// One `ai:` target answer, and what the call used.
 #[derive(Debug)]
-pub(crate) struct TargetReply {
-    pub(crate) answer: Result<TargetAnswer, serde_json::Error>,
-    pub(crate) usage:  Usage,
+pub struct TargetReply {
+    pub answer: Result<TargetAnswer, serde_json::Error>,
+    pub usage:  Usage,
 }
 
 /// An `EXTRACT` answer (SPEC 7.6): the object, the raw text it came
 /// from, which keeps exact numbers, and what the call used.
 #[derive(Debug)]
-pub(crate) struct ExtractReply {
-    pub(crate) object: Json,
-    pub(crate) text:   String,
-    pub(crate) usage:  Usage,
+pub struct ExtractReply {
+    pub object: Json,
+    pub text:   String,
+    pub usage:  Usage,
 }
 
 /// A `JUDGE` verdict (SPEC 9.8).
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "lowercase")]
-pub(crate) enum Verdict {
+pub enum Verdict {
     Yes,
     No,
     Unsure,
 }
 
 impl Verdict {
-    pub(crate) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Yes => "yes",
             Self::No => "no",
@@ -147,17 +147,17 @@ impl Verdict {
 
 /// A `JUDGE` answer.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-pub(crate) struct JudgeAnswer {
-    pub(crate) verdict: Verdict,
-    pub(crate) reason:  String,
+pub struct JudgeAnswer {
+    pub verdict: Verdict,
+    pub reason:  String,
 }
 
 /// One `JUDGE` answer, and what the call used.
 #[derive(Debug)]
-pub(crate) struct JudgeReply {
+pub struct JudgeReply {
     /// One answer for each claim, in order.
-    pub(crate) answer: Result<Vec<JudgeAnswer>, serde_json::Error>,
-    pub(crate) usage:  Usage,
+    pub answer: Result<Vec<JudgeAnswer>, serde_json::Error>,
+    pub usage:  Usage,
 }
 
 /// Several `JUDGE` answers, one for each claim of a batch.
@@ -168,9 +168,9 @@ struct JudgeAnswers {
 
 /// One `GOAL` answer, and what the call used.
 #[derive(Debug)]
-pub(crate) struct GoalReply {
-    pub(crate) answer: Result<GoalInference, serde_json::Error>,
-    pub(crate) usage:  Usage,
+pub struct GoalReply {
+    pub answer: Result<GoalInference, serde_json::Error>,
+    pub usage:  Usage,
 }
 
 /// The text an instruction wants typed, and what the call used.
@@ -182,13 +182,13 @@ pub(crate) struct TextReply {
 
 /// The run's model client, shared by every flow.
 #[derive(Debug)]
-pub(crate) struct ModelClient {
+pub struct ModelClient {
     client:   Client,
     endpoint: bool,
 }
 
 impl ModelClient {
-    pub(crate) fn from_env() -> Result<Self, ModelSetupError> {
+    pub fn from_env() -> Result<Self, ModelSetupError> {
         let endpoint = endpoint_from_env();
         let catalog = match &endpoint {
             Some(url) => endpoint_catalog(url),
@@ -228,7 +228,7 @@ impl ModelClient {
 
     /// Asks the model for the next step toward a goal (SPEC 7.7). The
     /// call, with its retries, ends by `deadline`.
-    pub(crate) async fn goal_step(
+    pub async fn goal_step(
         &self,
         model: &str,
         user: &str,
@@ -252,7 +252,7 @@ impl ModelClient {
 
     /// Asks the model for every element that an `ai:` description names
     /// (SPEC 6.3). The call, with its retries, ends by `deadline`.
-    pub(crate) async fn find_elements(
+    pub async fn find_elements(
         &self,
         model: &str,
         user: &str,
@@ -301,7 +301,7 @@ impl ModelClient {
 
     /// Asks the model whether a claim holds, from the text and a PNG
     /// screenshot (SPEC 9.8).
-    pub(crate) async fn judge(
+    pub async fn judge(
         &self,
         model: &str,
         text: &str,
@@ -370,7 +370,7 @@ impl ModelClient {
     /// False when the model's provider has no credentials in the
     /// environment (SPEC 9.8). An endpoint, and a model the catalog does
     /// not know, count as ready: their calls report their own errors.
-    pub(crate) async fn has_credentials(&self, model: &str) -> bool {
+    pub async fn has_credentials(&self, model: &str) -> bool {
         if self.endpoint {
             return true;
         }
@@ -399,7 +399,7 @@ impl ModelClient {
     }
 
     /// Asks the model to read a value in the shape of `schema` (SPEC 7.6).
-    pub(crate) async fn extract(
+    pub async fn extract(
         &self,
         model: &str,
         user: &str,

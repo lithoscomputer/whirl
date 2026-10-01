@@ -21,7 +21,7 @@ use std::mem;
 use std::sync::Arc;
 use std::time::Instant;
 
-pub(crate) use client::{JevClient, JevSetupError};
+pub use client::{JevClient, JevSetupError};
 use serde_json::{Map, Value as Json, json};
 use tokio::task::JoinSet;
 use whirl_lang::ast::MouseButton;
@@ -29,12 +29,10 @@ use whirl_lang::ast::MouseButton;
 use self::client::{JevAnswer, JevError, JevQuestion, JevResponse, choice, noul};
 use self::intent::{FillValue, Intent, ScrollArea, ScrollWay};
 use self::outline::{Outline, View, shortlist};
-use crate::run::act::decision::{ActInference, ActMethod};
-use crate::run::act::instruction::quoted_strings;
-use crate::run::act::model::ModelClient;
-use crate::run::act::planner::{
-    ActPlanner, Plan, PlanFuture, PlanRequest, PlanStep, PlanUsage, PlannedBy,
-};
+use crate::decision::{ActInference, ActMethod};
+use crate::instruction::quoted_strings;
+use crate::model::ModelClient;
+use crate::planner::{ActPlanner, Plan, PlanFuture, PlanRequest, PlanStep, PlanUsage, PlannedBy};
 
 /// The key of the none-of-these option.
 const NONE: &str = "none_match";
@@ -86,7 +84,7 @@ const CHECKABLE_ROLES: &[&str] = &[
 
 /// Asks Jev first and the fallback planner when Jev is unsure.
 #[derive(Debug)]
-pub(crate) struct JevPlanner {
+pub struct JevPlanner {
     jev:      Arc<JevClient>,
     fallback: Arc<dyn ActPlanner>,
     /// Reads unquoted text to type from the instruction.
@@ -94,11 +92,7 @@ pub(crate) struct JevPlanner {
 }
 
 impl JevPlanner {
-    pub(crate) fn new(
-        jev: JevClient,
-        fallback: Arc<dyn ActPlanner>,
-        model: Arc<ModelClient>,
-    ) -> Self {
+    pub fn new(jev: JevClient, fallback: Arc<dyn ActPlanner>, model: Arc<ModelClient>) -> Self {
         Self {
             jev: Arc::new(jev),
             fallback,

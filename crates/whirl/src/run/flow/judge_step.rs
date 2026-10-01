@@ -10,6 +10,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use serde::Deserialize;
 use serde_json::Value as Json;
+use whirl_ai::{Instruction, JudgeAnswer, PageSnapshot, PlanUsage, Verdict, judge_message};
 use whirl_lang::ast::{self, CheckStep};
 use whirl_lang::render_snapshot_target;
 use whirl_report::model::{JudgeReport, StepError, StepWarning};
@@ -17,7 +18,6 @@ use whirl_shim::{AriaSnapshotResult, ShimClient, StepCommand};
 
 use super::act_step::{ActBudget, ActLine, act_failure, usage_report};
 use super::{EntryState, FlowExec, StepEnd, StepNode};
-use crate::run::act::{Instruction, JudgeAnswer, PageSnapshot, PlanUsage, Verdict, judge_message};
 
 /// A `JUDGE` line ready to run.
 pub(super) struct JudgePlan {

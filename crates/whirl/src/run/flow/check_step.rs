@@ -12,6 +12,7 @@ use base64::engine::general_purpose::STANDARD;
 use chrono::{DateTime, Utc};
 use serde_json::Value as Json;
 use tokio::time::sleep;
+use whirl_ai::PlanUsage;
 use whirl_check::{
     Charset, Check, DateFormat, Expected, Filter, JsonQuery, Markup, Missing, Pattern,
     PatternFlags, Predicate, Read, ReadContext, XpathQuery,
@@ -33,7 +34,6 @@ use super::{
     BuildError, EntryState, FlowExec, StepBudget, StepEnd, StepNode, entry_timeout_error,
     step_error,
 };
-use crate::run::act::PlanUsage;
 use crate::run::vars::{MASK, VarStore};
 
 /// Playwright's poll schedule for retried checks (ADR

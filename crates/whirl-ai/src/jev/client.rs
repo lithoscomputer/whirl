@@ -92,7 +92,7 @@ pub(crate) enum JevError {
 /// A failure to set up the Jev client. The run stops with a runtime error
 /// (exit 3).
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum JevSetupError {
+pub enum JevSetupError {
     #[error("--jev needs {API_KEY_ENV}")]
     MissingKey,
     #[error("the Jev catalog could not be built")]
@@ -132,14 +132,14 @@ impl Breaker {
 
 /// The run's Jev client, shared by every flow.
 #[derive(Debug)]
-pub(crate) struct JevClient {
+pub struct JevClient {
     client:  Client,
     breaker: Mutex<Breaker>,
 }
 
 impl JevClient {
     /// Builds the client from the environment (SPEC 13).
-    pub(crate) fn from_env() -> Result<Self, JevSetupError> {
+    pub fn from_env() -> Result<Self, JevSetupError> {
         if env::var(API_KEY_ENV).map_or(true, |key| key.is_empty()) {
             return Err(JevSetupError::MissingKey);
         }

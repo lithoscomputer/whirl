@@ -40,7 +40,7 @@
 //! OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
 //! USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-use crate::run::act::decision::ActMethod;
+use crate::decision::ActMethod;
 
 /// The system prompt of every `ACT` model call.
 pub(crate) fn system_prompt() -> String {
@@ -159,7 +159,7 @@ pub(crate) fn goal_system_prompt() -> String {
 
 /// The user message of a `GOAL` call: the goal, how to answer an action,
 /// the steps so far, and the snapshot.
-pub(crate) fn goal_message(
+pub fn goal_message(
     goal: &str,
     placeholders: &[String],
     steps: &[String],
@@ -200,7 +200,7 @@ pub(crate) fn goal_message(
 /// The text of a `JUDGE` call's user message: the claims, their
 /// placeholders, and the snapshot. The screenshot follows it. Several
 /// claims about the same view share one call.
-pub(crate) fn judge_message(claims: &[&str], placeholders: &[String], snapshot: &str) -> String {
+pub fn judge_message(claims: &[&str], placeholders: &[String], snapshot: &str) -> String {
     let placeholders = match (placeholders.is_empty(), claims.len()) {
         (true, _) => String::new(),
         (false, 1) => format!(
@@ -231,11 +231,7 @@ pub(crate) fn judge_message(claims: &[&str], placeholders: &[String], snapshot: 
 
 /// The user message of an `EXTRACT` call: the instruction, its
 /// placeholders, and the snapshot.
-pub(crate) fn extract_message(
-    instruction: &str,
-    placeholders: &[String],
-    snapshot: &str,
-) -> String {
+pub fn extract_message(instruction: &str, placeholders: &[String], snapshot: &str) -> String {
     let placeholders = if placeholders.is_empty() {
         String::new()
     } else {
@@ -249,7 +245,7 @@ pub(crate) fn extract_message(
 
 /// The user message of an `ai:` target call: the description, its
 /// placeholders, and the snapshot.
-pub(crate) fn target_message(description: &str, placeholders: &[String], snapshot: &str) -> String {
+pub fn target_message(description: &str, placeholders: &[String], snapshot: &str) -> String {
     let placeholders = if placeholders.is_empty() {
         String::new()
     } else {
