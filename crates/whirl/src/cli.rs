@@ -18,6 +18,7 @@ use clap::{Args, CommandFactory as _, Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use tokio::runtime::Runtime;
+use whirl_ai::ModelCatalog;
 use whirl_check::validate_literals;
 use whirl_lang::{
     CliOptions, Lint, ModelFacts, OptionFlag, ParseError, Severity, ast, format_file, lint_act,
@@ -26,7 +27,6 @@ use whirl_lang::{
 use whirl_report::model::Status;
 use whirl_report::{ReportMetadata, aggregate, console, html, json, junit};
 
-use crate::run::act::ModelCatalog;
 use crate::run::cache::{self, CacheMode};
 use crate::run::{artifacts, flow, runner, vars};
 use crate::{doctor, install, telemetry};

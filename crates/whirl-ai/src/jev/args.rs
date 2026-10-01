@@ -5,7 +5,7 @@
 
 use whirl_lang::ast::Percent;
 
-use crate::run::act::instruction::{Instruction, quoted_strings, same_text};
+use crate::instruction::{Instruction, quoted_strings, same_text};
 
 /// The texts a fill could type: the placeholders and quoted strings in the
 /// instruction, in order. One of them may name the field instead, as in
@@ -169,7 +169,7 @@ mod tests {
     use whirl_lang::ast::{Span, Value, ValueSegment};
 
     use super::*;
-    use crate::run::act::instruction::testing::TestVars;
+    use crate::instruction::testing::TestVars;
 
     fn instruction(segments: Vec<ValueSegment>, vars: &mut TestVars) -> Instruction {
         let value = Value {

@@ -49,15 +49,15 @@ pub(crate) struct SnapshotNode {
 /// An element's ARIA role and accessible name: what the AI cache checks
 /// before it replays a locator (SPEC 12.1).
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
-pub(crate) struct Fingerprint {
-    pub(crate) role: String,
-    pub(crate) name: Option<String>,
+pub struct Fingerprint {
+    pub role: String,
+    pub name: Option<String>,
 }
 
 impl Fingerprint {
     /// The fingerprint of the first entry of an element's AI snapshot,
     /// which is the element itself.
-    pub(crate) fn of_snapshot(snapshot: &str) -> Option<Self> {
+    pub fn of_snapshot(snapshot: &str) -> Option<Self> {
         let line = snapshot.lines().find_map(SnapshotLine::parse)?;
         Some(Self {
             role: line.role,
@@ -97,7 +97,7 @@ pub(crate) fn quote(text: &str) -> String {
 
 /// One AI snapshot of the selected tab.
 #[derive(Clone, Debug)]
-pub(crate) struct PageSnapshot {
+pub struct PageSnapshot {
     raw:   String,
     text:  String,
     nodes: HashMap<ElementRef, SnapshotNode>,
@@ -108,7 +108,7 @@ pub(crate) struct PageSnapshot {
 impl PageSnapshot {
     /// Indexes every `[ref=...]` line of a snapshot, and keeps the text the
     /// model reads.
-    pub(crate) fn parse(snapshot: &str) -> Self {
+    pub fn parse(snapshot: &str) -> Self {
         let nodes = snapshot.lines().filter_map(parse_line).collect();
         Self {
             raw: snapshot.to_owned(),
@@ -120,7 +120,8 @@ impl PageSnapshot {
 
     /// Marks the snapshot as the whole page's, so its first ref, `<body>`,
     /// stands for the page (SPEC 7.4).
-    pub(crate) fn of_page(mut self) -> Self {
+    #[must_use]
+    pub fn of_page(mut self) -> Self {
         self.page = self
             .raw
             .lines()
@@ -135,12 +136,12 @@ impl PageSnapshot {
     }
 
     /// The snapshot as the model reads it (SPEC 7.4).
-    pub(crate) fn text(&self) -> &str {
+    pub fn text(&self) -> &str {
         &self.text
     }
 
     /// The element a model answer names, when the snapshot has it.
-    pub(crate) fn target(&self, raw_ref: &str) -> Option<Target> {
+    pub fn target(&self, raw_ref: &str) -> Option<Target> {
         let element = ElementRef::try_new(raw_ref)?;
         let node = self.nodes.get(&element)?.clone();
         let page = self.page.as_ref() == Some(&element);
@@ -454,7 +455,7 @@ fn parse_line(line: &str) -> Option<(ElementRef, SnapshotNode)> {
 /// An element the model chose. Only [`PageSnapshot::target`] builds one,
 /// so a ref the page never showed cannot become an action target.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct Target {
+pub struct Target {
     element: ElementRef,
     node:    SnapshotNode,
     /// True when the element is the page's `<body>`.
@@ -467,12 +468,12 @@ impl Target {
         json!([{"type": "ref", "ref": self.element.as_str()}])
     }
 
-    pub(crate) fn locator_text(&self) -> String {
+    pub fn locator_text(&self) -> String {
         self.node.locator_text()
     }
 
     /// The snapshot ref, such as `e12`.
-    pub(crate) fn element_ref(&self) -> &str {
+    pub fn element_ref(&self) -> &str {
         self.element.as_str()
     }
 
@@ -482,7 +483,7 @@ impl Target {
     }
 
     /// The element's role and accessible name (SPEC 12.1).
-    pub(crate) fn fingerprint(&self) -> Fingerprint {
+    pub fn fingerprint(&self) -> Fingerprint {
         Fingerprint {
             role: self.node.role.clone(),
             name: self.node.name.clone(),

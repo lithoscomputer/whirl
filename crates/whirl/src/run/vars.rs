@@ -10,10 +10,9 @@
 use std::collections::HashMap;
 use std::env;
 
+use whirl_ai::Variables;
 use whirl_lang::ast::{Span, Value, ValueSegment};
 use whirl_types::{Value as TypedValue, quote as quote_json};
-
-use crate::run::act::Variables;
 
 /// The replacement text for a masked secret (SPEC 11).
 pub(crate) const MASK: &str = "***";

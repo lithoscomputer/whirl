@@ -11,7 +11,7 @@ use std::iter;
 
 use serde_json::{Map, Value as Json, json};
 
-use crate::run::act::snapshot::SnapshotLine;
+use crate::snapshot::SnapshotLine;
 
 /// One line of an AI snapshot.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]

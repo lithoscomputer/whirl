@@ -6,8 +6,11 @@
 use std::error::Error as _;
 use std::time::{Duration, Instant};
 
-use lithos_llm::types::ErrorKind;
 use serde_json::Value as Json;
+use whirl_ai::{
+    ActDecision, ActPlanner, FollowUp, Instruction, ModelError, ModelErrorKind, PageSnapshot,
+    PlanError, PlanRequest, PlanStep, PlanUsage, PlannedAction, PlannedBy,
+};
 use whirl_lang::parse_action_line;
 use whirl_report::model::{
     ActActionReport, ActJevUsage, ActReport, ActUsage, StepError, StepWarning,
@@ -17,10 +20,6 @@ use whirl_shim::{
 };
 
 use super::{EntryState, FlowExec, StepBudget, StepEnd, StepNode, entry_timeout_error};
-use crate::run::act::{
-    ActDecision, ActPlanner, FollowUp, Instruction, PageSnapshot, PlanError, PlanRequest, PlanStep,
-    PlanUsage, PlannedAction, PlannedBy,
-};
 use crate::run::cache::{CacheEntry, CachedAction, EntryKind};
 
 /// The budget of one `ACT` line.
@@ -638,7 +637,7 @@ impl FlowExec<'_> {
 
     /// Classifies a failed model call (SPEC 7.4). A call that ran out the
     /// line's budget is a timeout like any other step's.
-    pub(super) fn model_failure(&self, error: &lithos_llm::Error, line: &ActLine<'_>) -> StepEnd {
+    pub(super) fn model_failure(&self, error: &ModelError, line: &ActLine<'_>) -> StepEnd {
         if line.remaining_ms() == 0 {
             return line.timed_out();
         }
@@ -651,10 +650,10 @@ impl FlowExec<'_> {
         }
         let message = self.vars.mask(&message);
         match error.kind() {
-            ErrorKind::ContentFilter | ErrorKind::ContextLength => {
+            ModelErrorKind::ContentFilter | ModelErrorKind::ContextLength => {
                 StepEnd::Failed(act_failure("act-model", &message))
             }
-            ErrorKind::ResponseDecode => {
+            ModelErrorKind::ResponseDecode => {
                 StepEnd::Failed(act_failure("act-invalid-decision", &message))
             }
             _ => StepEnd::Error(act_failure("act-model", &message)),

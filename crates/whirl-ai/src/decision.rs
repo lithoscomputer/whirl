@@ -8,13 +8,13 @@ use serde_json::{Value as Json, json};
 use whirl_lang::ast::{MouseButton, Percent, ScrollDirection, ScrollMotion};
 use whirl_shim::{StepCommand, wire};
 
-use crate::run::act::instruction::{Instruction, UnboundPlaceholder, same_text};
-use crate::run::act::snapshot::{PageSnapshot, Target, quote};
+use crate::instruction::{Instruction, UnboundPlaceholder, same_text};
+use crate::snapshot::{PageSnapshot, Target, quote};
 
 /// The raw structured answer that [`inference_schema`] describes.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct ActInference {
+pub struct ActInference {
     action:   Option<InferredAction>,
     two_step: bool,
 }
@@ -58,7 +58,7 @@ impl ActInference {
 /// How one `GOAL` answer goes on (SPEC 7.7).
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "lowercase")]
-pub(crate) enum GoalStatus {
+pub enum GoalStatus {
     Act,
     Done,
     Impossible,
@@ -67,16 +67,16 @@ pub(crate) enum GoalStatus {
 /// The raw structured answer that [`goal_schema`] describes.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct GoalInference {
-    pub(crate) status: GoalStatus,
-    pub(crate) reason: String,
-    actions:           Vec<InferredAction>,
+pub struct GoalInference {
+    pub status: GoalStatus,
+    pub reason: String,
+    actions:    Vec<InferredAction>,
 }
 
 impl GoalInference {
     /// The answer's actions, each as a one-step `ACT` answer, so each goes
     /// through [`PageSnapshot::decide`] like any answer.
-    pub(crate) fn into_acts(self) -> Vec<ActInference> {
+    pub fn into_acts(self) -> Vec<ActInference> {
         self.actions
             .into_iter()
             .map(|action| ActInference {
@@ -251,7 +251,7 @@ fn action_object_schema() -> Json {
 
 /// What happens after the chosen action runs.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum FollowUp {
+pub enum FollowUp {
     Done,
     /// A two-step action: plan again on a fresh snapshot.
     Replan,
@@ -259,7 +259,7 @@ pub(crate) enum FollowUp {
 
 /// The checked answer.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum ActDecision {
+pub enum ActDecision {
     Perform {
         action:      PlannedAction,
         description: String,
@@ -271,12 +271,12 @@ pub(crate) enum ActDecision {
 /// Text the model wrote for an action argument. It may hold placeholders,
 /// which the decision checked are all bound.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ArgText(String);
+pub struct ArgText(String);
 
 /// One element action the model chose: a Whirl verb aimed at a snapshot
 /// element.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum PlannedAction {
+pub enum PlannedAction {
     Click {
         target: Target,
         button: MouseButton,
@@ -391,7 +391,7 @@ impl PlannedAction {
     }
 
     /// The shim command for this action, with placeholders filled in.
-    pub(crate) fn command(&self, instruction: &Instruction) -> StepCommand {
+    pub fn command(&self, instruction: &Instruction) -> StepCommand {
         let fill = |text: &ArgText| {
             instruction
                 .bindings()
@@ -441,7 +441,7 @@ impl PlannedAction {
     }
 
     /// For a fill, the read that checks the field afterwards (SPEC 7.4).
-    pub(crate) fn fill_read_back(&self, instruction: &Instruction) -> Option<FillReadBack> {
+    pub fn fill_read_back(&self, instruction: &Instruction) -> Option<FillReadBack> {
         let Self::Fill { target, text } = self else {
             return None;
         };
@@ -460,7 +460,7 @@ impl PlannedAction {
 
     /// The action as a Whirl line, such as `CLICK button:"Sign in"`.
     /// Placeholders stay placeholders, so no secret reaches a report.
-    pub(crate) fn line(&self) -> String {
+    pub fn line(&self) -> String {
         let with = |verb: &str, target: &Target, argument: &ArgText| {
             format!("{verb} {} {}", target.locator_text(), quote(&argument.0))
         };
@@ -494,7 +494,7 @@ impl PlannedAction {
     }
 
     /// The elements the action targets, in line order.
-    pub(crate) fn targets(&self) -> Vec<&Target> {
+    pub fn targets(&self) -> Vec<&Target> {
         match self {
             Self::Click { target, .. }
             | Self::Dblclick(target)
@@ -512,7 +512,7 @@ impl PlannedAction {
     /// The action as the AI cache writes it (SPEC 12.1): `locators` are
     /// the generated locators of [`Self::targets`], and `value` writes an
     /// argument, or gives `None` when the cache cannot hold it.
-    pub(crate) fn cache_line(
+    pub fn cache_line(
         &self,
         locators: &[String],
         value: impl Fn(&str) -> Option<String>,
@@ -545,7 +545,7 @@ impl PlannedAction {
     }
 
     /// How the step-two prompt describes the first action.
-    pub(crate) fn describe_for_model(&self, description: &str) -> String {
+    pub fn describe_for_model(&self, description: &str) -> String {
         let (method, argument) = match self {
             Self::Click {
                 button: MouseButton::Left,
@@ -581,25 +581,25 @@ impl PlannedAction {
 
 /// The check that a fill left its value in the field (SPEC 7.4).
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct FillReadBack {
+pub struct FillReadBack {
     /// The non-waiting read of the field's value.
-    pub(crate) command: StepCommand,
+    pub command: StepCommand,
     /// The value the fill typed, with placeholders filled in.
-    expected:           String,
+    expected:    String,
     /// False when the value holds a masked value, which no message shows.
-    shows_value:        bool,
+    shows_value: bool,
 }
 
 impl FillReadBack {
     /// Whether the field holds the filled value. Case, spaces, and
     /// punctuation do not count, so a field that formats its value, such as
     /// a phone number, still matches.
-    pub(crate) fn matches(&self, held: &str) -> bool {
+    pub fn matches(&self, held: &str) -> bool {
         same_text(held, &self.expected)
     }
 
     /// Why the line fails when the field holds `held` instead.
-    pub(crate) fn mismatch(&self, action: &PlannedAction, held: &str) -> String {
+    pub fn mismatch(&self, action: &PlannedAction, held: &str) -> String {
         if self.shows_value {
             format!("after {}, the field holds {}", action.line(), quote(held))
         } else {
@@ -613,7 +613,7 @@ impl FillReadBack {
 
 /// Why an answer cannot become an action.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
-pub(crate) enum DecisionError {
+pub enum DecisionError {
     #[error("the answer names element {element_id}, which is not in the page snapshot")]
     UnknownElement { element_id: String },
     #[error(
@@ -662,7 +662,7 @@ fn arity_text(arity: &RangeInclusive<usize>) -> String {
 impl PageSnapshot {
     /// Checks a model answer against this snapshot and the instruction's
     /// placeholders. This is the only way an answer becomes an action.
-    pub(crate) fn decide(
+    pub fn decide(
         &self,
         inference: ActInference,
         instruction: &Instruction,
@@ -718,7 +718,7 @@ mod tests {
     use whirl_lang::ast::{Span, Value, ValueSegment};
 
     use super::*;
-    use crate::run::act::instruction::testing::TestVars;
+    use crate::instruction::testing::TestVars;
 
     const SNAPSHOT: &str = "- textbox \"Email\" [ref=e4]\n- button \"Sign in\" [ref=e5]\n";
 

@@ -11,15 +11,15 @@ use std::time::Instant;
 
 use lithos_llm::types::Usage;
 
-use crate::run::act::decision::ActInference;
-use crate::run::act::instruction::Instruction;
-use crate::run::act::model::ModelClient;
-use crate::run::act::prompt;
-use crate::run::act::snapshot::PageSnapshot;
+use crate::decision::ActInference;
+use crate::instruction::Instruction;
+use crate::model::ModelClient;
+use crate::prompt;
+use crate::snapshot::PageSnapshot;
 
 /// Which planning step of one `ACT` line a request is for.
 #[derive(Clone, Copy, Debug)]
-pub(crate) enum PlanStep<'a> {
+pub enum PlanStep<'a> {
     First,
     /// Step two of a two-step action. The text describes the action that
     /// step one ran.
@@ -30,33 +30,33 @@ pub(crate) enum PlanStep<'a> {
 
 /// What one planning step needs.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct PlanRequest<'a> {
-    pub(crate) instruction: &'a Instruction,
-    pub(crate) snapshot:    &'a PageSnapshot,
-    pub(crate) step:        PlanStep<'a>,
+pub struct PlanRequest<'a> {
+    pub instruction: &'a Instruction,
+    pub snapshot:    &'a PageSnapshot,
+    pub step:        PlanStep<'a>,
     /// The file's `model` option.
-    pub(crate) model:       &'a str,
+    pub model:       &'a str,
     /// When planning must end, retries included.
-    pub(crate) deadline:    Instant,
+    pub deadline:    Instant,
     /// Likely elements another planner found, which the prompt shows the
     /// model before the snapshot.
-    pub(crate) hint:        Option<&'a str>,
+    pub hint:        Option<&'a str>,
 }
 
 /// What one planning step spent.
 #[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct PlanUsage {
-    pub(crate) model_calls: u32,
-    pub(crate) model:       Usage,
-    pub(crate) jev:         JevUsage,
+pub struct PlanUsage {
+    pub model_calls: u32,
+    pub model:       Usage,
+    pub jev:         JevUsage,
 }
 
 /// What Jev requests used.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct JevUsage {
-    pub(crate) requests:        u32,
-    pub(crate) input_tokens:    u64,
-    pub(crate) output_tokens:   u64,
+pub struct JevUsage {
+    pub requests:               u32,
+    pub input_tokens:           u64,
+    pub output_tokens:          u64,
     pub(crate) cost_usd_micros: u64,
     /// True when the catalog could not price an answered request.
     pub(crate) unpriced:        bool,
@@ -64,13 +64,14 @@ pub(crate) struct JevUsage {
 
 impl JevUsage {
     /// The requests' cost, when every answered one was priced.
-    pub(crate) fn cost(self) -> Option<u64> {
+    pub fn cost(self) -> Option<u64> {
         (!self.unpriced).then_some(self.cost_usd_micros)
     }
 }
 
 impl PlanUsage {
-    pub(crate) fn saturating_add(self, other: Self) -> Self {
+    #[must_use]
+    pub fn saturating_add(self, other: Self) -> Self {
         Self {
             model_calls: self.model_calls.saturating_add(other.model_calls),
             model:       self.model.saturating_add(other.model),
@@ -93,13 +94,13 @@ impl PlanUsage {
 
 /// Which planner chose an answer.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum PlannedBy {
+pub enum PlannedBy {
     Llm,
     Jev,
 }
 
 impl PlannedBy {
-    pub(crate) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Llm => "llm",
             Self::Jev => "jev",
@@ -109,7 +110,7 @@ impl PlannedBy {
 
 /// Why planning gave no answer.
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum PlanError {
+pub enum PlanError {
     /// The model call failed; the caller classifies it (SPEC 7.4).
     #[error(transparent)]
     Model(lithos_llm::Error),
@@ -119,10 +120,10 @@ pub(crate) enum PlanError {
 
 /// One planning step's result. The usage counts even when planning fails.
 #[derive(Debug)]
-pub(crate) struct Plan {
-    pub(crate) answer:     Result<ActInference, PlanError>,
-    pub(crate) usage:      PlanUsage,
-    pub(crate) planned_by: PlannedBy,
+pub struct Plan {
+    pub answer:     Result<ActInference, PlanError>,
+    pub usage:      PlanUsage,
+    pub planned_by: PlannedBy,
 }
 
 /// The future a planner returns. It is boxed, so the trait is
@@ -134,7 +135,7 @@ pub(crate) type PlanFuture<'a> = Pin<Box<dyn Future<Output = Plan> + Send + 'a>>
 /// An implementation returns the model's answer or a [`PlanError`], and
 /// always the usage it spent. It must not touch the page, and it must end
 /// by `request.deadline`. The run shares one planner across its workers.
-pub(crate) trait ActPlanner: fmt::Debug + Send + Sync {
+pub trait ActPlanner: fmt::Debug + Send + Sync {
     fn plan<'a>(&'a self, request: PlanRequest<'a>) -> PlanFuture<'a>;
 
     /// The name reports give this planner, such as `llm`.
@@ -143,12 +144,12 @@ pub(crate) trait ActPlanner: fmt::Debug + Send + Sync {
 
 /// Plans with one structured call to the `model` option's language model.
 #[derive(Debug)]
-pub(crate) struct LlmPlanner {
+pub struct LlmPlanner {
     client: Arc<ModelClient>,
 }
 
 impl LlmPlanner {
-    pub(crate) fn new(client: Arc<ModelClient>) -> Self {
+    pub fn new(client: Arc<ModelClient>) -> Self {
         Self { client }
     }
 }

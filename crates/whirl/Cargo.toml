@@ -13,7 +13,6 @@ base64.workspace = true
 chrono.workspace = true
 clap = { version = "4.6.6", features = ["derive"] }
 flate2 = "1"
-lithos-llm = { git = "https://github.com/lithoscomputer/lithos-llm", rev = "f40391aa8b3c3871bbac3dced2f4e26ddc46a743" }
 reqwest = { version = "0.12", default-features = false, features = [
     "blocking",
     "rustls-tls",
@@ -28,6 +27,7 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber = { version = "=0.3.20", default-features = false, features = ["fmt", "registry"] }
 url.workspace = true
+whirl-ai = { path = "../whirl-ai" }
 whirl-check = { path = "../whirl-check" }
 whirl-lang = { path = "../whirl-lang" }
 whirl-report = { path = "../whirl-report" }
