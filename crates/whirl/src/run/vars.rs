@@ -13,6 +13,8 @@ use std::env;
 use whirl_lang::ast::{Span, Value, ValueSegment};
 use whirl_types::{Value as TypedValue, quote as quote_json};
 
+use crate::run::act::Variables;
+
 /// The replacement text for a masked secret (SPEC 11).
 pub(crate) const MASK: &str = "***";
 
@@ -293,6 +295,24 @@ impl VarStore {
                     span,
                 })?,
         }))
+    }
+}
+
+/// The store as the model-facing code sees it: `Instruction` resolves an
+/// `ACT`, `GOAL`, `ai:`, `EXTRACT`, or `JUDGE` text through this.
+impl Variables for VarStore {
+    type Error = VarError;
+
+    fn resolve(&mut self, value: &Value) -> Result<String, VarError> {
+        Self::resolve(self, value)
+    }
+
+    fn mask(&self, text: &str) -> String {
+        Self::mask(self, text)
+    }
+
+    fn secrets(&self) -> &[String] {
+        self.masker.secrets()
     }
 }
 
