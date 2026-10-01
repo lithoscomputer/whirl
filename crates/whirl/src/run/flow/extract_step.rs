@@ -9,13 +9,13 @@ use std::time::{Duration, Instant};
 use serde_json::{Value as Json, json};
 use whirl_check::parse_json;
 use whirl_report::model::{CaptureValue, ExtractReport, StepError};
+use whirl_shim::{AriaSnapshotResult, ReadResult, ShimClient, StepCommand};
 use whirl_types::Value;
 
 use super::act_step::{ActBudget, ActLine, act_failure, usage_report};
 use super::{EntryState, FlowExec, StepEnd, StepNode};
 use crate::run::act::{Instruction, ModelClient, PageSnapshot, PlanUsage, extract_message};
 use crate::run::extract;
-use crate::run::shim::{AriaSnapshotResult, ReadResult, ShimClient, StepCommand};
 use crate::run::vars::MASK;
 
 /// An `EXTRACT` line ready to run.

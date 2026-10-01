@@ -21,6 +21,10 @@ use whirl_lang::ast::{
     Subject,
 };
 use whirl_report::model::{CaptureValue, StepError};
+use whirl_shim::{
+    MissingReason, ReadResult, RequestReadResult, ResponseReadResult, ShimClient, StepCommand,
+    StepOutcome, StepRequest, wire,
+};
 use whirl_types::{FilterKind, Number, Value};
 
 use super::act_step::{ActBudget, ActLine};
@@ -30,10 +34,6 @@ use super::{
     step_error,
 };
 use crate::run::act::PlanUsage;
-use crate::run::shim::{
-    MissingReason, ReadResult, RequestReadResult, ResponseReadResult, ShimClient, StepCommand,
-    StepOutcome, StepRequest, wire,
-};
 use crate::run::vars::{MASK, VarStore};
 
 /// Playwright's poll schedule for retried checks (ADR

@@ -6,10 +6,10 @@ use std::ops::RangeInclusive;
 use serde::Deserialize;
 use serde_json::{Value as Json, json};
 use whirl_lang::ast::{MouseButton, Percent, ScrollDirection, ScrollMotion};
+use whirl_shim::{StepCommand, wire};
 
 use crate::run::act::instruction::{Instruction, UnboundPlaceholder, same_text};
 use crate::run::act::snapshot::{PageSnapshot, Target, quote};
-use crate::run::shim::{StepCommand, wire};
 
 /// The raw structured answer that [`inference_schema`] describes.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]

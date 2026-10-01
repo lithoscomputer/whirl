@@ -9,9 +9,9 @@ use tokio::process::Command;
 use tokio::runtime::Runtime;
 use tokio::task::spawn_blocking;
 use tokio::time::timeout;
+use whirl_shim::{ShimClient, StartFlowParams, ViewportParams, resolve_launch};
 
 use crate::install::{self, Progress};
-use crate::run::shim::{self, ShimClient, StartFlowParams, ViewportParams};
 
 #[derive(Deserialize)]
 struct NodeInfo {
@@ -35,7 +35,7 @@ fn shell_quote(value: &str) -> String {
 }
 
 async fn inspect(browser: &str, progress: Progress<'_>) -> anyhow::Result<()> {
-    let launch = spawn_blocking(shim::resolve_launch)
+    let launch = spawn_blocking(resolve_launch)
         .await
         .context("checking the shim installation")??;
     ensure!(

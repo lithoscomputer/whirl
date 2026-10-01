@@ -16,7 +16,8 @@ fn step(script: &str) -> StepRequest {
 async fn stalled_client(mode: &str) -> ShimClient {
     let launch = ShimLaunch {
         node:    PathBuf::from("node"),
-        shim_js: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake_shim.js"),
+        shim_js: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../whirl/tests/fixtures/fake_shim.js"),
     };
     let mut client = ShimClient::spawn(&launch).expect("the fake shim starts");
     client.hello().await.expect("the fake shim is ready");

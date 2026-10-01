@@ -12,7 +12,6 @@ anyhow.workspace = true
 base64.workspace = true
 chrono.workspace = true
 clap = { version = "4.6.6", features = ["derive"] }
-dirs = "6"
 flate2 = "1"
 lithos-llm = { git = "https://github.com/lithoscomputer/lithos-llm", rev = "f40391aa8b3c3871bbac3dced2f4e26ddc46a743" }
 reqwest = { version = "0.12", default-features = false, features = [
@@ -25,13 +24,14 @@ sha2 = "0.10"
 tar = "0.4"
 tempfile.workspace = true
 thiserror.workspace = true
-tokio = { version = "1", features = ["full"] }
-tracing = { version = "=0.1.44", default-features = false, features = ["std"] }
+tokio.workspace = true
+tracing.workspace = true
 tracing-subscriber = { version = "=0.3.20", default-features = false, features = ["fmt", "registry"] }
-url = "=2.5.8"
+url.workspace = true
 whirl-check = { path = "../whirl-check" }
 whirl-lang = { path = "../whirl-lang" }
 whirl-report = { path = "../whirl-report" }
+whirl-shim = { path = "../whirl-shim" }
 whirl-types = { path = "../whirl-types" }
 zip = { version = "7.2.0", default-features = false, features = [
     "deflate-flate2",

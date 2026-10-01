@@ -12,6 +12,9 @@ use whirl_lang::parse_action_line;
 use whirl_report::model::{
     ActActionReport, ActJevUsage, ActReport, ActUsage, StepError, StepWarning,
 };
+use whirl_shim::{
+    AriaSnapshotResult, ReadResult, ShimClient, StepCommand, StepOutcome, StepRequest,
+};
 
 use super::{EntryState, FlowExec, StepBudget, StepEnd, StepNode, entry_timeout_error};
 use crate::run::act::{
@@ -19,9 +22,6 @@ use crate::run::act::{
     PlanUsage, PlannedAction, PlannedBy,
 };
 use crate::run::cache::{CacheEntry, CachedAction, EntryKind};
-use crate::run::shim::{
-    AriaSnapshotResult, ReadResult, ShimClient, StepCommand, StepOutcome, StepRequest,
-};
 
 /// The budget of one `ACT` line.
 #[derive(Clone, Copy, Debug)]
