@@ -21,7 +21,7 @@ use whirl_types::PredicateKind;
 
 use super::act_step::{ActBudget, ActLine, act_failure, usage_report};
 use super::{EntryState, FlowExec, PreparedStep, StepEnd, StepNode, entry_timeout_error};
-use crate::run::cache::{CacheEntry, CacheKey, EntryKind};
+use crate::cache::{CacheEntry, CacheKey, EntryKind};
 
 /// Whirl asks the model again for a target it did not find at most this
 /// often (SPEC 6.3).

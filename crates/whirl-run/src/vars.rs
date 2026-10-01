@@ -329,7 +329,7 @@ fn reference_segment(name: &str) -> ValueSegment {
 /// A malformed variables file or `--var` flag. The CLI maps this to a
 /// usage error (SPEC 13, exit 4).
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
-pub(crate) enum VarsFileError {
+pub enum VarsFileError {
     #[error("line {line}: expected 'name=value', got '{text}'")]
     MissingEquals { line: u32, text: String },
     #[error("line {line}: invalid variable name '{name}'")]
@@ -349,7 +349,7 @@ fn is_valid_name(name: &str) -> bool {
 /// Parses a variables file (SPEC 11): one `name=value` per line, `#`
 /// comment lines and blank lines ignored. The value is everything after
 /// the first `=`, verbatim. Entries are returned in file order.
-pub(crate) fn parse_variables_file(source: &str) -> Result<Vec<(String, String)>, VarsFileError> {
+pub fn parse_variables_file(source: &str) -> Result<Vec<(String, String)>, VarsFileError> {
     let mut entries = Vec::new();
     for (index, raw_line) in source.lines().enumerate() {
         let line = u32::try_from(index).unwrap_or(u32::MAX).saturating_add(1);
@@ -377,7 +377,7 @@ pub(crate) fn parse_variables_file(source: &str) -> Result<Vec<(String, String)>
 }
 
 /// Parses one `--var name=value` flag (SPEC 13).
-pub(crate) fn parse_var_flag(flag: &str) -> Result<(String, String), VarsFileError> {
+pub fn parse_var_flag(flag: &str) -> Result<(String, String), VarsFileError> {
     let entries = parse_variables_file(flag)?;
     entries
         .into_iter()

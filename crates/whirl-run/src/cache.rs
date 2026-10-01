@@ -16,8 +16,8 @@ use whirl_lang::render_snapshot_target;
 const VERSION: u32 = 1;
 
 /// What a run does with each flow's cache (SPEC 12.1).
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, clap::ValueEnum)]
-pub(crate) enum CacheMode {
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum CacheMode {
     /// Replay hits; resolve misses with the model; never write.
     #[default]
     Replay,
@@ -34,7 +34,7 @@ impl CacheMode {
 }
 
 /// The cache path of a flow: `<flow>.whirl-cache.json` beside it.
-pub(crate) fn cache_path(flow: &Path) -> PathBuf {
+pub fn cache_path(flow: &Path) -> PathBuf {
     let mut name = flow.file_name().unwrap_or_default().to_os_string();
     name.push("-cache.json");
     flow.with_file_name(name)
@@ -43,7 +43,7 @@ pub(crate) fn cache_path(flow: &Path) -> PathBuf {
 /// One action an `ACT` or `GOAL` line ran, as the cache holds it.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct CachedAction {
+pub struct CachedAction {
     /// The action as a Whirl line; variable references stay references.
     pub(crate) line:         String,
     /// The fingerprint of each element in the line, in order.
@@ -53,7 +53,7 @@ pub(crate) struct CachedAction {
 /// One cache entry (SPEC 12.1).
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
-pub(crate) enum CacheEntry {
+pub enum CacheEntry {
     AiTarget {
         line:        String,
         occurrence:  u32,
@@ -77,7 +77,7 @@ pub(crate) enum CacheEntry {
 }
 
 impl CacheEntry {
-    pub(crate) fn key(&self) -> CacheKey {
+    pub fn key(&self) -> CacheKey {
         match self {
             Self::AiTarget {
                 line,
@@ -112,7 +112,7 @@ impl CacheEntry {
 
 /// The kinds of entry.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum EntryKind {
+pub enum EntryKind {
     AiTarget,
     Act,
     Goal,
@@ -121,11 +121,11 @@ pub(crate) enum EntryKind {
 /// What names an entry: its kind, its authored line, the line's
 /// occurrence, and for a target its authored locator (SPEC 12.1).
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub(crate) struct CacheKey {
-    pub(crate) kind:       EntryKind,
-    pub(crate) line:       String,
-    pub(crate) occurrence: u32,
-    pub(crate) target:     Option<String>,
+pub struct CacheKey {
+    pub kind:       EntryKind,
+    pub line:       String,
+    pub occurrence: u32,
+    pub target:     Option<String>,
 }
 
 /// The file as written.
@@ -138,7 +138,7 @@ struct CacheFile {
 
 /// Why a cache file cannot be read (SPEC 12.1).
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum CacheError {
+pub enum CacheError {
     #[error("cannot read '{path}'")]
     Read {
         path:   PathBuf,
@@ -150,7 +150,7 @@ pub(crate) enum CacheError {
 }
 
 /// The entries of a cache file; empty when the file does not exist.
-pub(crate) fn load(path: &Path) -> Result<Vec<CacheEntry>, CacheError> {
+pub fn load(path: &Path) -> Result<Vec<CacheEntry>, CacheError> {
     let text = match fs::read_to_string(path) {
         Ok(text) => text,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -286,7 +286,7 @@ impl FlowCache {
 }
 
 /// The key of every entry the file's lines could have (SPEC 12.1).
-pub(crate) fn file_keys(file: &File) -> Vec<CacheKey> {
+pub fn file_keys(file: &File) -> Vec<CacheKey> {
     let occurrences = occurrences(file);
     let key = |kind, line: u32, text: &str, target: Option<String>| CacheKey {
         kind,

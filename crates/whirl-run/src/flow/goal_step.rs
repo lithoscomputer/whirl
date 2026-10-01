@@ -17,7 +17,7 @@ use super::act_step::{
     ActBudget, ActLine, Replay, ShimFailure, act_failure, usage_report, warning,
 };
 use super::{EntryState, FlowExec, StepEnd, StepNode};
-use crate::run::cache::{CacheEntry, CachedAction, EntryKind};
+use crate::cache::{CacheEntry, CachedAction, EntryKind};
 
 /// The most actions one `GOAL` line runs (SPEC 7.7).
 const MAX_ACTIONS: usize = 20;

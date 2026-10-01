@@ -20,30 +20,30 @@ use whirl_lang::ast::{File, FileOption};
 use whirl_report::model::{FileReport, FlowRoles, RunReport, SETUP_ENTRY, Status, Timing};
 use whirl_shim::{ShimClient, ShimError, ShimLaunch, resolve_launch};
 
-use crate::run::artifacts::{self, ArtifactsError, Flow};
-use crate::run::flow::{FlowFlags, FlowOutcome, FlowRun, SetupHandoff, run_flow, setup_path_for};
+use crate::artifacts::{self, ArtifactsError, Flow};
+use crate::flow::{FlowFlags, FlowOutcome, FlowRun, SetupHandoff, run_flow, setup_path_for};
 
 /// Everything a run needs beyond its parsed files.
 #[derive(Clone, Debug)]
-pub(crate) struct RunSettings {
+pub struct RunSettings {
     /// Worker slots (SPEC 12); `None` uses the logical CPU count.
-    pub(crate) jobs:          Option<usize>,
-    pub(crate) fail_fast:     bool,
+    pub jobs:          Option<usize>,
+    pub fail_fast:     bool,
     /// The `--out` directory (possibly relative).
-    pub(crate) out_dir:       PathBuf,
-    pub(crate) flags:         FlowFlags,
+    pub out_dir:       PathBuf,
+    pub flags:         FlowFlags,
     /// `--variables-file` entries then `--var` flags, in order.
-    pub(crate) base_vars:     Vec<(String, String)>,
+    pub base_vars:     Vec<(String, String)>,
     /// Hashes of the exact source bytes that the CLI parsed, keyed by input
     /// path.
-    pub(crate) source_hashes: HashMap<PathBuf, String>,
+    pub source_hashes: HashMap<PathBuf, String>,
     /// `--jev`: plan `ACT` with Jev first (SPEC 7.4, 13).
-    pub(crate) jev:           bool,
+    pub jev:           bool,
 }
 
 /// A failure before any flow runs.
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum RunnerError {
+pub enum RunnerError {
     /// A runtime error (exit 3).
     #[error(transparent)]
     Artifacts(#[from] ArtifactsError),
@@ -97,7 +97,7 @@ enum SetupResult {
 /// flows of those files that are not inputs themselves. Setup flows run
 /// first, once each, and their dependents start from the saved state
 /// (SPEC 12).
-pub(crate) async fn run_files(
+pub async fn run_files(
     files: &[File],
     setups: &[File],
     settings: &RunSettings,

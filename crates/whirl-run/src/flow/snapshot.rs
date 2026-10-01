@@ -8,8 +8,8 @@ use whirl_report::model::SnapshotReport;
 use whirl_shim::wire;
 
 use super::{OptionsError, resolve_option};
-use crate::run::flow::render_step_text;
-use crate::run::vars::VarStore;
+use crate::flow::render_step_text;
+use crate::vars::VarStore;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct SnapshotSettings {

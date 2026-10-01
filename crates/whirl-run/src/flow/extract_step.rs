@@ -15,8 +15,8 @@ use whirl_types::Value;
 
 use super::act_step::{ActBudget, ActLine, act_failure, usage_report};
 use super::{EntryState, FlowExec, StepEnd, StepNode};
-use crate::run::extract;
-use crate::run::vars::MASK;
+use crate::extract;
+use crate::vars::MASK;
 
 /// An `EXTRACT` line ready to run.
 pub(super) struct ExtractPlan {

@@ -20,7 +20,7 @@ use whirl_shim::{
 };
 
 use super::{EntryState, FlowExec, StepBudget, StepEnd, StepNode, entry_timeout_error};
-use crate::run::cache::{CacheEntry, CachedAction, EntryKind};
+use crate::cache::{CacheEntry, CachedAction, EntryKind};
 
 /// The budget of one `ACT` line.
 #[derive(Clone, Copy, Debug)]

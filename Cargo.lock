@@ -2991,17 +2991,15 @@ dependencies = [
  "thiserror",
  "tiny_http",
  "tokio",
- "tracing",
  "tracing-subscriber",
  "trycmd",
  "twin-openai",
- "url",
  "whirl-ai",
  "whirl-check",
  "whirl-lang",
  "whirl-report",
+ "whirl-run",
  "whirl-shim",
- "whirl-types",
  "zip",
 ]
 
@@ -3062,6 +3060,28 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "whirl-run"
+version = "0.20.0"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "url",
+ "whirl-ai",
+ "whirl-check",
+ "whirl-lang",
+ "whirl-report",
+ "whirl-shim",
+ "whirl-types",
 ]
 
 [[package]]

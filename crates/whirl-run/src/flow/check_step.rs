@@ -34,7 +34,7 @@ use super::{
     BuildError, EntryState, FlowExec, StepBudget, StepEnd, StepNode, entry_timeout_error,
     step_error,
 };
-use crate::run::vars::{MASK, VarStore};
+use crate::vars::{MASK, VarStore};
 
 /// Playwright's poll schedule for retried checks (ADR
 /// `evaluate-checks-in-rust` §1.3): 100, 250, 500, then 1000 ms.
