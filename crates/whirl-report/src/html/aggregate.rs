@@ -5,11 +5,11 @@ use std::io;
 use std::path::Path;
 
 use super::{badge, escape, render_details, render_file, render_head, render_timing, status_text};
-use crate::report::aggregate::{Report, Selection};
-use crate::report::metadata::FileMetadata;
-use crate::report::model::Status;
+use crate::aggregate::{Report, Selection};
+use crate::metadata::FileMetadata;
+use crate::model::Status;
 
-pub(crate) fn write(path: &Path, report: &Report) -> anyhow::Result<()> {
+pub fn write(path: &Path, report: &Report) -> anyhow::Result<()> {
     for input in &report.inputs {
         super::check_artifact_destination(path, &input.document, &input.base)?;
     }

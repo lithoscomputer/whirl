@@ -4,9 +4,9 @@ use serde_json::{Value as Json, json};
 use whirl_lang::ast::OptionValue;
 use whirl_lang::ast::snapshot::{MaxDiff, PixelThreshold, SnapshotOption};
 use whirl_lang::render_snapshot_option;
+use whirl_report::model::SnapshotReport;
 
 use super::{OptionsError, resolve_option};
-use crate::report::model::SnapshotReport;
 use crate::run::flow::render_step_text;
 use crate::run::shim::wire;
 use crate::run::vars::VarStore;

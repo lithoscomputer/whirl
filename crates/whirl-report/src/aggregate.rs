@@ -6,14 +6,14 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
 
-use crate::report::json::Document;
-use crate::report::metadata::ReportMetadata;
-use crate::report::model::FileReport;
+use crate::json::Document;
+use crate::metadata::ReportMetadata;
+use crate::model::FileReport;
 
-pub(crate) struct Input {
-    pub(crate) path:     PathBuf,
-    pub(crate) document: Document,
-    pub(crate) base:     PathBuf,
+pub struct Input {
+    pub path:     PathBuf,
+    pub document: Document,
+    pub base:     PathBuf,
 }
 
 #[derive(Clone, Copy)]
@@ -27,7 +27,7 @@ pub(crate) struct Scenario {
     pub(crate) selected: Option<Selection>,
 }
 
-pub(crate) struct Report {
+pub struct Report {
     pub(crate) inputs:    Vec<Input>,
     pub(crate) scenarios: Vec<Scenario>,
     pub(crate) setups:    Vec<Selection>,
@@ -35,7 +35,7 @@ pub(crate) struct Report {
     pub(crate) metadata:  ReportMetadata,
 }
 
-pub(crate) fn read_expected(path: &Path) -> anyhow::Result<Vec<String>> {
+pub fn read_expected(path: &Path) -> anyhow::Result<Vec<String>> {
     let source = fs::read_to_string(path)
         .with_context(|| format!("reading expected scenarios '{}'", path.display()))?;
     let paths: Vec<String> = serde_json::from_str(&source)
@@ -53,7 +53,7 @@ pub(crate) fn read_expected(path: &Path) -> anyhow::Result<Vec<String>> {
 }
 
 impl Report {
-    pub(crate) fn new(
+    pub fn new(
         mut inputs: Vec<Input>,
         expected: Option<Vec<String>>,
         metadata: Option<ReportMetadata>,

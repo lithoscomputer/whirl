@@ -14,12 +14,12 @@ use whirl_lang::ast::{
     OptionValue, ReducedMotion, Value, Viewport,
 };
 use whirl_lang::render_snapshot_target;
-
-use crate::report::model::{
+use whirl_report::model::{
     ActReport, AiReport, BlockedHostRule, CaptureValue, EntryReport, ExtractReport, FileReport,
     GoalReport, JudgeReport, MockReport, ReportViewport, RuntimeMetadata, SETUP_ENTRY,
     SnapshotReport, Status, StepError, StepKind, StepReport, StepWarning, Timing,
 };
+
 use crate::run::act::{ActPlanner, Instruction, JudgeAnswer, ModelClient};
 use crate::run::artifacts;
 use crate::run::cache::{self, CacheMode};
@@ -1628,44 +1628,35 @@ fn skipped_entry(file: &File, entry: &ast::Entry, vars: &VarStore) -> EntryRepor
 }
 
 /// The synthetic `[setup]` entry for a failure before the first entry
-/// (SPEC 14).
+/// (SPEC 14). Its single synthetic step carries the failure's message.
 fn setup_entry(status: Status, message: String) -> EntryReport {
+    let step = StepReport {
+        line: 0,
+        kind: StepKind::Action,
+        text: SETUP_ENTRY.to_owned(),
+        status,
+        duration_ms: 0,
+        error: Some(StepError {
+            code: "setup-failed".to_owned(),
+            message,
+            ..StepError::default()
+        }),
+        snapshot: None,
+        act: None,
+        warnings: Vec::new(),
+        ai: None,
+        extract: None,
+        judge: None,
+        goal: None,
+    };
     EntryReport {
         name: SETUP_ENTRY.to_owned(),
         line: 0,
         status,
         duration_ms: 0,
-        steps: Vec::new(),
+        steps: vec![step],
         captures: Vec::new(),
         artifacts: Vec::new(),
-    }
-    .with_setup_step(message)
-}
-
-impl EntryReport {
-    /// Attaches the single synthetic step that carries a setup
-    /// failure's message.
-    fn with_setup_step(mut self, message: String) -> Self {
-        self.steps.push(StepReport {
-            line:        0,
-            kind:        StepKind::Action,
-            text:        SETUP_ENTRY.to_owned(),
-            status:      self.status,
-            duration_ms: 0,
-            error:       Some(StepError {
-                code: "setup-failed".to_owned(),
-                message,
-                ..StepError::default()
-            }),
-            snapshot:    None,
-            act:         None,
-            warnings:    Vec::new(),
-            ai:          None,
-            extract:     None,
-            judge:       None,
-            goal:        None,
-        });
-        self
     }
 }
 

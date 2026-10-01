@@ -12,13 +12,13 @@ use std::time::{Duration, Instant};
 use tokio::time::sleep;
 use whirl_lang::ast::{self, Locator, LocatorSegment, SegmentKind};
 use whirl_lang::{is_role, parse_locator, render_snapshot_target};
+use whirl_report::model::{
+    ActReport, AiReport, AiTargetReport, ExtractReport, JudgeReport, StepError, StepWarning,
+};
 use whirl_types::PredicateKind;
 
 use super::act_step::{ActBudget, ActLine, act_failure, usage_report};
 use super::{EntryState, FlowExec, PreparedStep, StepEnd, StepNode, entry_timeout_error};
-use crate::report::model::{
-    ActReport, AiReport, AiTargetReport, ExtractReport, JudgeReport, StepError, StepWarning,
-};
 use crate::run::act::{Fingerprint, Instruction, PageSnapshot, PlanUsage, Target, target_message};
 use crate::run::cache::{CacheEntry, CacheKey, EntryKind};
 use crate::run::shim::{AriaSnapshotResult, GeneratedLocator, ShimClient, StepCommand, wire};

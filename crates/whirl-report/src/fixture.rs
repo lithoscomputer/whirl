@@ -1,15 +1,17 @@
 //! A shared [`RunReport`] fixture for reporter tests: passed, failed,
 //! skipped, setup-failure, and runtime-error cases, with an env-sourced
-//! secret masked the way the runner masks it.
+//! secret already masked, the way the runner delivers its strings.
 
-use crate::report::model::{
+use crate::model::{
     CaptureValue, EntryReport, FileReport, RunReport, SETUP_ENTRY, Status, StepError, StepKind,
     StepReport, Timing,
 };
-use crate::run::vars::Masker;
 
 /// The raw secret; it must never appear in any rendered report.
 pub(crate) const SECRET: &str = "hunter2";
+
+/// The runner's replacement text for a masked secret (SPEC 11).
+const MASK: &str = "***";
 
 fn step(
     line: u32,
@@ -38,16 +40,14 @@ fn step(
 /// Builds the fixture report. Strings that carried the secret are
 /// pre-masked, as the runner would deliver them.
 pub(crate) fn sample_report() -> RunReport {
-    let mut masker = Masker::default();
-    masker.record(SECRET);
-    let fill_text = masker.mask(&format!("FILL \"Password\" {SECRET}"));
-    let actual_value = masker.mask(SECRET);
+    let fill_text = format!("FILL \"Password\" {MASK}");
+    let actual_value = MASK;
     RunReport {
         timing:      Timing::default(),
         duration_ms: 3_210,
         files:       vec![
             passed_file(),
-            failed_file(&fill_text, &actual_value),
+            failed_file(&fill_text, actual_value),
             setup_failed_file(),
             error_file(),
         ],

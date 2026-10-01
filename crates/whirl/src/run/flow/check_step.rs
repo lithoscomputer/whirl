@@ -20,6 +20,7 @@ use whirl_lang::ast::{
     self, Extractor, FilterArg, FilterSpec, Operand, PredicateSpec, RequestField, ResponseField,
     Subject,
 };
+use whirl_report::model::{CaptureValue, StepError};
 use whirl_types::{FilterKind, Number, Value};
 
 use super::act_step::{ActBudget, ActLine};
@@ -28,7 +29,6 @@ use super::{
     BuildError, EntryState, FlowExec, StepBudget, StepEnd, StepNode, entry_timeout_error,
     step_error,
 };
-use crate::report::model::{CaptureValue, StepError};
 use crate::run::act::PlanUsage;
 use crate::run::shim::{
     MissingReason, ReadResult, RequestReadResult, ResponseReadResult, ShimClient, StepCommand,

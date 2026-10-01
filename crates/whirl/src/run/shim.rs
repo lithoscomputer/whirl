@@ -23,8 +23,7 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, timeout, timeout_at};
 use tracing::{Instrument as _, debug, debug_span, warn};
-
-use crate::report::model::SnapshotReport;
+use whirl_report::model::SnapshotReport;
 
 pub(super) mod wire;
 
