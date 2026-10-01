@@ -2981,7 +2981,6 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "clap",
- "dirs",
  "flate2",
  "lithos-llm",
  "reqwest 0.12.28",
@@ -3001,6 +3000,7 @@ dependencies = [
  "whirl-check",
  "whirl-lang",
  "whirl-report",
+ "whirl-shim",
  "whirl-types",
  "zip",
 ]
@@ -3048,6 +3048,20 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "whirl-shim"
+version = "0.20.0"
+dependencies = [
+ "dirs",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "url",
+ "whirl-lang",
 ]
 
 [[package]]

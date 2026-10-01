@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use whirl_lang::{parse_action_line, render_action};
 use whirl_report::model::{ActActionReport, GoalReport, StepError, StepWarning};
+use whirl_shim::{AriaSnapshotResult, ShimClient, StepCommand};
 
 use super::act_step::{
     ActBudget, ActLine, Replay, ShimFailure, act_failure, usage_report, warning,
@@ -17,7 +18,6 @@ use crate::run::act::{
     Target, goal_message, target_message,
 };
 use crate::run::cache::{CacheEntry, CachedAction, EntryKind};
-use crate::run::shim::{AriaSnapshotResult, ShimClient, StepCommand};
 
 /// The most actions one `GOAL` line runs (SPEC 7.7).
 const MAX_ACTIONS: usize = 20;

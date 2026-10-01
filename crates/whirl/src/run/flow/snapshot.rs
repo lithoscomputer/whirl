@@ -5,10 +5,10 @@ use whirl_lang::ast::OptionValue;
 use whirl_lang::ast::snapshot::{MaxDiff, PixelThreshold, SnapshotOption};
 use whirl_lang::render_snapshot_option;
 use whirl_report::model::SnapshotReport;
+use whirl_shim::wire;
 
 use super::{OptionsError, resolve_option};
 use crate::run::flow::render_step_text;
-use crate::run::shim::wire;
 use crate::run::vars::VarStore;
 
 #[derive(Clone, Debug, Eq, PartialEq)]

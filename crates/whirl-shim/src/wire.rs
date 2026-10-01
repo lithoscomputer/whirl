@@ -18,7 +18,7 @@ use whirl_lang::ast::{
 
 /// Shim-only response key for an independent HTTP entry. `$` and `:` cannot
 /// occur in a public `RESPONSE` name.
-pub(crate) fn independent_http_response(line: u32) -> String {
+pub fn independent_http_response(line: u32) -> String {
     format!("$whirl:http:{line}")
 }
 
@@ -26,7 +26,7 @@ pub(crate) fn independent_http_response(line: u32) -> String {
 /// (SPEC 7.5): the normalized URL without its fragment, where each `*`
 /// matches any run of characters. The expression is ECMAScript without
 /// the `u` flag, so it escapes only syntax characters.
-pub(crate) fn mock_pattern(url: &str) -> Result<String, String> {
+pub fn mock_pattern(url: &str) -> Result<String, String> {
     let mut parsed = url::Url::parse(url)
         .map_err(|_| format!("MOCK needs an absolute HTTP URL or a path with base: {url}"))?;
     if !matches!(parsed.scheme(), "http" | "https") {
@@ -53,7 +53,7 @@ pub(crate) fn mock_pattern(url: &str) -> Result<String, String> {
 /// The locator that wire segments stand for (protocol 4.1), with literal
 /// values: the reverse of [`locator_wire`], for the locators the shim
 /// generates (SPEC 12.1). `None` for a segment a file cannot write.
-pub(crate) fn locator_from_wire(segments: &Json) -> Option<Locator> {
+pub fn locator_from_wire(segments: &Json) -> Option<Locator> {
     let span = Span {
         line:   0,
         column: 0,
@@ -108,7 +108,7 @@ pub(crate) fn locator_from_wire(segments: &Json) -> Option<Locator> {
 
 /// A `scroll` command's motion (protocol section 4): into view without a
 /// motion, else one chunk or a vertical position.
-pub(crate) fn scroll_motion_wire(motion: Option<&ScrollMotion>) -> Json {
+pub fn scroll_motion_wire(motion: Option<&ScrollMotion>) -> Json {
     match motion {
         None => json!({"type": "intoView"}),
         Some(ScrollMotion::Chunk(direction)) => {
@@ -119,7 +119,7 @@ pub(crate) fn scroll_motion_wire(motion: Option<&ScrollMotion>) -> Json {
 }
 
 /// Resolves a value to its final string; `E` is the runner's error.
-pub(crate) type Resolve<'a, E> = dyn FnMut(&Value) -> Result<String, E> + 'a;
+pub type Resolve<'a, E> = dyn FnMut(&Value) -> Result<String, E> + 'a;
 
 /// The canonical flag string of a regex literal: `i`, `s`, `m` in that
 /// order.
@@ -163,7 +163,7 @@ fn regex_source(regex: &Regex) -> String {
 /// Converts a locator to the wire array of protocol section 4.1.
 /// `default_engine` names the engine an unprefixed segment selects; it
 /// must be present when the locator can hold one (actions, SPEC 6.1).
-pub(crate) fn locator_wire<E>(
+pub fn locator_wire<E>(
     locator: &Locator,
     default_engine: Option<DefaultEngine>,
     resolve: &mut Resolve<'_, E>,
@@ -234,7 +234,7 @@ fn segment_wire<E>(
 /// 4.2, classifying a resolved value per SPEC 8: a value starting with
 /// `/` compares the path (or path plus query when it contains `?`); any
 /// other value compares the full URL.
-pub(crate) fn page_wire<E>(check: &PageCheck, resolve: &mut Resolve<'_, E>) -> Result<Json, E> {
+pub fn page_wire<E>(check: &PageCheck, resolve: &mut Resolve<'_, E>) -> Result<Json, E> {
     let json = match check {
         PageCheck::Value(value) => {
             let resolved = resolve(value)?;
@@ -273,7 +273,7 @@ fn locator_subject<E>(locator: &Locator, resolve: &mut Resolve<'_, E>) -> Result
 }
 
 /// The wire spec of a state check (protocol section 4.3).
-pub(crate) fn state_assert_wire<E>(
+pub fn state_assert_wire<E>(
     locator: &Locator,
     state: StateCheck,
     resolve: &mut Resolve<'_, E>,
@@ -285,13 +285,13 @@ pub(crate) fn state_assert_wire<E>(
 }
 
 /// The wire spec of a `window:NAME closed` check (protocol section 4.3).
-pub(crate) fn tab_closed_wire(name: &Ident) -> Json {
+pub fn tab_closed_wire(name: &Ident) -> Json {
     json!({"subject": {"type": "tab", "name": name.text}, "check": {"type": "closed"}})
 }
 
 /// The wire read subject of a page subject (protocol section 4.4), or
 /// `None` for a response subject, which `readResponse` reads.
-pub(crate) fn read_subject_wire<E>(
+pub fn read_subject_wire<E>(
     subject: &Subject,
     resolve: &mut Resolve<'_, E>,
 ) -> Result<Option<Json>, E> {

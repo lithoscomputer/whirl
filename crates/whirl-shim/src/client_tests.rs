@@ -1,5 +1,5 @@
 //! Shim client framing tests against the fake shim in
-//! `tests/fixtures/fake_shim.js`: request/response dispatch, typed
+//! `crates/whirl/tests/fixtures/fake_shim.js`: request/response dispatch, typed
 //! lifecycle results, step outcomes, the external watchdog's cancel and
 //! kill paths, and clean shutdown. The fake shim needs only `node` on
 //! `PATH`; no browser is involved.
@@ -16,12 +16,10 @@ use super::{
 };
 
 /// Launch parameters for the fake shim: `node` from `PATH` and the
-/// fixture next to this test.
+/// fixture the `whirl` crate's acceptance tests share.
 fn fake_shim_launch() -> ShimLaunch {
-    let shim_js = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("fixtures")
-        .join("fake_shim.js");
+    let shim_js =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../whirl/tests/fixtures/fake_shim.js");
     ShimLaunch {
         node: PathBuf::from("node"),
         shim_js,

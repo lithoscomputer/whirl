@@ -19,14 +19,14 @@ use whirl_report::model::{
     GoalReport, JudgeReport, MockReport, ReportViewport, RuntimeMetadata, SETUP_ENTRY,
     SnapshotReport, Status, StepError, StepKind, StepReport, StepWarning, Timing,
 };
+use whirl_shim::{
+    EndFlowParams, ErrorObject, MockHits, ShimClient, ShimError, StartFlowParams, StepCommand,
+    StepOutcome, StepRequest, VideoParams, ViewportParams, wire,
+};
 
 use crate::run::act::{ActPlanner, Instruction, JudgeAnswer, ModelClient};
 use crate::run::artifacts;
 use crate::run::cache::{self, CacheMode};
-use crate::run::shim::{
-    EndFlowParams, ErrorObject, MockHits, ShimClient, ShimError, StartFlowParams, StepCommand,
-    StepOutcome, StepRequest, VideoParams, ViewportParams, wire,
-};
 use crate::run::vars::{VarError, VarStore};
 
 mod act_step;
