@@ -2,9 +2,8 @@
 //! strict schema that the model call sends, and the check of the answer.
 
 use serde_json::{Map, Value as Json, json};
+use whirl_check::parse_json;
 use whirl_types::Value;
-
-use crate::check::parse_json;
 
 /// True for a string node with `"format": "uri"`, whose answer is a ref.
 fn is_link(node: &Json) -> bool {

@@ -7,10 +7,10 @@ use std::ops::Range;
 /// The `i`, `s`, and `m` flags a regex literal may carry. Unicode mode is
 /// always on.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct PatternFlags {
-    pub(crate) ignore_case: bool,
-    pub(crate) dot_all:     bool,
-    pub(crate) multiline:   bool,
+pub struct PatternFlags {
+    pub ignore_case: bool,
+    pub dot_all:     bool,
+    pub multiline:   bool,
 }
 
 impl PatternFlags {
@@ -32,7 +32,7 @@ impl PatternFlags {
 
 /// A compiled regex literal.
 #[derive(Clone)]
-pub(crate) struct Pattern {
+pub struct Pattern {
     source: String,
     flags:  PatternFlags,
     regex:  regress::Regex,
@@ -41,7 +41,7 @@ pub(crate) struct Pattern {
 /// A pattern that is invalid in Unicode mode.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 #[error("invalid regex /{pattern}/: {reason}")]
-pub(crate) struct PatternError {
+pub struct PatternError {
     pub(crate) pattern: String,
     pub(crate) reason:  String,
 }
@@ -50,7 +50,7 @@ impl Pattern {
     /// Compiles a regex literal as written between the slashes. The `\/`
     /// delimiter escape becomes a plain `/`; every other escape is passed
     /// to the engine unchanged.
-    pub(crate) fn new(written: &str, flags: PatternFlags) -> Result<Self, PatternError> {
+    pub fn new(written: &str, flags: PatternFlags) -> Result<Self, PatternError> {
         let source = unescape_delimiter(written);
         let regex =
             regress::Regex::with_flags(&source, flags.letters().as_str()).map_err(|error| {

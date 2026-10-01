@@ -1,0 +1,29 @@
+[package]
+name = "whirl-check"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The Whirl check engine: filters, predicates, and literal validation for ASSERT and CAPTURE lines"
+
+[dependencies]
+base64.workspace = true
+chrono.workspace = true
+encoding_rs = "=0.8.42"
+form_urlencoded = "=1.2.2"
+html-escape = "=0.2.15"
+percent-encoding = "=2.3.2"
+regress = "=0.12.0"
+serde_json.workspace = true
+serde_json_path = "=0.7.2"
+thiserror.workspace = true
+whirl-lang = { path = "../whirl-lang" }
+whirl-types = { path = "../whirl-types" }
+whirl-xpath = { path = "../whirl-xpath" }
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

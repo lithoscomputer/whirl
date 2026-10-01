@@ -18,12 +18,12 @@ use clap::{Args, CommandFactory as _, Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use tokio::runtime::Runtime;
+use whirl_check::validate_literals;
 use whirl_lang::{
     CliOptions, Lint, ModelFacts, OptionFlag, ParseError, Severity, ast, format_file, lint_act,
     lint_file_with, lint_setup_refs, parse_file, setup_capture_uses,
 };
 
-use crate::check::validate_literals;
 use crate::report::metadata::ReportMetadata;
 use crate::report::model::Status;
 use crate::report::{console, html, json, junit};
