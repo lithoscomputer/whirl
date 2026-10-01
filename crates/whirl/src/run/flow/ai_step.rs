@@ -684,7 +684,7 @@ impl FlowExec<'_> {
                 }
             };
             match prepared {
-                PreparedStep::Command(command) => {
+                PreparedStep::Command(command) | PreparedStep::Snapshot { command, .. } => {
                     let mut line = ActLine {
                         node: replaced_node,
                         title,
