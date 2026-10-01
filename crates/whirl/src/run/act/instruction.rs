@@ -6,7 +6,8 @@
 //! arguments, and Whirl puts the values back only when it builds the shim
 //! command.
 
-use crate::lang::ast::{Value, ValueSegment};
+use whirl_lang::ast::{Value, ValueSegment};
+
 use crate::run::vars::{VarError, VarStore};
 
 /// Placeholder names and the secret values they stand for.
@@ -352,8 +353,9 @@ fn redact_into(out: &mut String, text: &str, secrets: &[String], bindings: &mut 
 
 #[cfg(test)]
 mod tests {
+    use whirl_lang::ast::Span;
+
     use super::*;
-    use crate::lang::ast::Span;
 
     fn value(segments: Vec<ValueSegment>) -> Value {
         Value {

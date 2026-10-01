@@ -9,7 +9,7 @@ description = "XPath 1.0 over HTML and XML for Whirl checks, through libxml2"
 
 [dependencies]
 libxml = "=0.3.21"
-thiserror = "2"
+thiserror.workspace = true
 
 [build-dependencies]
 pkg-config = "=0.3.34"

@@ -24,11 +24,11 @@ use std::time::Instant;
 pub(crate) use client::{JevClient, JevSetupError};
 use serde_json::{Map, Value as Json, json};
 use tokio::task::JoinSet;
+use whirl_lang::ast::MouseButton;
 
 use self::client::{JevAnswer, JevError, JevQuestion, JevResponse, choice, noul};
 use self::intent::{FillValue, Intent, ScrollArea, ScrollWay};
 use self::outline::{Outline, View, shortlist};
-use crate::lang::ast::MouseButton;
 use crate::run::act::decision::{ActInference, ActMethod};
 use crate::run::act::instruction::quoted_strings;
 use crate::run::act::model::ModelClient;

@@ -10,11 +10,11 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use serde::Deserialize;
 use serde_json::Value as Json;
+use whirl_lang::ast::{self, CheckStep};
+use whirl_lang::render_snapshot_target;
 
 use super::act_step::{ActBudget, ActLine, act_failure, usage_report};
 use super::{EntryState, FlowExec, StepEnd, StepNode};
-use crate::lang::ast::{self, CheckStep};
-use crate::lang::fmt::render_snapshot_target;
 use crate::report::model::{JudgeReport, StepError, StepWarning};
 use crate::run::act::{Instruction, JudgeAnswer, PageSnapshot, PlanUsage, Verdict, judge_message};
 use crate::run::shim::{AriaSnapshotResult, ShimClient, StepCommand};

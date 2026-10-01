@@ -31,11 +31,12 @@ serde_json_path = "=0.7.2"
 sha2 = "0.10"
 tar = "0.4"
 tempfile = "=3.27.0"
-thiserror = "2"
+thiserror.workspace = true
 tokio = { version = "1", features = ["full"] }
 tracing = { version = "=0.1.44", default-features = false, features = ["std"] }
 tracing-subscriber = { version = "=0.3.20", default-features = false, features = ["fmt", "registry"] }
 url = "=2.5.8"
+whirl-lang = { path = "../whirl-lang" }
 whirl-types = { path = "../whirl-types" }
 whirl-xpath = { path = "../whirl-xpath" }
 zip = { version = "7.2.0", default-features = false, features = [
@@ -44,10 +45,6 @@ zip = { version = "7.2.0", default-features = false, features = [
 
 [dev-dependencies]
 axum = "0.8"
-# Runs the grammar in SPEC section 17 against the parser.
-pest = "=2.9.2"
-pest_meta = "=2.9.2"
-pest_vm = "=2.9.2"
 proptest.workspace = true
 tiny_http = "0.12.0"
 # The OpenAI-compatible model twin that ACT acceptance tests run against.

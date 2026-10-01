@@ -6,21 +6,21 @@ use std::str::FromStr;
 use super::{Locator, OptionValue, Percent, Span};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct SnapshotOptionLine {
-    pub(crate) option: SnapshotOption,
-    pub(crate) line:   u32,
-    pub(crate) span:   Span,
+pub struct SnapshotOptionLine {
+    pub option: SnapshotOption,
+    pub line:   u32,
+    pub span:   Span,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum SnapshotOption {
+pub enum SnapshotOption {
     Mask(Option<Locator>),
     MaxDiff(OptionValue<MaxDiff>),
     PixelThreshold(OptionValue<PixelThreshold>),
 }
 
 impl SnapshotOption {
-    pub(crate) fn key(&self) -> &'static str {
+    pub fn key(&self) -> &'static str {
         match self {
             Self::Mask(_) => "snapshot-mask",
             Self::MaxDiff(_) => "snapshot-max-diff",
@@ -31,14 +31,14 @@ impl SnapshotOption {
 
 /// Counts and percentages retain their unit through resolution and formatting.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum MaxDiff {
+pub enum MaxDiff {
     Pixels(u64),
     Percent(Percent),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 #[error("expected {0}")]
-pub(crate) struct InvalidSnapshotValue(&'static str);
+pub struct InvalidSnapshotValue(&'static str);
 
 impl FromStr for MaxDiff {
     type Err = InvalidSnapshotValue;
@@ -73,7 +73,7 @@ impl fmt::Display for MaxDiff {
 /// Retain the validated JSON number text, avoiding floating-point equality in
 /// the AST.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct PixelThreshold(String);
+pub struct PixelThreshold(String);
 
 impl FromStr for PixelThreshold {
     type Err = InvalidSnapshotValue;
@@ -90,7 +90,7 @@ impl FromStr for PixelThreshold {
 }
 
 impl PixelThreshold {
-    pub(crate) fn value(&self) -> f64 {
+    pub fn value(&self) -> f64 {
         self.0.parse().expect("validated threshold")
     }
 }

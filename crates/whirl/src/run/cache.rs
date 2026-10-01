@@ -8,9 +8,9 @@ use std::{fs, io};
 
 use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
+use whirl_lang::ast::{ActionKind, AssertBody, CheckLine, CheckStep, File, Locator, Subject};
+use whirl_lang::render_snapshot_target;
 
-use crate::lang::ast::{ActionKind, AssertBody, CheckLine, CheckStep, File, Locator, Subject};
-use crate::lang::fmt::render_snapshot_target;
 use crate::run::act::Fingerprint;
 
 /// The cache file format version (SPEC 12.1).
@@ -374,8 +374,9 @@ pub(crate) fn occurrences(file: &File) -> HashMap<u32, u32> {
 
 #[cfg(test)]
 mod tests {
+    use whirl_lang::parse_file;
+
     use super::*;
-    use crate::lang::parse::parse_file;
 
     fn target_entry() -> CacheEntry {
         CacheEntry::AiTarget {

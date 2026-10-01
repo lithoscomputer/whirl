@@ -3,14 +3,14 @@
 //! date format, and charset label. The same code builds the filters at
 //! run time, so a literal that passes `whirl check` cannot fail later.
 
-use whirl_types::FilterKind;
-
-use super::{Charset, DateFormat, JsonQuery, Pattern, PatternFlags, XpathQuery};
-use crate::lang::ast::{
+use whirl_lang::ParseError;
+use whirl_lang::ast::{
     AssertBody, CheckStep, File, FilterArg, FilterSpec, PageCheck, PredicateSpec, Regex,
     RequestField, ResponseField, Span, Subject, Value,
 };
-use crate::lang::parse::ParseError;
+use whirl_types::FilterKind;
+
+use super::{Charset, DateFormat, JsonQuery, Pattern, PatternFlags, XpathQuery};
 
 /// Checks every literal filter argument of `file`, in source order, and
 /// reports the first invalid one as the parse diagnostic the parser used
@@ -180,8 +180,9 @@ fn collect_filters<'a>(filters: &'a [FilterSpec], literals: &mut Vec<Literal<'a>
 mod tests {
     use std::path::Path;
 
+    use whirl_lang::parse_file;
+
     use super::*;
-    use crate::lang::parse::parse_file;
 
     fn validate(source: &str) -> Result<(), ParseError> {
         let file = parse_file(Path::new("test.whirl"), source).expect("source should parse");

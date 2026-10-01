@@ -1,11 +1,11 @@
 //! Snapshot defaults are resolved once; each action overlays its own options.
 
 use serde_json::{Value as Json, json};
+use whirl_lang::ast::OptionValue;
+use whirl_lang::ast::snapshot::{MaxDiff, PixelThreshold, SnapshotOption};
+use whirl_lang::render_snapshot_option;
 
 use super::{OptionsError, resolve_option};
-use crate::lang::ast::OptionValue;
-use crate::lang::ast::snapshot::{MaxDiff, PixelThreshold, SnapshotOption};
-use crate::lang::fmt::render_snapshot_option;
 use crate::report::model::SnapshotReport;
 use crate::run::flow::render_step_text;
 use crate::run::shim::wire;
@@ -113,9 +113,10 @@ impl SnapshotSettings {
 mod tests {
     use std::path::Path;
 
+    use whirl_lang::ast::{ActionKind, FileOption};
+    use whirl_lang::parse_file;
+
     use super::*;
-    use crate::lang::ast::{ActionKind, FileOption};
-    use crate::lang::parse::parse_file;
 
     #[test]
     fn local_settings_override_independently_without_changing_defaults() {
