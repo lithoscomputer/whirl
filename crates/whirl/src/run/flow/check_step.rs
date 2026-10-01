@@ -12,6 +12,10 @@ use base64::engine::general_purpose::STANDARD;
 use chrono::{DateTime, Utc};
 use serde_json::Value as Json;
 use tokio::time::sleep;
+use whirl_check::{
+    Charset, Check, DateFormat, Expected, Filter, JsonQuery, Markup, Missing, Pattern,
+    PatternFlags, Predicate, Read, ReadContext, XpathQuery,
+};
 use whirl_lang::ast::{
     self, Extractor, FilterArg, FilterSpec, Operand, PredicateSpec, RequestField, ResponseField,
     Subject,
@@ -23,10 +27,6 @@ use super::ai_step::{self, AiSpend, AiTarget, Found};
 use super::{
     BuildError, EntryState, FlowExec, StepBudget, StepEnd, StepNode, entry_timeout_error,
     step_error,
-};
-use crate::check::{
-    self, Charset, Check, DateFormat, Expected, Filter, JsonQuery, Markup, Missing, Pattern,
-    PatternFlags, Predicate, Read, ReadContext, XpathQuery,
 };
 use crate::report::model::{CaptureValue, StepError};
 use crate::run::act::PlanUsage;
@@ -481,7 +481,7 @@ impl FlowExec<'_> {
                 if text_compare {
                     return Ok(Expected::Text(resolved));
                 }
-                check::parse_json(&resolved)
+                whirl_check::parse_json(&resolved)
                     .map(Expected::Typed)
                     .map_err(|error| filter_error(format!("the JSON literal is invalid: {error}")))
             }
@@ -585,7 +585,7 @@ impl FlowExec<'_> {
             {
                 Attempt::End(end) => break end,
                 Attempt::Retry(error) => last = Some(error),
-                Attempt::Read(read) => match check::apply_filters(
+                Attempt::Read(read) => match whirl_check::apply_filters(
                     &prepared.filters,
                     read,
                     self.read_context(&prepared.source),
@@ -958,7 +958,7 @@ impl ResponseData {
     /// XML when the `Content-Type` names an XML media type, else HTML.
     fn markup(&self) -> Markup {
         match self.header("content-type") {
-            Some(content_type) if check::is_xml_content_type(&content_type) => Markup::Xml,
+            Some(content_type) if whirl_check::is_xml_content_type(&content_type) => Markup::Xml,
             _ => Markup::Html,
         }
     }
@@ -1056,7 +1056,7 @@ impl RequestData {
     /// XML when the `Content-Type` names an XML media type, else HTML.
     fn markup(&self) -> Markup {
         match self.header("content-type") {
-            Some(content_type) if check::is_xml_content_type(&content_type) => Markup::Xml,
+            Some(content_type) if whirl_check::is_xml_content_type(&content_type) => Markup::Xml,
             _ => Markup::Html,
         }
     }
@@ -1169,7 +1169,7 @@ fn simple_error(code: &str, message: &str) -> StepError {
 }
 
 /// A check failure as a masked report detail (SPEC 9.7, 11).
-fn failure_error(vars: &VarStore, failure: &check::Failure) -> StepError {
+fn failure_error(vars: &VarStore, failure: &whirl_check::Failure) -> StepError {
     StepError {
         code:       failure.code.as_str().to_owned(),
         message:    vars.mask(&format!("{}: {}", failure.code, failure.message)),

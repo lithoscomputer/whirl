@@ -31,7 +31,7 @@ const BASE64_URL: GeneralPurpose = GeneralPurpose::new(
 
 /// One filter with its arguments resolved.
 #[derive(Clone, Debug)]
-pub(crate) enum Filter {
+pub enum Filter {
     Count,
     First,
     Last,
@@ -81,7 +81,7 @@ pub(crate) enum Step {
 
 /// Why a value is missing (SPEC 9.2).
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum Missing {
+pub enum Missing {
     /// A locator with no match.
     NoElement,
     /// An element without the attribute. Negated predicates pass on it
@@ -113,18 +113,18 @@ impl fmt::Display for Missing {
 /// A filter that cannot work on its input (SPEC 9.5).
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 #[error("{}: {reason}", filter.trim_end_matches(':'))]
-pub(crate) struct FilterError {
+pub struct FilterError {
     pub(crate) filter: &'static str,
     pub(crate) reason: String,
 }
 
 /// A `chrono` `%` format that parsed without errors.
 #[derive(Clone, Debug)]
-pub(crate) struct DateFormat(String);
+pub struct DateFormat(String);
 
 impl DateFormat {
     /// Checks the format's `%` codes.
-    pub(crate) fn new(format: &str) -> Result<Self, String> {
+    pub fn new(format: &str) -> Result<Self, String> {
         if StrftimeItems::new(format).any(|item| matches!(item, Item::Error)) {
             return Err(format!("invalid date format {}", quote(format)));
         }
@@ -134,11 +134,11 @@ impl DateFormat {
 
 /// A WHATWG Encoding Standard encoding.
 #[derive(Clone, Copy)]
-pub(crate) struct Charset(&'static encoding_rs::Encoding);
+pub struct Charset(&'static encoding_rs::Encoding);
 
 impl Charset {
     /// Looks up an encoding label such as `gb2312` or `utf-8`.
-    pub(crate) fn from_label(label: &str) -> Result<Self, String> {
+    pub fn from_label(label: &str) -> Result<Self, String> {
         encoding_rs::Encoding::for_label(label.trim().as_bytes())
             .map(Self)
             .ok_or_else(|| format!("unknown encoding label {}", quote(label)))
@@ -148,7 +148,7 @@ impl Charset {
 impl Charset {
     /// Decodes bytes without a byte order mark and without replacement
     /// characters.
-    pub(crate) fn decode(self, bytes: &[u8]) -> Result<String, String> {
+    pub fn decode(self, bytes: &[u8]) -> Result<String, String> {
         self.0
             .decode_without_bom_handling_and_without_replacement(bytes)
             .map(std::borrow::Cow::into_owned)
@@ -163,7 +163,7 @@ impl Charset {
     /// bytes for it. `None` when this charset is UTF-8 or cannot encode,
     /// when the bytes are ASCII or not UTF-8, or when the text holds a
     /// character this charset cannot encode.
-    pub(crate) fn undo_browser_decode(self, bytes: &[u8]) -> Option<(String, Vec<u8>)> {
+    pub fn undo_browser_decode(self, bytes: &[u8]) -> Option<(String, Vec<u8>)> {
         if self.0 == encoding_rs::UTF_8 || self.0.output_encoding() != self.0 || bytes.is_ascii() {
             return None;
         }
@@ -475,7 +475,7 @@ mod tests {
     use chrono::TimeZone as _;
 
     use super::*;
-    use crate::check::pattern::PatternFlags;
+    use crate::pattern::PatternFlags;
 
     fn now() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 9, 26, 12, 0, 0)

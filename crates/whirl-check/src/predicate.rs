@@ -13,7 +13,7 @@ use super::pattern::Pattern;
 
 /// A predicate with its expected value resolved.
 #[derive(Clone, Debug)]
-pub(crate) enum Predicate {
+pub enum Predicate {
     Compare(PredicateKind, Expected),
     Matches(Pattern),
     /// `exists` and the `is…` type predicates.
@@ -22,7 +22,7 @@ pub(crate) enum Predicate {
 
 /// The expected value after SPEC 9.6's reading.
 #[derive(Clone, Debug)]
-pub(crate) enum Expected {
+pub enum Expected {
     /// The value under test is always a string, so the expected value is
     /// its text.
     Text(String),
@@ -37,7 +37,7 @@ impl Expected {
     /// Reads a bare expected value in a typed comparison: a JSON number,
     /// `true`, `false`, `null`, or a bytes literal, else a string. A value
     /// shaped like a bytes literal that does not decode is an error.
-    pub(crate) fn bare(text: String) -> Result<Self, String> {
+    pub fn bare(text: String) -> Result<Self, String> {
         if let Some(number) = Number::parse(&text) {
             return Ok(Self::Typed(Value::Number(number)));
         }
@@ -266,7 +266,7 @@ fn is_uuid_v4(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::check::pattern::PatternFlags;
+    use crate::pattern::PatternFlags;
 
     fn bare(text: &str) -> Expected {
         Expected::bare(text.to_owned()).expect("a valid literal")

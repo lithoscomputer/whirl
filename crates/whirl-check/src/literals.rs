@@ -16,7 +16,7 @@ use super::{Charset, DateFormat, JsonQuery, Pattern, PatternFlags, XpathQuery};
 /// reports the first invalid one as the parse diagnostic the parser used
 /// to produce (SPEC 16). `source` is the file's text, for the diagnostic's
 /// source line.
-pub(crate) fn validate_literals(file: &File, source: &str) -> Result<(), ParseError> {
+pub fn validate_literals(file: &File, source: &str) -> Result<(), ParseError> {
     let mut literals = Vec::new();
     for entry in &file.entries {
         if let Some(page) = &entry.page

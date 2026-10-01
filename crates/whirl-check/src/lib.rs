@@ -2,8 +2,10 @@
 //!
 //! A check reads a value from its subject, passes it through filters, and
 //! tests it with one predicate. The runner resolves the parsed check into
-//! a [`Check`] and hands it each [`Read`]; this module never talks to the
-//! browser.
+//! a [`Check`] and hands it each [`Read`]; this crate never talks to the
+//! browser. It also owns [`validate_literals`], which checks every
+//! literal filter argument of a parsed file with the same code that
+//! builds filters at run time.
 
 mod filter;
 mod json;
@@ -15,31 +17,32 @@ mod xpath;
 use std::fmt;
 
 use chrono::{DateTime, Utc};
-pub(crate) use filter::{Charset, DateFormat, Filter, FilterError, Missing, Step};
-pub(crate) use json::{JsonQuery, parse as parse_json};
-pub(crate) use literals::validate_literals;
-pub(crate) use pattern::{Pattern, PatternFlags};
-pub(crate) use predicate::{Expected, Predicate};
+use filter::Step;
+pub use filter::{Charset, DateFormat, Filter, FilterError, Missing};
+pub use json::{JsonError, JsonQuery, parse as parse_json};
+pub use literals::validate_literals;
+pub use pattern::{Pattern, PatternError, PatternFlags};
+pub use predicate::{Expected, Predicate};
 use whirl_types::{PredicateKind, Value};
-pub(crate) use xpath::{Markup, XpathQuery, is_xml_content_type};
+pub use xpath::{Markup, XpathQuery, is_xml_content_type};
 
 use self::predicate::Outcome;
 
 /// What a subject gave: a value, or a missing value (SPEC 9.2).
 #[derive(Clone, Debug)]
-pub(crate) enum Read {
+pub enum Read {
     Value(Value),
     Missing(Missing),
 }
 
 /// What filters need besides their input.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct ReadContext {
+pub struct ReadContext {
     /// The time of the read, for `daysAfterNow` and `daysBeforeNow`.
-    pub(crate) now:    DateTime<Utc>,
+    pub now:    DateTime<Utc>,
     /// How a first `xpath:` filter parses the read: XML for the body of an
     /// XML response, else HTML (SPEC 9.5). Later filters always parse HTML.
-    pub(crate) markup: Markup,
+    pub markup: Markup,
 }
 
 #[cfg(test)]
@@ -55,26 +58,26 @@ impl ReadContext {
 
 /// One check, resolved and ready to test values.
 #[derive(Clone, Debug)]
-pub(crate) struct Check {
-    pub(crate) filters:   Vec<Filter>,
-    pub(crate) negated:   bool,
-    pub(crate) predicate: Predicate,
+pub struct Check {
+    pub filters:   Vec<Filter>,
+    pub negated:   bool,
+    pub predicate: Predicate,
 }
 
 /// Why a check did not pass, with the report's stable code (SPEC 9.7).
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct Failure {
-    pub(crate) code:     FailureCode,
-    pub(crate) message:  String,
+pub struct Failure {
+    pub code:     FailureCode,
+    pub message:  String,
     /// The check as written, such as `not contains admin`.
-    pub(crate) expected: String,
+    pub expected: String,
     /// What the check saw.
-    pub(crate) actual:   String,
+    pub actual:   String,
 }
 
 /// The report codes of SPEC 9.7 that the engine produces.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum FailureCode {
+pub enum FailureCode {
     /// A predicate that does not hold.
     Assert,
     TypeMismatch,
@@ -84,7 +87,7 @@ pub(crate) enum FailureCode {
 
 impl FailureCode {
     /// The stable report code.
-    pub(crate) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Assert => "assert",
             Self::TypeMismatch => "type-mismatch",
@@ -102,7 +105,7 @@ impl fmt::Display for FailureCode {
 
 impl Check {
     /// The check as written after its subject, such as `not contains x`.
-    pub(crate) fn describe(&self) -> String {
+    pub fn describe(&self) -> String {
         let predicate = self.predicate.describe();
         if self.negated {
             format!("not {predicate}")
@@ -112,7 +115,7 @@ impl Check {
     }
 
     /// Tests one read of the subject (SPEC 9.7).
-    pub(crate) fn evaluate(&self, read: Read, context: ReadContext) -> Result<(), Failure> {
+    pub fn evaluate(&self, read: Read, context: ReadContext) -> Result<(), Failure> {
         let value = match apply_filters(&self.filters, read, context) {
             Ok(Read::Value(value)) => value,
             Ok(Read::Missing(missing)) => return self.on_missing(&missing),
@@ -197,7 +200,7 @@ fn typed(value: &Value) -> String {
 
 /// Runs filters over a read. A missing value passes through without
 /// running them (SPEC 9.5).
-pub(crate) fn apply_filters(
+pub fn apply_filters(
     filters: &[Filter],
     read: Read,
     context: ReadContext,

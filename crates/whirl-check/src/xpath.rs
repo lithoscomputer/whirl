@@ -2,7 +2,7 @@
 //! libxml2 through the `whirl-xpath` crate.
 
 use whirl_types::{Number, Value, quote};
-pub(crate) use whirl_xpath::Markup;
+pub use whirl_xpath::Markup;
 use whirl_xpath::Output;
 
 /// The largest `f64` below which every whole number is exact.
@@ -10,12 +10,12 @@ const EXACT_INTEGER_LIMIT: f64 = 9_007_199_254_740_992.0;
 
 /// An XPath 1.0 expression that libxml2 accepts.
 #[derive(Clone, Debug)]
-pub(crate) struct XpathQuery(String);
+pub struct XpathQuery(String);
 
 impl XpathQuery {
     /// Checks the expression. An unknown namespace prefix passes, because
     /// only the document can define it.
-    pub(crate) fn parse(expression: &str) -> Result<Self, String> {
+    pub fn parse(expression: &str) -> Result<Self, String> {
         whirl_xpath::validate(expression)
             .map_err(|error| format!("invalid XPath expression {}: {error}", quote(expression)))?;
         Ok(Self(expression.to_owned()))
@@ -58,7 +58,7 @@ fn number(value: f64) -> Option<Number> {
 
 /// True when a `Content-Type` value names an XML media type: `text/xml`,
 /// `application/xml`, or a type that ends in `+xml` (SPEC 9.5).
-pub(crate) fn is_xml_content_type(content_type: &str) -> bool {
+pub fn is_xml_content_type(content_type: &str) -> bool {
     let essence = content_type
         .split(';')
         .next()

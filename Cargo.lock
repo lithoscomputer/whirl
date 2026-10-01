@@ -2982,19 +2982,12 @@ dependencies = [
  "chrono",
  "clap",
  "dirs",
- "encoding_rs",
  "flate2",
- "form_urlencoded",
- "html-escape",
  "lithos-llm",
- "percent-encoding",
- "proptest",
  "quick-junit",
- "regress",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
- "serde_json_path",
  "sha2",
  "tar",
  "tempfile",
@@ -3006,10 +2999,30 @@ dependencies = [
  "trycmd",
  "twin-openai",
  "url",
+ "whirl-check",
+ "whirl-lang",
+ "whirl-types",
+ "zip",
+]
+
+[[package]]
+name = "whirl-check"
+version = "0.20.0"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "encoding_rs",
+ "form_urlencoded",
+ "html-escape",
+ "percent-encoding",
+ "proptest",
+ "regress",
+ "serde_json",
+ "serde_json_path",
+ "thiserror",
  "whirl-lang",
  "whirl-types",
  "whirl-xpath",
- "zip",
 ]
 
 [[package]]

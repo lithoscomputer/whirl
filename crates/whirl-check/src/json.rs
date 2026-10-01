@@ -19,7 +19,7 @@ const MAX_DEPTH: usize = 128;
 /// A JSON syntax error with its byte offset.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 #[error("invalid JSON at byte {offset}: {reason}")]
-pub(crate) struct JsonError {
+pub struct JsonError {
     pub(crate) offset: usize,
     pub(crate) reason: JsonErrorReason,
 }
@@ -52,7 +52,7 @@ impl fmt::Display for JsonErrorReason {
 }
 
 /// Parses one JSON text into an exact [`Value`] tree.
-pub(crate) fn parse(text: &str) -> Result<Value, JsonError> {
+pub fn parse(text: &str) -> Result<Value, JsonError> {
     let mut parser = Parser {
         text,
         bytes: text.as_bytes(),
@@ -296,7 +296,7 @@ impl Parser<'_> {
 
 /// A parsed RFC 9535 JSONPath query (SPEC 9.5).
 #[derive(Clone, Debug)]
-pub(crate) struct JsonQuery {
+pub struct JsonQuery {
     text:     String,
     path:     JsonPath,
     singular: bool,
@@ -304,7 +304,7 @@ pub(crate) struct JsonQuery {
 
 impl JsonQuery {
     /// Parses a query such as `$.items[0].id`.
-    pub(crate) fn parse(text: &str) -> Result<Self, String> {
+    pub fn parse(text: &str) -> Result<Self, String> {
         let path =
             JsonPath::parse(text).map_err(|error| format!("invalid JSONPath {text}: {error}"))?;
         Ok(Self {
