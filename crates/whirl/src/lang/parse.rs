@@ -16,7 +16,6 @@ use whirl_types::{
     is_bytes_literal_shape, quote as quote_json,
 };
 
-use crate::check::{Charset, DateFormat, JsonQuery, Pattern, PatternFlags, XpathQuery};
 use crate::lang::ast::snapshot::{MaxDiff, PixelThreshold, SnapshotOption, SnapshotOptionLine};
 use crate::lang::ast::{
     Action, ActionKind, Assert, AssertBody, BrowserKind, BrowserSimOrigin, Capture, CheckLine,
@@ -50,6 +49,27 @@ pub(crate) struct ParseError {
 }
 
 impl ParseError {
+    /// A syntax diagnostic at `span` of `source`, for a rule outside the
+    /// grammar that is checked after parsing (SPEC 17.1), such as an
+    /// invalid literal regex. It has no expected alternatives.
+    pub(crate) fn at_span(path: &Path, source: &str, span: Span, message: String) -> Self {
+        let source_line = source
+            .lines()
+            .nth(usize::try_from(span.line.saturating_sub(1)).unwrap_or(0))
+            .unwrap_or_default()
+            .to_owned();
+        Self {
+            code: ParseErrorCode::Syntax,
+            path: path.to_path_buf(),
+            line: span.line,
+            column: span.column,
+            len: span.len,
+            source_line,
+            message,
+            expected: Vec::new(),
+        }
+    }
+
     /// Renders the diagnostic: location and message, the source line, a
     /// caret under the offending token, and the expected alternatives.
     pub(crate) fn render(&self) -> String {
@@ -1354,10 +1374,10 @@ fn parse_request_field(cursor: &mut Cursor, span: Span) -> Result<RequestField, 
         _ => "",
     };
     if head.starts_with("json:") {
-        return Ok(RequestField::Json(json_path_value(token)?));
+        return Ok(RequestField::Json(prefixed_value(token, "json:")?));
     }
     if head.starts_with("xpath:") {
-        return Ok(RequestField::Xpath(xpath_value(token)?));
+        return Ok(RequestField::Xpath(prefixed_value(token, "xpath:")?));
     }
     if !head.starts_with("header:") {
         return Err(
@@ -1396,10 +1416,10 @@ fn parse_response_field_token(token: RawToken) -> Result<ResponseField, LineErro
         _ => "",
     };
     if head.starts_with("json:") {
-        return Ok(ResponseField::Json(json_path_value(token)?));
+        return Ok(ResponseField::Json(prefixed_value(token, "json:")?));
     }
     if head.starts_with("xpath:") {
-        return Ok(ResponseField::Xpath(xpath_value(token)?));
+        return Ok(ResponseField::Xpath(prefixed_value(token, "xpath:")?));
     }
     if !head.starts_with("header:") {
         return Err(
@@ -1427,27 +1447,6 @@ fn prefixed_value(token: RawToken, prefix: &str) -> Result<Value, LineError> {
             LineError::new(span, format!("`{prefix}` needs an argument")).expecting(["a query"])
         })?
         .into_value()
-}
-
-/// A `json:PATH` argument, with a literal path checked here (SPEC 9.5).
-fn json_path_value(token: RawToken) -> Result<Value, LineError> {
-    let span = token.span;
-    let value = prefixed_value(token, "json:")?;
-    if let Some(literal) = value.as_literal() {
-        JsonQuery::parse(&literal).map_err(|message| LineError::new(span, message))?;
-    }
-    Ok(value)
-}
-
-/// An `xpath:EXPR` argument, with a literal expression checked here (SPEC
-/// 9.5).
-fn xpath_value(token: RawToken) -> Result<Value, LineError> {
-    let span = token.span;
-    let value = prefixed_value(token, "xpath:")?;
-    if let Some(literal) = value.as_literal() {
-        XpathQuery::parse(&literal).map_err(|message| LineError::new(span, message))?;
-    }
-    Ok(value)
 }
 
 /// Parses `MOCK METHOD url STATUS` or `MOCK METHOD url failed` (SPEC
@@ -1820,21 +1819,6 @@ fn parse_expected(cursor: &mut Cursor, op_span: Span) -> Result<Operand, LineErr
     parse_operand(cursor, op_span).map(Operand::Value)
 }
 
-/// Checks a regex literal in Unicode mode (SPEC 3.1).
-fn validate_regex(regex: &Regex) -> Result<(), LineError> {
-    let flags = PatternFlags {
-        ignore_case: regex.flags.ignore_case,
-        dot_all:     regex.flags.dot_all,
-        multiline:   regex.flags.multiline,
-    };
-    Pattern::validate(&regex.pattern, flags).map_err(|error| {
-        LineError::new(
-            regex.span,
-            format!("invalid regex in Unicode mode: {}", error.reason),
-        )
-    })
-}
-
 /// Parses an index: an integer with an optional minus sign (SPEC 3.1).
 fn parse_index(text: &str) -> Option<i64> {
     let digits = text.strip_prefix('-').unwrap_or(text);
@@ -1865,13 +1849,11 @@ fn parse_filters(cursor: &mut Cursor) -> Result<(Vec<FilterSpec>, Option<RawToke
         let (head_is_json, head_is_xpath) = (head.starts_with("json:"), head.starts_with("xpath:"));
         let span = token.span;
         let (kind, args) = if head_is_json {
-            (FilterKind::Json, vec![FilterArg::Value(json_path_value(
-                token,
-            )?)])
+            let path = prefixed_value(token, "json:")?;
+            (FilterKind::Json, vec![FilterArg::Value(path)])
         } else if head_is_xpath {
-            (FilterKind::Xpath, vec![FilterArg::Value(xpath_value(
-                token,
-            )?)])
+            let expression = prefixed_value(token, "xpath:")?;
+            (FilterKind::Xpath, vec![FilterArg::Value(expression)])
         } else if let Some(kind) = keyword {
             (kind, parse_filter_args(kind, cursor, span)?)
         } else {
@@ -1881,19 +1863,16 @@ fn parse_filters(cursor: &mut Cursor) -> Result<(Vec<FilterSpec>, Option<RawToke
     }
 }
 
-/// Parses the arguments of one filter keyword (SPEC 9.5), checking
-/// literal regexes, date formats, and charset labels.
+/// Parses the arguments of one filter keyword (SPEC 9.5). A literal
+/// regex, date format, or charset label is checked after parsing, by the
+/// check engine.
 fn parse_filter_args(
     kind: FilterKind,
     cursor: &mut Cursor,
     span: Span,
 ) -> Result<Vec<FilterArg>, LineError> {
     let value = |cursor: &mut Cursor| parse_operand(cursor, span).map(FilterArg::Value);
-    let regex = |cursor: &mut Cursor| -> Result<FilterArg, LineError> {
-        let regex = cursor.expect_regex()?;
-        validate_regex(&regex)?;
-        Ok(FilterArg::Regex(regex))
-    };
+    let regex = |cursor: &mut Cursor| cursor.expect_regex().map(FilterArg::Regex);
     Ok(match kind {
         FilterKind::Nth => {
             let token = cursor.next_token()?.ok_or_else(|| {
@@ -1906,23 +1885,11 @@ fn parse_filter_args(
             })?;
             vec![FilterArg::Index(index)]
         }
-        FilterKind::Split | FilterKind::UrlQueryParam => vec![value(cursor)?],
-        FilterKind::ToDate | FilterKind::DateFormat => {
-            let format = parse_operand(cursor, span)?;
-            if let Some(literal) = format.as_literal() {
-                DateFormat::new(&literal)
-                    .map_err(|message| LineError::new(format.span, message))?;
-            }
-            vec![FilterArg::Value(format)]
-        }
-        FilterKind::CharsetDecode => {
-            let label = parse_operand(cursor, span)?;
-            if let Some(literal) = label.as_literal() {
-                Charset::from_label(&literal)
-                    .map_err(|message| LineError::new(label.span, message))?;
-            }
-            vec![FilterArg::Value(label)]
-        }
+        FilterKind::Split
+        | FilterKind::UrlQueryParam
+        | FilterKind::ToDate
+        | FilterKind::DateFormat
+        | FilterKind::CharsetDecode => vec![value(cursor)?],
         FilterKind::Replace => vec![value(cursor)?, value(cursor)?],
         FilterKind::Regex => vec![regex(cursor)?],
         FilterKind::ReplaceRegex => vec![regex(cursor)?, value(cursor)?],
@@ -1954,9 +1921,7 @@ fn parse_predicate(
     };
     let text = token.bare_single().unwrap_or_default();
     if text == "matches" {
-        let regex = cursor.expect_regex()?;
-        validate_regex(&regex)?;
-        return Ok((negated, PredicateSpec::Matches(regex)));
+        return Ok((negated, PredicateSpec::Matches(cursor.expect_regex()?)));
     }
     if let Some((_, kind)) = COMPARE_KEYWORDS.iter().find(|(name, _)| *name == text) {
         let expected = parse_expected(cursor, token.span)?;
@@ -2195,9 +2160,7 @@ fn parse_page_body(
             .expecting(["a value", "matches /re/"]));
     };
     let check = if token.bare_single() == Some("matches") {
-        let regex = cursor.expect_regex()?;
-        validate_regex(&regex)?;
-        PageCheck::Matches(regex)
+        PageCheck::Matches(cursor.expect_regex()?)
     } else {
         if token.timeout.is_some() && cursor.at_line_end() {
             return Err(
@@ -3872,13 +3835,10 @@ mod tests {
     }
 
     #[test]
-    fn json_paths_are_checked_when_literal() {
-        let error = parse_err("VISIT /\nASSERT response:x json:$.[ == 1\n");
-        assert!(
-            error.message.starts_with("invalid JSONPath"),
-            "{}",
-            error.message
-        );
+    fn json_paths_parse_as_prefixed_values() {
+        // A literal path is not checked here; the check engine validates
+        // it after parsing.
+        only_check("response:x json:$.[ == 1");
         let error = parse_err("VISIT /\nASSERT response:r json:$[\"a\"] == 1\n");
         assert!(
             error.message.contains("quote the whole value"),
@@ -3927,30 +3887,13 @@ mod tests {
     }
 
     #[test]
-    fn xpath_expressions_are_checked_when_literal() {
-        for invalid in ["//li[", "count(", "foo()"] {
-            let error = parse_err(&format!(
-                "VISIT /\nASSERT response:x xpath:\"{invalid}\" exists\n"
-            ));
-            assert!(
-                error.message.starts_with("invalid XPath expression"),
-                "{invalid}: {}",
-                error.message
-            );
-        }
+    fn xpath_expressions_parse_as_prefixed_values() {
+        // A literal expression is not checked here; the check engine
+        // validates it after parsing.
+        only_check("response:x xpath:\"//li[\" exists");
         let error = parse_err("VISIT /\nASSERT response:r xpath://a[@x=\"1\"] exists\n");
         assert!(
             error.message.contains("quote the whole value"),
-            "{}",
-            error.message
-        );
-    }
-
-    #[test]
-    fn regexes_must_be_valid_in_unicode_mode() {
-        let error = parse_err("VISIT /\nASSERT url matches /a\\-b/\n");
-        assert!(
-            error.message.starts_with("invalid regex in Unicode mode"),
             "{}",
             error.message
         );
