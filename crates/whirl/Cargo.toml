@@ -9,8 +9,8 @@ description.workspace = true
 
 [dependencies]
 anyhow = "1.0.104"
-base64 = "=0.22.1"
-chrono = { version = "=0.4.45", default-features = false, features = ["std", "serde"] }
+base64.workspace = true
+chrono.workspace = true
 clap = { version = "4.6.6", features = ["derive"] }
 dirs = "6"
 encoding_rs = "=0.8.42"
@@ -26,7 +26,7 @@ reqwest = { version = "0.12", default-features = false, features = [
     "rustls-tls",
 ] }
 serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["preserve_order", "raw_value"] }
+serde_json.workspace = true
 serde_json_path = "=0.7.2"
 sha2 = "0.10"
 tar = "0.4"
@@ -36,6 +36,7 @@ tokio = { version = "1", features = ["full"] }
 tracing = { version = "=0.1.44", default-features = false, features = ["std"] }
 tracing-subscriber = { version = "=0.3.20", default-features = false, features = ["fmt", "registry"] }
 url = "=2.5.8"
+whirl-types = { path = "../whirl-types" }
 whirl-xpath = { path = "../whirl-xpath" }
 zip = { version = "7.2.0", default-features = false, features = [
     "deflate-flate2",
@@ -47,7 +48,7 @@ axum = "0.8"
 pest = "=2.9.2"
 pest_meta = "=2.9.2"
 pest_vm = "=2.9.2"
-proptest = "=1.11.0"
+proptest.workspace = true
 tiny_http = "0.12.0"
 # The OpenAI-compatible model twin that ACT acceptance tests run against.
 twin-openai = { git = "https://github.com/lithoscomputer/twins", rev = "73164984026a2901f133140a467195c1d924f244" }

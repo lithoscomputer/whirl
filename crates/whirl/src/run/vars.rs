@@ -10,7 +10,8 @@
 use std::collections::HashMap;
 use std::env;
 
-use crate::check::{Value as TypedValue, quote_json};
+use whirl_types::{Value as TypedValue, quote as quote_json};
+
 use crate::lang::ast::{Span, Value, ValueSegment};
 
 /// The replacement text for a masked secret (SPEC 11).

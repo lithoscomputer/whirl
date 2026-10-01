@@ -7,11 +7,11 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use chrono::{DateTime, SecondsFormat, Utc};
 
-use super::number::Number;
+use crate::number::Number;
 
 /// A value that a subject or a filter gives, or that a capture stores.
 #[derive(Clone, Debug)]
-pub(crate) enum Value {
+pub enum Value {
     String(String),
     Number(Number),
     Bool(bool),
@@ -29,7 +29,7 @@ pub(crate) enum Value {
 
 /// The type of a [`Value`], named as SPEC 9.3 names it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ValueType {
+pub enum ValueType {
     String,
     Number,
     Boolean,
@@ -43,7 +43,7 @@ pub(crate) enum ValueType {
 
 impl ValueType {
     /// The SPEC name, such as `string` or `node set`.
-    pub(crate) fn name(self) -> &'static str {
+    pub fn name(self) -> &'static str {
         match self {
             Self::String => "string",
             Self::Number => "number",
@@ -69,7 +69,7 @@ impl Value {
     /// typed the way Hurl types `--variable` (SPEC 11): a JSON number,
     /// `true`, `false`, or `null` gives that type; any other text is a
     /// string.
-    pub(crate) fn infer(text: &str) -> Self {
+    pub fn infer(text: &str) -> Self {
         if let Some(number) = Number::parse(text) {
             return Self::Number(number);
         }
@@ -83,7 +83,7 @@ impl Value {
 
     /// A value from the shim's JSON transport: a page string, a count, or
     /// an `eval` result (SPEC 10).
-    pub(crate) fn from_json(json: serde_json::Value) -> Self {
+    pub fn from_json(json: serde_json::Value) -> Self {
         match json {
             serde_json::Value::Null => Self::Null,
             serde_json::Value::Bool(value) => Self::Bool(value),
@@ -104,7 +104,7 @@ impl Value {
     }
 
     /// The value's type.
-    pub(crate) fn value_type(&self) -> ValueType {
+    pub fn value_type(&self) -> ValueType {
         match self {
             Self::String(_) => ValueType::String,
             Self::Number(_) => ValueType::Number,
@@ -120,7 +120,7 @@ impl Value {
 
     /// The text form (SPEC 9.3), used for interpolation, reports, and
     /// `toString`. A node set has none.
-    pub(crate) fn text_form(&self) -> Option<String> {
+    pub fn text_form(&self) -> Option<String> {
         Some(match self {
             Self::String(text) => text.clone(),
             Self::Number(number) => number.text().to_owned(),
@@ -135,7 +135,7 @@ impl Value {
 
     /// Compact JSON for the value. Bytes and dates become JSON strings of
     /// their text form. A node set has none.
-    pub(crate) fn to_json(&self) -> Option<String> {
+    pub fn to_json(&self) -> Option<String> {
         let mut out = String::new();
         self.write_json(&mut out)?;
         Some(out)
@@ -177,7 +177,7 @@ impl Value {
 
     /// JSON equality (SPEC 9.6). Values of different types are never
     /// equal; integers and floats are both numbers.
-    pub(crate) fn json_eq(&self, other: &Self) -> bool {
+    pub fn json_eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::String(a), Self::String(b)) => a == b,
             (Self::Number(a), Self::Number(b)) => a == b,
@@ -204,7 +204,7 @@ impl Value {
     /// The value as a failure report shows it: a string in JSON quotes,
     /// so `"42"` and `42` read differently, and other values in their
     /// text form, with the type named where the text form is ambiguous.
-    pub(crate) fn describe(&self) -> String {
+    pub fn describe(&self) -> String {
         match self {
             Self::String(text) => quote(text),
             Self::Bytes(_) | Self::Date(_) => format!(
@@ -246,7 +246,7 @@ fn hex_digit(nibble: u32) -> char {
 }
 
 /// `text` as a JSON string literal, for reports.
-pub(crate) fn quote(text: &str) -> String {
+pub fn quote(text: &str) -> String {
     let mut out = String::with_capacity(text.len() + 2);
     push_json_string(&mut out, text);
     out

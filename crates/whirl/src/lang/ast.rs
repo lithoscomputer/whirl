@@ -8,7 +8,7 @@
 use std::fmt;
 use std::path::PathBuf;
 
-use crate::check::{FilterKind, PredicateKind, StaticType};
+use whirl_types::{FilterKind, PredicateKind, StaticType};
 
 mod options;
 pub(crate) mod snapshot;

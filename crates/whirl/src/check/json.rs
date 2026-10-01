@@ -8,10 +8,9 @@
 use std::fmt;
 
 use serde_json_path::{JsonPath, PathElement};
+use whirl_types::{Number, Value};
 
 use super::filter::{Missing, Step};
-use super::number::Number;
-use super::value::Value;
 
 /// Nesting deeper than this is an error, so hostile input cannot exhaust
 /// the stack. serde_json uses the same limit.

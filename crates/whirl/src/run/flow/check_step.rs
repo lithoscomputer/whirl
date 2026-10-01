@@ -12,6 +12,7 @@ use base64::engine::general_purpose::STANDARD;
 use chrono::{DateTime, Utc};
 use serde_json::Value as Json;
 use tokio::time::sleep;
+use whirl_types::{FilterKind, Number, Value};
 
 use super::act_step::{ActBudget, ActLine};
 use super::ai_step::{self, AiSpend, AiTarget, Found};
@@ -20,8 +21,8 @@ use super::{
     step_error,
 };
 use crate::check::{
-    self, Charset, Check, DateFormat, Expected, Filter, FilterKind, JsonQuery, Markup, Missing,
-    Pattern, PatternFlags, Predicate, Read, ReadContext, Value, XpathQuery,
+    self, Charset, Check, DateFormat, Expected, Filter, JsonQuery, Markup, Missing, Pattern,
+    PatternFlags, Predicate, Read, ReadContext, XpathQuery,
 };
 use crate::lang::ast::{
     self, Extractor, FilterArg, FilterSpec, Operand, PredicateSpec, RequestField, ResponseField,
@@ -973,9 +974,9 @@ impl ResponseData {
     /// Reads one field (SPEC 9.2).
     fn field(&self, field: &ResponseRead) -> Result<Read, String> {
         Ok(match field {
-            ResponseRead::Status => Read::Value(Value::Number(check::Number::integer(i64::from(
-                self.status,
-            )))),
+            ResponseRead::Status => {
+                Read::Value(Value::Number(Number::integer(i64::from(self.status))))
+            }
             ResponseRead::Header(name) => match self.header(name) {
                 Some(value) => Read::Value(Value::String(value)),
                 None => Read::Missing(Missing::AbsentHeader(name.clone())),

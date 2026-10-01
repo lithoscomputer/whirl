@@ -11,10 +11,12 @@ use std::mem;
 use std::path::{Path, PathBuf};
 use std::vec::IntoIter;
 
-use crate::check::{
-    COMPARE_KEYWORDS, Charset, DateFormat, FILTER_KEYWORDS, FilterKind, JsonQuery, Pattern,
-    PatternFlags, WORD_PREDICATES, XpathQuery, bytes_literal, is_bytes_literal_shape, quote_json,
+use whirl_types::{
+    COMPARE_KEYWORDS, FILTER_KEYWORDS, FilterKind, WORD_PREDICATES, bytes_literal,
+    is_bytes_literal_shape, quote as quote_json,
 };
+
+use crate::check::{Charset, DateFormat, JsonQuery, Pattern, PatternFlags, XpathQuery};
 use crate::lang::ast::snapshot::{MaxDiff, PixelThreshold, SnapshotOption, SnapshotOptionLine};
 use crate::lang::ast::{
     Action, ActionKind, Assert, AssertBody, BrowserKind, BrowserSimOrigin, Capture, CheckLine,
@@ -3613,7 +3615,8 @@ impl Parser {
 
 #[cfg(test)]
 mod tests {
-    use crate::check::PredicateKind;
+    use whirl_types::PredicateKind;
+
     use crate::lang::ast::DurationUnit;
     /// Parses many `.whirl` sources and reports every broken file's first
     /// error, so one `whirl check` run surfaces them all (SPEC 13, 16).

@@ -10,7 +10,6 @@ use serde_json::{Value as Json, json};
 use tokio::fs;
 use tracing::{Instrument as _, debug, debug_span, info_span};
 
-use crate::check;
 use crate::lang::ast::{
     self, BrowserKind, BrowserSimOrigin, DialogPolicy, DurationLit, File, FileOption, OptionSource,
     OptionValue, ReducedMotion, Value, Viewport,
@@ -397,7 +396,7 @@ pub(crate) fn setup_path_for(file: &File) -> Option<PathBuf> {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct SetupHandoff {
     pub(crate) storage_path: PathBuf,
-    pub(crate) captures:     Vec<(String, check::Value)>,
+    pub(crate) captures:     Vec<(String, whirl_types::Value)>,
     pub(crate) secrets:      Vec<String>,
 }
 
@@ -407,7 +406,7 @@ pub(crate) struct SetupHandoff {
 pub(crate) struct FlowOutcome {
     pub(crate) report:   FileReport,
     /// Every capture, unmasked, in the order taken.
-    pub(crate) captures: Vec<(String, check::Value)>,
+    pub(crate) captures: Vec<(String, whirl_types::Value)>,
     /// The secrets the run masked.
     pub(crate) secrets:  Vec<String>,
 }
@@ -631,7 +630,7 @@ struct FlowExec<'a> {
     /// cancel closed it).
     flow_open:     bool,
     /// Every capture, unmasked, for a dependent file (SPEC 12).
-    captures:      Vec<(String, check::Value)>,
+    captures:      Vec<(String, whirl_types::Value)>,
     /// Responses read so far; a response never changes (SPEC 9.7).
     responses:     check_step::ResponseCache,
     /// Requests read so far, by `RESPONSE` name (SPEC 9.2).
@@ -1780,7 +1779,7 @@ pub(crate) async fn run_flow(run: &FlowRun<'_>, client: &mut ShimClient) -> Flow
         };
         let finish = |mut report: FileReport,
                       vars: &VarStore,
-                      captures: Vec<(String, check::Value)>| {
+                      captures: Vec<(String, whirl_types::Value)>| {
             report.duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
             debug!(status = ?report.status, duration_ms = report.duration_ms, "flow finished");
             FlowOutcome {
