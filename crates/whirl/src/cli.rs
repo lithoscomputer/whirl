@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use tokio::runtime::Runtime;
 
+use crate::check::validate_literals;
 use crate::lang::cli_options::{CliOptions, OptionFlag};
 use crate::lang::lint::{
     Lint, ModelFacts, Severity, lint_act, lint_file_with, lint_setup_refs, setup_capture_uses,
@@ -441,13 +442,17 @@ struct ParsedInput {
     source: String,
 }
 
-/// Parses every input. Files that parse are returned even when others
-/// fail, so `check` can lint and report everything in one pass.
+/// Parses every input and checks its literal filter arguments (SPEC
+/// 17.1). Files that parse are returned even when others fail, so `check`
+/// can lint and report everything in one pass.
 fn parse_inputs(sources: Vec<(PathBuf, String)>) -> (Vec<ParsedInput>, Vec<ParseError>) {
     let mut parsed = Vec::new();
     let mut errors = Vec::new();
     for (path, source) in sources {
-        match parse_file(&path, &source) {
+        match parse_file(&path, &source).and_then(|file| {
+            validate_literals(&file, &source)?;
+            Ok(file)
+        }) {
             Ok(file) => parsed.push(ParsedInput { file, source }),
             Err(error) => errors.push(error),
         }
@@ -657,7 +662,10 @@ fn check_inputs(
             continue;
         }
         match fs::read_to_string(&path) {
-            Ok(source) => match parse_file(&path, &source) {
+            Ok(source) => match parse_file(&path, &source).and_then(|file| {
+                validate_literals(&file, &source)?;
+                Ok(file)
+            }) {
                 Ok(mut file) => {
                     options.apply(&mut file);
                     setups.push(ParsedInput { file, source });
