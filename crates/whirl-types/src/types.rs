@@ -5,11 +5,11 @@
 
 use std::fmt;
 
-use super::value::ValueType;
+use crate::value::ValueType;
 
 /// A value's type as far as the parser can see.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum StaticType {
+pub enum StaticType {
     Known(ValueType),
     /// A list whose items have this type.
     ListOf(Box<Self>),
@@ -18,9 +18,9 @@ pub(crate) enum StaticType {
 }
 
 impl StaticType {
-    pub(crate) const STRING: Self = Self::Known(ValueType::String);
-    pub(crate) const NUMBER: Self = Self::Known(ValueType::Number);
-    pub(crate) const BYTES: Self = Self::Known(ValueType::Bytes);
+    pub const STRING: Self = Self::Known(ValueType::String);
+    pub const NUMBER: Self = Self::Known(ValueType::Number);
+    pub const BYTES: Self = Self::Known(ValueType::Bytes);
 
     /// The concrete type, when known.
     fn value_type(&self) -> Option<ValueType> {
@@ -33,7 +33,7 @@ impl StaticType {
 
     /// True when the value is always a string, so the expected value is
     /// text (SPEC 9.6).
-    pub(crate) fn is_string(&self) -> bool {
+    pub fn is_string(&self) -> bool {
         *self == Self::STRING
     }
 
@@ -55,7 +55,7 @@ impl fmt::Display for StaticType {
 
 /// A filter without its arguments (SPEC 9.5).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum FilterKind {
+pub enum FilterKind {
     Count,
     First,
     Last,
@@ -89,7 +89,7 @@ pub(crate) enum FilterKind {
 }
 
 /// Every filter keyword that has no `:` argument, with its kind.
-pub(crate) const FILTER_KEYWORDS: &[(&str, FilterKind)] = &[
+pub const FILTER_KEYWORDS: &[(&str, FilterKind)] = &[
     ("count", FilterKind::Count),
     ("first", FilterKind::First),
     ("last", FilterKind::Last),
@@ -122,7 +122,7 @@ pub(crate) const FILTER_KEYWORDS: &[(&str, FilterKind)] = &[
 
 impl FilterKind {
     /// The filter's keyword in `.whirl` source.
-    pub(crate) fn name(self) -> &'static str {
+    pub fn name(self) -> &'static str {
         match self {
             Self::Json => "json:",
             Self::Xpath => "xpath:",
@@ -134,7 +134,7 @@ impl FilterKind {
     }
 
     /// The input types the filter accepts (SPEC 9.5).
-    pub(crate) fn input_types(self) -> &'static [ValueType] {
+    pub fn input_types(self) -> &'static [ValueType] {
         use ValueType::{Boolean, Bytes, Date, List, NodeSet, Null, Number, Object, String};
         match self {
             Self::Count => &[List, NodeSet, Bytes],
@@ -167,7 +167,7 @@ impl FilterKind {
 
     /// The output type for an input type, or `None` when the filter cannot
     /// take that input.
-    pub(crate) fn output(self, input: &StaticType) -> Option<StaticType> {
+    pub fn output(self, input: &StaticType) -> Option<StaticType> {
         if !input.accepted_by(self.input_types()) {
             return None;
         }
@@ -206,7 +206,7 @@ impl FilterKind {
 
 /// A predicate without its expected value (SPEC 9.4).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum PredicateKind {
+pub enum PredicateKind {
     Eq,
     Ne,
     Gt,
@@ -233,7 +233,7 @@ pub(crate) enum PredicateKind {
 }
 
 /// Predicates that take an expected value, with their spelling.
-pub(crate) const COMPARE_KEYWORDS: &[(&str, PredicateKind)] = &[
+pub const COMPARE_KEYWORDS: &[(&str, PredicateKind)] = &[
     ("==", PredicateKind::Eq),
     ("!=", PredicateKind::Ne),
     (">", PredicateKind::Gt),
@@ -246,7 +246,7 @@ pub(crate) const COMPARE_KEYWORDS: &[(&str, PredicateKind)] = &[
 ];
 
 /// Predicates that take nothing, with their spelling.
-pub(crate) const WORD_PREDICATES: &[(&str, PredicateKind)] = &[
+pub const WORD_PREDICATES: &[(&str, PredicateKind)] = &[
     ("exists", PredicateKind::Exists),
     ("isBoolean", PredicateKind::IsBoolean),
     ("isEmpty", PredicateKind::IsEmpty),
@@ -264,7 +264,7 @@ pub(crate) const WORD_PREDICATES: &[(&str, PredicateKind)] = &[
 
 impl PredicateKind {
     /// The predicate's spelling in `.whirl` source.
-    pub(crate) fn name(self) -> &'static str {
+    pub fn name(self) -> &'static str {
         if self == Self::Matches {
             return "matches";
         }
@@ -276,7 +276,7 @@ impl PredicateKind {
     }
 
     /// The value types the predicate accepts (SPEC 9.4); `None` means any.
-    pub(crate) fn value_types(self) -> Option<&'static [ValueType]> {
+    pub fn value_types(self) -> Option<&'static [ValueType]> {
         use ValueType::{Bytes, Date, List, Number, Object, String};
         match self {
             Self::Gt | Self::Ge | Self::Lt | Self::Le => Some(&[Number, Date]),
@@ -289,7 +289,7 @@ impl PredicateKind {
     }
 
     /// True when the predicate can test a value of this static type.
-    pub(crate) fn accepts(self, value: &StaticType) -> bool {
+    pub fn accepts(self, value: &StaticType) -> bool {
         self.value_types()
             .is_none_or(|accepted| value.accepted_by(accepted))
     }

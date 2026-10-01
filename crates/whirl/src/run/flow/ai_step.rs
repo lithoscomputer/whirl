@@ -10,10 +10,10 @@ use std::mem;
 use std::time::{Duration, Instant};
 
 use tokio::time::sleep;
+use whirl_types::PredicateKind;
 
 use super::act_step::{ActBudget, ActLine, act_failure, usage_report};
 use super::{EntryState, FlowExec, PreparedStep, StepEnd, StepNode, entry_timeout_error};
-use crate::check::PredicateKind;
 use crate::lang::ast::{self, Locator, LocatorSegment, SegmentKind};
 use crate::lang::fmt::render_snapshot_target;
 use crate::lang::parse::{is_role, parse_locator};

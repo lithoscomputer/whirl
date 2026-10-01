@@ -14,7 +14,7 @@ const MAX_INTEGER_DIGITS: usize = 4096;
 
 /// A JSON number with its exact text.
 #[derive(Clone, Debug)]
-pub(crate) struct Number {
+pub struct Number {
     text:  String,
     float: bool,
 }
@@ -22,7 +22,7 @@ pub(crate) struct Number {
 impl Number {
     /// Parses text in the JSON number grammar (RFC 8259 section 6). A
     /// number with a fraction or an exponent is a float.
-    pub(crate) fn parse(text: &str) -> Option<Self> {
+    pub fn parse(text: &str) -> Option<Self> {
         let parts = Parts::split(text)?;
         let float = parts.fraction.is_some() || parts.exponent.is_some();
         Some(Self {
@@ -32,7 +32,7 @@ impl Number {
     }
 
     /// An integer from a machine integer.
-    pub(crate) fn integer(value: i64) -> Self {
+    pub fn integer(value: i64) -> Self {
         Self {
             text:  value.to_string(),
             float: false,
@@ -42,7 +42,7 @@ impl Number {
     /// A float from a finite `f64`, written as the shortest text that turns
     /// back into the same `f64`, with at least one fractional digit (SPEC
     /// 9.3). Non-finite values have no JSON form.
-    pub(crate) fn from_f64(value: f64) -> Option<Self> {
+    pub fn from_f64(value: f64) -> Option<Self> {
         if !value.is_finite() {
             return None;
         }
@@ -59,18 +59,18 @@ impl Number {
     }
 
     /// The number's exact JSON text.
-    pub(crate) fn text(&self) -> &str {
+    pub fn text(&self) -> &str {
         &self.text
     }
 
     /// True for a number with a fraction or an exponent, or a `toFloat`
     /// result.
-    pub(crate) fn is_float(&self) -> bool {
+    pub fn is_float(&self) -> bool {
         self.float
     }
 
     /// The same value as a float, for `toFloat`.
-    pub(crate) fn to_float(&self) -> Option<Self> {
+    pub fn to_float(&self) -> Option<Self> {
         if self.float {
             return Some(self.clone());
         }
@@ -80,7 +80,7 @@ impl Number {
 
     /// The integer part, truncated toward zero (`toInt`). `None` when the
     /// integer would need more than [`MAX_INTEGER_DIGITS`] digits.
-    pub(crate) fn truncate(&self) -> Option<Self> {
+    pub fn truncate(&self) -> Option<Self> {
         let decimal = self.decimal();
         let digits = if decimal.exponent >= 0 {
             let zeros = usize::try_from(decimal.exponent).ok()?;
@@ -107,7 +107,7 @@ impl Number {
 
     /// The number as an `i64`, when it is an integer in range. Used for
     /// list indexes.
-    pub(crate) fn to_i64(&self) -> Option<i64> {
+    pub fn to_i64(&self) -> Option<i64> {
         let truncated = self.truncate()?;
         if truncated.decimal() != self.decimal() {
             return None;
@@ -116,7 +116,7 @@ impl Number {
     }
 
     /// Compares two numbers by value.
-    pub(crate) fn cmp_value(&self, other: &Self) -> Ordering {
+    pub fn cmp_value(&self, other: &Self) -> Ordering {
         self.decimal().cmp(&other.decimal())
     }
 

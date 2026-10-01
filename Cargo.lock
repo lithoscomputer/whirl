@@ -3009,8 +3009,19 @@ dependencies = [
  "trycmd",
  "twin-openai",
  "url",
+ "whirl-types",
  "whirl-xpath",
  "zip",
+]
+
+[[package]]
+name = "whirl-types"
+version = "0.20.0"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "proptest",
+ "serde_json",
 ]
 
 [[package]]

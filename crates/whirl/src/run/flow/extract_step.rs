@@ -7,10 +7,11 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value as Json, json};
+use whirl_types::Value;
 
 use super::act_step::{ActBudget, ActLine, act_failure, usage_report};
 use super::{EntryState, FlowExec, StepEnd, StepNode};
-use crate::check::{self, Value};
+use crate::check;
 use crate::report::model::{CaptureValue, ExtractReport, StepError};
 use crate::run::act::{Instruction, ModelClient, PageSnapshot, PlanUsage, extract_message};
 use crate::run::extract;

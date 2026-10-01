@@ -7,7 +7,8 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use crate::check::{Number, PredicateKind, StaticType, ValueType, is_bytes_literal_shape};
+use whirl_types::{Number, PredicateKind, StaticType, ValueType, is_bytes_literal_shape};
+
 use crate::lang::ast::snapshot::SnapshotOption;
 use crate::lang::ast::{
     Action, ActionKind, Assert, AssertBody, Capture, CheckLine, CheckStep, Entry, Extractor, File,

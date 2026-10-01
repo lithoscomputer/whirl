@@ -7,11 +7,8 @@
 
 mod filter;
 mod json;
-mod number;
 mod pattern;
 mod predicate;
-mod types;
-mod value;
 mod xpath;
 
 use std::fmt;
@@ -19,13 +16,9 @@ use std::fmt;
 use chrono::{DateTime, Utc};
 pub(crate) use filter::{Charset, DateFormat, Filter, FilterError, Missing, Step};
 pub(crate) use json::{JsonQuery, parse as parse_json};
-pub(crate) use number::Number;
 pub(crate) use pattern::{Pattern, PatternFlags};
-pub(crate) use predicate::{Expected, Predicate, bytes_literal, is_bytes_literal_shape};
-pub(crate) use types::{
-    COMPARE_KEYWORDS, FILTER_KEYWORDS, FilterKind, PredicateKind, StaticType, WORD_PREDICATES,
-};
-pub(crate) use value::{Value, ValueType, quote as quote_json};
+pub(crate) use predicate::{Expected, Predicate};
+use whirl_types::{PredicateKind, Value};
 pub(crate) use xpath::{Markup, XpathQuery, is_xml_content_type};
 
 use self::predicate::Outcome;

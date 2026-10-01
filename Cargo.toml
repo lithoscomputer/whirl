@@ -10,6 +10,12 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/lithoscomputer/whirl"
 description = "Run web UI tests written in plain text files, driving real browsers through Playwright"
 
+[workspace.dependencies]
+base64 = "=0.22.1"
+chrono = { version = "=0.4.45", default-features = false, features = ["std", "serde"] }
+proptest = "=1.11.0"
+serde_json = { version = "1", features = ["preserve_order", "raw_value"] }
+
 [workspace.lints.rust]
 unsafe_code = "deny"
 unreachable_pub = "warn"

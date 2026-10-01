@@ -16,7 +16,8 @@
 
 use std::fmt::Write as _;
 
-use crate::check::{Number, is_bytes_literal_shape};
+use whirl_types::{Number, is_bytes_literal_shape};
+
 use crate::lang::ast::snapshot::SnapshotOption;
 use crate::lang::ast::{
     Action, ActionKind, Assert, AssertBody, Capture, CheckLine, CheckStep, Comment, DurationLit,

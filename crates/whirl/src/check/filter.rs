@@ -8,12 +8,10 @@ use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
 use base64::{Engine as _, alphabet};
 use chrono::format::{Item, StrftimeItems};
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
+use whirl_types::{FilterKind, Number, Value, quote};
 
 use super::json::JsonQuery;
-use super::number::Number;
 use super::pattern::Pattern;
-use super::types::FilterKind;
-use super::value::{Value, quote};
 use super::xpath::{Markup, XpathQuery};
 
 /// Base64 with the standard alphabet; decoding accepts text with or

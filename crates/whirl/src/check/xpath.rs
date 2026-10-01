@@ -1,11 +1,9 @@
 //! XPath 1.0 queries for the `xpath:` filter (SPEC 9.5), evaluated by
 //! libxml2 through the `whirl-xpath` crate.
 
+use whirl_types::{Number, Value, quote};
 pub(crate) use whirl_xpath::Markup;
 use whirl_xpath::Output;
-
-use super::number::Number;
-use super::value::{Value, quote};
 
 /// The largest `f64` below which every whole number is exact.
 const EXACT_INTEGER_LIMIT: f64 = 9_007_199_254_740_992.0;
