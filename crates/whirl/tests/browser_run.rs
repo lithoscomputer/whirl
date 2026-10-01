@@ -482,10 +482,11 @@ fn a_run_writes_json_and_junit_reports_with_masking() {
         "telemetry must not contain URLs"
     );
     // Lint diagnostics intentionally name the input file. Only tracing
-    // lines carry a Rust module target such as whirl::run::runner.
+    // lines carry a Rust module target such as whirl_run::runner or
+    // whirl_shim.
     let telemetry = stderr
         .lines()
-        .filter(|line| line.contains("whirl::"))
+        .filter(|line| line.contains("whirl_run::") || line.contains("whirl_shim"))
         .collect::<Vec<_>>()
         .join("\n");
     assert!(
