@@ -11,7 +11,7 @@ mod prompt;
 mod snapshot;
 
 pub(crate) use decision::{ActDecision, FollowUp, GoalStatus, PlannedAction};
-pub(crate) use instruction::Instruction;
+pub(crate) use instruction::{Instruction, Variables};
 pub(crate) use jev::{JevClient, JevPlanner, JevSetupError};
 pub(crate) use model::{JudgeAnswer, ModelCatalog, ModelClient, ModelSetupError, Verdict};
 pub(crate) use planner::{

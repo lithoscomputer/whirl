@@ -8,7 +8,29 @@
 
 use whirl_lang::ast::{Value, ValueSegment};
 
-use crate::run::vars::{VarError, VarStore};
+/// The variable store an instruction resolves through (SPEC 11): what the
+/// runner's store does for every other value, seen from the model side.
+///
+/// Implementors resolve `{{name}}`, `{{setup.name}}`, and `{{env.NAME}}`
+/// references to their text form. Resolving an env reference records its
+/// value as a secret, so [`Variables::secrets`] grows as resolution goes
+/// on. [`Variables::mask`] replaces every recorded secret in a text, so a
+/// text that masks to itself holds no secret.
+pub(crate) trait Variables {
+    /// A failed resolution: an undefined variable or an unset environment
+    /// variable. The step that referenced it fails with this error.
+    type Error;
+
+    /// Resolves a value to its final string (SPEC 11) and records every
+    /// `{{env.NAME}}` value it reads as a secret.
+    fn resolve(&mut self, value: &Value) -> Result<String, Self::Error>;
+
+    /// Replaces every recorded secret in `text` with its mask.
+    fn mask(&self, text: &str) -> String;
+
+    /// Every recorded secret, longest first.
+    fn secrets(&self) -> &[String];
+}
 
 /// Placeholder names and the secret values they stand for.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -112,7 +134,7 @@ pub(crate) struct Instruction {
 impl Instruction {
     /// Resolves an `ACT` value (SPEC 11) with masked values replaced by
     /// placeholders. Resolution records env values for masking as usual.
-    pub(crate) fn try_new(value: &Value, vars: &mut VarStore) -> Result<Self, VarError> {
+    pub(crate) fn try_new<V: Variables>(value: &Value, vars: &mut V) -> Result<Self, V::Error> {
         let mut prompt = String::new();
         let mut bindings = SecretBindings::default();
         let mut references = Vec::new();
@@ -135,12 +157,7 @@ impl Instruction {
                         };
                         references.push((reference, resolved.clone()));
                     }
-                    redact_into(
-                        &mut prompt,
-                        &resolved,
-                        vars.masker().secrets(),
-                        &mut bindings,
-                    );
+                    redact_into(&mut prompt, &resolved, vars.secrets(), &mut bindings);
                 }
             }
         }
@@ -351,10 +368,81 @@ fn redact_into(out: &mut String, text: &str, secrets: &[String], bindings: &mut 
     }
 }
 
+/// A [`Variables`] store for unit tests: string inputs by name and the
+/// secrets of a runner's store, masked with `***`.
+#[cfg(test)]
+pub(crate) mod testing {
+    use std::cmp::Reverse;
+    use std::collections::HashMap;
+
+    use whirl_lang::ast::{Value, ValueSegment};
+
+    use super::Variables;
+
+    /// An undefined variable; the tests never resolve env or setup references.
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub(crate) struct Undefined(pub(crate) String);
+
+    #[derive(Debug, Default)]
+    pub(crate) struct TestVars {
+        values:  HashMap<String, String>,
+        /// Recorded secrets, longest first.
+        secrets: Vec<String>,
+    }
+
+    impl TestVars {
+        pub(crate) fn new() -> Self {
+            Self::default()
+        }
+
+        pub(crate) fn set_input(&mut self, name: &str, text: &str) {
+            self.values.insert(name.to_owned(), text.to_owned());
+        }
+
+        pub(crate) fn record_secret(&mut self, secret: &str) {
+            self.secrets.push(secret.to_owned());
+            self.secrets.sort_by_key(|secret| Reverse(secret.len()));
+        }
+    }
+
+    impl Variables for TestVars {
+        type Error = Undefined;
+
+        fn resolve(&mut self, value: &Value) -> Result<String, Undefined> {
+            let mut out = String::new();
+            for segment in &value.segments {
+                match segment {
+                    ValueSegment::Literal(text) => out.push_str(text),
+                    ValueSegment::Var(name) => out.push_str(
+                        self.values
+                            .get(name)
+                            .ok_or_else(|| Undefined(name.clone()))?,
+                    ),
+                    ValueSegment::EnvVar(name) | ValueSegment::SetupVar(name) => {
+                        return Err(Undefined(name.clone()));
+                    }
+                }
+            }
+            Ok(out)
+        }
+
+        fn mask(&self, text: &str) -> String {
+            self.secrets
+                .iter()
+                .fold(text.to_owned(), |text, secret| text.replace(secret, "***"))
+        }
+
+        fn secrets(&self) -> &[String] {
+            &self.secrets
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use whirl_lang::ast::Span;
 
+    use super::testing::TestVars;
     use super::*;
 
     fn value(segments: Vec<ValueSegment>) -> Value {
@@ -371,7 +459,7 @@ mod tests {
 
     #[test]
     fn the_cache_writes_placeholders_and_variables_as_references() {
-        let mut vars = VarStore::new();
+        let mut vars = TestVars::new();
         vars.set_input("user", "ada");
         let instruction = Instruction::try_new(
             &value(vec![
@@ -395,7 +483,7 @@ mod tests {
 
     #[test]
     fn plain_variables_reach_the_model_as_values() {
-        let mut vars = VarStore::new();
+        let mut vars = TestVars::new();
         vars.set_input("user", "ada");
         let instruction = Instruction::try_new(
             &value(vec![
@@ -411,7 +499,7 @@ mod tests {
 
     #[test]
     fn a_recorded_secret_inside_a_variable_becomes_a_placeholder() {
-        let mut vars = VarStore::new();
+        let mut vars = TestVars::new();
         vars.record_secret("hunter2");
         vars.set_input("login", "ada:hunter2");
         let instruction = Instruction::try_new(
@@ -450,7 +538,7 @@ mod tests {
     fn literal(text: &str) -> Instruction {
         Instruction::try_new(
             &value(vec![ValueSegment::Literal(text.to_owned())]),
-            &mut VarStore::new(),
+            &mut TestVars::new(),
         )
         .expect("resolves")
     }
@@ -492,7 +580,7 @@ mod tests {
         );
         assert_eq!(instruction.span("abc 124"), None);
         assert_eq!(instruction.span(""), None);
-        let mut vars = VarStore::new();
+        let mut vars = TestVars::new();
         vars.record_secret("hunter2");
         vars.set_input("pw", "hunter2");
         let secret = Instruction::try_new(

@@ -718,7 +718,7 @@ mod tests {
     use whirl_lang::ast::{Span, Value, ValueSegment};
 
     use super::*;
-    use crate::run::vars::VarStore;
+    use crate::run::act::instruction::testing::TestVars;
 
     const SNAPSHOT: &str = "- textbox \"Email\" [ref=e4]\n- button \"Sign in\" [ref=e5]\n";
 
@@ -736,7 +736,7 @@ mod tests {
             },
             quoted:   true,
         };
-        Instruction::try_new(&value, &mut VarStore::new()).expect("literal resolves")
+        Instruction::try_new(&value, &mut TestVars::new()).expect("literal resolves")
     }
 
     fn inference(json: Json) -> ActInference {
@@ -801,7 +801,7 @@ mod tests {
 
     #[test]
     fn a_fill_mismatch_never_shows_a_masked_value() {
-        let mut vars = VarStore::new();
+        let mut vars = TestVars::new();
         vars.record_secret("hunter2");
         vars.set_input("password", "hunter2");
         let value = Value {

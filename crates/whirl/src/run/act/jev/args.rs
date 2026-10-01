@@ -169,9 +169,9 @@ mod tests {
     use whirl_lang::ast::{Span, Value, ValueSegment};
 
     use super::*;
-    use crate::run::vars::VarStore;
+    use crate::run::act::instruction::testing::TestVars;
 
-    fn instruction(segments: Vec<ValueSegment>, vars: &mut VarStore) -> Instruction {
+    fn instruction(segments: Vec<ValueSegment>, vars: &mut TestVars) -> Instruction {
         let value = Value {
             segments,
             span: Span {
@@ -187,7 +187,7 @@ mod tests {
     fn literal(text: &str) -> Instruction {
         instruction(
             vec![ValueSegment::Literal(text.to_owned())],
-            &mut VarStore::new(),
+            &mut TestVars::new(),
         )
     }
 
@@ -200,7 +200,7 @@ mod tests {
 
     #[test]
     fn a_placeholder_is_a_fill_value() {
-        let mut vars = VarStore::new();
+        let mut vars = TestVars::new();
         vars.record_secret("hunter2");
         vars.set_input("password", "hunter2");
         let typed = instruction(
