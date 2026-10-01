@@ -8,8 +8,8 @@ use serde::de::{Deserializer, MapAccess, Visitor};
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 
-use crate::report::metadata::ReportMetadata;
-use crate::report::model::{CaptureValue, RunReport};
+use crate::metadata::ReportMetadata;
+use crate::model::{CaptureValue, RunReport};
 
 /// The version this Whirl writes (SPEC 14).
 const VERSION: u32 = 2;
@@ -21,22 +21,22 @@ const READABLE_VERSIONS: [u32; 2] = [1, 2];
 /// The producer's context stays attached when a saved report is rendered later.
 #[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct Document {
-    version: u32,
-    pub(crate) working_directory: PathBuf,
-    pub(crate) whirl_version: String,
-    pub(crate) platform: String,
-    pub(crate) architecture: String,
+pub struct Document {
+    version:                    u32,
+    pub working_directory:      PathBuf,
+    pub(crate) whirl_version:   String,
+    pub(crate) platform:        String,
+    pub(crate) architecture:    String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) video_requested: Option<bool>,
     #[serde(flatten)]
-    pub(crate) report: RunReport,
+    pub report:                 RunReport,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) metadata: Option<ReportMetadata>,
+    pub metadata:               Option<ReportMetadata>,
 }
 
 impl Document {
-    pub(crate) fn new(report: RunReport, metadata: Option<ReportMetadata>, video: bool) -> Self {
+    pub fn new(report: RunReport, metadata: Option<ReportMetadata>, video: bool) -> Self {
         Self {
             version: VERSION,
             working_directory: env::current_dir().unwrap_or_default(),
@@ -49,7 +49,7 @@ impl Document {
         }
     }
 
-    pub(crate) fn read(path: &Path) -> anyhow::Result<Self> {
+    pub fn read(path: &Path) -> anyhow::Result<Self> {
         // Check the version before interpreting its result shape.
         #[derive(Deserialize)]
         struct Version {
@@ -119,7 +119,7 @@ impl Document {
     }
 
     /// Pretty-printed JSON with a trailing newline.
-    pub(crate) fn render(&self) -> String {
+    pub fn render(&self) -> String {
         let mut text = serde_json::to_string_pretty(self)
             .expect("the report model should always serialize to JSON");
         text.push('\n');
@@ -183,7 +183,7 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
-    use crate::report::fixture::{SECRET, sample_report};
+    use crate::fixture::{SECRET, sample_report};
 
     fn rendered() -> Value {
         let text = Document::new(sample_report(), None, false).render();

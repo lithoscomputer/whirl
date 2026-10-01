@@ -16,43 +16,43 @@ use serde_json::value::RawValue;
 /// Absent fields belong to reports written before timestamps were recorded.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct Timing {
+pub struct Timing {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) started_at:  Option<DateTime<Utc>>,
+    pub started_at:  Option<DateTime<Utc>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) finished_at: Option<DateTime<Utc>>,
+    pub finished_at: Option<DateTime<Utc>>,
 }
 
 impl Timing {
-    pub(crate) fn start() -> Self {
+    pub fn start() -> Self {
         Self {
             started_at:  Some(SystemTime::now().into()),
             finished_at: None,
         }
     }
 
-    pub(crate) fn finish(&mut self) {
+    pub fn finish(&mut self) {
         self.finished_at = Some(SystemTime::now().into());
     }
 }
 
 /// A requested flow can also supply setup state, while still running once.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub(crate) struct FlowRoles {
-    pub(crate) requested: bool,
-    pub(crate) setup:     bool,
+pub struct FlowRoles {
+    pub requested: bool,
+    pub setup:     bool,
 }
 
 /// The name of the synthetic entry that reports a failure before the
 /// first real entry: option resolution, storage loading, or browser
 /// launch (SPEC 14).
-pub(crate) const SETUP_ENTRY: &str = "[setup]";
+pub const SETUP_ENTRY: &str = "[setup]";
 
 /// Outcome of a step, an entry, or a file. Files never report
 /// `Skipped`.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
-pub(crate) enum Status {
+pub enum Status {
     Passed,
     Failed,
     /// A runtime error (SPEC 13, exit 3): shim or browser failure,
@@ -64,7 +64,7 @@ pub(crate) enum Status {
 /// What kind of SPEC line a step is.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
-pub(crate) enum StepKind {
+pub enum StepKind {
     Action,
     Page,
     Assert,
@@ -75,15 +75,15 @@ pub(crate) enum StepKind {
 /// A failed step's error detail.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct StepError {
-    pub(crate) code:       String,
-    pub(crate) message:    String,
+pub struct StepError {
+    pub code:       String,
+    pub message:    String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) expected:   Option<String>,
+    pub expected:   Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) actual:     Option<String>,
+    pub actual:     Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) candidates: Option<Vec<String>>,
+    pub candidates: Option<Vec<String>>,
 }
 
 impl Default for StepError {
@@ -100,80 +100,80 @@ impl Default for StepError {
 
 /// The viewport recorded in a report, in CSS pixels.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub(crate) struct ReportViewport {
-    pub(crate) width:  u64,
-    pub(crate) height: u64,
+pub struct ReportViewport {
+    pub width:  u64,
+    pub height: u64,
 }
 
 /// The selected browser environment, reported only after a context starts.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct RuntimeMetadata {
-    pub(crate) browser:            String,
-    pub(crate) viewport:           ReportViewport,
-    pub(crate) user_agent:         Option<String>,
-    pub(crate) browser_version:    Option<String>,
-    pub(crate) node_version:       Option<String>,
-    pub(crate) playwright_version: Option<String>,
+pub struct RuntimeMetadata {
+    pub browser:            String,
+    pub viewport:           ReportViewport,
+    pub user_agent:         Option<String>,
+    pub browser_version:    Option<String>,
+    pub node_version:       Option<String>,
+    pub playwright_version: Option<String>,
     /// Frames per second of the file's recording; absent without `--video`
     /// and in reports written before the field existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) video_fps:          Option<u64>,
+    pub video_fps:          Option<u64>,
 }
 
 /// One executed (or skipped) step.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct StepReport {
-    pub(crate) line:        u32,
-    pub(crate) kind:        StepKind,
+pub struct StepReport {
+    pub line:        u32,
+    pub kind:        StepKind,
     /// The rendered, secret-masked step text.
-    pub(crate) text:        String,
-    pub(crate) status:      Status,
-    pub(crate) duration_ms: u64,
+    pub text:        String,
+    pub status:      Status,
+    pub duration_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) error:       Option<StepError>,
+    pub error:       Option<StepError>,
     /// What an `ACT` step asked and did (SPEC 7.4).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) act:         Option<ActReport>,
+    pub act:         Option<ActReport>,
     /// What the step's `ai:` targets resolved to (SPEC 6.3).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) ai:          Option<AiReport>,
+    pub ai:          Option<AiReport>,
     /// What an `EXTRACT` step read (SPEC 7.6).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) extract:     Option<ExtractReport>,
+    pub extract:     Option<ExtractReport>,
     /// What a `JUDGE` step's model answered (SPEC 9.8).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) judge:       Option<JudgeReport>,
+    pub judge:       Option<JudgeReport>,
     /// What a `GOAL` step ran (SPEC 7.7).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) goal:        Option<GoalReport>,
+    pub goal:        Option<GoalReport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) snapshot:    Option<SnapshotReport>,
+    pub snapshot:    Option<SnapshotReport>,
     /// Notices that do not fail the step, each with a stable code.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) warnings:    Vec<StepWarning>,
+    pub warnings:    Vec<StepWarning>,
 }
 
 /// A notice about a step that does not change its status.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub(crate) struct StepWarning {
+pub struct StepWarning {
     /// A stable code, such as `unused-mock`.
-    pub(crate) code:    String,
+    pub code:    String,
     /// Human-readable detail, secret-masked.
-    pub(crate) message: String,
+    pub message: String,
 }
 
 /// The rule that blocked a host (SPEC 5).
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct BlockedHostRule {
-    pub(crate) host:   String,
+pub struct BlockedHostRule {
+    pub host:   String,
     /// `allow-hosts` or `block-hosts`.
-    pub(crate) option: String,
+    pub option: String,
     /// The `block-hosts` glob that matched; none when no `allow-hosts`
     /// glob matched.
-    pub(crate) glob:   Option<String>,
+    pub glob:   Option<String>,
 }
 
 impl BlockedHostRule {
@@ -190,7 +190,7 @@ impl BlockedHostRule {
 /// Where a setting's value came from (SPEC 13).
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
-pub(crate) enum SettingSource {
+pub enum SettingSource {
     Default,
     File,
     CommandLine,
@@ -199,7 +199,7 @@ pub(crate) enum SettingSource {
 /// A setting's value: text, a list, or none when unset.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(untagged)]
-pub(crate) enum SettingValue {
+pub enum SettingValue {
     Text(String),
     List(Vec<String>),
 }
@@ -207,14 +207,14 @@ pub(crate) enum SettingValue {
 /// One effective setting of a file (SPEC 14).
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct SettingReport {
-    pub(crate) key:    String,
+pub struct SettingReport {
+    pub key:    String,
     /// The value the file ran with, masked; null when unset.
-    pub(crate) value:  Option<SettingValue>,
-    pub(crate) source: SettingSource,
+    pub value:  Option<SettingValue>,
+    pub source: SettingSource,
     /// False for a setting that this engine validates but does not apply,
     /// such as `browsersim-origin`.
-    pub(crate) active: bool,
+    pub active: bool,
 }
 
 impl SettingReport {
@@ -231,96 +231,96 @@ impl SettingReport {
 /// A mock a flow registered and how many requests it served (SPEC 7.5).
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct MockReport {
-    pub(crate) line:   u32,
-    pub(crate) method: String,
+pub struct MockReport {
+    pub line:   u32,
+    pub method: String,
     /// The resolved URL pattern, secret-masked.
-    pub(crate) url:    String,
-    pub(crate) hits:   u64,
+    pub url:    String,
+    pub hits:   u64,
 }
 
 /// Effective snapshot options. Numeric text retains units and permits secret
 /// masking.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct SnapshotReport {
+pub struct SnapshotReport {
     /// The element target's locator text; absent for a full-page capture.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) target:          Option<String>,
-    pub(crate) masks:           Vec<String>,
-    pub(crate) max_diff:        String,
-    pub(crate) pixel_threshold: String,
+    pub target:          Option<String>,
+    pub masks:           Vec<String>,
+    pub max_diff:        String,
+    pub pixel_threshold: String,
 }
 
 /// An `ACT` step's model, the actions it ran, and what the model calls
 /// used. Arguments keep their `%name%` placeholders, so no secret appears.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct ActReport {
-    pub(crate) model:   String,
+pub struct ActReport {
+    pub model:   String,
     /// The planner that chose the actions: `llm`, or `jev` with `--jev`.
     #[serde(default = "llm_planner")]
-    pub(crate) planner: String,
-    pub(crate) actions: Vec<ActActionReport>,
-    pub(crate) usage:   ActUsage,
+    pub planner: String,
+    pub actions: Vec<ActActionReport>,
+    pub usage:   ActUsage,
     /// The line's AI cache status (SPEC 12.1): `hit`, `miss`, or `healed`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) cache:   Option<String>,
+    pub cache:   Option<String>,
     /// For a healed line, the lines the cache held.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) cached:  Option<Vec<String>>,
+    pub cached:  Option<Vec<String>>,
 }
 
 /// A step's `ai:` targets: what each resolved to, and what the model calls
 /// used (SPEC 6.3).
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct AiReport {
-    pub(crate) model:   String,
-    pub(crate) targets: Vec<AiTargetReport>,
-    pub(crate) usage:   ActUsage,
+pub struct AiReport {
+    pub model:   String,
+    pub targets: Vec<AiTargetReport>,
+    pub usage:   ActUsage,
 }
 
 /// One `ai:` target of a step.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct AiTargetReport {
+pub struct AiTargetReport {
     /// The authored locator, with its `ai:` segment; masked.
-    pub(crate) target:      String,
+    pub target:      String,
     /// The locator of the element it resolved to, when it found one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) locator:     Option<String>,
+    pub locator:     Option<String>,
     /// The model's description of the element.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) description: Option<String>,
+    pub description: Option<String>,
     /// The AI cache status (SPEC 12.1): `hit`, `miss`, `healed`, or
     /// `uncached`.
-    pub(crate) cache:       String,
+    pub cache:       String,
     /// For a healed target, the locator the cache held.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) cached:      Option<String>,
+    pub cached:      Option<String>,
 }
 
 /// A `JUDGE` step's verdict, the model's reason, and what the call used
 /// (SPEC 9.8).
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct JudgeReport {
-    pub(crate) model:   String,
+pub struct JudgeReport {
+    pub model:   String,
     /// `yes`, `no`, or `unsure`; absent when the call failed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) verdict: Option<String>,
+    pub verdict: Option<String>,
     /// The model's reason, masked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) reason:  Option<String>,
-    pub(crate) usage:   ActUsage,
+    pub reason:  Option<String>,
+    pub usage:   ActUsage,
 }
 
 /// What an `EXTRACT` step read and what its model call used (SPEC 7.6).
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct ExtractReport {
-    pub(crate) model: String,
+pub struct ExtractReport {
+    pub model: String,
     /// The value with its type, masked as a capture is; absent when the
     /// model found no value.
     #[serde(
@@ -329,8 +329,8 @@ pub(crate) struct ExtractReport {
         serialize_with = "serialize_optional_capture",
         deserialize_with = "deserialize_optional_capture"
     )]
-    pub(crate) value: Option<CaptureValue>,
-    pub(crate) usage: ActUsage,
+    pub value: Option<CaptureValue>,
+    pub usage: ActUsage,
 }
 
 /// Writes a value as the `{type, value}` of a capture.
@@ -380,108 +380,108 @@ fn llm_planner() -> String {
 /// One action an `ACT` or `GOAL` step ran.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct ActActionReport {
+pub struct ActActionReport {
     /// The action as a Whirl line, such as `CLICK button:"Sign in"`.
-    pub(crate) line:        String,
+    pub line:        String,
     /// The model's description of the element.
-    pub(crate) description: String,
+    pub description: String,
     /// Which planner chose this action: `llm`, `jev`, or `cache`.
     #[serde(default = "llm_planner")]
-    pub(crate) planned_by:  String,
+    pub planned_by:  String,
     /// Why the action failed, for a `GOAL` action that the model planned
     /// past (SPEC 7.7).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) error:       Option<String>,
+    pub error:       Option<String>,
 }
 
 /// A `GOAL` step's model, the actions it ran, how it ended, and what the
 /// model calls used (SPEC 7.7).
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct GoalReport {
-    pub(crate) model:   String,
-    pub(crate) actions: Vec<ActActionReport>,
+pub struct GoalReport {
+    pub model:   String,
+    pub actions: Vec<ActActionReport>,
     /// `done` or `impossible`; absent when the model did not say, as for
     /// a cache hit or a step that ran out of actions or time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) end:     Option<String>,
+    pub end:     Option<String>,
     /// The model's reason for its last answer, masked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) reason:  Option<String>,
-    pub(crate) usage:   ActUsage,
+    pub reason:  Option<String>,
+    pub usage:   ActUsage,
     /// The line's AI cache status (SPEC 12.1): `hit`, `miss`, or `healed`.
-    pub(crate) cache:   String,
+    pub cache:   String,
     /// For a healed line, the lines the cache held.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) cached:  Option<Vec<String>>,
+    pub cached:  Option<Vec<String>>,
 }
 
 /// Token usage summed over an `ACT` step's model calls.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct ActUsage {
-    pub(crate) model_calls:     u32,
+pub struct ActUsage {
+    pub model_calls:     u32,
     /// Prompt tokens, cached or not.
-    pub(crate) input_tokens:    u64,
+    pub input_tokens:    u64,
     /// Completion tokens, reasoning included.
-    pub(crate) output_tokens:   u64,
+    pub output_tokens:   u64,
     /// Present only when every call was priced.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) cost_usd_micros: Option<u64>,
+    pub cost_usd_micros: Option<u64>,
     /// Jev's requests, tokens, and cost; present only with `--jev`.
     /// `costUsdMicros` above includes Jev's cost.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) jev:             Option<ActJevUsage>,
+    pub jev:             Option<ActJevUsage>,
 }
 
 /// What an `ACT` step's Jev requests used.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct ActJevUsage {
-    pub(crate) requests:        u32,
-    pub(crate) input_tokens:    u64,
-    pub(crate) output_tokens:   u64,
+pub struct ActJevUsage {
+    pub requests:        u32,
+    pub input_tokens:    u64,
+    pub output_tokens:   u64,
     /// Present only when every answered request was priced.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) cost_usd_micros: Option<u64>,
+    pub cost_usd_micros: Option<u64>,
 }
 
 /// One entry's result: its steps, captures, and artifacts.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct EntryReport {
+pub struct EntryReport {
     /// The display name (SPEC 14): nearest comment above the entry, or
     /// its first action plus line number; `[setup]` for the synthetic
     /// pre-entry failure.
-    pub(crate) name:        String,
-    pub(crate) line:        u32,
-    pub(crate) status:      Status,
-    pub(crate) duration_ms: u64,
-    pub(crate) steps:       Vec<StepReport>,
+    pub name:        String,
+    pub line:        u32,
+    pub status:      Status,
+    pub duration_ms: u64,
+    pub steps:       Vec<StepReport>,
     /// Captured variables, masked, in capture order. Serialized as a
     /// JSON object of `{type, value}` (SPEC 14; report version 2).
     #[serde(
         serialize_with = "serialize_captures",
         deserialize_with = "deserialize_captures"
     )]
-    pub(crate) captures:    Vec<(String, CaptureValue)>,
+    pub captures:    Vec<(String, CaptureValue)>,
     /// Artifact paths recorded for this entry.
-    pub(crate) artifacts:   Vec<String>,
+    pub artifacts:   Vec<String>,
 }
 
 /// One capture as the JSON report writes it: its type and its value. The
 /// value keeps its exact JSON text, so a large integer survives a report
 /// round trip.
 #[derive(Clone, Debug)]
-pub(crate) struct CaptureValue {
+pub struct CaptureValue {
     /// The SPEC 9.3 type name, such as `string` or `number`.
-    pub(crate) value_type: String,
-    pub(crate) value:      Box<RawValue>,
+    pub value_type: String,
+    pub value:      Box<RawValue>,
 }
 
 impl CaptureValue {
     /// A capture with its type and its value's JSON text.
-    pub(crate) fn new(value_type: &str, json: String) -> Self {
+    pub fn new(value_type: &str, json: String) -> Self {
         Self {
             value_type: value_type.to_owned(),
             value:      RawValue::from_string(json)
@@ -498,7 +498,7 @@ impl CaptureValue {
     }
 
     /// A masked capture: its type stays, and its value is `***` (SPEC 14).
-    pub(crate) fn masked(value_type: &str, mask: &str) -> Self {
+    pub fn masked(value_type: &str, mask: &str) -> Self {
         Self::new(
             value_type,
             serde_json::to_string(mask).expect("a string always serializes"),
@@ -592,37 +592,37 @@ fn deserialize_captures<'de, D: Deserializer<'de>>(
 /// One file's result.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct FileReport {
+pub struct FileReport {
     #[serde(flatten)]
-    pub(crate) timing:             Timing,
+    pub timing:             Timing,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) source_sha256:      Option<String>,
+    pub source_sha256:      Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) roles:              Option<FlowRoles>,
+    pub roles:              Option<FlowRoles>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) runtime:            Option<RuntimeMetadata>,
+    pub runtime:            Option<RuntimeMetadata>,
     /// The input path as given on the command line.
-    pub(crate) path:               String,
-    pub(crate) status:             Status,
-    pub(crate) duration_ms:        u64,
-    pub(crate) artifacts_dir:      String,
-    pub(crate) blocked_hosts:      Vec<String>,
+    pub path:               String,
+    pub status:             Status,
+    pub duration_ms:        u64,
+    pub artifacts_dir:      String,
+    pub blocked_hosts:      Vec<String>,
     /// The rule that blocked each host of `blocked_hosts` (SPEC 5). Older
     /// reports omit it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) blocked_host_rules: Vec<BlockedHostRule>,
+    pub blocked_host_rules: Vec<BlockedHostRule>,
     /// The settings the file ran with, masked (SPEC 14). A file whose
     /// options failed to resolve, and older reports, have none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) settings:           Vec<SettingReport>,
+    pub settings:           Vec<SettingReport>,
     /// Screenshot warnings (SPEC 7) and other non-failing notices.
-    pub(crate) warnings:           Vec<String>,
+    pub warnings:           Vec<String>,
     /// File-level artifact paths (`video.webm`, `network.har`).
-    pub(crate) artifacts:          Vec<String>,
+    pub artifacts:          Vec<String>,
     /// Every `MOCK` that ran, in order (SPEC 7.5).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) mocks:              Vec<MockReport>,
-    pub(crate) entries:            Vec<EntryReport>,
+    pub mocks:              Vec<MockReport>,
+    pub entries:            Vec<EntryReport>,
 }
 
 impl FileReport {
@@ -671,21 +671,21 @@ impl FileReport {
 /// The whole run.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct RunReport {
+pub struct RunReport {
     #[serde(flatten)]
-    pub(crate) timing:      Timing,
-    pub(crate) duration_ms: u64,
-    pub(crate) files:       Vec<FileReport>,
+    pub timing:      Timing,
+    pub duration_ms: u64,
+    pub files:       Vec<FileReport>,
 }
 
 impl RunReport {
     /// True when any file hit a runtime error (SPEC 13, exit 3).
-    pub(crate) fn has_error(&self) -> bool {
+    pub fn has_error(&self) -> bool {
         self.files.iter().any(|file| file.status == Status::Error)
     }
 
     /// True when any file failed (SPEC 13, exit 1).
-    pub(crate) fn has_failure(&self) -> bool {
+    pub fn has_failure(&self) -> bool {
         self.files.iter().any(|file| file.status == Status::Failed)
     }
 }

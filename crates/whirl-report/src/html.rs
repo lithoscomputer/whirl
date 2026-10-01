@@ -9,18 +9,18 @@ use base64::engine::general_purpose::STANDARD;
 use base64::write::EncoderWriter;
 use tempfile::NamedTempFile;
 
-use crate::report::json::Document;
-use crate::report::metadata::{FileMetadata, ReportMetadata};
-use crate::report::model::{EntryReport, FileReport, SettingSource, Status, StepReport, Timing};
+use crate::json::Document;
+use crate::metadata::{FileMetadata, ReportMetadata};
+use crate::model::{EntryReport, FileReport, SettingSource, Status, StepReport, Timing};
 
-pub(crate) mod aggregate;
+pub mod aggregate;
 
 const STYLE: &str = include_str!("html.css");
 
 /// Stream media to a sibling temporary file, then atomically replace the
 /// report. Missing or invalid media is shown as unavailable; output errors fail
 /// the write.
-pub(crate) fn write(path: &Path, document: &Document, base: &Path) -> anyhow::Result<()> {
+pub fn write(path: &Path, document: &Document, base: &Path) -> anyhow::Result<()> {
     check_artifact_destination(path, document, base)?;
     write_atomic(path, |output| render(output, document, base))
 }

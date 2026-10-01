@@ -23,10 +23,9 @@ use whirl_lang::{
     CliOptions, Lint, ModelFacts, OptionFlag, ParseError, Severity, ast, format_file, lint_act,
     lint_file_with, lint_setup_refs, parse_file, setup_capture_uses,
 };
+use whirl_report::model::Status;
+use whirl_report::{ReportMetadata, aggregate, console, html, json, junit};
 
-use crate::report::metadata::ReportMetadata;
-use crate::report::model::Status;
-use crate::report::{console, html, json, junit};
 use crate::run::act::ModelCatalog;
 use crate::run::cache::{self, CacheMode};
 use crate::run::{artifacts, flow, runner, vars};
@@ -1320,8 +1319,6 @@ fn same_inode(_left: &Path, _right: &Path) -> bool {
 
 /// Saved results are data, never executable configuration.
 fn report_command(args: &ReportArgs) -> Exit {
-    use crate::report::aggregate;
-
     let prepared = (|| -> anyhow::Result<_> {
         check_report_destination(
             &args.html,

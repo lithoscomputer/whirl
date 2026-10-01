@@ -4,7 +4,7 @@
 
 use std::fmt::Write as _;
 
-use crate::report::model::{EntryReport, FileReport, RunReport, Status, StepReport};
+use crate::model::{EntryReport, FileReport, RunReport, Status, StepReport};
 
 /// A duration rendered for people: `0.3s`, `12.4s`.
 fn duration_text(ms: u64) -> String {
@@ -24,7 +24,7 @@ fn status_text(status: Status) -> &'static str {
 
 /// Renders the whole console report: the per-file summary lines,
 /// warnings, and the failure detail blocks.
-pub(crate) fn render(report: &RunReport) -> String {
+pub fn render(report: &RunReport) -> String {
     let mut out = String::new();
     for file in &report.files {
         let _ = writeln!(
@@ -60,7 +60,7 @@ pub(crate) fn render(report: &RunReport) -> String {
 
 /// The line after a replay run that missed or healed the AI cache (SPEC
 /// 12.1), or `None` when every AI step hit it.
-pub(crate) fn cache_summary(report: &RunReport) -> Option<String> {
+pub fn cache_summary(report: &RunReport) -> Option<String> {
     let codes = report
         .files
         .iter()
@@ -140,7 +140,7 @@ fn render_entry_failure(out: &mut String, file: &FileReport, entry: &EntryReport
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::report::model::{ActActionReport, ActReport, ActUsage, StepError, StepKind, Timing};
+    use crate::model::{ActActionReport, ActReport, ActUsage, StepError, StepKind, Timing};
 
     fn step(line: u32, text: &str, status: Status, error: Option<StepError>) -> StepReport {
         StepReport {

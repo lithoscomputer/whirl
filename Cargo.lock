@@ -2984,7 +2984,6 @@ dependencies = [
  "dirs",
  "flate2",
  "lithos-llm",
- "quick-junit",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -3001,6 +3000,7 @@ dependencies = [
  "url",
  "whirl-check",
  "whirl-lang",
+ "whirl-report",
  "whirl-types",
  "zip",
 ]
@@ -3035,6 +3035,19 @@ dependencies = [
  "serde_json",
  "thiserror",
  "whirl-types",
+]
+
+[[package]]
+name = "whirl-report"
+version = "0.20.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "chrono",
+ "quick-junit",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

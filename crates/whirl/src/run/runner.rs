@@ -14,8 +14,8 @@ use tokio::fs;
 use tokio::task::{JoinSet, spawn_blocking};
 use tracing::{Instrument as _, debug, info, info_span, warn};
 use whirl_lang::ast::{File, FileOption};
+use whirl_report::model::{FileReport, FlowRoles, RunReport, SETUP_ENTRY, Status, Timing};
 
-use crate::report::model::{FileReport, FlowRoles, RunReport, SETUP_ENTRY, Status, Timing};
 use crate::run::act::{
     ActPlanner, JevClient, JevPlanner, JevSetupError, LlmPlanner, ModelClient, ModelSetupError,
 };
@@ -610,7 +610,7 @@ fn setup_failure_message(setup: &File, report: &FileReport) -> String {
 /// A file that could not start at all: a synthetic `[setup]` case, a
 /// runtime error for a dead shim or a failure for a failed setup flow.
 fn synthetic_outcome(job: &FlowJob, status: Status, message: &str) -> FlowOutcome {
-    use crate::report::model::{EntryReport, StepError, StepKind, StepReport};
+    use whirl_report::model::{EntryReport, StepError, StepKind, StepReport};
 
     FlowOutcome {
         report:   FileReport {

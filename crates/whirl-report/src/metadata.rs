@@ -9,7 +9,7 @@ use serde::de::{Error as _, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-pub(crate) struct FileMetadata {
+pub struct FileMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) title:       Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -17,7 +17,7 @@ pub(crate) struct FileMetadata {
 }
 
 #[derive(Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-pub(crate) struct ReportMetadata {
+pub struct ReportMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) title:       Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -25,7 +25,7 @@ pub(crate) struct ReportMetadata {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub(crate) details:     BTreeMap<String, String>,
     #[serde(default, deserialize_with = "unique_files")]
-    pub(crate) files:       BTreeMap<String, FileMetadata>,
+    pub files:              BTreeMap<String, FileMetadata>,
 }
 
 fn unique_files<'de, D: Deserializer<'de>>(
@@ -54,7 +54,7 @@ fn unique_files<'de, D: Deserializer<'de>>(
 
 impl ReportMetadata {
     /// Author files are strict; saved report readers ignore additive fields.
-    pub(crate) fn read_author(path: &Path) -> anyhow::Result<Self> {
+    pub fn read_author(path: &Path) -> anyhow::Result<Self> {
         let source = fs::read_to_string(path)?;
         let value: serde_json::Value =
             serde_json::from_str(&source).context("invalid report metadata")?;
@@ -80,7 +80,7 @@ impl ReportMetadata {
     }
 
     /// Resolve metadata keys relative to its file, before a browser starts.
-    pub(crate) fn load(path: &Path) -> anyhow::Result<Self> {
+    pub fn load(path: &Path) -> anyhow::Result<Self> {
         let mut metadata = Self::read_author(path)?;
         let parent = path.parent().unwrap_or_else(|| Path::new("."));
         let mut files = BTreeMap::new();
@@ -102,7 +102,7 @@ impl ReportMetadata {
     }
 
     /// Match canonical inputs once, retaining the paths used in run reports.
-    pub(crate) fn select<'a>(&mut self, paths: impl Iterator<Item = &'a Path>) {
+    pub fn select<'a>(&mut self, paths: impl Iterator<Item = &'a Path>) {
         self.files = paths
             .filter_map(|path| {
                 let canonical = path.canonicalize().ok()?;
