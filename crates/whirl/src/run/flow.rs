@@ -604,6 +604,12 @@ impl BuildError {
 /// plans its own commands (SPEC 7.4).
 enum PreparedStep {
     Command(StepCommand),
+    /// A `SNAPSHOT` line: its command, and the effective settings the
+    /// step report echoes (SPEC 7). The report never goes to the shim.
+    Snapshot {
+        command: StepCommand,
+        report:  SnapshotReport,
+    },
     Act {
         instruction: Instruction,
         /// The wire locator of the element the snapshot is limited to.
@@ -718,6 +724,14 @@ impl FlowExec<'_> {
                 ast::ActionKind::Goal { goal } => Ok(PreparedStep::Goal(goal_step::GoalPlan {
                     goal: Instruction::try_new(goal, &mut self.vars)?,
                 })),
+                ast::ActionKind::Snapshot {
+                    name,
+                    target,
+                    options,
+                } => {
+                    let (command, report) = self.build_snapshot(name, target.as_ref(), options)?;
+                    Ok(PreparedStep::Snapshot { command, report })
+                }
                 _ => self.build_action(action).map(PreparedStep::Command),
             },
             StepNode::Page(page) => {
@@ -949,49 +963,7 @@ impl FlowExec<'_> {
                 name,
                 target,
                 options,
-            } => {
-                let settings = self.options.snapshot.with_options(
-                    options.iter().map(|line| (&line.option, line.line)),
-                    &mut self.vars,
-                )?;
-                // A target has no default engine (SPEC 6.1), so interpolation
-                // changes only its values.
-                let target_wire = target
-                    .as_ref()
-                    .map(|target| self.locator(target, None))
-                    .transpose()?;
-                let target_text = target.as_ref().map(|target| {
-                    render_step_text(&render_snapshot_target(target), &mut self.vars)
-                });
-                let report = settings.report(target_text.as_deref(), &self.vars);
-                let baseline = artifacts::snapshot_baseline_path(
-                    self.run.canonical,
-                    &name.text,
-                    self.options.browser.as_str(),
-                );
-                // The shim's snapshot writer creates the baseline directory.
-                StepCommand::Snapshot {
-                    baseline_path:   baseline.to_string_lossy().into_owned(),
-                    actual_path:     self
-                        .run
-                        .abs_dir
-                        .join(artifacts::snapshot_actual_file(&name.text))
-                        .to_string_lossy()
-                        .into_owned(),
-                    diff_path:       self
-                        .run
-                        .abs_dir
-                        .join(artifacts::snapshot_diff_file(&name.text))
-                        .to_string_lossy()
-                        .into_owned(),
-                    update:          self.run.flags.update_snapshots,
-                    target:          target_wire,
-                    masks:           settings.masks.clone(),
-                    pixel_threshold: settings.threshold.value(),
-                    max_diff:        settings.max_diff_wire(),
-                    report:          Box::new(report),
-                }
-            }
+            } => self.build_snapshot(name, target.as_ref(), options)?.0,
             K::Eval { script } => StepCommand::EvalAction {
                 script: self.resolve(script)?,
             },
@@ -1005,6 +977,55 @@ impl FlowExec<'_> {
             },
         };
         Ok(command)
+    }
+
+    /// Builds the wire command of a `SNAPSHOT` line (SPEC 7) and the
+    /// effective settings its step report echoes.
+    fn build_snapshot(
+        &mut self,
+        name: &ast::Ident,
+        target: Option<&ast::Locator>,
+        options: &[ast::snapshot::SnapshotOptionLine],
+    ) -> Result<(StepCommand, SnapshotReport), BuildError> {
+        let settings = self.options.snapshot.with_options(
+            options.iter().map(|line| (&line.option, line.line)),
+            &mut self.vars,
+        )?;
+        // A target has no default engine (SPEC 6.1), so interpolation
+        // changes only its values.
+        let target_wire = target
+            .map(|target| self.locator(target, None))
+            .transpose()?;
+        let target_text =
+            target.map(|target| render_step_text(&render_snapshot_target(target), &mut self.vars));
+        let report = settings.report(target_text.as_deref(), &self.vars);
+        let baseline = artifacts::snapshot_baseline_path(
+            self.run.canonical,
+            &name.text,
+            self.options.browser.as_str(),
+        );
+        // The shim's snapshot writer creates the baseline directory.
+        let command = StepCommand::Snapshot {
+            baseline_path:   baseline.to_string_lossy().into_owned(),
+            actual_path:     self
+                .run
+                .abs_dir
+                .join(artifacts::snapshot_actual_file(&name.text))
+                .to_string_lossy()
+                .into_owned(),
+            diff_path:       self
+                .run
+                .abs_dir
+                .join(artifacts::snapshot_diff_file(&name.text))
+                .to_string_lossy()
+                .into_owned(),
+            update:          self.run.flags.update_snapshots,
+            target:          target_wire,
+            masks:           settings.masks.clone(),
+            pixel_threshold: settings.threshold.value(),
+            max_diff:        settings.max_diff_wire(),
+        };
+        Ok((command, report))
     }
 }
 
@@ -1217,9 +1238,7 @@ impl FlowExec<'_> {
         let title = render_step_text(node.raw_text(), &mut self.vars);
 
         let snapshot = match &prepared {
-            Some(PreparedStep::Command(StepCommand::Snapshot { report, .. })) => {
-                Some((**report).clone())
-            }
+            Some(PreparedStep::Snapshot { report, .. }) => Some(report.clone()),
             _ => None,
         };
         let line_budget = line_budget_ms(node, &self.options);
@@ -1252,7 +1271,7 @@ impl FlowExec<'_> {
                 judge = run.judge;
                 (run.end, run.act, run.spend)
             }
-            Some(PreparedStep::Command(command)) => {
+            Some(PreparedStep::Command(command) | PreparedStep::Snapshot { command, .. }) => {
                 let request = StepRequest {
                     entry_start: state.steps.is_empty(),
                     command,

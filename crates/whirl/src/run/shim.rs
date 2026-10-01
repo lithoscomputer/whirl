@@ -23,7 +23,6 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, timeout, timeout_at};
 use tracing::{Instrument as _, debug, debug_span, warn};
-use whirl_report::model::SnapshotReport;
 
 pub(super) mod wire;
 
@@ -381,8 +380,6 @@ pub(crate) enum StepCommand {
         masks:           Vec<Json>,
         pixel_threshold: f64,
         max_diff:        Json,
-        #[serde(skip)]
-        report:          Box<SnapshotReport>,
         baseline_path:   String,
         actual_path:     String,
         diff_path:       String,
@@ -1217,12 +1214,6 @@ mod tests {
                     masks:           vec![],
                     pixel_threshold: 0.2,
                     max_diff:        serde_json::json!({"type": "pixels", "value": 0}),
-                    report:          Box::new(SnapshotReport {
-                        target:          None,
-                        masks:           vec![],
-                        max_diff:        "0".to_owned(),
-                        pixel_threshold: "0.2".to_owned(),
-                    }),
                 },
                 "snapshot",
                 serde_json::json!({
