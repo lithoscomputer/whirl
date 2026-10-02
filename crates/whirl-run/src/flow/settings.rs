@@ -45,25 +45,26 @@ fn value_of(key: &str, options: &ResolvedOptions) -> Option<SettingValue> {
             .map(|path| SettingValue::Text(path.to_string_lossy().into_owned()))
     };
     match key {
-        "base" => options.base.as_deref().and_then(text),
-        "browser" => text(options.browser.as_str()),
+        "base" => options.browser.base.as_deref().and_then(text),
+        "browser" => text(options.browser.engine.as_str()),
         "viewport" => text(&format!(
             "{}x{}",
-            options.viewport.width, options.viewport.height
+            options.browser.viewport.width, options.browser.viewport.height
         )),
         "step-timeout" => text(&render_duration_ms(options.step_timeout_ms)),
         "entry-timeout" => options
             .entry_timeout_ms
             .and_then(|ms| text(&render_duration_ms(ms))),
-        "nav-timeout" => text(&render_duration_ms(options.nav_timeout_ms)),
-        "allow-hosts" => options.allow_hosts.clone().map(SettingValue::List),
-        "block-hosts" => options.block_hosts.clone().map(SettingValue::List),
-        "dialogs" => text(options.dialogs.as_str()),
+        "nav-timeout" => text(&render_duration_ms(options.browser.nav_timeout_ms)),
+        "allow-hosts" => options.browser.allow_hosts.clone().map(SettingValue::List),
+        "block-hosts" => options.browser.block_hosts.clone().map(SettingValue::List),
+        "dialogs" => text(options.browser.dialogs.as_str()),
         "reduced-motion" => options
+            .browser
             .reduced_motion
             .and_then(|motion| text(motion.as_str())),
-        "storage" => path(&options.storage),
-        "user-agent" => options.user_agent.as_deref().and_then(text),
+        "storage" => path(&options.browser.storage),
+        "user-agent" => options.browser.user_agent.as_deref().and_then(text),
         "setup" => path(&options.setup),
         "model" => options.model.as_deref().and_then(text),
         "snapshot-mask" => Some(SettingValue::List(options.snapshot.mask_text().to_vec())),
