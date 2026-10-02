@@ -9,12 +9,11 @@ use std::{iter, mem};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use serde::Deserialize;
-use serde_json::Value as Json;
 use whirl_ai::{Instruction, JudgeAnswer, PageSnapshot, PlanUsage, Verdict, judge_message};
 use whirl_lang::ast::{self, CheckStep};
 use whirl_lang::render_snapshot_target;
 use whirl_report::model::{JudgeReport, StepError, StepWarning};
-use whirl_shim::{AriaSnapshotResult, ShimClient, StepCommand};
+use whirl_shim::{AriaSnapshotResult, Locator, ShimClient, StepCommand};
 
 use super::act_step::{ActBudget, ActLine, act_failure, usage_report};
 use super::{EntryState, FlowExec, StepEnd, StepNode};
@@ -23,8 +22,8 @@ use super::{EntryState, FlowExec, StepEnd, StepNode};
 pub(super) struct JudgePlan {
     /// The claim, with masked values as placeholders.
     pub(super) claim: Instruction,
-    /// The wire locator of the element the model sees.
-    pub(super) scope: Option<Json>,
+    /// The element the model sees.
+    pub(super) scope: Option<Locator>,
 }
 
 /// `judgeScreenshot` result (protocol 4.9).

@@ -23,8 +23,8 @@ use whirl_lang::ast::{
 };
 use whirl_report::model::{CaptureValue, StepError};
 use whirl_shim::{
-    MissingReason, ReadResult, RequestReadResult, ResponseReadResult, ShimClient, StepCommand,
-    StepOutcome, StepRequest, wire,
+    MissingReason, ReadResult, ReadSubject, RequestReadResult, ResponseReadResult, ShimClient,
+    StepCommand, StepOutcome, StepRequest,
 };
 use whirl_types::{FilterKind, Number, Value};
 
@@ -64,10 +64,10 @@ pub(super) struct ResponseData {
 
 /// Where a line reads its value.
 enum Source {
-    /// A page subject: the wire read subject, and the attribute name when
-    /// the subject reads one.
+    /// A page subject: its read subject, which an `ai:` target fills in
+    /// once found, and the attribute name when the subject reads one.
     Page {
-        subject: Json,
+        subject: Option<ReadSubject>,
         attr:    Option<String>,
         /// False for a capture that never waits: `count` and `eval`.
         retry:   bool,
@@ -359,11 +359,13 @@ impl FlowExec<'_> {
                     _ => None,
                 };
                 let subject = if ai.is_some() {
-                    Json::Null
+                    None
                 } else {
                     let vars = &mut self.vars;
-                    wire::read_subject_wire(page, &mut |value| vars.resolve(value))?
-                        .expect("a page subject always has a read subject")
+                    Some(
+                        ReadSubject::resolve(page, &mut |value| vars.resolve(value))?
+                            .expect("a page subject always has a read subject"),
+                    )
                 };
                 let attr = match page {
                     Subject::Element {
@@ -705,7 +707,7 @@ impl FlowExec<'_> {
                         .find_subject(node, ai, remaining, budget, title, client, state)
                         .await
                     {
-                        Ok(Some(found)) => *subject = found,
+                        Ok(Some(found)) => *subject = Some(found),
                         // No element yet, or none at all: a missing value,
                         // which `not exists` accepts (SPEC 6.3).
                         Ok(None) => return Attempt::Read(Read::Missing(Missing::NoElement)),
@@ -713,7 +715,9 @@ impl FlowExec<'_> {
                     }
                 }
                 let command = StepCommand::Read {
-                    subject: subject.clone(),
+                    subject: subject
+                        .clone()
+                        .expect("an AI read found its element; other reads resolved at build"),
                 };
                 let result = match self
                     .shim_call(node, command, remaining, budget, title, client, state)
@@ -829,7 +833,7 @@ impl FlowExec<'_> {
         title: Option<&str>,
         client: &mut ShimClient,
         state: &mut EntryState,
-    ) -> Result<Option<Json>, StepEnd> {
+    ) -> Result<Option<ReadSubject>, StepEnd> {
         if ai.target.is_none() {
             let Subject::Element { locator, .. } = &ai.subject else {
                 unreachable!("an AI read has an element subject");
@@ -868,16 +872,13 @@ impl FlowExec<'_> {
             *target = locator;
         }
         let vars = &mut self.vars;
-        let wire = wire::read_subject_wire(&subject, &mut |value| vars.resolve(value)).map_err(
-            |error| {
-                StepEnd::Failed(StepError {
-                    code: "variable-resolution".to_owned(),
-                    message: error.to_string(),
-                    ..StepError::default()
-                })
-            },
-        )?;
-        Ok(wire)
+        ReadSubject::resolve(&subject, &mut |value| vars.resolve(value)).map_err(|error| {
+            StepEnd::Failed(StepError {
+                code: "variable-resolution".to_owned(),
+                message: error.to_string(),
+                ..StepError::default()
+            })
+        })
     }
 
     /// Runs one shim command for a line. A retryable page failure comes

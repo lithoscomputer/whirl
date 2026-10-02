@@ -6,11 +6,11 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use serde_json::{Value as Json, json};
+use serde_json::Value as Json;
 use whirl_ai::{Instruction, ModelClient, PageSnapshot, PlanUsage, extract_message};
 use whirl_check::parse_json;
 use whirl_report::model::{CaptureValue, ExtractReport, StepError};
-use whirl_shim::{AriaSnapshotResult, ReadResult, ShimClient, StepCommand};
+use whirl_shim::{AriaSnapshotResult, Locator, ReadResult, ReadSubject, ShimClient, StepCommand};
 use whirl_types::Value;
 
 use super::act_step::{ActBudget, ActLine, act_failure, usage_report};
@@ -22,8 +22,8 @@ use crate::vars::MASK;
 pub(super) struct ExtractPlan {
     pub(super) name:        String,
     pub(super) instruction: Instruction,
-    /// The wire locator of the element the snapshot is limited to.
-    pub(super) scope:       Option<Json>,
+    /// The element the snapshot is limited to.
+    pub(super) scope:       Option<Locator>,
     pub(super) schema:      Option<Json>,
 }
 
@@ -223,7 +223,7 @@ impl FlowExec<'_> {
             return Ok(value);
         }
         let page = self
-            .read_text(line, json!({"type": "url"}), client, state)
+            .read_text(line, ReadSubject::url(), client, state)
             .await?
             .unwrap_or_default();
         let mut urls = HashMap::new();
@@ -239,11 +239,7 @@ impl FlowExec<'_> {
                     ),
                 ));
             }
-            let subject = json!({
-                "type": "element",
-                "locator": [{"type": "ref", "ref": element}],
-                "extract": {"type": "attr", "name": "href"}
-            });
+            let subject = ReadSubject::element_attr(&Locator::element_ref(&element), "href");
             let Some(href) = self.read_text(line, subject, client, state).await? else {
                 return Err(failure(
                     "extract-ref",
@@ -264,7 +260,7 @@ impl FlowExec<'_> {
     async fn read_text(
         &mut self,
         line: &mut ActLine<'_>,
-        subject: Json,
+        subject: ReadSubject,
         client: &mut ShimClient,
         state: &mut EntryState,
     ) -> Result<Option<String>, StepEnd> {
