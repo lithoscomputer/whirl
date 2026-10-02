@@ -21,8 +21,8 @@ use whirl_report::model::{
     SnapshotReport, Status, StepError, StepKind, StepReport, StepWarning, Timing,
 };
 use whirl_shim::{
-    EndFlowParams, ErrorObject, MockHits, ShimClient, ShimError, StartFlowParams, StepCommand,
-    StepOutcome, StepRequest, VideoParams, ViewportParams, wire,
+    BrowserOptions, EndFlowParams, ErrorObject, Features, MockHits, Recording, ShimClient,
+    ShimError, StartFlowParams, StepCommand, StepOutcome, StepRequest, VideoOutput, wire,
 };
 
 use crate::artifacts;
@@ -51,9 +51,6 @@ pub(crate) const DEFAULT_VIEWPORT: Viewport = Viewport {
 /// Budget for the best-effort failure screenshot (SPEC 12).
 const FAILURE_SCREENSHOT_TIMEOUT_MS: u64 = 5_000;
 
-/// The frame rate of Chromium recordings without `--video-fps` (SPEC 13).
-pub(crate) const DEFAULT_VIDEO_FPS: u8 = 60;
-
 /// Run-wide flags the flow needs (SPEC 13).
 #[derive(Clone, Debug, Default)]
 pub struct FlowFlags {
@@ -74,50 +71,17 @@ pub struct FlowFlags {
     pub load_state:       Option<PathBuf>,
 }
 
-/// The hostname of a URL, textually: scheme and userinfo stripped, cut
-/// at the first `/`, `?`, or `#`, port removed (IPv6 brackets kept
-/// textual per SPEC 5). `None` when the URL has no host (`data:`).
-fn url_host(url: &str) -> Option<String> {
-    // Without `://` the URL is opaque (`data:`) and has no host.
-    let (_, rest) = url.split_once("://")?;
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
-    let host_port = authority
-        .rsplit_once('@')
-        .map_or(authority, |(_, host)| host);
-    let host = if let Some(end) = host_port.strip_prefix('[') {
-        // IPv6 literal: keep the bracketed text without the port.
-        end.split_once(']').map_or(host_port, |(ip, _)| ip)
-    } else {
-        host_port.split(':').next().unwrap_or_default()
-    };
-    (!host.is_empty()).then(|| host.to_owned())
-}
-
 /// A file's options after resolution at file start (SPEC 5, 11). The
 /// command line's options are already in the file's option lines.
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ResolvedOptions {
     snapshot:          SnapshotSettings,
-    base:              Option<String>,
-    browser:           BrowserKind,
-    viewport:          Viewport,
+    /// The browser context the flow runs in; `whirl-shim` maps it to
+    /// `startFlow`. Its `storage` path is resolved relative to the
+    /// `.whirl` file (SPEC 5).
+    browser:           BrowserOptions,
     step_timeout_ms:   u64,
     entry_timeout_ms:  Option<u64>,
-    nav_timeout_ms:    u64,
-    /// As the options set it; [`ResolvedOptions::shim_allow_hosts`] adds
-    /// the `base` host (SPEC 5).
-    allow_hosts:       Option<Vec<String>>,
-    /// Hosts blocked even when `allow_hosts` allows them (SPEC 5).
-    block_hosts:       Option<Vec<String>>,
-    dialogs:           DialogPolicy,
-    /// The `prefers-reduced-motion` value the page sees; the engine
-    /// default when unset (SPEC 5).
-    reduced_motion:    Option<ReducedMotion>,
-    /// Resolved relative to the `.whirl` file (SPEC 5).
-    storage:           Option<PathBuf>,
-    headed:            bool,
-    /// Browser user agent string; the engine default when unset (SPEC 5).
-    user_agent:        Option<String>,
     /// The `setup` flow, resolved relative to the `.whirl` file (SPEC 5).
     setup:             Option<PathBuf>,
     /// The model `ACT` asks (SPEC 5, 7.4).
@@ -287,38 +251,30 @@ impl ResolvedOptions {
 
         Ok(Self {
             snapshot,
-            base,
-            browser,
-            viewport,
+            browser: BrowserOptions {
+                engine: browser,
+                viewport,
+                base,
+                allow_hosts,
+                block_hosts,
+                dialogs,
+                reduced_motion,
+                storage,
+                headed: flags.headed,
+                user_agent,
+                nav_timeout_ms,
+            },
             step_timeout_ms,
             entry_timeout_ms,
-            nav_timeout_ms,
-            allow_hosts,
-            block_hosts,
-            dialogs,
-            reduced_motion,
-            storage,
-            headed: flags.headed,
-            user_agent,
             setup: setup.map(|path| resolve_beside_file(canonical, &path)),
             model,
             browsersim_origin,
         })
     }
 
-    /// The `allow-hosts` list the shim enforces: the `base` host is always
-    /// allowed (SPEC 5).
-    fn shim_allow_hosts(&self) -> Option<Vec<String>> {
-        let mut hosts = self.allow_hosts.clone()?;
-        if let Some(host) = self.base.as_deref().and_then(url_host) {
-            hosts.push(host);
-        }
-        Some(hosts)
-    }
-
     /// Apply the validated setup handoff before creating a browser context.
     fn use_setup(&mut self, setup: &SetupHandoff) {
-        self.storage = Some(setup.storage_path.clone());
+        self.browser.storage = Some(setup.storage_path.clone());
     }
 }
 
@@ -520,7 +476,7 @@ fn line_budget_ms(node: StepNode<'_>, options: &ResolvedOptions) -> u64 {
     }
     match node {
         StepNode::Action(action) if matches!(action.kind, ast::ActionKind::Visit { .. }) => {
-            options.nav_timeout_ms
+            options.browser.nav_timeout_ms
         }
         StepNode::Action(action) if matches!(action.kind, ast::ActionKind::Goal { .. }) => {
             goal_step::DEFAULT_TIMEOUT_MS
@@ -800,7 +756,7 @@ impl FlowExec<'_> {
     fn resolve_url(&mut self, value: &ast::Value) -> Result<String, BuildError> {
         let resolved = self.resolve(value)?;
         if resolved.starts_with('/') {
-            let Some(base) = self.options.base.as_deref() else {
+            let Some(base) = self.options.browser.base.as_deref() else {
                 return Err(BuildError::NoBase { url: resolved });
             };
             Ok(format!("{}{resolved}", base.trim_end_matches('/')))
@@ -1002,7 +958,7 @@ impl FlowExec<'_> {
         let baseline = artifacts::snapshot_baseline_path(
             self.run.canonical,
             &name.text,
-            self.options.browser.as_str(),
+            self.options.browser.engine.as_str(),
         );
         // The shim's snapshot writer creates the baseline directory.
         let command = StepCommand::Snapshot {
@@ -1685,39 +1641,27 @@ fn wire_path(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
-/// The `startFlow` params of one flow (protocol section 3).
-fn start_flow_params(run: &FlowRun<'_>, options: &ResolvedOptions) -> StartFlowParams {
-    StartFlowParams {
-        browser:            options.browser.as_str().to_owned(),
-        headed:             options.headed,
-        viewport:           ViewportParams {
-            width:  options.viewport.width,
-            height: options.viewport.height,
-        },
-        storage_state_path: options.storage.as_deref().map(wire_path),
-        dialogs:            options.dialogs.as_str().to_owned(),
-        allow_hosts:        options.shim_allow_hosts(),
-        block_hosts:        options.block_hosts.clone(),
-        nav_timeout_ms:     options.nav_timeout_ms,
-        user_agent:         options.user_agent.clone(),
-        reduced_motion:     options
-            .reduced_motion
-            .map(|motion| motion.as_str().to_owned()),
-        video:              run.flags.video.then(|| VideoParams {
-            temp_dir:   wire_path(&run.abs_dir.join("video-temp")),
-            final_path: wire_path(&run.abs_dir.join(artifacts::VIDEO_WEBM)),
-            // Only Chromium has the screencast recorder; the other engines
-            // keep Playwright's recorder at its fixed rate (SPEC 13).
-            fps:        (options.browser == BrowserKind::Chromium)
-                .then(|| run.flags.video_fps.unwrap_or(DEFAULT_VIDEO_FPS)),
+/// What one flow records (SPEC 13): the run's flags as artifact files
+/// under the flow's directory.
+fn recording(run: &FlowRun<'_>) -> Recording {
+    Recording {
+        video: run.flags.video.then(|| VideoOutput {
+            path: run.abs_dir.join(artifacts::VIDEO_WEBM),
+            fps:  run.flags.video_fps,
         }),
-        har_path:           run
+        har:   run
             .flags
             .har
-            .then(|| wire_path(&run.abs_dir.join(artifacts::NETWORK_HAR))),
-        trace:              run.flags.trace,
-        open_shadow_roots:  run.file.uses_act() || run.file.uses_goal(),
-        mocks:              run.file.uses_mock(),
+            .then(|| run.abs_dir.join(artifacts::NETWORK_HAR)),
+        trace: run.flags.trace,
+    }
+}
+
+/// The context features a file's lines need (SPEC 7.4, 7.5).
+fn features(file: &File) -> Features {
+    Features {
+        open_shadow_roots: file.uses_act() || file.uses_goal(),
+        mocks:             file.uses_mock(),
     }
 }
 
@@ -1846,7 +1790,8 @@ pub(crate) async fn run_flow(run: &FlowRun<'_>, client: &mut ShimClient) -> Flow
         // Browser context launch; storage loading happens here too. A shim
         // `internal` error is a runtime error; other errors are setup
         // failures (SPEC 14).
-        let params = start_flow_params(run, &options);
+        let params =
+            StartFlowParams::from_options(&options.browser, &recording(run), &features(run.file));
         let runtime_result = match client.start_flow(&params).await {
             Ok(result) => result,
             Err(error) => {
@@ -2107,7 +2052,10 @@ mod tests {
         let canonical = Path::new("/real/dir/flow.whirl");
         let options = ResolvedOptions::try_new(&file, canonical, &mut vars, &FlowFlags::default())
             .expect("options resolve");
-        assert_eq!(options.storage, Some(PathBuf::from("/real/dir/st.json")));
+        assert_eq!(
+            options.browser.storage,
+            Some(PathBuf::from("/real/dir/st.json"))
+        );
     }
 
     #[test]

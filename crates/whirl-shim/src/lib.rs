@@ -1,7 +1,9 @@
 //! The browser shim boundary of `docs/engineering/shim-protocol.md`:
 //! spawning `<node> <shim-js>`, the JSON-Lines request/response protocol,
 //! the external per-step watchdog, clean shutdown, and the shim launch
-//! resolution of protocol section 8. [`wire`] maps AST nodes to the wire
+//! resolution of protocol section 8. [`BrowserOptions`] and
+//! [`StartFlowParams::from_options`] map a flow's resolved browser
+//! options to the `startFlow` params, [`wire`] maps AST nodes to the wire
 //! JSON, and [`bundle`] names the installed bundle's layout for
 //! `whirl install`.
 //!
@@ -28,6 +30,7 @@ use tokio::time::{Instant, timeout, timeout_at};
 use tracing::{Instrument as _, debug, debug_span, warn};
 
 pub mod bundle;
+mod context;
 pub mod wire;
 
 use bundle::{BUNDLE_NODE, BUNDLE_SHIM_JS, BUNDLE_VERSION_FILE, SHIM_JS_ENV, WHIRL_VERSION};
@@ -165,6 +168,8 @@ pub struct HelloResult {
     pub ffmpeg_path:        Option<String>,
 }
 
+pub use context::{BrowserOptions, Features, Recording, VideoOutput};
+
 /// `startFlow` viewport params.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub struct ViewportParams {
@@ -184,7 +189,8 @@ pub struct VideoParams {
     pub fps:        Option<u8>,
 }
 
-/// `startFlow` params (protocol section 3).
+/// `startFlow` params (protocol section 3). Built from a flow's
+/// [`BrowserOptions`] by [`StartFlowParams::from_options`].
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StartFlowParams {
