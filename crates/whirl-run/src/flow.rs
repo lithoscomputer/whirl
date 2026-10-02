@@ -59,17 +59,24 @@ pub struct FlowFlags {
     pub video:            bool,
     /// The `--video-fps` flag; honored on Chromium only.
     pub video_fps:        Option<u8>,
-    pub har:              bool,
     pub update_snapshots: bool,
-    /// Set only when this flow is the run's single file.
-    pub save_state:       Option<PathBuf>,
     /// The `--cache` mode (SPEC 12.1).
     pub cache:            CacheMode,
+    /// The flags that only a browser flow uses.
+    pub web:              WebFlags,
+}
+
+/// The run-wide flags of a browser flow (SPEC 13).
+#[derive(Clone, Debug, Default)]
+pub struct WebFlags {
+    pub har:        bool,
     /// `--headed`: show the browser window.
-    pub headed:           bool,
+    pub headed:     bool,
     /// The `--load-state` file; the CLI rejects it together with a
     /// `storage` or `setup` option (SPEC 13).
-    pub load_state:       Option<PathBuf>,
+    pub load_state: Option<PathBuf>,
+    /// Set only when this flow is the run's single file.
+    pub save_state: Option<PathBuf>,
 }
 
 /// A file's options after resolution at file start (SPEC 5, 11). The
@@ -246,7 +253,7 @@ impl ResolvedOptions {
         }
 
         // The CLI rejects `--load-state` with a `storage` option.
-        if let Some(path) = &flags.load_state {
+        if let Some(path) = &flags.web.load_state {
             storage = Some(path.clone());
         }
 
@@ -261,7 +268,7 @@ impl ResolvedOptions {
                 dialogs,
                 reduced_motion,
                 storage,
-                headed: flags.headed,
+                headed: flags.web.headed,
                 user_agent,
                 nav_timeout_ms,
             },
@@ -1652,6 +1659,7 @@ fn recording(run: &FlowRun<'_>) -> Recording {
         }),
         har:   run
             .flags
+            .web
             .har
             .then(|| run.abs_dir.join(artifacts::NETWORK_HAR)),
         trace: run.flags.trace,
@@ -1904,6 +1912,7 @@ pub(crate) async fn run_flow(run: &FlowRun<'_>, client: &mut ShimClient) -> Flow
                 save_storage_path: (report.status == Status::Passed)
                     .then(|| {
                         run.flags
+                            .web
                             .save_state
                             .as_deref()
                             .or(run.state_out)
@@ -1971,7 +1980,7 @@ pub(crate) async fn run_flow(run: &FlowRun<'_>, client: &mut ShimClient) -> Flow
                             exec.vars.mask(&reason)
                         ));
                     }
-                    if run.flags.har {
+                    if run.flags.web.har {
                         report.artifacts.push(
                             run.report_dir
                                 .join(artifacts::NETWORK_HAR)
