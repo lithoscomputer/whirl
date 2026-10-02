@@ -27,7 +27,7 @@ use whirl_lang::{
 use whirl_report::model::Status;
 use whirl_report::{ReportMetadata, aggregate, console, html, json, junit};
 use whirl_run::cache::{self, CacheMode};
-use whirl_run::{FlowFlags, RunSettings, RunnerError};
+use whirl_run::{FlowFlags, RunSettings, RunnerError, WebFlags};
 
 use crate::{doctor, install, telemetry};
 
@@ -1199,12 +1199,14 @@ fn run_command(args: &RunArgs) -> Exit {
             trace:            args.trace,
             video:            args.video,
             video_fps:        args.video_fps,
-            har:              args.har,
             update_snapshots: args.update_snapshots,
-            save_state:       args.save_state.clone(),
             cache:            args.cache.into(),
-            headed:           args.headed,
-            load_state:       args.load_state.clone(),
+            web:              WebFlags {
+                har:        args.har,
+                headed:     args.headed,
+                load_state: args.load_state.clone(),
+                save_state: args.save_state.clone(),
+            },
         },
         base_vars,
         jev: args.jev,

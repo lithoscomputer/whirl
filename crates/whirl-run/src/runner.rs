@@ -247,7 +247,7 @@ impl PreparedRun {
     ) -> Result<Self, RunnerError> {
         let inputs: Vec<PathBuf> = files.iter().map(|file| file.path.clone()).collect();
         let requested = artifacts::dedup_flows(&inputs)?;
-        if settings.flags.save_state.is_some() && requested.len() > 1 {
+        if settings.flags.web.save_state.is_some() && requested.len() > 1 {
             return Err(RunnerError::SaveStateManyFiles {
                 count: requested.len(),
             });
@@ -316,8 +316,8 @@ impl PreparedRun {
 
         // Normalize CLI paths once, before workers construct wire messages.
         for input in [
-            &mut settings.flags.load_state,
-            &mut settings.flags.save_state,
+            &mut settings.flags.web.load_state,
+            &mut settings.flags.web.save_state,
         ]
         .into_iter()
         .flatten()
