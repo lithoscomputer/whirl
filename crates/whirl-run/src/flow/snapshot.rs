@@ -1,11 +1,10 @@
 //! Snapshot defaults are resolved once; each action overlays its own options.
 
-use serde_json::{Value as Json, json};
 use whirl_lang::ast::OptionValue;
 use whirl_lang::ast::snapshot::{MaxDiff, PixelThreshold, SnapshotOption};
 use whirl_lang::render_snapshot_option;
 use whirl_report::model::SnapshotReport;
-use whirl_shim::wire;
+use whirl_shim::Locator;
 
 use super::{OptionsError, resolve_option};
 use crate::flow::render_step_text;
@@ -13,9 +12,9 @@ use crate::vars::VarStore;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct SnapshotSettings {
-    pub(super) masks:     Vec<Json>,
+    pub(super) masks:     Vec<Locator>,
     mask_text:            Vec<String>,
-    max_diff:             MaxDiff,
+    pub(super) max_diff:  MaxDiff,
     max_diff_text:        String,
     pub(super) threshold: PixelThreshold,
 }
@@ -61,7 +60,7 @@ impl SnapshotSettings {
                     if let Some(locator) = locator {
                         settings
                             .masks
-                            .push(wire::locator_wire(locator, None, &mut |value| {
+                            .push(Locator::resolve(locator, None, &mut |value| {
                                 vars.resolve(value)
                             })?);
                         let text = render_step_text(&render_snapshot_option(option), vars);
@@ -91,13 +90,6 @@ impl SnapshotSettings {
         Ok(settings)
     }
 
-    pub(super) fn max_diff_wire(&self) -> Json {
-        match &self.max_diff {
-            MaxDiff::Pixels(count) => json!({"type": "pixels", "value": count}),
-            MaxDiff::Percent(percent) => json!({"type": "percent", "value": percent.value()}),
-        }
-    }
-
     /// `target` is the element target's rendered locator text, if any.
     pub(super) fn report(&self, target: Option<&str>, vars: &VarStore) -> SnapshotReport {
         SnapshotReport {
@@ -113,10 +105,19 @@ impl SnapshotSettings {
 mod tests {
     use std::path::Path;
 
-    use whirl_lang::ast::{ActionKind, FileOption};
+    use whirl_lang::ast::{ActionKind, FileOption, Percent};
     use whirl_lang::parse_file;
 
     use super::*;
+
+    /// A resolved locator, for comparison.
+    fn locator(text: &str) -> Locator {
+        let locator = whirl_lang::parse_locator(text).expect("the locator parses");
+        Locator::resolve(&locator, None, &mut |value| {
+            Ok::<_, String>(value.as_literal().expect("a literal"))
+        })
+        .expect("resolves")
+    }
 
     #[test]
     fn local_settings_override_independently_without_changing_defaults() {
@@ -145,22 +146,17 @@ mod tests {
             )
             .expect("local settings");
         assert_eq!(
-            local.max_diff_wire(),
-            json!({"type":"percent", "value":0.125})
+            local.max_diff,
+            MaxDiff::Percent(Percent::parse("0.125%").expect("a percent"))
         );
-        assert_eq!(local.masks, vec![
-            json!([{"type":"css", "selector":".second"}])
-        ]);
+        assert_eq!(local.masks, vec![locator("css:.second")]);
         assert_eq!(local.report(None, &vars), SnapshotReport {
             target:          None,
             masks:           vec!["css:.second".to_owned()],
             max_diff:        "0.125%".to_owned(),
             pixel_threshold: "0.1".to_owned(),
         });
-        assert_eq!(
-            defaults.max_diff_wire(),
-            json!({"type":"pixels", "value":20})
-        );
+        assert_eq!(defaults.max_diff, MaxDiff::Pixels(20));
         assert_eq!(defaults.report(None, &vars).masks, [
             "css:.first",
             "testid:clock"
@@ -175,7 +171,7 @@ mod tests {
             )
             .expect("cleared masks");
         assert!(cleared.masks.is_empty());
-        assert_eq!(cleared.max_diff_wire(), defaults.max_diff_wire());
+        assert_eq!(cleared.max_diff, defaults.max_diff);
         assert_eq!(cleared.threshold.to_string(), "0");
     }
 
@@ -197,10 +193,7 @@ mod tests {
                 &mut vars,
             )
             .expect("valid settings");
-        assert_eq!(
-            settings.max_diff_wire(),
-            json!({"type":"pixels", "value":1})
-        );
+        assert_eq!(settings.max_diff, MaxDiff::Pixels(1));
         assert_eq!(settings.report(None, &vars).max_diff, "***");
         assert_eq!(settings.report(None, &vars).masks, ["testid:***"]);
         vars.set_input("limit", "-1");

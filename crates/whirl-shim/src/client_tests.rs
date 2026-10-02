@@ -11,8 +11,8 @@ use serde_json::json;
 use tokio::time::sleep;
 
 use super::{
-    EndFlowParams, ReadResult, ShimClient, ShimLaunch, StartFlowParams, StepCommand, StepOutcome,
-    StepRequest, ViewportParams,
+    EndFlowParams, Locator, ReadResult, ReadSubject, ShimClient, ShimLaunch, StartFlowParams,
+    StepCommand, StepOutcome, StepRequest, ViewportParams,
 };
 
 /// Launch parameters for the fake shim: `node` from `PATH` and the
@@ -133,7 +133,7 @@ async fn step_params_carry_the_common_timeout_and_title() {
     let step = StepRequest {
         entry_start: false,
         command:     StepCommand::Click {
-            locator: locator.clone(),
+            locator: Locator(locator.clone()),
             button:  "left".to_owned(),
         },
         timeout_ms:  1_000,
@@ -255,7 +255,7 @@ async fn a_read_result_deserializes_to_its_typed_form() {
     let step = StepRequest {
         entry_start: false,
         command:     StepCommand::Read {
-            subject: json!({"type": "url"}),
+            subject: ReadSubject::url(),
         },
         timeout_ms:  1_000,
         title:       None,

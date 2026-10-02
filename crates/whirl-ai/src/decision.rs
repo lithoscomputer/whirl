@@ -6,7 +6,7 @@ use std::ops::RangeInclusive;
 use serde::Deserialize;
 use serde_json::{Value as Json, json};
 use whirl_lang::ast::{MouseButton, Percent, ScrollDirection, ScrollMotion};
-use whirl_shim::{StepCommand, wire};
+use whirl_shim::{ReadSubject, StepCommand};
 
 use crate::instruction::{Instruction, UnboundPlaceholder, same_text};
 use crate::snapshot::{PageSnapshot, Target, quote};
@@ -400,41 +400,41 @@ impl PlannedAction {
         };
         match self {
             Self::Click { target, button } => StepCommand::Click {
-                locator: target.locator_wire(),
+                locator: target.locator(),
                 button:  button.name().to_owned(),
             },
             Self::Dblclick(target) => StepCommand::Dblclick {
-                locator: target.locator_wire(),
+                locator: target.locator(),
             },
             Self::Hover(target) => StepCommand::Hover {
-                locator: target.locator_wire(),
+                locator: target.locator(),
             },
             Self::Drag { source, target } => StepCommand::Drag {
-                locator: source.locator_wire(),
-                target:  target.locator_wire(),
+                locator: source.locator(),
+                target:  target.locator(),
             },
             Self::ScrollIntoView(target) => StepCommand::Scroll {
-                locator: Some(target.locator_wire()),
-                motion:  wire::scroll_motion_wire(None),
+                locator: Some(target.locator()),
+                motion:  None,
             },
             Self::Scroll { target, motion } => StepCommand::Scroll {
-                locator: target.as_ref().map(Target::locator_wire),
-                motion:  wire::scroll_motion_wire(Some(motion)),
+                locator: target.as_ref().map(Target::locator),
+                motion:  Some(motion.clone()),
             },
             Self::Fill { target, text } => StepCommand::Fill {
-                locator: target.locator_wire(),
+                locator: target.locator(),
                 value:   fill(text),
             },
             Self::Type { target, text } => StepCommand::Type {
-                locator: target.locator_wire(),
+                locator: target.locator(),
                 text:    fill(text),
             },
             Self::Press { target, key } => StepCommand::Press {
-                locator: Some(target.locator_wire()),
+                locator: Some(target.locator()),
                 key:     fill(key),
             },
             Self::Select { target, option } => StepCommand::SelectOption {
-                locator: target.locator_wire(),
+                locator: target.locator(),
                 label:   fill(option),
             },
         }
@@ -451,7 +451,7 @@ impl PlannedAction {
             .expect("the decision checked every placeholder is bound");
         Some(FillReadBack {
             command: StepCommand::Read {
-                subject: json!({"type": "element", "locator": target.locator_wire(), "extract": {"type": "value"}}),
+                subject: ReadSubject::element_value(&target.locator()),
             },
             shows_value: expected == text.0,
             expected,
@@ -716,6 +716,7 @@ impl PageSnapshot {
 #[cfg(test)]
 mod tests {
     use whirl_lang::ast::{Span, Value, ValueSegment};
+    use whirl_shim::Locator;
 
     use super::*;
     use crate::instruction::testing::TestVars;
@@ -758,7 +759,7 @@ mod tests {
         assert_eq!(then, FollowUp::Done);
         assert_eq!(action.line(), r#"FILL textbox:"Email" "ada@example.com""#);
         assert_eq!(action.command(&instruction("x")), StepCommand::Fill {
-            locator: json!([{"type": "ref", "ref": "e4"}]),
+            locator: Locator::element_ref("e4"),
             value:   "ada@example.com".to_owned(),
         });
     }
@@ -785,7 +786,7 @@ mod tests {
             .fill_read_back(&instruction)
             .expect("a fill reads back");
         assert_eq!(read_back.command, StepCommand::Read {
-            subject: json!({"type": "element", "locator": [{"type": "ref", "ref": "e4"}], "extract": {"type": "value"}}),
+            subject: ReadSubject::element_value(&Locator::element_ref("e4")),
         });
         assert!(read_back.matches("5551234567"));
         assert!(read_back.matches("(555) 123-4567"));
@@ -908,7 +909,7 @@ mod tests {
             };
             assert_eq!(action.line(), line);
             assert_eq!(action.command(&instruction("x")), StepCommand::Click {
-                locator: json!([{"type": "ref", "ref": "e5"}]),
+                locator: Locator::element_ref("e5"),
                 button:  button.to_owned(),
             });
         }
@@ -943,8 +944,8 @@ mod tests {
         };
         assert_eq!(action.line(), r#"DRAG textbox:"Email" to button:"Sign in""#);
         assert_eq!(action.command(&instruction("x")), StepCommand::Drag {
-            locator: json!([{"type": "ref", "ref": "e4"}]),
-            target:  json!([{"type": "ref", "ref": "e5"}]),
+            locator: Locator::element_ref("e4"),
+            target:  Locator::element_ref("e5"),
         });
         assert_eq!(
             action.describe_for_model("the email"),
@@ -990,41 +991,36 @@ mod tests {
     #[test]
     fn scroll_methods_run_as_scroll_lines() {
         for (method, arguments, line, motion) in [
-            (
-                "scrollIntoView",
-                &[][..],
-                r#"SCROLL list:"Feed""#,
-                json!({"type": "intoView"}),
-            ),
+            ("scrollIntoView", &[][..], r#"SCROLL list:"Feed""#, None),
             (
                 "scrollTo",
                 &["50%"][..],
                 r#"SCROLL list:"Feed" to 50%"#,
-                json!({"type": "position", "percent": 50.0}),
+                Some(ScrollMotion::To(Percent::parse("50%").expect("a percent"))),
             ),
             (
                 "nextChunk",
                 &[][..],
                 r#"SCROLL list:"Feed" down"#,
-                json!({"type": "chunk", "direction": "down"}),
+                Some(ScrollMotion::Chunk(ScrollDirection::Down)),
             ),
             (
                 "prevChunk",
                 &[][..],
                 r#"SCROLL list:"Feed" up"#,
-                json!({"type": "chunk", "direction": "up"}),
+                Some(ScrollMotion::Chunk(ScrollDirection::Up)),
             ),
             (
                 "scrollLeft",
                 &[][..],
                 r#"SCROLL list:"Feed" left"#,
-                json!({"type": "chunk", "direction": "left"}),
+                Some(ScrollMotion::Chunk(ScrollDirection::Left)),
             ),
             (
                 "scrollRight",
                 &[][..],
                 r#"SCROLL list:"Feed" right"#,
-                json!({"type": "chunk", "direction": "right"}),
+                Some(ScrollMotion::Chunk(ScrollDirection::Right)),
             ),
         ] {
             let action = scroll_action(scroll(method, arguments));
@@ -1032,7 +1028,7 @@ mod tests {
             assert_eq!(
                 action.command(&instruction("x")),
                 StepCommand::Scroll {
-                    locator: Some(json!([{"type": "ref", "ref": "e2"}])),
+                    locator: Some(Locator::element_ref("e2")),
                     motion,
                 },
                 "{method}"
@@ -1054,7 +1050,7 @@ mod tests {
         assert_eq!(action.line(), "SCROLL down");
         assert_eq!(action.command(&instruction("x")), StepCommand::Scroll {
             locator: None,
-            motion:  json!({"type": "chunk", "direction": "down"}),
+            motion:  Some(ScrollMotion::Chunk(ScrollDirection::Down)),
         });
     }
 

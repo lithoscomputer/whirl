@@ -1,5 +1,9 @@
 //! Conversion of AST nodes to the shim wire JSON of
-//! `docs/engineering/shim-protocol.md` sections 4.1-4.4.
+//! `docs/engineering/shim-protocol.md` sections 4.1-4.4 and 4.6, behind
+//! typed values: [`Locator`], [`PageExpect`], [`AssertSpec`],
+//! [`ReadSubject`], [`MockPattern`], and [`MockResponse`]. A
+//! [`StepCommand`](crate::StepCommand) carries these, and only this crate
+//! sees the JSON inside them.
 //!
 //! Checks with a subject never reach the shim as checks: Rust evaluates
 //! them (ADR `evaluate-checks-in-rust`) and sends only reads.
@@ -10,23 +14,180 @@
 //! variable table (and masking registry) through it, and a resolver
 //! error aborts the conversion unchanged.
 
+use serde::{Serialize, Serializer};
 use serde_json::{Value as Json, json};
+use whirl_lang::ast::snapshot::MaxDiff;
 use whirl_lang::ast::{
-    DefaultEngine, Extractor, Ident, Locator, LocatorSegment, PageCheck, Regex, ScrollMotion,
+    self, DefaultEngine, Extractor, Ident, LocatorSegment, PageCheck, Regex, ScrollMotion,
     SegmentKind, Span, StateCheck, Subject, TextPrefix, Value, ValueSegment,
 };
 
-/// Shim-only response key for an independent HTTP entry. `$` and `:` cannot
-/// occur in a public `RESPONSE` name.
-pub fn independent_http_response(line: u32) -> String {
+/// The response name of an independent `HTTP` step (SPEC 7.3), by its
+/// line: the name its checks read with. `$` and `:` cannot occur in a
+/// public `RESPONSE` name, so it never collides with one.
+pub fn response_name_for_http(line: u32) -> String {
     format!("$whirl:http:{line}")
+}
+
+/// A locator on the wire (protocol 4.1): the segments of an AST locator
+/// with every value resolved.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct Locator(pub(crate) Json);
+
+impl Locator {
+    /// Resolves a locator's values. `default_engine` names the engine an
+    /// unprefixed segment selects; it must be present when the locator
+    /// can hold one (actions, SPEC 6.1).
+    pub fn resolve<E>(
+        locator: &ast::Locator,
+        default_engine: Option<DefaultEngine>,
+        resolve: &mut Resolve<'_, E>,
+    ) -> Result<Self, E> {
+        locator_wire(locator, default_engine, resolve).map(Self)
+    }
+
+    /// The locator of a snapshot element, such as `e12`: one `ref`
+    /// segment (protocol 4.1).
+    #[must_use]
+    pub fn element_ref(element: &str) -> Self {
+        Self(json!([{"type": "ref", "ref": element}]))
+    }
+}
+
+/// A `PAGE` expectation on the wire (protocol 4.2).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct PageExpect(pub(crate) Json);
+
+impl PageExpect {
+    /// Resolves a `PAGE` check's value, classifying it per SPEC 8.
+    pub fn resolve<E>(check: &PageCheck, resolve: &mut Resolve<'_, E>) -> Result<Self, E> {
+        page_wire(check, resolve).map(Self)
+    }
+}
+
+/// An `assert` spec on the wire (protocol 4.3): a state check or a tab
+/// closure.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct AssertSpec(pub(crate) Json);
+
+impl AssertSpec {
+    /// Resolves a state check's locator.
+    pub fn element_state<E>(
+        locator: &ast::Locator,
+        state: StateCheck,
+        resolve: &mut Resolve<'_, E>,
+    ) -> Result<Self, E> {
+        state_assert_wire(locator, state, resolve).map(Self)
+    }
+
+    /// A `window:NAME closed` check.
+    #[must_use]
+    pub fn tab_closed(name: &Ident) -> Self {
+        Self(tab_closed_wire(name))
+    }
+}
+
+/// A `read` subject on the wire (protocol 4.4).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct ReadSubject(pub(crate) Json);
+
+impl ReadSubject {
+    /// Resolves a page subject's values, or `None` for a response,
+    /// request, or extract subject, which the shim does not read.
+    pub fn resolve<E>(subject: &Subject, resolve: &mut Resolve<'_, E>) -> Result<Option<Self>, E> {
+        Ok(read_subject_wire(subject, resolve)?.map(Self))
+    }
+
+    /// The selected tab's URL.
+    #[must_use]
+    pub fn url() -> Self {
+        Self(json!({"type": "url"}))
+    }
+
+    /// An element's input value.
+    #[must_use]
+    pub fn element_value(locator: &Locator) -> Self {
+        Self(json!({"type": "element", "locator": locator.0, "extract": {"type": "value"}}))
+    }
+
+    /// An element's attribute.
+    #[must_use]
+    pub fn element_attr(locator: &Locator, name: &str) -> Self {
+        Self(json!({
+            "type": "element",
+            "locator": locator.0,
+            "extract": {"type": "attr", "name": name}
+        }))
+    }
+}
+
+/// The URL pattern of a `MOCK` (protocol 4.6): an anchored regular
+/// expression for the request URL.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct MockPattern(String);
+
+impl MockPattern {
+    /// The pattern for a `MOCK`'s absolute URL (SPEC 7.5): the normalized
+    /// URL without its fragment, where each `*` matches any run of
+    /// characters. The expression is ECMAScript without the `u` flag, so
+    /// it escapes only syntax characters. The error is the step failure's
+    /// message.
+    pub fn parse(url: &str) -> Result<Self, String> {
+        mock_pattern(url).map(Self)
+    }
+}
+
+/// What a `MOCK` serves (protocol 4.6), with its headers and body
+/// resolved.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum MockResponse {
+    /// A response with a status, header pairs, and a body (`None` for
+    /// an empty body).
+    Fulfill {
+        status:  u16,
+        headers: Vec<(String, String)>,
+        body:    Option<String>,
+    },
+    /// A failed request, as for a dropped connection.
+    Failed,
+}
+
+/// Serializes a `scroll` command's motion (protocol section 4).
+#[expect(
+    clippy::ref_option,
+    reason = "serde's serialize_with hands the field over as `&Option<T>`"
+)]
+pub(crate) fn serialize_scroll_motion<S: Serializer>(
+    motion: &Option<ScrollMotion>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    scroll_motion_wire(motion.as_ref()).serialize(serializer)
+}
+
+/// Serializes a `snapshot` command's `maxDiff`, keeping its unit
+/// (protocol section 4).
+pub(crate) fn serialize_max_diff<S: Serializer>(
+    max_diff: &MaxDiff,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    let json = match max_diff {
+        MaxDiff::Pixels(count) => json!({"type": "pixels", "value": count}),
+        MaxDiff::Percent(percent) => json!({"type": "percent", "value": percent.value()}),
+    };
+    json.serialize(serializer)
 }
 
 /// The anchored regular expression a `MOCK` sends for its absolute URL
 /// (SPEC 7.5): the normalized URL without its fragment, where each `*`
 /// matches any run of characters. The expression is ECMAScript without
 /// the `u` flag, so it escapes only syntax characters.
-pub fn mock_pattern(url: &str) -> Result<String, String> {
+fn mock_pattern(url: &str) -> Result<String, String> {
     let mut parsed = url::Url::parse(url)
         .map_err(|_| format!("MOCK needs an absolute HTTP URL or a path with base: {url}"))?;
     if !matches!(parsed.scheme(), "http" | "https") {
@@ -53,7 +214,7 @@ pub fn mock_pattern(url: &str) -> Result<String, String> {
 /// The locator that wire segments stand for (protocol 4.1), with literal
 /// values: the reverse of [`locator_wire`], for the locators the shim
 /// generates (SPEC 12.1). `None` for a segment a file cannot write.
-pub fn locator_from_wire(segments: &Json) -> Option<Locator> {
+pub(crate) fn locator_from_wire(segments: &Json) -> Option<ast::Locator> {
     let span = Span {
         line:   0,
         column: 0,
@@ -100,7 +261,7 @@ pub fn locator_from_wire(segments: &Json) -> Option<Locator> {
         };
         out.push(LocatorSegment { kind, span });
     }
-    (!out.is_empty()).then_some(Locator {
+    (!out.is_empty()).then_some(ast::Locator {
         segments: out,
         span,
     })
@@ -108,7 +269,7 @@ pub fn locator_from_wire(segments: &Json) -> Option<Locator> {
 
 /// A `scroll` command's motion (protocol section 4): into view without a
 /// motion, else one chunk or a vertical position.
-pub fn scroll_motion_wire(motion: Option<&ScrollMotion>) -> Json {
+fn scroll_motion_wire(motion: Option<&ScrollMotion>) -> Json {
     match motion {
         None => json!({"type": "intoView"}),
         Some(ScrollMotion::Chunk(direction)) => {
@@ -163,8 +324,8 @@ fn regex_source(regex: &Regex) -> String {
 /// Converts a locator to the wire array of protocol section 4.1.
 /// `default_engine` names the engine an unprefixed segment selects; it
 /// must be present when the locator can hold one (actions, SPEC 6.1).
-pub fn locator_wire<E>(
-    locator: &Locator,
+fn locator_wire<E>(
+    locator: &ast::Locator,
     default_engine: Option<DefaultEngine>,
     resolve: &mut Resolve<'_, E>,
 ) -> Result<Json, E> {
@@ -234,7 +395,7 @@ fn segment_wire<E>(
 /// 4.2, classifying a resolved value per SPEC 8: a value starting with
 /// `/` compares the path (or path plus query when it contains `?`); any
 /// other value compares the full URL.
-pub fn page_wire<E>(check: &PageCheck, resolve: &mut Resolve<'_, E>) -> Result<Json, E> {
+fn page_wire<E>(check: &PageCheck, resolve: &mut Resolve<'_, E>) -> Result<Json, E> {
     let json = match check {
         PageCheck::Value(value) => {
             let resolved = resolve(value)?;
@@ -266,15 +427,15 @@ fn state_text(state: StateCheck) -> &'static str {
     }
 }
 
-fn locator_subject<E>(locator: &Locator, resolve: &mut Resolve<'_, E>) -> Result<Json, E> {
+fn locator_subject<E>(locator: &ast::Locator, resolve: &mut Resolve<'_, E>) -> Result<Json, E> {
     // Asserts and captures never hold default-engine segments (SPEC 6.1).
     let locator = locator_wire(locator, None, resolve)?;
     Ok(json!({"type": "locator", "locator": locator}))
 }
 
 /// The wire spec of a state check (protocol section 4.3).
-pub fn state_assert_wire<E>(
-    locator: &Locator,
+fn state_assert_wire<E>(
+    locator: &ast::Locator,
     state: StateCheck,
     resolve: &mut Resolve<'_, E>,
 ) -> Result<Json, E> {
@@ -285,13 +446,13 @@ pub fn state_assert_wire<E>(
 }
 
 /// The wire spec of a `window:NAME closed` check (protocol section 4.3).
-pub fn tab_closed_wire(name: &Ident) -> Json {
+fn tab_closed_wire(name: &Ident) -> Json {
     json!({"subject": {"type": "tab", "name": name.text}, "check": {"type": "closed"}})
 }
 
 /// The wire read subject of a page subject (protocol section 4.4), or
 /// `None` for a response subject, which `readResponse` reads.
-pub fn read_subject_wire<E>(
+fn read_subject_wire<E>(
     subject: &Subject,
     resolve: &mut Resolve<'_, E>,
 ) -> Result<Option<Json>, E> {

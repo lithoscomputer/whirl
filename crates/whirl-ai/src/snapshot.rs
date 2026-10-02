@@ -5,7 +5,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::str::Chars;
 
-use serde_json::{Value as Json, json};
+use whirl_shim::Locator;
 
 /// An element ref from an AI snapshot: `e12`, or `f1e3` for an element
 /// inside the first iframe. The shim resolves it with an `aria-ref=`
@@ -463,9 +463,9 @@ pub struct Target {
 }
 
 impl Target {
-    /// The protocol locator JSON: one `ref` segment (protocol 4.1).
-    pub(crate) fn locator_wire(&self) -> Json {
-        json!([{"type": "ref", "ref": self.element.as_str()}])
+    /// The shim locator of the element: one `ref` segment (protocol 4.1).
+    pub(crate) fn locator(&self) -> Locator {
+        Locator::element_ref(self.element.as_str())
     }
 
     pub fn locator_text(&self) -> String {
@@ -812,9 +812,6 @@ mod tests {
     fn locators_render_with_target_ref_segments() {
         let snapshot = PageSnapshot::parse(SNAPSHOT);
         let target = snapshot.target("f1e2").expect("present");
-        assert_eq!(
-            target.locator_wire(),
-            json!([{"type": "ref", "ref": "f1e2"}])
-        );
+        assert_eq!(target.locator(), Locator::element_ref("f1e2"));
     }
 }

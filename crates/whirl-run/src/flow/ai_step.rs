@@ -16,7 +16,7 @@ use whirl_lang::{is_role, parse_locator, render_snapshot_target};
 use whirl_report::model::{
     ActReport, AiReport, AiTargetReport, ExtractReport, JudgeReport, StepError, StepWarning,
 };
-use whirl_shim::{AriaSnapshotResult, GeneratedLocator, ShimClient, StepCommand, wire};
+use whirl_shim::{AriaSnapshotResult, GeneratedLocator, ShimClient, StepCommand};
 use whirl_types::PredicateKind;
 
 use super::act_step::{ActBudget, ActLine, act_failure, usage_report};
@@ -291,7 +291,7 @@ impl FlowExec<'_> {
         client: &mut ShimClient,
         state: &mut EntryState,
     ) -> Option<()> {
-        let wire = self.locator(locator, None).ok()?;
+        let locator = self.locator(locator, None).ok()?;
         let half = Duration::from_millis(line.remaining_ms() / 2);
         let mut probe = ActLine {
             deadline: Instant::now() + half,
@@ -302,7 +302,7 @@ impl FlowExec<'_> {
             .act_shim_call(
                 &mut probe,
                 StepCommand::AriaSnapshot {
-                    locator: Some(wire),
+                    locator: Some(locator),
                     settle:  false,
                 },
                 client,
@@ -538,10 +538,6 @@ impl FlowExec<'_> {
             .map_err(|_| ("cache-unstable", "the locator generator failed".to_owned()))?;
         match serde_json::from_value::<GeneratedLocator>(result) {
             Ok(GeneratedLocator::Locator { locator }) => {
-                let locator = wire::locator_from_wire(&locator).ok_or((
-                    "cache-unstable",
-                    "the generated locator is malformed".to_owned(),
-                ))?;
                 if let Some(role) =
                     locator
                         .segments

@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::path::{self, Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use serde_json::{Value as Json, json};
+use serde_json::Value as Json;
 use tokio::fs;
 use tracing::{Instrument as _, debug, debug_span, info_span};
 use whirl_ai::{ActPlanner, Instruction, JudgeAnswer, ModelClient};
@@ -21,8 +21,9 @@ use whirl_report::model::{
     SnapshotReport, Status, StepError, StepKind, StepReport, StepWarning, Timing,
 };
 use whirl_shim::{
-    BrowserOptions, EndFlowParams, ErrorObject, Features, MockHits, Recording, ShimClient,
-    ShimError, StartFlowParams, StepCommand, StepOutcome, StepRequest, VideoOutput, wire,
+    AssertSpec, BrowserOptions, EndFlowParams, ErrorObject, Features, Locator, MockHits,
+    MockPattern, MockResponse, PageExpect, Recording, ShimClient, ShimError, StartFlowParams,
+    StepCommand, StepOutcome, StepRequest, VideoOutput, response_name_for_http,
 };
 
 use crate::artifacts;
@@ -568,8 +569,8 @@ enum PreparedStep {
     },
     Act {
         instruction: Instruction,
-        /// The wire locator of the element the snapshot is limited to.
-        scope:       Option<Json>,
+        /// The element the snapshot is limited to.
+        scope:       Option<Locator>,
     },
     /// An `EXTRACT` line (SPEC 7.6).
     Extract(extract_step::ExtractPlan),
@@ -636,17 +637,17 @@ impl FlowExec<'_> {
             .into_owned())
     }
 
-    /// Resolves a locator to wire JSON.
+    /// Resolves a locator's values for the shim.
     fn locator(
         &mut self,
         locator: &ast::Locator,
         engine: Option<ast::DefaultEngine>,
-    ) -> Result<Json, VarError> {
+    ) -> Result<Locator, VarError> {
         let vars = &mut self.vars;
-        wire::locator_wire(locator, engine, &mut |value| vars.resolve(value))
+        Locator::resolve(locator, engine, &mut |value| vars.resolve(value))
     }
 
-    /// Builds the wire command of one step (protocol section 4), or the
+    /// Builds the command of one step (protocol section 4), or the
     /// resolved instruction of an `ACT` line.
     fn prepare_step(
         &mut self,
@@ -692,19 +693,20 @@ impl FlowExec<'_> {
             },
             StepNode::Page(page) => {
                 let vars = &mut self.vars;
-                let expect = wire::page_wire(&page.check, &mut |value| vars.resolve(value))?;
+                let expect = PageExpect::resolve(&page.check, &mut |value| vars.resolve(value))?;
                 Ok(PreparedStep::Command(StepCommand::Page { expect }))
             }
             StepNode::Assert(assert) => match &assert.body {
                 ast::AssertBody::WindowClosed { name } => {
                     Ok(PreparedStep::Command(StepCommand::Assert {
-                        spec: wire::tab_closed_wire(name),
+                        spec: AssertSpec::tab_closed(name),
                     }))
                 }
                 ast::AssertBody::ElementState { locator, state } => {
                     let vars = &mut self.vars;
-                    let spec =
-                        wire::state_assert_wire(locator, *state, &mut |value| vars.resolve(value))?;
+                    let spec = AssertSpec::element_state(locator, *state, &mut |value| {
+                        vars.resolve(value)
+                    })?;
                     Ok(PreparedStep::Command(StepCommand::Assert { spec }))
                 }
                 ast::AssertBody::Check(line) => self
@@ -765,8 +767,8 @@ impl FlowExec<'_> {
         }
     }
 
-    /// Builds the wire command of one action line (SPEC 7). `ACT` lines
-    /// plan their commands instead; see [`Self::prepare_step`].
+    /// Builds the command of one action line (SPEC 7). `ACT` lines plan
+    /// their commands instead; see [`Self::prepare_step`].
     fn build_action(&mut self, action: &ast::Action) -> Result<StepCommand, BuildError> {
         use ast::ActionKind as K;
 
@@ -798,7 +800,7 @@ impl FlowExec<'_> {
             } => {
                 let (headers, body) = self.message_parts(headers, body.as_ref())?;
                 StepCommand::Http {
-                    name: wire::independent_http_response(action.line),
+                    name: response_name_for_http(action.line),
                     method: method.clone(),
                     url: self.resolve_url(url)?,
                     headers,
@@ -812,7 +814,7 @@ impl FlowExec<'_> {
                 ..
             } => {
                 let url = self.resolve_url(url)?;
-                let pattern = wire::mock_pattern(&url).map_err(BuildError::Check)?;
+                let pattern = MockPattern::parse(&url).map_err(BuildError::Check)?;
                 let response = match response {
                     ast::MockResponse::Fulfill {
                         status,
@@ -820,14 +822,13 @@ impl FlowExec<'_> {
                         body,
                     } => {
                         let (headers, body) = self.message_parts(headers, body.as_ref())?;
-                        json!({
-                            "type": "fulfill",
-                            "status": status,
-                            "headers": headers,
-                            "body": body,
-                        })
+                        MockResponse::Fulfill {
+                            status: *status,
+                            headers,
+                            body,
+                        }
                     }
-                    ast::MockResponse::Failed => json!({"type": "failed"}),
+                    ast::MockResponse::Failed => MockResponse::Failed,
                 };
                 self.mocks.push(RegisteredMock {
                     line:   action.line,
@@ -884,14 +885,14 @@ impl FlowExec<'_> {
             },
             K::ScrollIntoView { target } => StepCommand::Scroll {
                 locator: Some(self.locator(target, engine)?),
-                motion:  wire::scroll_motion_wire(None),
+                motion:  None,
             },
             K::Scroll { target, motion } => StepCommand::Scroll {
                 locator: target
                     .as_ref()
                     .map(|target| self.locator(target, engine))
                     .transpose()?,
-                motion:  wire::scroll_motion_wire(Some(motion)),
+                motion:  Some(motion.clone()),
             },
             K::Upload { target, path } => {
                 let path = self.file_path(path)?;
@@ -935,7 +936,7 @@ impl FlowExec<'_> {
         Ok(command)
     }
 
-    /// Builds the wire command of a `SNAPSHOT` line (SPEC 7) and the
+    /// Builds the command of a `SNAPSHOT` line (SPEC 7) and the
     /// effective settings its step report echoes.
     fn build_snapshot(
         &mut self,
@@ -949,7 +950,7 @@ impl FlowExec<'_> {
         )?;
         // A target has no default engine (SPEC 6.1), so interpolation
         // changes only its values.
-        let target_wire = target
+        let target_locator = target
             .map(|target| self.locator(target, None))
             .transpose()?;
         let target_text =
@@ -976,10 +977,10 @@ impl FlowExec<'_> {
                 .to_string_lossy()
                 .into_owned(),
             update:          self.run.flags.update_snapshots,
-            target:          target_wire,
+            target:          target_locator,
             masks:           settings.masks.clone(),
             pixel_threshold: settings.threshold.value(),
-            max_diff:        settings.max_diff_wire(),
+            max_diff:        settings.max_diff.clone(),
         };
         Ok((command, report))
     }
@@ -1481,7 +1482,7 @@ impl FlowExec<'_> {
         self.judge_answers.clear();
         let implicit_response = entry.actions.first().and_then(|action| {
             matches!(action.kind, ast::ActionKind::Http { .. })
-                .then(|| wire::independent_http_response(action.line))
+                .then(|| response_name_for_http(action.line))
         });
         for node in entry_steps(entry) {
             if entry_status != Status::Passed {
