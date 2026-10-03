@@ -64,6 +64,7 @@ async fn unanswered_start_flow_kills_the_process() {
         storage_state_path: None,
         dialogs:            "dismiss".to_owned(),
         allow_hosts:        None,
+        block_hosts:        None,
         nav_timeout_ms:     30_000,
         user_agent:         None,
         reduced_motion:     None,

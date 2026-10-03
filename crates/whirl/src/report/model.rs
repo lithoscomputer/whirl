@@ -164,6 +164,70 @@ pub(crate) struct StepWarning {
     pub(crate) message: String,
 }
 
+/// The rule that blocked a host (SPEC 5).
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BlockedHostRule {
+    pub(crate) host:   String,
+    /// `allow-hosts` or `block-hosts`.
+    pub(crate) option: String,
+    /// The `block-hosts` glob that matched; none when no `allow-hosts`
+    /// glob matched.
+    pub(crate) glob:   Option<String>,
+}
+
+impl BlockedHostRule {
+    /// The rule as the console and reports write it, such as
+    /// `block-hosts *.analytics.example.com`.
+    pub(crate) fn describe(&self) -> String {
+        match &self.glob {
+            Some(glob) => format!("{} {glob}", self.option),
+            None => format!("not in {}", self.option),
+        }
+    }
+}
+
+/// Where a setting's value came from (SPEC 13).
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum SettingSource {
+    Default,
+    File,
+    CommandLine,
+}
+
+/// A setting's value: text, a list, or none when unset.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(untagged)]
+pub(crate) enum SettingValue {
+    Text(String),
+    List(Vec<String>),
+}
+
+/// One effective setting of a file (SPEC 14).
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SettingReport {
+    pub(crate) key:    String,
+    /// The value the file ran with, masked; null when unset.
+    pub(crate) value:  Option<SettingValue>,
+    pub(crate) source: SettingSource,
+    /// False for a setting that this engine validates but does not apply,
+    /// such as `browsersim-origin`.
+    pub(crate) active: bool,
+}
+
+impl SettingReport {
+    /// The value as one line of text.
+    pub(crate) fn value_text(&self) -> String {
+        match &self.value {
+            None => "none".to_owned(),
+            Some(SettingValue::Text(text)) => text.clone(),
+            Some(SettingValue::List(items)) => items.join(" "),
+        }
+    }
+}
+
 /// A mock a flow registered and how many requests it served (SPEC 7.5).
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -530,30 +594,67 @@ fn deserialize_captures<'de, D: Deserializer<'de>>(
 #[serde(rename_all = "camelCase")]
 pub(crate) struct FileReport {
     #[serde(flatten)]
-    pub(crate) timing:        Timing,
+    pub(crate) timing:             Timing,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) source_sha256: Option<String>,
+    pub(crate) source_sha256:      Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) roles:         Option<FlowRoles>,
+    pub(crate) roles:              Option<FlowRoles>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) runtime:       Option<RuntimeMetadata>,
+    pub(crate) runtime:            Option<RuntimeMetadata>,
     /// The input path as given on the command line.
-    pub(crate) path:          String,
-    pub(crate) status:        Status,
-    pub(crate) duration_ms:   u64,
-    pub(crate) artifacts_dir: String,
-    pub(crate) blocked_hosts: Vec<String>,
+    pub(crate) path:               String,
+    pub(crate) status:             Status,
+    pub(crate) duration_ms:        u64,
+    pub(crate) artifacts_dir:      String,
+    pub(crate) blocked_hosts:      Vec<String>,
+    /// The rule that blocked each host of `blocked_hosts` (SPEC 5). Older
+    /// reports omit it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) blocked_host_rules: Vec<BlockedHostRule>,
+    /// The settings the file ran with, masked (SPEC 14). A file whose
+    /// options failed to resolve, and older reports, have none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) settings:           Vec<SettingReport>,
     /// Screenshot warnings (SPEC 7) and other non-failing notices.
-    pub(crate) warnings:      Vec<String>,
+    pub(crate) warnings:           Vec<String>,
     /// File-level artifact paths (`video.webm`, `network.har`).
-    pub(crate) artifacts:     Vec<String>,
+    pub(crate) artifacts:          Vec<String>,
     /// Every `MOCK` that ran, in order (SPEC 7.5).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) mocks:         Vec<MockReport>,
-    pub(crate) entries:       Vec<EntryReport>,
+    pub(crate) mocks:              Vec<MockReport>,
+    pub(crate) entries:            Vec<EntryReport>,
 }
 
 impl FileReport {
+    /// Each blocked host with the rule that blocked it, as the console and
+    /// reports show it (SPEC 5).
+    pub(crate) fn blocked_host_lines(&self) -> Vec<String> {
+        self.blocked_hosts
+            .iter()
+            .map(|host| {
+                match self
+                    .blocked_host_rules
+                    .iter()
+                    .find(|rule| rule.host == *host)
+                {
+                    Some(rule) => format!("{host} ({})", rule.describe()),
+                    None => host.clone(),
+                }
+            })
+            .collect()
+    }
+
+    /// Each setting that this engine did not apply and that the file or
+    /// the command line set, such as `browsersim-origin: recorded`
+    /// (SPEC 5).
+    pub(crate) fn inactive_setting_lines(&self) -> Vec<String> {
+        self.settings
+            .iter()
+            .filter(|setting| !setting.active && setting.source != SettingSource::Default)
+            .map(|setting| format!("{}: {}", setting.key, setting.value_text()))
+            .collect()
+    }
+
     /// Every warning to show a reader: the file's own, then each step's
     /// with its line and code.
     pub(crate) fn warning_lines(&self) -> Vec<String> {

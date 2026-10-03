@@ -190,6 +190,7 @@ export function decodeStartFlowParams(params: Params): StartFlowParams {
 	const viewport = fieldObject(params, "viewport");
 	const video = fieldObjectOrNull(params, "video");
 	const allowHosts = fieldArrayOrNull(params, "allowHosts");
+	const blockHosts = fieldArrayOrNull(params, "blockHosts");
 	return {
 		browser: fieldEnum(params, "browser", browserEngines),
 		headed: fieldBoolean(params, "headed"),
@@ -201,6 +202,8 @@ export function decodeStartFlowParams(params: Params): StartFlowParams {
 		dialogs: fieldEnum(params, "dialogs", ["dismiss", "accept"]),
 		allowHosts:
 			allowHosts === null ? null : allowHosts.map((host) => String(host)),
+		blockHosts:
+			blockHosts === null ? null : blockHosts.map((host) => String(host)),
 		navTimeoutMs: fieldNumber(params, "navTimeoutMs"),
 		userAgent: fieldStringOrNull(params, "userAgent"),
 		reducedMotion:

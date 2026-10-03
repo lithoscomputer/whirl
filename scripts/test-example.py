@@ -34,7 +34,7 @@ def main():
                     if time.monotonic() >= deadline:
                         raise RuntimeError("Sample app readiness timed out")
                     time.sleep(0.1)
-            command = [os.environ.get("WHIRL_BIN", str(ROOT / "target/debug/whirl")), "--base", base, "--trace", "--report-json", str(reports / "report.json"), "--report-junit", str(reports / "junit.xml"), "--artifacts", str(reports / "flows")]
+            command = [os.environ.get("WHIRL_BIN", str(ROOT / "target/debug/whirl")), "run", "-O", f"base={base}", "--trace", "--report-json", str(reports / "report.json"), "--report-junit", str(reports / "junit.xml"), "--out", str(reports / "flows")]
             if args.update_snapshots:
                 command.append("--update-snapshots")
             command.append(str(ROOT / "examples/shop/flows"))

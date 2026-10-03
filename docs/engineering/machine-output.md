@@ -1,6 +1,6 @@
 # Machine-readable output
 
-`whirl check --json flows/` writes diagnostics to stdout. `whirl --report-json
+`whirl check --json flows/` writes diagnostics to stdout. `whirl run --report-json
 report.json flows/` writes the run report. The check document uses `version: 1`,
 and the run report uses `version: 2`. Consumers must ignore unknown fields.
 Breaking shape changes require a new version.
@@ -13,6 +13,7 @@ Schemas: [check](check.schema.json), [run report](report.schema.json).
 | --- | --- |
 | `parse-error` | Invalid flow syntax; `expected` lists alternatives when available |
 | `input-selection` | Missing input path or no selected flow files |
+| `invalid-option` | A `-O` argument has an unknown key, an invalid value, or the wrong form; exit 4 |
 | `input-io` | An input could not be read |
 | `setup-io` | A setup flow could not be found or read |
 | `nested-setup` | A setup flow names another setup |
@@ -45,7 +46,8 @@ Schemas: [check](check.schema.json), [run report](report.schema.json).
 
 Locations use 1-based Unicode character positions, not bytes or UTF-16 units.
 `length` is the source span length on that line. Input and I/O diagnostics may
-have null locations. `expected` is an array, empty when there are no alternatives.
+have null locations, and so does a lint about an option set with `-O`, which
+is not on a line of the file. `expected` is an array, empty when there are no alternatives.
 Warnings do not change exit status. Successful checks emit an empty diagnostics
 array. Argument syntax errors, such as an unknown flag, still use CLI usage text.
 
@@ -126,6 +128,18 @@ the recording's frames per second (60 or the `--video-fps` value on Chromium,
 25 elsewhere); it is absent without a recording and in older reports. A failure
 before context startup has no runtime object.
 
+Each file whose options resolved has `settings`: one object for every option
+key, in the order of SPEC section 5, with the `value` the file ran with (text,
+a list, or null when unset), its `source` (`default`, `file`, or
+`command-line`), and `active`, which is false for a `browsersim-*` setting that
+ordinary runs validate but do not apply. Values use the text form and are
+masked like other output (SPEC 11); `allow-hosts` lists the configured hosts
+without the implicit `base` host. `blockedHosts` lists each blocked hostname,
+and `blockedHostRules` gives the rule behind each one: its `option`
+(`allow-hosts` or `block-hosts`) and the `block-hosts` `glob` that matched, or
+null when no `allow-hosts` glob matched. Both new fields are absent in older
+reports.
+
 ## Saved reports and run records
 
 ```sh
@@ -175,13 +189,13 @@ version 1 capture as a string.
 ## Rerunning failures
 
 ```sh
-whirl --report-json report.json flows/
-whirl --rerun-failed report.json --trace
+whirl run --report-json report.json flows/
+whirl run --rerun-failed report.json --trace
 ```
 
 Reruns select failed and errored files, resolve relative paths using the report's
 working directory, and execute each whole file plus its setup. Reports do not
-store executable configuration or secret values. Supply the original `--base`,
+store executable configuration or secret values. Supply the original `-O` options,
 `--browser`, variable flags, and environment again when needed. Move a report
 freely, but update file paths if the project itself has moved.
 

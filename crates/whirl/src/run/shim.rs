@@ -29,7 +29,7 @@ use crate::report::model::SnapshotReport;
 pub(super) mod wire;
 
 /// The protocol version this Whirl speaks (protocol section 3).
-pub(crate) const PROTOCOL: u64 = 8;
+pub(crate) const PROTOCOL: u64 = 9;
 
 /// Environment variable naming the built shim entry (protocol section 8).
 pub(crate) const SHIM_JS_ENV: &str = "WHIRL_SHIM_JS";
@@ -223,6 +223,7 @@ pub(crate) struct StartFlowParams {
     pub(crate) storage_state_path: Option<String>,
     pub(crate) dialogs:            String,
     pub(crate) allow_hosts:        Option<Vec<String>>,
+    pub(crate) block_hosts:        Option<Vec<String>>,
     pub(crate) nav_timeout_ms:     u64,
     pub(crate) user_agent:         Option<String>,
     pub(crate) reduced_motion:     Option<String>,
@@ -249,7 +250,8 @@ pub(crate) struct EndFlowParams {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct EndFlowResult {
-    pub(crate) blocked_hosts: Vec<String>,
+    /// Every blocked host with its rule, sorted by host (SPEC 5).
+    pub(crate) blocked_hosts: Vec<BlockedHost>,
     pub(crate) video_path:    Option<String>,
     /// Why the shim skipped a requested recording. Older shims omit it.
     #[serde(default)]
@@ -261,6 +263,16 @@ pub(crate) struct EndFlowResult {
     /// 7.5). Older shims omit it.
     #[serde(default)]
     pub(crate) mocks:         Vec<MockHits>,
+}
+
+/// A host that a host rule blocked (protocol section 3).
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+pub(crate) struct BlockedHost {
+    pub(crate) host:   String,
+    /// `allow-hosts` or `block-hosts`.
+    pub(crate) option: String,
+    /// The `block-hosts` glob that matched; none for `allow-hosts`.
+    pub(crate) glob:   Option<String>,
 }
 
 /// One mock's served-request count at `endFlow` (protocol section 3).

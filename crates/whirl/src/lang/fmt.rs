@@ -630,9 +630,9 @@ fn render_option(option: &FileOption) -> String {
             "nav-timeout: {}",
             render_option_value(value, |duration| render_duration(*duration))
         ),
-        FileOption::AllowHosts(globs) => {
+        FileOption::AllowHosts(globs) | FileOption::BlockHosts(globs) => {
             let globs: Vec<String> = globs.iter().map(plain).collect();
-            format!("allow-hosts: {}", globs.join(" "))
+            format!("{}: {}", option.key(), globs.join(" "))
         }
         FileOption::Dialogs(value) => format!(
             "dialogs: {}",
@@ -646,6 +646,10 @@ fn render_option(option: &FileOption) -> String {
         FileOption::UserAgent(value) => format!("user-agent: {}", plain(value)),
         FileOption::Setup(value) => format!("setup: {}", plain(value)),
         FileOption::Model(value) => format!("model: {}", plain(value)),
+        FileOption::BrowserSimOrigin(value) => format!(
+            "browsersim-origin: {}",
+            render_option_value(value, |origin| origin.as_str().to_owned())
+        ),
     }
 }
 
@@ -982,7 +986,8 @@ mod tests {
             | FileOption::NavTimeout(value) => scrub_option_value(value),
             FileOption::Dialogs(value) => scrub_option_value(value),
             FileOption::ReducedMotion(value) => scrub_option_value(value),
-            FileOption::AllowHosts(globs) => {
+            FileOption::BrowserSimOrigin(value) => scrub_option_value(value),
+            FileOption::AllowHosts(globs) | FileOption::BlockHosts(globs) => {
                 for glob in globs {
                     scrub_value(glob);
                 }

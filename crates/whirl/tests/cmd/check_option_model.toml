@@ -1,0 +1,5 @@
+bin.name = "whirl"
+args = ["check", "-O", "model=anthropic/claude-sonnet-5", "cart.whirl"]
+fs.base = "options.in"
+fs.sandbox = true
+status = "success"

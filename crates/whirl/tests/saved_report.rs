@@ -248,7 +248,7 @@ fn source_hash_uses_parsed_bytes_even_when_the_file_changes_during_execution() {
         .current_dir(dir.path())
         .env("WHIRL_NODE", "node")
         .env("WHIRL_SHIM_JS", dir.path().join("shim.cjs"))
-        .args(["--report-json", "report.json", "mutable.whirl"])
+        .args(["run", "--report-json", "report.json", "mutable.whirl"])
         .output()
         .expect("whirl command");
     assert_eq!(output.status.code(), Some(0), "{output:?}");
@@ -569,6 +569,7 @@ fn live_json_can_store_author_provenance_without_rendering_html() {
             concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake_shim.js"),
         )
         .args([
+            "run",
             "--report-json",
             "report.json",
             "--report-metadata",

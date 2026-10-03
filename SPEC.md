@@ -48,8 +48,8 @@ ASSERT alert:* text contains "Added to cart"
 Run it:
 
 ```console
-$ whirl flows/checkout.whirl
-$ whirl --report-junit report.xml flows/
+$ whirl run flows/checkout.whirl
+$ whirl run --report-junit report.xml flows/
 ```
 
 ## 3. Files
@@ -141,6 +141,7 @@ The `[Options]` section holds `key: value` lines. White space must follow the co
 | `entry-timeout` | duration | none | Cap on an entry's total time across all of its lines |
 | `nav-timeout` | duration | `30s` | Navigation timeout for `VISIT` |
 | `allow-hosts` | glob list | all hosts | Hosts the browser may reach; requests to others are aborted |
+| `block-hosts` | glob list | no hosts | Hosts the browser may not reach, even when `allow-hosts` allows them |
 | `dialogs` | `dismiss` \| `accept` | `dismiss` | Automatic response to alert, confirm, and prompt dialogs |
 | `reduced-motion` | `reduce` \| `no-preference` | engine default | What the page's `prefers-reduced-motion` media query reports |
 | `storage` | file path | none | Saved storage state loaded into each file's browser context |
@@ -150,10 +151,19 @@ The `[Options]` section holds `key: value` lines. White space must follow the co
 | `snapshot-mask` | explicit locator or `none` | no masks | Mask matching elements in every `SNAPSHOT`; repeated lines form a list |
 | `snapshot-max-diff` | pixel count or percentage | `0` | Maximum different pixels allowed in a `SNAPSHOT` |
 | `snapshot-pixel-threshold` | number from 0 to 1 | `0.2` | Color distance above which a pixel counts as different |
+| `browsersim-origin` | `build` \| `recorded` | `build` | The origin a page sees when BrowserSim replays a recording; inactive in ordinary runs |
 
-`allow-hosts` takes one or more host globs (`allow-hosts: example.com *.example.com`). Globs match the request's hostname only — scheme and port are ignored — and `*.example.com` does not match the apex `example.com`; list both to cover both. The `base` host is always allowed. Whirl aborts requests to any other host, including fetch/XHR, WebSockets, and subresources, and the reports list every blocked host. Service workers are disabled when `allow-hosts` is set, because they can bypass request routing. IP-literal hosts match textually; `data:` and `blob:` URLs have no host and are always allowed. Without the option, all hosts are allowed.
+`allow-hosts` and `block-hosts` each take one or more host globs (`allow-hosts: example.com *.example.com`). Globs match the request's hostname only — scheme, port, and path are ignored — and `*.example.com` does not match the apex `example.com`; list both to cover both. With `allow-hosts`, the `base` host is always allowed, and Whirl aborts requests to any other host, including fetch/XHR, WebSockets, subresources, and independent `HTTP` requests. Without it, all hosts are allowed. `block-hosts` aborts the requests to the hosts it matches in the same way. An explicit block wins over an allowance, including the `base` host's:
 
-`storage` names a Playwright storageState JSON file, resolved relative to the `.whirl` file. Each browser context starts from that saved state (cookies and local storage) instead of empty, so flows can skip UI login. Produce the file with `--save-storage`, which writes the final context state of a successful run — typically of a dedicated login flow.
+```whirl
+[Options]
+base: http://localhost:3000
+block-hosts: analytics.example.com *.analytics.example.com
+```
+
+The reports list every blocked host with the rule that blocked it: the `block-hosts` glob that matched, or `allow-hosts` when no glob of that list matched. Service workers are disabled when either option is set, because they can bypass request routing. IP-literal hosts match textually; `data:` and `blob:` URLs have no host and are always allowed.
+
+`storage` names a Playwright storageState JSON file, resolved relative to the `.whirl` file. Each browser context starts from that saved state (cookies and local storage) instead of empty, so flows can skip UI login. Produce the file with `--save-state`, which writes the final context state of a successful run — typically of a dedicated login flow. `--load-state` supplies the same kind of file from the command line (section 13).
 
 `setup` names another `.whirl` file, resolved relative to this one, whose final state this file starts from: Whirl runs the setup flow first, in its own context, saves that context's cookies and storage, and starts this file's context from the saved state, the way `storage` would. The two options cannot be combined. The setup flow is an ordinary flow with its own options, so it runs and debugs on its own, and it may not name a `setup` of its own. It can use HTTP entries before its first `VISIT`, or contain only HTTP entries. Every file that names the same setup flow in one invocation shares one run of it: ten flows that need a signed-in session sign in once. The saved state lives only for the invocation. The setup flow's captures are readable in the dependent file as `{{setup.name}}` (section 11). When the setup flow fails, its dependents do not start and each reports the failure as its `[setup]` case (section 12). The path must be literal: it is resolved before any variable exists.
 
@@ -170,7 +180,9 @@ are pinned to the bundled Playwright version and may change with a Whirl upgrade
 All other values are literal strings, including unknown names such as `chorme`.
 Quote a value that contains spaces. Quoted and unquoted forms have the same
 meaning: `chrome` and `"chrome"` both select the alias. Alias resolution happens
-after option interpolation and CLI overrides; `--user-agent chrome` works too.
+after option interpolation and CLI overrides; `-O user-agent=chrome` works too.
+
+Keys that start with `browsersim-` configure BrowserSim, a recording engine that ordinary runs do not use. An ordinary run validates them and does not apply them. The console output and the reports list each one that the file or the command line sets as inactive. `browsersim-origin` chooses the origin that a page sees when BrowserSim replays a recording: `build`, the default, is the origin of the build under test, and `recorded` is the origin the recording captured. Any other `browsersim-` key is unknown.
 
 `model` names a language model in the form `provider/model`, such as
 `anthropic/claude-sonnet-5` or `openai/gpt-5.6-luna`, from the model catalog
@@ -179,7 +191,7 @@ variable, such as `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`. A file that uses
 `ACT` without `model` is a lint error. Without `WHIRL_LLM_ENDPOINT` (section
 13), `whirl check` also reports a literal `model` that the catalog cannot route.
 
-Unknown keys are a parse error. When section 13 defines a corresponding command-line flag, that flag overrides the file option.
+Unknown keys are a parse error. The command line can set every key except `setup` for every file with `-O key=value`, and `browser` also with `--browser` (section 13). A value from the command line replaces the file's value. `--load-state` is not such a flag: it cannot be combined with `storage` (section 13).
 
 ## 6. Locators
 
@@ -344,7 +356,7 @@ Every action already scrolls its element into view, so a flow needs `SCROLL` onl
 
 `SCREENSHOT` never fails the entry, even when it goes wrong: if the capture or the file write fails — a crashed page, an I/O error, or its step timeout expiring — Whirl skips the artifact and records a warning naming the screenshot and the cause, in the console output and in reports, so a missing artifact is always explained. One cap outranks this: an expiring `entry-timeout` fails the entry as usual, whatever line is in flight.
 
-`SNAPSHOT` is retried like an assert through a shim-owned polling loop and uses Playwright's image comparator. Whirl captures frames until two consecutive frames are identical, then compares against the baseline at `<flow>.whirl-snapshots/<name>-<browser>-<platform>.png` next to the flow file. Images must have identical dimensions. By default no pixel may differ; a pixel differs when its color distance exceeds `snapshot-pixel-threshold` (default `0.2` on a 0–1 scale). On a mismatch Whirl recaptures and recompares until the step timeout. A stable mismatch fails the entry and writes the actual and diff images to the artifacts directory. Tolerances do not change frame stabilization or retry timing. When the browser refuses a capture for a moment, as Chromium can on a busy machine, Whirl takes it again within the step timeout; `SCREENSHOT` and `JUDGE` do the same. The platform tag (`linux`, `darwin`, `win32`) keeps baselines rendered on one OS separate. The viewport is not part of the key. A missing baseline fails the run; `--update-snapshots` writes or refreshes baselines instead of comparing.
+`SNAPSHOT` is retried like an assert through a shim-owned polling loop and uses Playwright's image comparator. Whirl captures frames until two consecutive frames are identical, then compares against the baseline at `<flow>.whirl-snapshots/<name>-<browser>-<platform>.png` next to the flow file. Images must have identical dimensions. By default no pixel may differ; a pixel differs when its color distance exceeds `snapshot-pixel-threshold` (default `0.2` on a 0–1 scale). On a mismatch Whirl recaptures and recompares until the step timeout. A stable mismatch fails the entry and writes the actual and diff images to the output directory. Tolerances do not change frame stabilization or retry timing. When the browser refuses a capture for a moment, as Chromium can on a busy machine, Whirl takes it again within the step timeout; `SCREENSHOT` and `JUDGE` do the same. The platform tag (`linux`, `darwin`, `win32`) keeps baselines rendered on one OS separate. The viewport is not part of the key. A missing baseline fails the run; `--update-snapshots` writes or refreshes baselines instead of comparing.
 
 A locator after the name makes an element snapshot: `SNAPSHOT cart testid:cart`
 captures only the element's rendered rectangle. The name stays first. Every
@@ -557,7 +569,7 @@ header names are rejected.
 supported. These requests fail the action without contacting the server.
 
 Relative paths resolve against `base`. Only HTTP and HTTPS URLs without embedded
-credentials are accepted. `allow-hosts` applies. Redirects and failed requests are
+credentials are accepted. `allow-hosts` and `block-hosts` apply. Redirects and failed requests are
 never retried or followed automatically; assert a 3xx, 4xx, or 5xx like any other
 response. The step timeout covers receiving the entire response, with a 1 MiB
 body limit. HTTP requests are cancelled if their flow closes. Browser CORS rules
@@ -861,10 +873,10 @@ sent. A request that a `failed` mock served has no response, so `RESPONSE`
 fails on it (section 7.2).
 
 A mocked request never reaches the network, so Whirl serves it even when
-`allow-hosts` does not allow its host, and does not report that host as
-blocked. A file that uses `MOCK` runs with service workers disabled, as with
-`allow-hosts`, because a service worker can answer requests before a mock sees
-them. The URL, header values, and body support interpolation, which happens
+`allow-hosts` or `block-hosts` blocks its host, and does not report that host
+as blocked. A file that uses `MOCK` runs with service workers disabled, as
+with the host options, because a service worker can answer requests before a
+mock sees them. The URL, header values, and body support interpolation, which happens
 when the line runs.
 
 Reports list each mock with its method, URL, and the number of requests it
@@ -1401,13 +1413,13 @@ Option values (section 5) use the text form. They resolve once, when the file st
 
 `{{env.NAME}}` reads the environment variable `NAME` at run time. This is the intended path for secrets; secret values never belong in `.whirl` files. A reference to an undefined variable or unset environment variable fails the step.
 
-Whirl masks every value sourced from `env.*` in the textual output it generates: console failure details, rendered step text, the JSON and JUnit reports, and trace step titles. Masking works on the text form. A masked capture keeps its type in the JSON report. Browser-recorded artifacts — screenshots, video, HAR files, and saved storage state — can still contain secrets the flow typed or received. Treat the artifacts directory and storage-state files as sensitive, and prefer dedicated test credentials.
+Whirl masks every value sourced from `env.*` in the textual output it generates: console failure details, rendered step text, the JSON and JUnit reports, and trace step titles. Masking works on the text form. A masked capture keeps its type in the JSON report. Browser-recorded artifacts — screenshots, video, HAR files, and saved storage state — can still contain secrets the flow typed or received. Treat the output directory and saved state files as sensitive, and prefer dedicated test credentials.
 
 ## 12. Execution model
 
 - **Isolation.** Each file runs in a fresh browser context with an initial page named `main` and any popups it opens. Without the `storage` option the context starts empty; with it, the context starts from the saved storage state. Files never share live state either way.
 - **Order.** Entries run top to bottom. Within a browser entry: actions, then `PAGE`, then check lines in the order written. Within an HTTP entry: the request, then its check lines in the order written.
-- **Failure.** The first failing step fails the entry, and a failed entry stops its file; remaining entries in that file are skipped and reported as skipped. Other files still run. On failure Whirl saves a full-page screenshot and, with `--trace`, a Playwright trace to the artifacts directory.
+- **Failure.** The first failing step fails the entry, and a failed entry stops its file; remaining entries in that file are skipped and reported as skipped. Other files still run. On failure Whirl saves a full-page screenshot and, with `--trace`, a Playwright trace to the output directory.
 - **Navigation.** `VISIT` completes when the new document reaches `DOMContentLoaded`: the HTML is parsed and its synchronous scripts have run. It does not wait for the `load` event, because images, fonts, iframes, and media hold `load` open for reasons a flow never asserted, and every later line waits for what it needs anyway: actions wait for their element to be actionable, asserts and `PAGE` retry. A page that only becomes usable after `load` needs an assert on that state before an `EVAL` or `SCREENSHOT`, which run once without waiting.
 - **Retries.** Page checks and page captures read their value again on the schedule of section 9.7 until they pass or the step timeout expires. Response checks, response captures, and `eval` captures read once.
 - **JUDGE.** A `JUDGE` line runs once, after the check lines before it in its entry pass. Its screenshot, snapshot, and model call share its step timeout, so a `JUDGE` line that needs more sets its own `@duration`.
@@ -1556,14 +1568,17 @@ on the next passing run.
 ## 13. Command line
 
 ```
-whirl [OPTIONS] <PATH>...        Run files; directories recurse to *.whirl
-whirl check [--json] <PATH>...            Parse and lint only; nothing runs
+whirl run [OPTIONS] <PATH>...    Run files; directories recurse to *.whirl
+whirl check [--json] [-O KEY=VALUE]... <PATH>...
+                                 Parse and lint only; nothing runs
 whirl install [BROWSER]...       Provision the shim bundle and selected browsers
 whirl doctor [--browser NAME]    Check the runtime and browser; print repair commands
 whirl show-trace <PATH>          Open a trace with the private runtime
 whirl fmt [--check] <PATH>...    Rewrite files to canonical form
 whirl report <REPORT>... --html <PATH>  Generate HTML from saved results
 ```
+
+Files run only through `whirl run`. `whirl` without a command prints help and exits with a usage error, and so does `whirl checkout.whirl`, with a hint to use `whirl run`.
 
 `whirl install chromium` provisions only Chromium; any combination of `chromium`, `firefox`, and `webkit` may be named. Without names, all three engines are provisioned. The bundle records the Whirl version that installed it; a binary of another version refuses to run that bundle and reports a runtime error naming `whirl install`, so an upgraded `whirl` never drives a stale shim. `whirl doctor` checks the selected Node runtime, the bundle's version, shim protocol, Playwright version, and a real headless browser launch (Chromium by default). It installs nothing, finishes within 30 seconds, exits 0 when ready or 3 when diagnosis fails, and prints repair commands. On Linux, a failed launch also prints the private-runtime command for installing system libraries. Unsupported browser names are usage errors.
 
@@ -1576,17 +1591,19 @@ written. It preserves JSON and fenced body text, apart from the LF
 line-ending normalization defined in section 7.3. `--check` writes
 nothing and exits with code 1 when any file would change.
 
+`whirl run` takes these flags:
+
 | Flag | Meaning |
 | --- | --- |
 | `--rerun-failed REPORT` | Run only failed or errored files from a JSON report; replaces PATH arguments |
-| `--base URL` | Override the `base` option |
-| `--browser NAME` | Override the `browser` option |
-| `--step-timeout DURATION` | Override the `step-timeout` option |
+| `--browser NAME` | Set the `browser` option, as `-O browser=NAME` does |
 | `--headed` | Run with a visible browser window |
 | `--jobs N` | Worker slots for parallel files |
+| `-O KEY=VALUE` | Set an option for every file (repeatable; see below) |
 | `--var k=v` | Define a variable (repeatable) |
 | `--variables-file PATH` | Load variables from a file |
-| `--artifacts DIR` | Artifact output directory (default `whirl-artifacts/`) |
+| `--out DIR` | Output directory for the run's screenshots, traces, video, and network logs (default `whirl-artifacts/`, relative to the working directory) |
+| `--artifacts DIR` | Deprecated alias for `--out`; Whirl prints a warning |
 | `--trace` | Record a Playwright trace per file; the trace is saved only when the file fails |
 | `--report-junit PATH` | Write a JUnit XML report |
 | `--report-json PATH` | Write a JSON report |
@@ -1594,13 +1611,11 @@ nothing and exits with code 1 when any file would change.
 | `--report-metadata PATH` | Read author-written HTML report context from JSON; requires `--report-html` or `--report-json` |
 | `--fail-fast` | Stop scheduling new files after the first failure |
 | `--update-snapshots` | Write or refresh SNAPSHOT baselines instead of comparing |
-| `--video` | Record a .webm video of each file's run into the artifacts directory |
+| `--video` | Record a .webm video of each file's run into the output directory |
 | `--video-fps N` | Frames per second for `--video` on Chromium, 1 to 60; requires `--video` |
-| `--har` | Record a .har network log per file into the artifacts directory |
-| `--storage PATH` | Override the storage option |
-| `--save-storage PATH` | Write the final storage state after a successful run (single file only) |
-| `--entry-timeout DURATION` | Override the entry-timeout option |
-| `--user-agent UA` | Override the user-agent option with `chrome`, `firefox`, `safari`, or a literal string |
+| `--har` | Record a .har network log per file into the output directory |
+| `--load-state FILE` | Start each file's browser context from saved browser state |
+| `--save-state FILE` | Write the final browser state after a successful run (single file only) |
 | `--jev` | Plan `ACT` with TypeSafe's Jev first, and the `model` option when Jev is unsure (section 7.4) |
 | `--cache MODE` | What to do with each flow's AI cache: `replay` (default), `update`, or `only` (section 12.1) |
 
@@ -1613,6 +1628,48 @@ Exit codes:
 | 2 | Parse or lint error |
 | 3 | Runtime error (browser or shim failure) |
 | 4 | Usage error |
+
+`-O key=value` sets an option (section 5) for every file that runs, setup
+flows included, on `whirl run` and `whirl check`. Settings resolve in this
+order: the built-in default, then the file's `[Options]` line, then the
+command line. `whirl check` applies `-O` before its lints, so
+`-O model=anthropic/claude-sonnet-5` satisfies a file that uses `ACT`, and it
+still launches no browser.
+
+- The text after the first `=` is one literal value, as if quoted: white
+  space, `#`, and `{{` are part of it, as in
+  `-O 'user-agent=Whirl/1 (test)'`. It has the forms and validation of
+  section 5. A `snapshot-mask` value is the exception: it is a locator,
+  written as in a file, as in `-O 'snapshot-mask=text:"Sign in"'`.
+- An unknown key, a value of the wrong form, an empty value for a key with
+  one value, and `-O setup=` are usage errors, found before any browser
+  starts.
+- For a key with one value, the last `-O` value wins.
+- For a list key, `allow-hosts`, `block-hosts`, or `snapshot-mask`, each
+  `-O` gives one item, and the items form one list that replaces the file's
+  list: `-O allow-hosts=a.example -O allow-hosts=b.example` allows those two
+  hosts and not the file's. A host glob cannot contain white space. An
+  empty value, as in `-O allow-hosts=`, clears the list. An empty value
+  cannot be combined with other values for its key.
+- `--browser NAME` sets the `browser` option, with a literal value and the
+  same validation. `--browser` and `-O browser=` together are a usage error,
+  even when the values agree.
+- The removed `--base`, `--step-timeout`, `--entry-timeout`, and
+  `--user-agent` flags are usage errors that name their `-O` form, such as
+  `-O base=URL`.
+- A path from `-O storage=` resolves against the working directory, and it
+  cannot be combined with `--load-state`.
+
+`--out` names a directory; Whirl creates it when needed. Supplying both `--out` and `--artifacts` is a usage error.
+
+`--load-state` and `--save-state` read and write Whirl's state format: the
+Playwright storageState JSON file that the `storage` option also names
+(section 5), with the context's cookies and each origin's local storage.
+`--load-state` starts every file's browser context from the file. A file whose
+options include `storage` or `setup` already chooses its starting state, so
+`--load-state` with such a file is a usage error. `--save-state` needs a
+single input file. The removed `--storage` and `--save-storage` flags are
+usage errors that name their replacements.
 
 Two environment variables change where `ACT` sends its model calls (section
 7.4). `WHIRL_LLM_ENDPOINT=http://host:port` sends every call to one
@@ -1633,7 +1690,7 @@ it from a report; pass it again.
 
 `--rerun-failed` reads a version 1 or version 2 report with an absolute `workingDirectory`. Relative file paths resolve against that directory, even when the report is moved. Each selected file runs from the beginning, including its setup. Existing CLI overrides and secrets must be supplied again; a report is not executable configuration. An unsupported or malformed report is a usage error. A report with no failed or errored files exits 0 with a message and launches no browser.
 
-If the input paths select no `.whirl` files, run, `check`, and `fmt` report a usage error (exit 4).
+If the input paths select no `.whirl` files, `run`, `check`, and `fmt` report a usage error (exit 4).
 
 Whirl parses and lints every input file before it launches any browser: a parse or lint error anywhere stops the invocation with exit 2 and nothing runs. When one invocation hits several categories, the highest applicable code wins — a usage error (4) is detected before parsing and preempts everything, and within a run a runtime error (3) outranks failed entries (1), which outrank 0.
 
@@ -1643,12 +1700,13 @@ Whirl parses and lints every input file before it launches any browser: a parse 
 - Default console output: one line per file with pass/fail and duration, then a failure detail block per failed entry: file, line, the failing step, expected versus actual, and the artifact paths.
 - The JUnit report maps one file to one test suite and one entry to one test case. An entry is named by the comment line directly above it — the nearest comment line with no other content line between it and the entry's first action (`# Log in.`) — falling back to its first action line and line number. A failure before the first entry — option resolution, storage loading, or browser launch — reports as a synthetic test case named `[setup]` in that file's suite: an `<error>` for runtime errors, a `<failure>` otherwise. The JSON report carries the same synthetic entry, and masking applies to it like any other output.
 - The JSON report is version 2. Version 2 differs from version 1 only in the shape of captures (below). The report includes `workingDirectory`, `whirlVersion`, `platform`, and `architecture`. Files whose browser context starts include `runtime`: browser engine, viewport, the actual user agent string (with section 11's masking), and actual browser, Node, and Playwright versions. Unavailable user agent and version fields are null. Each step error has a stable `code`, separate from its human-readable message. Additive fields do not change the report version; readers must ignore unknown fields. See [machine-readable output](docs/engineering/machine-output.md) for schemas and codes.
+- Each file whose options resolved lists its settings in the JSON report: every option key with the value the file ran with, masked (section 11), and its source: the default, the file, or the command line (section 13). A `browsersim-` setting is marked inactive. The HTML report shows the same list. `blockedHostRules` gives the rule behind each blocked host (section 5).
 - The JSON report is the machine-readable superset: per-step timing, captures, and artifact paths. Each capture is written as its type and value, such as `{"type": "number", "value": 42}`. Bytes are written as Base64, dates as RFC 3339 text, and numbers with their exact JSON text. A capture with a value sourced from `env.*` keeps its type and has its value masked.
-- Artifacts: each flow writes to `<artifacts>/<flow path without the .whirl extension>/`. The mirrored path is the flow file's canonical path (made absolute, symlinks resolved) relative to the current working directory, so parallel flows never collide, and overlapping inputs or symlinked duplicates of one file resolve to one flow, run once, and write to one directory. A flow outside the working directory writes to `<file stem>-<hash>/` instead, where `<hash>` is the first 16 hex digits of the SHA-256 of the canonical path, so absolute paths and `..` segments never escape the artifacts directory. Because all inputs are known before the run starts, Whirl verifies that no two flows map to the same directory; a collision is a runtime error. Names inside are fixed: screenshots by their given name, `snapshot-<name>-actual.png` and `snapshot-<name>-diff.png`, `failure.png`, `trace.zip`, `video.webm`, and `network.har`. Duplicate `SCREENSHOT` names or duplicate `SNAPSHOT` names within one flow are a lint error; the two keywords have separate name spaces, because their artifact files never collide.
+- Artifacts: each flow writes to `<out>/<flow path without the .whirl extension>/`, where `<out>` is the `--out` directory. The mirrored path is the flow file's canonical path (made absolute, symlinks resolved) relative to the current working directory, so parallel flows never collide, and overlapping inputs or symlinked duplicates of one file resolve to one flow, run once, and write to one directory. A flow outside the working directory writes to `<file stem>-<hash>/` instead, where `<hash>` is the first 16 hex digits of the SHA-256 of the canonical path, so absolute paths and `..` segments never escape the output directory. Because all inputs are known before the run starts, Whirl verifies that no two flows map to the same directory; a collision is a runtime error. Names inside are fixed: screenshots by their given name, `snapshot-<name>-actual.png` and `snapshot-<name>-diff.png`, `failure.png`, `trace.zip`, `video.webm`, and `network.har`. Duplicate `SCREENSHOT` names or duplicate `SNAPSHOT` names within one flow are a lint error; the two keywords have separate name spaces, because their artifact files never collide.
 
 ### 14.1 HTML reports
 
-`--report-html evidence.html` writes a standalone HTML file after the run, including failed runs. It renders the same masked results as the other reports: file and entry outcomes, steps and timings, failures with expected and actual values, captures, warnings, blocked hosts, and browser environment details. The report embeds available PNG screenshots and, with `--video`, WebM recordings from the current run. It opens offline and can be moved without its artifacts directory. Trace and HAR paths are shown as text; these files are not embedded.
+`--report-html evidence.html` writes a standalone HTML file after the run, including failed runs. It renders the same masked results as the other reports: file and entry outcomes, steps and timings, failures with expected and actual values, captures, warnings, blocked hosts with their rules, settings, and browser environment details. The report embeds available PNG screenshots and, with `--video`, WebM recordings from the current run. It opens offline and can be moved without its output directory. Trace and HAR paths are shown as text; these files are not embedded.
 
 Test outcomes and media availability are separate. A missing or unreadable recording never changes a passed test to failed, and a recording never makes a failed test pass. The report explains absent or invalid media. Whirl reads only listed media artifacts inside their flow's artifact directory. A media read failure during embedding or an output write failure is a runtime error (exit 3). HTML output is written to a temporary file and replaces its destination only after generation succeeds. Its parent directory must exist. The HTML destination must not conflict with an input, another requested report, or a recorded artifact.
 
@@ -1724,7 +1782,7 @@ Rust source, configuration, and project setup follow the [Brynary Rust Style Gui
 
 ## 16. Errors
 
-- **JSON diagnostics.** `whirl check --json` writes one version 1 JSON document to stdout, containing `exitCode` and `diagnostics`, with no diagnostic text on stderr. Each diagnostic includes a stable code, severity, path, line, column, length, message, and expected alternatives. Positions are 1-based Unicode character positions; locations unavailable for input or I/O errors are null. CLI argument syntax errors still use the ordinary usage message.
+- **JSON diagnostics.** `whirl check --json` writes one version 1 JSON document to stdout, containing `exitCode` and `diagnostics`, with no diagnostic text on stderr. Each diagnostic includes a stable code, severity, path, line, column, length, message, and expected alternatives. Positions are 1-based Unicode character positions; locations unavailable for input or I/O errors are null, and so are the locations of a diagnostic about an option set with `-O`. An invalid `-O` argument is the diagnostic `invalid-option` (exit 4). Other CLI argument syntax errors still use the ordinary usage message.
 - **Parse errors** (exit 2) are reported with file, line, column, a caret under the offending token, and the expected alternatives. `whirl check` surfaces them without launching a browser. Lint warnings do not change the exit code. Whirl warns about a capture that is never used, about an HTTP entry without a `status` check, and about a `count >= 1` assert directly followed by a check on the same locator, only when the following check requires at least one element. A `hidden` check or a count comparison that accepts zero does not make the presence check redundant. `whirl check` reports a check whose types cannot work, such as `text toHex` or `url > 3`, as the error `filter-type`. It reports an invalid literal regex, JSONPath, or XPath as a parse error.
 - **Test failures** (exit 1) report the failing step the same way, plus expected versus actual and the artifacts. Check failures use the codes of section 9.7.
 - **Warnings** do not change a step's status or the exit code. Each has a stable code in the JSON report: `unused-mock` (section 7.5); `cache-miss`, `healed`, `uncached`, `cache-secret`, and `cache-unstable` (section 12.1). `whirl check` reports `cache-stale-entry` as a warning and `cache-invalid`, `ai-count`, `unknown-extract`, `duplicate-extract`, `extract-schema-unsupported`, `judge-without-images`, and `goal-unchecked` as errors, and `extract-unsettled`, `judge-alone`, and `judge-images-unknown` as warnings. A `JUDGE` that answers `unsure` is the step warning `judge-unsure`, and one that answers `no` fails with `judge-false`.
@@ -1819,13 +1877,15 @@ name      = @{ attr_name ~ kw_end }
 // ---------------------------------------------------------------- Options (5)
 
 options     = { ws* ~ "[Options]" ~ eol ~ option_line* }
-option_line = { ws* ~ (allow_hosts | snapshot_setting | option) ~ eol }
+option_line = { ws* ~ (host_list | snapshot_setting | option) ~ eol }
 option      = { option_key ~ ":" ~ ws+ ~ value }
+// `browsersim-origin` comes before `browser`, which is its prefix.
 option_key  = {
-    "base" | "browser" | "viewport" | "step-timeout" | "entry-timeout" | "nav-timeout"
-  | "dialogs" | "reduced-motion" | "storage" | "user-agent" | "setup" | "model"
+    "base" | "browsersim-origin" | "browser" | "viewport" | "step-timeout"
+  | "entry-timeout" | "nav-timeout" | "dialogs" | "reduced-motion" | "storage"
+  | "user-agent" | "setup" | "model"
 }
-allow_hosts = { "allow-hosts:" ~ (ws+ ~ value)+ }
+host_list   = { ("allow-hosts" | "block-hosts") ~ ":" ~ (ws+ ~ value)+ }
 
 // Snapshot settings, in [Options] and below a SNAPSHOT (7).
 snapshot_setting         = { snapshot_mask | snapshot_max_diff | snapshot_pixel_threshold }

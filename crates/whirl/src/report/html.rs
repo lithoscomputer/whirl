@@ -11,7 +11,7 @@ use tempfile::NamedTempFile;
 
 use crate::report::json::Document;
 use crate::report::metadata::{FileMetadata, ReportMetadata};
-use crate::report::model::{EntryReport, FileReport, Status, StepReport, Timing};
+use crate::report::model::{EntryReport, FileReport, SettingSource, Status, StepReport, Timing};
 
 pub(crate) mod aggregate;
 
@@ -183,6 +183,32 @@ fn render(output: &mut impl io::Write, document: &Document, base: &Path) -> io::
     )
 }
 
+/// The settings a file ran with and where each came from (SPEC 14).
+fn render_settings(output: &mut impl io::Write, file: &FileReport) -> io::Result<()> {
+    if file.settings.is_empty() {
+        return Ok(());
+    }
+    write!(
+        output,
+        "<details class=\"runtime\"><summary>Settings</summary><dl>"
+    )?;
+    for setting in &file.settings {
+        let source = match setting.source {
+            SettingSource::Default => "default",
+            SettingSource::File => "file",
+            SettingSource::CommandLine => "command line",
+        };
+        let inactive = if setting.active { "" } else { ", inactive" };
+        write!(
+            output,
+            "<dt>{}</dt><dd>{} ({source}{inactive})</dd>",
+            escape(&setting.key),
+            escape(&setting.value_text())
+        )?;
+    }
+    write!(output, "</dl></details>")
+}
+
 fn render_details(output: &mut impl io::Write, metadata: &ReportMetadata) -> io::Result<()> {
     if !metadata.details.is_empty() {
         write!(
@@ -306,13 +332,22 @@ fn render_file(
             escape(&warning)
         )?;
     }
-    if !file.blocked_hosts.is_empty() {
+    let blocked = file.blocked_host_lines();
+    if !blocked.is_empty() {
         write!(
             output,
             "<p class=\"warning\">Blocked hosts: {}</p>",
-            escape(&file.blocked_hosts.join(", "))
+            escape(&blocked.join(", "))
         )?;
     }
+    for setting in file.inactive_setting_lines() {
+        write!(
+            output,
+            "<p>Inactive setting: {} (BrowserSim only)</p>",
+            escape(&setting)
+        )?;
+    }
+    render_settings(output, file)?;
     if !file.mocks.is_empty() {
         write!(output, "<p>Mocks:</p><ul>")?;
         for mock in &file.mocks {

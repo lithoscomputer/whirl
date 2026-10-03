@@ -84,7 +84,7 @@ pub(crate) struct Flow {
     pub(crate) input:     PathBuf,
     /// The canonical path; the identity that dedups flows.
     pub(crate) canonical: PathBuf,
-    /// The flow's artifact directory under the artifacts dir.
+    /// The flow's artifact directory under the output directory.
     pub(crate) dir:       PathBuf,
 }
 
@@ -132,24 +132,24 @@ fn without_whirl_extension(path: &Path) -> PathBuf {
 /// The artifact directory of one flow (SPEC 14): under `cwd`, the
 /// canonical path relative to `cwd` without the `.whirl` extension;
 /// outside it, `<file stem>-<16-hex-hash>` so absolute paths and `..`
-/// segments never escape the artifacts directory. `cwd` must itself be
+/// segments never escape the output directory. `cwd` must itself be
 /// canonical.
-pub(crate) fn flow_dir(artifacts_dir: &Path, cwd: &Path, canonical: &Path) -> PathBuf {
+pub(crate) fn flow_dir(out_dir: &Path, cwd: &Path, canonical: &Path) -> PathBuf {
     if let Ok(relative) = canonical.strip_prefix(cwd) {
-        return artifacts_dir.join(without_whirl_extension(relative));
+        return out_dir.join(without_whirl_extension(relative));
     }
     let stem = without_whirl_extension(canonical)
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
-    artifacts_dir.join(format!("{stem}-{hash}", hash = path_hash(canonical)))
+    out_dir.join(format!("{stem}-{hash}", hash = path_hash(canonical)))
 }
 
 /// Maps every input to a unique flow with its artifact directory:
 /// canonicalizes, dedups by canonical path (first-seen order), assigns
 /// directories, and verifies that no two flows collide (SPEC 14).
 pub(crate) fn plan_flows(
-    artifacts_dir: &Path,
+    out_dir: &Path,
     cwd: &Path,
     inputs: &[PathBuf],
 ) -> Result<Vec<Flow>, ArtifactsError> {
@@ -161,7 +161,7 @@ pub(crate) fn plan_flows(
         })?;
     let mut flows: Vec<Flow> = Vec::new();
     for (input, canonical) in dedup_flows(inputs)? {
-        let dir = flow_dir(artifacts_dir, &cwd, &canonical);
+        let dir = flow_dir(out_dir, &cwd, &canonical);
         if let Some(existing) = flows.iter().find(|flow| flow.dir == dir) {
             return Err(ArtifactsError::Collision {
                 first: existing.input.clone(),

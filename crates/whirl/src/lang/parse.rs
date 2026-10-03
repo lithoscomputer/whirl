@@ -17,13 +17,13 @@ use crate::check::{
 };
 use crate::lang::ast::snapshot::{MaxDiff, PixelThreshold, SnapshotOption, SnapshotOptionLine};
 use crate::lang::ast::{
-    Action, ActionKind, Assert, AssertBody, BrowserKind, Capture, CheckLine, CheckStep, Comment,
-    DialogPolicy, DurationLit, Entry, ExtractSchema, Extractor, File, FileOption, FilterArg,
-    FilterSpec, HttpBody, HttpBodyKind, HttpHeader, Ident, JsonLiteral, Judge, Locator,
-    LocatorSegment, MockResponse, MouseButton, Operand, OptionLine, OptionValue, Page, PageCheck,
-    Percent, PredicateSpec, ReducedMotion, Regex, RegexFlags, RequestField, ResponseField,
-    ScrollDirection, ScrollMotion, SegmentKind, Span, StateCheck, StoreScope, Subject, TextPrefix,
-    Value, ValueSegment, Viewport, chain_type,
+    Action, ActionKind, Assert, AssertBody, BrowserKind, BrowserSimOrigin, Capture, CheckLine,
+    CheckStep, Comment, DialogPolicy, DurationLit, Entry, ExtractSchema, Extractor, File,
+    FileOption, FilterArg, FilterSpec, HttpBody, HttpBodyKind, HttpHeader, Ident, JsonLiteral,
+    Judge, Locator, LocatorSegment, MockResponse, MouseButton, Operand, OptionLine, OptionSource,
+    OptionValue, Page, PageCheck, Percent, PredicateSpec, ReducedMotion, Regex, RegexFlags,
+    RequestField, ResponseField, ScrollDirection, ScrollMotion, SegmentKind, Span, StateCheck,
+    StoreScope, Subject, TextPrefix, Value, ValueSegment, Viewport, chain_type,
 };
 
 /// A parse diagnostic (SPEC 16): file, line, column, the source line, a
@@ -2377,7 +2377,7 @@ fn validate_snapshot_option<'a>(
     Ok(())
 }
 
-const OPTION_KEYS: [&str; 16] = [
+pub(crate) const OPTION_KEYS: [&str; 18] = [
     "base",
     "browser",
     "viewport",
@@ -2385,6 +2385,7 @@ const OPTION_KEYS: [&str; 16] = [
     "entry-timeout",
     "nav-timeout",
     "allow-hosts",
+    "block-hosts",
     "dialogs",
     "reduced-motion",
     "storage",
@@ -2394,6 +2395,7 @@ const OPTION_KEYS: [&str; 16] = [
     "snapshot-mask",
     "snapshot-max-diff",
     "snapshot-pixel-threshold",
+    "browsersim-origin",
 ];
 
 /// Shape-validates a literal option value at parse time; a value with
@@ -2415,6 +2417,38 @@ fn option_shape<T>(
     }
 }
 
+/// Parses the value of an option set on the command line with the syntax
+/// of a `key: value` line in `[Options]` (SPEC 5, 13). The value is on
+/// line 0, which marks it as coming from the command line. The error
+/// holds the message and the expected alternatives.
+pub(crate) fn parse_command_line_option(key: &str, value: &str) -> Result<FileOption, String> {
+    let describe = |error: LineError| match error.expected.as_slice() {
+        [] => error.message,
+        [only] => format!("{}; expected {only}", error.message),
+        [first, second] => format!("{}; expected {first} or {second}", error.message),
+        [first @ .., last] => format!(
+            "{}; expected {}, or {last}",
+            error.message,
+            first.join(", ")
+        ),
+    };
+    if value.contains(['\n', '\r']) {
+        return Err("a value must be one line".to_owned());
+    }
+    let line = format!("{key}: {value}");
+    let mut cursor = Cursor::new(&line, 0);
+    let first = cursor
+        .next_token()
+        .map_err(describe)?
+        .ok_or_else(|| "expected a value".to_owned())?;
+    let option = parse_option_line(&first, &mut cursor).map_err(describe)?;
+    cursor.skip_ws();
+    if cursor.at_comment() {
+        return Err("a `#` after white space starts a comment; quote the value".to_owned());
+    }
+    Ok(option)
+}
+
 /// Parses one `key: value` line in `[Options]` (SPEC 5).
 fn parse_option_line(first: &RawToken, cursor: &mut Cursor) -> Result<FileOption, LineError> {
     let first_span = first.span;
@@ -2433,14 +2467,18 @@ fn parse_option_line(first: &RawToken, cursor: &mut Cursor) -> Result<FileOption
     while let Some(token) = cursor.next_token()? {
         values.push(token.into_value()?);
     }
-    if key == "allow-hosts" {
+    if key == "allow-hosts" || key == "block-hosts" {
         if values.is_empty() {
             return Err(
                 LineError::new(after_span(first_span), "expected one or more host globs")
                     .expecting(["a host glob like *.example.com"]),
             );
         }
-        return Ok(FileOption::AllowHosts(values));
+        return Ok(if key == "allow-hosts" {
+            FileOption::AllowHosts(values)
+        } else {
+            FileOption::BlockHosts(values)
+        });
     }
     if values.len() > 1 {
         return Err(
@@ -2490,6 +2528,14 @@ fn parse_option_line(first: &RawToken, cursor: &mut Cursor) -> Result<FileOption
         "user-agent" => Ok(FileOption::UserAgent(value)),
         "setup" => Ok(FileOption::Setup(value)),
         "model" => Ok(FileOption::Model(value)),
+        "browsersim-origin" => {
+            let parse = |text: &str| text.parse::<BrowserSimOrigin>().ok();
+            Ok(FileOption::BrowserSimOrigin(option_shape(
+                value,
+                parse,
+                &["build", "recorded"],
+            )?))
+        }
         key => unreachable!("option key `{key}` was validated against OPTION_KEYS"),
     }
 }
@@ -2811,11 +2857,12 @@ pub(crate) fn parse_file(path: &Path, source: &str) -> Result<File, ParseError> 
         });
     }
     let mut file = File {
-        path:           path.to_path_buf(),
-        options:        parser.options,
-        entries:        parser.entries,
-        comments:       parser.comments,
-        options_header: parser.options_header,
+        path:              path.to_path_buf(),
+        options:           parser.options,
+        entries:           parser.entries,
+        comments:          parser.comments,
+        options_header:    parser.options_header,
+        command_line_keys: Vec::new(),
     };
     mark_text_extracts(&mut file);
     Ok(file)
@@ -3475,6 +3522,7 @@ impl Parser {
                     option,
                     line: line_no,
                     span,
+                    source: OptionSource::File,
                 });
                 Ok(())
             }

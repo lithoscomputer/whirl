@@ -1,4 +1,4 @@
 bin.name = "whirl"
-args = ["broken.whirl"]
+args = ["run", "broken.whirl"]
 fs.sandbox = true
 status.code = 2

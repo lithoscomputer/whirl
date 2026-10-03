@@ -1,0 +1,16 @@
+{
+  "diagnostics": [
+    {
+      "code": "conflicting-storage",
+      "column": null,
+      "expected": [],
+      "length": null,
+      "line": null,
+      "message": "storage and setup both set the starting state; use one",
+      "path": "account.whirl",
+      "severity": "error"
+    }
+  ],
+  "exitCode": 2,
+  "version": 1
+}
