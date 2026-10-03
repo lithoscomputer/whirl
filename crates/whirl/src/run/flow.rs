@@ -16,9 +16,9 @@ use crate::lang::ast::{
 };
 use crate::lang::fmt::render_snapshot_target;
 use crate::report::model::{
-    ActReport, AiReport, CaptureValue, EntryReport, FileReport, MockReport, ReportViewport,
-    RuntimeMetadata, SETUP_ENTRY, SnapshotReport, Status, StepError, StepKind, StepReport,
-    StepWarning, Timing,
+    ActReport, AiReport, CaptureValue, EntryReport, ExtractReport, FileReport, MockReport,
+    ReportViewport, RuntimeMetadata, SETUP_ENTRY, SnapshotReport, Status, StepError, StepKind,
+    StepReport, StepWarning, Timing,
 };
 use crate::run::act::{ActPlanner, Instruction, ModelClient};
 use crate::run::artifacts;
@@ -32,6 +32,7 @@ use crate::run::vars::{VarError, VarStore};
 mod act_step;
 mod ai_step;
 mod check_step;
+mod extract_step;
 mod snapshot;
 use snapshot::SnapshotSettings;
 
@@ -569,6 +570,8 @@ enum PreparedStep {
         /// The wire locator of the element the snapshot is limited to.
         scope:       Option<Json>,
     },
+    /// An `EXTRACT` line (SPEC 7.6).
+    Extract(extract_step::ExtractPlan),
     /// A check with a subject, evaluated in Rust (SPEC 9).
     Check(check_step::PreparedCheck),
     Capture(check_step::PreparedCapture),
@@ -593,6 +596,8 @@ struct FlowExec<'a> {
     mocks:     Vec<RegisteredMock>,
     /// The flow's AI cache (SPEC 12.1).
     cache:     cache::FlowCache,
+    /// The values `EXTRACT` lines read (SPEC 7.6).
+    extracts:  extract_step::ExtractValues,
 }
 
 /// The resolved header pairs and body of a request or a mocked response.
@@ -648,6 +653,20 @@ impl FlowExec<'_> {
                         .map(|scope| self.locator(scope, None))
                         .transpose()?,
                 }),
+                ast::ActionKind::Extract {
+                    name,
+                    scope,
+                    instruction,
+                    schema,
+                } => Ok(PreparedStep::Extract(extract_step::ExtractPlan {
+                    name:        name.text.clone(),
+                    instruction: Instruction::try_new(instruction, &mut self.vars)?,
+                    scope:       scope
+                        .as_ref()
+                        .map(|scope| self.locator(scope, None))
+                        .transpose()?,
+                    schema:      schema.as_ref().map(ast::ExtractSchema::json),
+                })),
                 _ => self.build_action(action).map(PreparedStep::Command),
             },
             StepNode::Page(page) => {
@@ -918,6 +937,7 @@ impl FlowExec<'_> {
                 script: self.resolve(script)?,
             },
             K::Act { .. } => unreachable!("prepare_step routes ACT to the act runner"),
+            K::Extract { .. } => unreachable!("prepare_step routes EXTRACT to its runner"),
             K::Store { scope, key, value } => StepCommand::Store {
                 scope: scope.keyword().to_owned(),
                 key:   self.resolve(key)?,
@@ -1058,6 +1078,7 @@ struct StepRun {
     act:         Option<ActReport>,
     snapshot:    Option<SnapshotReport>,
     ai:          Option<AiReport>,
+    extract:     Option<ExtractReport>,
     warnings:    Vec<StepWarning>,
 }
 
@@ -1070,6 +1091,7 @@ impl StepRun {
             snapshot: None,
             act: None,
             ai: None,
+            extract: None,
             warnings: Vec::new(),
         }
     }
@@ -1148,6 +1170,7 @@ impl FlowExec<'_> {
 
         let started = Instant::now();
         let span = debug_span!("step", line = node.line(), step_kind = ?node.kind());
+        let mut extract = None;
         let (end, act, mut spend) = match prepared {
             None => {
                 let budget = act_step::ActBudget {
@@ -1155,9 +1178,12 @@ impl FlowExec<'_> {
                     entry_capped,
                     entry_budget_ms,
                 };
-                self.run_ai_line(node, implicit_response, &title, budget, client, state)
+                let run = self
+                    .run_ai_line(node, implicit_response, &title, budget, client, state)
                     .instrument(span)
-                    .await
+                    .await;
+                extract = run.extract;
+                (run.end, run.act, run.spend)
             }
             Some(PreparedStep::Command(command)) => {
                 let request = StepRequest {
@@ -1194,6 +1220,19 @@ impl FlowExec<'_> {
                     ..ai_step::AiSpend::default()
                 };
                 (end, act, spend)
+            }
+            Some(PreparedStep::Extract(plan)) => {
+                let budget = act_step::ActBudget {
+                    timeout_ms,
+                    entry_capped,
+                    entry_budget_ms,
+                };
+                let (end, report) = self
+                    .run_extract(node, plan, &title, budget, client, state)
+                    .instrument(span)
+                    .await;
+                extract = report;
+                (end, None, ai_step::AiSpend::default())
             }
             Some(PreparedStep::Check(mut check)) => {
                 let budget = check_step::LineBudget {
@@ -1236,6 +1275,7 @@ impl FlowExec<'_> {
             snapshot,
             act,
             ai,
+            extract,
             warnings: spend.warnings,
         }
     }
@@ -1376,6 +1416,7 @@ impl FlowExec<'_> {
                     act:         None,
                     warnings:    Vec::new(),
                     ai:          None,
+                    extract:     None,
                 });
                 continue;
             }
@@ -1394,6 +1435,7 @@ impl FlowExec<'_> {
                 snapshot: run.snapshot,
                 warnings: run.warnings,
                 ai: run.ai,
+                extract: run.extract,
             });
             if status != Status::Passed {
                 entry_status = status;
@@ -1460,6 +1502,7 @@ fn skipped_entry(file: &File, entry: &ast::Entry, vars: &VarStore) -> EntryRepor
             act:         None,
             warnings:    Vec::new(),
             ai:          None,
+            extract:     None,
         })
         .collect();
     EntryReport {
@@ -1507,6 +1550,7 @@ impl EntryReport {
             act:         None,
             warnings:    Vec::new(),
             ai:          None,
+            extract:     None,
         });
         self
     }
@@ -1725,6 +1769,7 @@ pub(crate) async fn run_flow(run: &FlowRun<'_>, client: &mut ShimClient) -> Flow
             requests: check_step::RequestCache::new(),
             mocks: Vec::new(),
             cache: flow_cache,
+            extracts: extract_step::ExtractValues::new(),
         };
         if let Some(error) = cache_error {
             exec.warnings.push(format!(

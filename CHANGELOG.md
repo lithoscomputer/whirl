@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.16.0 (2026-09-28)
+
+- Add `EXTRACT name [locator] "instruction"`, which asks the model option's language model to read a value from the page, with an optional JSON Schema on the lines below. `extract:NAME` reads the value with its type in later checks and captures, and filters apply, as in `ASSERT extract:order json:$.total > 0`. Without a schema the value is a string; a null answer is a missing value. A `"format": "uri"` string is answered with a link's ref, and Whirl reads its absolute `href`. JSON numbers keep their exact text. The schema must use a documented subset (`extract-schema-unsupported`), and Whirl adapts it for providers that need strict schemas. An answer outside the schema fails with `extract-schema`. `whirl check` reports duplicate and unknown names and warns with `extract-unsettled` when `EXTRACT` directly follows an interaction. Reports show the value, the model, and what the call cost.
+- Add `extract-*` tasks to the evals: lists, numbers, links, missing values, and a scoped extract.
 ## 0.15.0 (2026-09-28)
 
 - Add `ai:"description"`, a locator segment that a language model resolves to one element, as in `CLICK ai:"the Add to cart button for the first product"`. It works in actions, checks, captures, `SNAPSHOT` targets, and `ACT` scopes, and it must be the last segment; the segments before it limit what the model sees. The model lists every element that matches: two or more fail with `strictness`, and none asks again every 2 seconds until the step times out, except in a `hidden` or `not exists` check, where none passes. `ai:` needs the `model` option and cannot be counted (`ai-count`). JSON and HTML reports show what each target resolved to and what its model calls cost.

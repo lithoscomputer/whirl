@@ -416,6 +416,7 @@ fn render_entry(
         )?;
         render_act(output, step)?;
         render_ai(output, step)?;
+        render_extract(output, step)?;
         render_snapshot(output, step)?;
         render_error(output, step)?;
         write!(output, "</li>")?;
@@ -523,6 +524,31 @@ fn render_act(output: &mut impl io::Write, step: &StepReport) -> io::Result<()> 
             escape(&action.line),
             escape(&action.description)
         )?;
+    }
+    write!(output, "</dl>")
+}
+
+/// What an `EXTRACT` step read (SPEC 7.6).
+fn render_extract(output: &mut impl io::Write, step: &StepReport) -> io::Result<()> {
+    let Some(extract) = &step.extract else {
+        return Ok(());
+    };
+    write!(
+        output,
+        "<dl><dt>Model</dt><dd><code>{}</code> · {} call(s) · {} input and {} output tokens</dd>",
+        escape(&extract.model),
+        extract.usage.model_calls,
+        extract.usage.input_tokens,
+        extract.usage.output_tokens
+    )?;
+    match &extract.value {
+        Some(value) => write!(
+            output,
+            "<dt>Read</dt><dd><code>{}</code> · {}</dd>",
+            escape(&value.display()),
+            escape(&value.value_type)
+        )?,
+        None => write!(output, "<dt>Read</dt><dd>no value</dd>")?,
     }
     write!(output, "</dl>")
 }

@@ -122,6 +122,14 @@ class ClassifyTest(unittest.TestCase):
         self.assertEqual(result.duration_ms, 1500)
         self.assertEqual(result.cost_usd_micros, 7505)
 
+    def test_extract_steps_count_toward_the_measurements(self):
+        extract = {"model": "m", "usage": {"modelCalls": 1, "inputTokens": 10, "outputTokens": 5, "costUsdMicros": 3}}
+        step_with_extract = step(duration_ms=200)
+        step_with_extract["extract"] = extract
+        report = file_report("x/extract-price.whirl", "passed", [entry("Read.", "passed", [step_with_extract])])
+        result = eval_act.classify(report, "m")
+        self.assertEqual((result.model_calls, result.duration_ms, result.cost_usd_micros), (1, 200, 3))
+
     def test_an_ambiguous_task_passes_only_on_strictness(self):
         path = "x/any-button.ambiguous.whirl"
         strict = file_report(path, "failed", [entry("Buy.", "failed", [step("failed", "strictness")])])

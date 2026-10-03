@@ -16,7 +16,7 @@ use lithos_llm::credentials::ConventionalCredentials;
 use lithos_llm::middleware::{CallContext, RetryMiddleware, RetryPolicy};
 use lithos_llm::resolver::{AvailableProviders, CatalogResolver, ModelResolver as _};
 use lithos_llm::types::{ErrorKind, Usage};
-use lithos_llm::{Client, Request};
+use lithos_llm::{Client, Request, StructuredCompletion};
 use serde::Deserialize;
 use serde_json::{Value as Json, json};
 
@@ -103,6 +103,15 @@ pub(crate) struct TargetAnswer {
 #[derive(Debug)]
 pub(crate) struct TargetReply {
     pub(crate) answer: Result<TargetAnswer, serde_json::Error>,
+    pub(crate) usage:  Usage,
+}
+
+/// An `EXTRACT` answer (SPEC 7.6): the object, the raw text it came
+/// from, which keeps exact numbers, and what the call used.
+#[derive(Debug)]
+pub(crate) struct ExtractReply {
+    pub(crate) object: Json,
+    pub(crate) text:   String,
     pub(crate) usage:  Usage,
 }
 
@@ -208,6 +217,31 @@ impl ModelClient {
         })
     }
 
+    /// Asks the model to read a value in the shape of `schema` (SPEC 7.6).
+    pub(crate) async fn extract(
+        &self,
+        model: &str,
+        user: &str,
+        schema: Json,
+        deadline: Instant,
+    ) -> Result<ExtractReply, lithos_llm::Error> {
+        let completion = self
+            .structured_completion(
+                model,
+                &prompt::extract_system_prompt(),
+                user,
+                "Extract",
+                schema,
+                deadline,
+            )
+            .await?;
+        Ok(ExtractReply {
+            text:   completion.response.text(),
+            usage:  completion.response.usage_with_cost(),
+            object: completion.object,
+        })
+    }
+
     /// Asks the model for the text an instruction wants typed, copied from
     /// the instruction; the page is not sent. `None` when the instruction
     /// does not say.
@@ -253,6 +287,22 @@ impl ModelClient {
         schema: Json,
         deadline: Instant,
     ) -> Result<(Json, Usage), lithos_llm::Error> {
+        let completion = self
+            .structured_completion(model, system, user, name, schema, deadline)
+            .await?;
+        Ok((completion.object, completion.response.usage_with_cost()))
+    }
+
+    /// One structured-output call's whole completion.
+    async fn structured_completion(
+        &self,
+        model: &str,
+        system: &str,
+        user: &str,
+        name: &str,
+        schema: Json,
+        deadline: Instant,
+    ) -> Result<StructuredCompletion, lithos_llm::Error> {
         let selector = if self.endpoint {
             format!("{ENDPOINT_PROVIDER}/{model}")
         } else {
@@ -269,11 +319,9 @@ impl ModelClient {
             })?;
         let mut context = CallContext::new();
         context.set_deadline(deadline);
-        let completion = self
-            .client
+        self.client
             .complete_object_with_context(request, name, schema, context)
-            .await?;
-        Ok((completion.object, completion.response.usage_with_cost()))
+            .await
     }
 }
 

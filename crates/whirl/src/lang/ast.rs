@@ -288,10 +288,15 @@ impl File {
             .any(|action| matches!(action.kind, ActionKind::Act { .. }))
     }
 
-    /// True when any line asks a language model: `ACT`, or a locator with an
-    /// `ai:` target (SPEC 6.3, 7.4).
+    /// True when any line asks a language model: `ACT`, `EXTRACT`, or a
+    /// locator with an `ai:` target (SPEC 6.3, 7.4, 7.6).
     pub(crate) fn uses_ai(&self) -> bool {
         self.uses_act()
+            || self
+                .entries
+                .iter()
+                .flat_map(|entry| &entry.actions)
+                .any(|action| matches!(action.kind, ActionKind::Extract { .. }))
             || self
                 .locator_uses()
                 .iter()
@@ -525,6 +530,14 @@ pub(crate) enum ActionKind {
         scope:       Option<Locator>,
         instruction: Value,
     },
+    /// `EXTRACT name [locator] "instruction"` asks the file's model to read
+    /// a value, shaped by an optional JSON Schema (SPEC 7.6).
+    Extract {
+        name:        Ident,
+        scope:       Option<Locator>,
+        instruction: Value,
+        schema:      Option<ExtractSchema>,
+    },
     /// `STORE local "key" "value"` writes one browser storage entry.
     Store {
         scope: StoreScope,
@@ -544,6 +557,23 @@ pub(crate) enum MockResponse {
     },
     /// A failed request, as for a dropped connection.
     Failed,
+}
+
+/// The JSON Schema lines below an `EXTRACT` headline (SPEC 7.6), as
+/// written. The parser checked that they are one JSON object without
+/// `{{ }}`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ExtractSchema {
+    pub(crate) text:     String,
+    pub(crate) line:     u32,
+    pub(crate) end_line: u32,
+}
+
+impl ExtractSchema {
+    /// The schema as JSON.
+    pub(crate) fn json(&self) -> serde_json::Value {
+        serde_json::from_str(&self.text).expect("the parser checked that the schema is JSON")
+    }
 }
 
 /// Browser storage a `STORE` action writes to (SPEC 7).
@@ -696,7 +726,8 @@ impl ActionKind {
             Self::Press { target, .. }
             | Self::Scroll { target, .. }
             | Self::Snapshot { target, .. }
-            | Self::Act { scope: target, .. } => target.iter().collect(),
+            | Self::Act { scope: target, .. }
+            | Self::Extract { scope: target, .. } => target.iter().collect(),
             Self::Http { .. }
             | Self::Response { .. }
             | Self::Mock { .. }
@@ -729,7 +760,8 @@ impl ActionKind {
             Self::Press { target, .. }
             | Self::Scroll { target, .. }
             | Self::Snapshot { target, .. }
-            | Self::Act { scope: target, .. } => target.iter_mut().collect(),
+            | Self::Act { scope: target, .. }
+            | Self::Extract { scope: target, .. } => target.iter_mut().collect(),
             Self::Http { .. }
             | Self::Response { .. }
             | Self::Mock { .. }
@@ -772,6 +804,7 @@ impl ActionKind {
             | Self::Snapshot { .. }
             | Self::Eval { .. }
             | Self::Act { .. }
+            | Self::Extract { .. }
             | Self::Store { .. } => None,
         }
     }
@@ -858,6 +891,12 @@ pub(crate) enum Subject {
         name:  Ident,
         field: RequestField,
     },
+    /// The value an `EXTRACT` line read (SPEC 7.6, 9.2). `text` is true
+    /// when that line has no schema, so the value is a string.
+    Extract {
+        name: Ident,
+        text: bool,
+    },
 }
 
 impl Subject {
@@ -886,7 +925,8 @@ impl Subject {
                     | RequestField::Header(_)
                     | RequestField::Body,
                 ..
-            } => StaticType::STRING,
+            }
+            | Self::Extract { text: true, .. } => StaticType::STRING,
             Self::Response {
                 field: ResponseField::Bytes,
                 ..
@@ -903,7 +943,8 @@ impl Subject {
             | Self::Request {
                 field: RequestField::Json(_) | RequestField::Xpath(_),
                 ..
-            } => StaticType::Any,
+            }
+            | Self::Extract { text: false, .. } => StaticType::Any,
         }
     }
 }

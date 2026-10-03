@@ -7,7 +7,7 @@ Whirl is a command-line tool that runs web UI tests written in plain text files.
 
 ## 1. Design principles
 
-1. **Closed vocabulary.** The language has a fixed set of actions, subjects, filters, and predicates. There are no conditionals, loops, functions, or user-defined keywords. A flow that needs branching is two files. `ACT` (section 7.4) and `ai:` targets (section 6.3) are fixed keywords too, but what a language model chooses for them can change from run to run, so a flow asserts the result it expects. The AI cache (section 12.1) records each choice, so later runs replay it.
+1. **Closed vocabulary.** The language has a fixed set of actions, subjects, filters, and predicates. There are no conditionals, loops, functions, or user-defined keywords. A flow that needs branching is two files. `ACT` (section 7.4), `ai:` targets (section 6.3), and `EXTRACT` (section 7.6) are fixed keywords too, but what a language model chooses for them can change from run to run, so a flow asserts the result it expects. The AI cache (section 12.1) records each choice, so later runs replay it.
 2. **No waits in the language.** Actions auto-wait for their target. Assertions retry until they pass or time out. The format has no `SLEEP` and no `WAIT`.
 3. **Semantic locators first.** The locator grammar puts `role:` and `label:` in front and makes raw CSS the visually distinct escape hatch.
 4. **One flow per file, top to bottom.** A file is a linear sequence of entries. Execution order is textual order. A failure stops the file.
@@ -326,6 +326,7 @@ An action is a verb, an optional locator, and an optional value. Element-targeti
 | `EVAL "script"` | Run a JavaScript script in the page. The escape hatch; rules below. |
 | `ACT "instruction"` | Ask a language model to choose one element action, then run it (section 7.4). |
 | `ACT locator "instruction"` | The same, looking only inside the element (section 7.4). |
+| `EXTRACT name [locator] "instruction"` | Ask a language model to read a value from the page, with an optional JSON Schema on the lines below (section 7.6). |
 | `STORE local "key" "value"` | Write one `localStorage` entry on the current page's origin. |
 | `STORE session "key" "value"` | Write one `sessionStorage` entry on the current page's origin. |
 | `STORE cookie "name" "value"` | Set one cookie for the current page's host, with path `/`. |
@@ -855,6 +856,88 @@ network log records a mocked response as an ordinary response with the mock's
 status, headers, and body. It records a request that a `failed` mock served
 with the status `-1` and the engine's failure text, as for any failed request.
 
+### 7.6 EXTRACT
+
+`EXTRACT` asks the language model named by the `model` option to read a value
+from the page. The value is typed, and later lines check it with the
+`extract:NAME` subject (section 9.2):
+
+```whirl
+[Options]
+model: anthropic/claude-sonnet-5
+
+VISIT /checkout
+EXTRACT order testid:summary "the order total and line items"
+{
+    "type": "object",
+    "properties": {
+        "total": { "type": "number" },
+        "items": { "type": "array", "items": { "type": "string" } }
+    },
+    "required": ["total", "items"]
+}
+ASSERT extract:order json:$.total > 0
+ASSERT extract:order json:$.items count >= 1
+```
+
+`EXTRACT name [locator] "instruction"` is an action. A JSON Schema object can
+follow on the next lines; it starts with `{` and ends when the object closes,
+as an `HTTP` JSON body does (section 7.3). A schema cannot contain `{{ }}`.
+Without a schema, the value is a string.
+
+The name follows the rules of `RESPONSE` names (section 7.2), in a separate
+namespace: a duplicate name, or a reference before the `EXTRACT` line, is a
+lint error. A locator before the instruction limits what the model sees to one
+element, as the scope of `ACT` does (section 7.4): it waits for its element,
+must match exactly one (section 6.2), and every segment carries a prefix.
+A file that uses `EXTRACT` needs the `model` option.
+
+`EXTRACT` runs once, when its line runs. It does not retry, and the AI cache
+(section 12.1) does not record it. Put an `ASSERT` before it that waits for
+the page to show the value; `whirl check` warns with `extract-unsettled` when
+`EXTRACT` directly follows an interaction, such as a `CLICK`, with no check
+between them.
+
+The model sees the instruction, with masked values as placeholders (section
+7.4), and the AI snapshot of the selected tab, or of the scope, without link
+URLs. It sees no screenshot. It answers through structured output in the shape
+of the schema. The prompt tells it to copy text exactly, with every symbol; to
+return every item when the instruction asks for a list or for "all"; to return
+null when the page does not show a value; and to answer a link field with the
+link's ref.
+
+Only this subset of JSON Schema is allowed: `type` (`string`, `number`,
+`integer`, `boolean`, `object`, `array`, `null`, or a list of these),
+`properties`, `required`, `items`, `enum`, `const`, `anyOf`, `description`,
+and `"format": "uri"` on a string. `whirl check` reports any other keyword or
+format as the error `extract-schema-unsupported`. Before the call, Whirl
+adapts the schema for providers that need strict schemas: every object gets
+`"additionalProperties": false` and lists every property in `required`, a
+property that the schema does not require may be null, and an `enum` or
+`const` without a `type` gets the type of its values. A null answer for such
+a property counts as absent. A schema whose root is not an object is sent as
+an object with one `value` property and read back from it.
+
+A string with `"format": "uri"` is a link. The model answers it with the ref
+of a link element in the snapshot, and Whirl reads that element's `href` and
+resolves it against the page URL, so the value is an absolute URL.
+
+JSON numbers keep their exact text (section 9.3). A null answer, or an empty
+string without a schema, is a missing value (section 9.2).
+
+An `EXTRACT` line fails the entry when:
+
+- the answer does not match the schema (`extract-schema`),
+- a link field names an element that is not a link with an `href`, or is not
+  in the snapshot (`extract-ref`),
+- the model fails, under the rules of `ACT` (section 7.4), with the code
+  `extract-model`, or
+- the step budget expires, like any step.
+
+The step's report text is the authored headline. The JSON report adds an
+`extract` object to the step: the model, the value with its type (masked as
+a capture is, section 14), and the token usage and cost of the model call.
+
 ## 8. PAGE
 
 ```
@@ -927,6 +1010,7 @@ Page checks retry until they pass or the step timeout expires. Response checks r
 | `request:NAME bytes` | bytes | The request body |
 | `request:NAME json:PATH` | any | Short for `request:NAME body json:PATH` |
 | `request:NAME xpath:EXPR` | any | Short for `request:NAME body xpath:EXPR` |
+| `extract:NAME` | any, or string without a schema | The value that `EXTRACT NAME` read (section 7.6) |
 
 Inside an HTTP entry (section 7.3), omit `response:NAME`: `status`, `header:HEADER`, `location`, `body`, `bytes`, `json:PATH`, and `xpath:EXPR` examine that entry's response. These implicit forms are invalid in a browser entry.
 
@@ -937,6 +1021,8 @@ Normalization collapses each run of whitespace to one space, trims both ends, an
 The `eval` subject runs its script under the rules of `EVAL` (section 7) each time Whirl reads the value. Its result follows the `eval` capture rules of section 10 and keeps its type: a string, a number, a boolean, `null`, a list, or an object. The script must not change the page, because it can run many times.
 
 A response subject waits for the body within the step timeout. The 1 MiB body limit of sections 7.2 and 7.3 applies. All checks for one response examine the same response.
+
+An `extract:NAME` subject reads the value of an earlier `EXTRACT` line with its type. Filters apply as usual: `extract:order json:$.total`. It reads once and does not retry, as a response check does (section 9.7). A null value is a missing value. A name that no earlier `EXTRACT` line declared is the lint error `unknown-extract`.
 
 A request subject reads the request that `RESPONSE NAME` selected (section 7.2), with the headers the browser sent. A request check reads once and does not retry, as a response check does (section 9.7), and the 1 MiB body limit applies. `request:NAME` with a name that no earlier `RESPONSE` line declared is the lint error `unknown-response`. An `HTTP` entry has no `request:` subject. Its request is the one the file wrote.
 
@@ -1463,7 +1549,7 @@ Rust source, configuration, and project setup follow the [Brynary Rust Style Gui
 - **JSON diagnostics.** `whirl check --json` writes one version 1 JSON document to stdout, containing `exitCode` and `diagnostics`, with no diagnostic text on stderr. Each diagnostic includes a stable code, severity, path, line, column, length, message, and expected alternatives. Positions are 1-based Unicode character positions; locations unavailable for input or I/O errors are null. CLI argument syntax errors still use the ordinary usage message.
 - **Parse errors** (exit 2) are reported with file, line, column, a caret under the offending token, and the expected alternatives. `whirl check` surfaces them without launching a browser. Lint warnings do not change the exit code. Whirl warns about a capture that is never used, about an HTTP entry without a `status` check, and about a `count >= 1` assert directly followed by a check on the same locator, only when the following check requires at least one element. A `hidden` check or a count comparison that accepts zero does not make the presence check redundant. `whirl check` reports a check whose types cannot work, such as `text toHex` or `url > 3`, as the error `filter-type`. It reports an invalid literal regex, JSONPath, or XPath as a parse error. A file with an `[Asserts]` or `[Captures]` section is the parse error `sections-removed`, and a file that mixes such sections with check lines is the parse error `mixed-check-syntax` (section 4.1).
 - **Test failures** (exit 1) report the failing step the same way, plus expected versus actual and the artifacts. Check failures use the codes of section 9.7.
-- **Warnings** do not change a step's status or the exit code. Each has a stable code in the JSON report: `unused-mock` (section 7.5); `cache-miss`, `healed`, `uncached`, `cache-secret`, and `cache-unstable` (section 12.1). `whirl check` reports `cache-stale-entry` as a warning and `cache-invalid` and `ai-count` as errors.
+- **Warnings** do not change a step's status or the exit code. Each has a stable code in the JSON report: `unused-mock` (section 7.5); `cache-miss`, `healed`, `uncached`, `cache-secret`, and `cache-unstable` (section 12.1). `whirl check` reports `cache-stale-entry` as a warning and `cache-invalid`, `ai-count`, `unknown-extract`, `duplicate-extract`, and `extract-schema-unsupported` as errors, and `extract-unsettled` as a warning.
 - **Runtime errors** (exit 3) cover shim crashes, missing browsers, and similar environmental failures.
 
 ## 17. Grammar
@@ -1479,7 +1565,9 @@ http-entry = http-request , { http-check-line } ;
 check-line = assert | capture ;
 http-check-line = http-assert | http-capture ;
 
-action     = action-body , [ step-timeout ] | snapshot | mock ;
+action     = action-body , [ step-timeout ] | snapshot | mock | extract ;
+extract    = "EXTRACT" , artifact-name , [ locator ] , value , [ step-timeout ]
+           , [ json-object ] ;   (* schema: section 7.6 *)
 snapshot   = "SNAPSHOT" , artifact-name , [ locator ] , [ step-timeout ]
            , { snapshot-option } ;   (* prefixed segments only; 6.1 *)
 snapshot-option = "snapshot-mask:" , ( locator | "none" )
@@ -1531,7 +1619,8 @@ subject    = locator , extractor
            | "url" | "title"
            | "eval" , value
            | "response:" , artifact-name , response-field
-           | "request:" , artifact-name , request-field ;
+           | "request:" , artifact-name , request-field
+           | "extract:" , artifact-name ;
 request-field = "method" | "url" | "header:" , value | "body" | "bytes"
               | json-path | xpath-expr ;
 extractor  = "text" | "value" | "count" | "attr:" , attr-name ;
@@ -1608,4 +1697,5 @@ Deferred beyond V1 (candidate V2 features, not promised):
 - Per-entry `[Options]` overrides and mobile device emulation.
 - An LLM-as-judge assertion (a `JUDGE` keyword with an explicit model option and advisory rather than hard-failing verdicts).
 - A step-two prompt for `ACT` that sends only the part of the snapshot that changed.
+- External schema files for `EXTRACT`, and a cache for `EXTRACT` results.
 - `--jev` for `ai:` targets, segments after an `ai:` segment, and `ai:` with `count`.

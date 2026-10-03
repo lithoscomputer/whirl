@@ -1,0 +1,10 @@
+[Options]
+base: {{env.EVAL_BASE}}
+model: {{model}}
+
+# EXTRACT: a link field comes back as an absolute URL.
+VISIT /landing-page/
+ASSERT role:link Customers visible
+EXTRACT link "the link to the Customers section" @60s
+{ "type": "string", "format": "uri" }
+ASSERT extract:link endsWith "/landing-page/#customers"

@@ -17,7 +17,9 @@ use crate::check::PredicateKind;
 use crate::lang::ast::{self, Locator, LocatorSegment, SegmentKind};
 use crate::lang::fmt::render_snapshot_target;
 use crate::lang::parse::parse_locator;
-use crate::report::model::{ActReport, AiReport, AiTargetReport, StepError, StepWarning};
+use crate::report::model::{
+    ActReport, AiReport, AiTargetReport, ExtractReport, StepError, StepWarning,
+};
 use crate::run::act::{Fingerprint, Instruction, PageSnapshot, PlanUsage, Target, target_message};
 use crate::run::cache::{CacheEntry, CacheKey, EntryKind};
 use crate::run::shim::{AriaSnapshotResult, GeneratedLocator, ShimClient, StepCommand, wire};
@@ -610,8 +612,9 @@ impl FlowExec<'_> {
         budget: ActBudget,
         client: &mut ShimClient,
         state: &mut EntryState,
-    ) -> (StepEnd, Option<ActReport>, AiSpend) {
+    ) -> AiLineRun {
         let mut spend = AiSpend::default();
+        let mut extract = None;
         let mut targets: Vec<AiTarget> = ai_locators(node)
             .into_iter()
             .map(|(locator, absence_ok)| self.ai_target(node, locator, absence_ok))
@@ -711,6 +714,22 @@ impl FlowExec<'_> {
                     spend.warnings.extend(warnings);
                     break end;
                 }
+                PreparedStep::Extract(plan) => {
+                    let remaining = ActBudget {
+                        timeout_ms: u64::try_from(
+                            deadline
+                                .saturating_duration_since(Instant::now())
+                                .as_millis(),
+                        )
+                        .unwrap_or(u64::MAX),
+                        ..budget
+                    };
+                    let (end, report) = self
+                        .run_extract(replaced_node, plan, title, remaining, client, state)
+                        .await;
+                    extract = report;
+                    break end;
+                }
                 PreparedStep::Check(_) | PreparedStep::Capture(_) => {
                     unreachable!("checks with a subject resolve their targets while they read")
                 }
@@ -724,8 +743,21 @@ impl FlowExec<'_> {
                 spend.targets.push(target.report);
             }
         }
-        (end, act, spend)
+        AiLineRun {
+            end,
+            act,
+            extract,
+            spend,
+        }
     }
+}
+
+/// What a line with `ai:` targets did.
+pub(super) struct AiLineRun {
+    pub(super) end:     StepEnd,
+    pub(super) act:     Option<ActReport>,
+    pub(super) extract: Option<ExtractReport>,
+    pub(super) spend:   AiSpend,
 }
 
 /// The `ai:` locators that a line resolves before it runs, each with

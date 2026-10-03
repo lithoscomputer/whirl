@@ -150,6 +150,7 @@ mod tests {
             act: None,
             warnings: Vec::new(),
             ai: None,
+            extract: None,
         }
     }
 

@@ -138,6 +138,9 @@ pub(crate) struct StepReport {
     /// What the step's `ai:` targets resolved to (SPEC 6.3).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) ai:          Option<AiReport>,
+    /// What an `EXTRACT` step read (SPEC 7.6).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) extract:     Option<ExtractReport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) snapshot:    Option<SnapshotReport>,
     /// Notices that do not fail the step, each with a stable code.
@@ -225,6 +228,62 @@ pub(crate) struct AiTargetReport {
     /// For a healed target, the locator the cache held.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) cached:      Option<String>,
+}
+
+/// What an `EXTRACT` step read and what its model call used (SPEC 7.6).
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ExtractReport {
+    pub(crate) model: String,
+    /// The value with its type, masked as a capture is; absent when the
+    /// model found no value.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_optional_capture",
+        deserialize_with = "deserialize_optional_capture"
+    )]
+    pub(crate) value: Option<CaptureValue>,
+    pub(crate) usage: ActUsage,
+}
+
+/// Writes a value as the `{type, value}` of a capture.
+#[expect(
+    clippy::ref_option,
+    reason = "serde's serialize_with passes the field by reference"
+)]
+fn serialize_optional_capture<S: Serializer>(
+    value: &Option<CaptureValue>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    match value {
+        Some(value) => CaptureOut {
+            value_type: &value.value_type,
+            value:      &value.value,
+        }
+        .serialize(serializer),
+        None => serializer.serialize_none(),
+    }
+}
+
+/// Reads a `{type, value}` capture shape.
+fn deserialize_optional_capture<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<CaptureValue>, D::Error> {
+    let shape = Option::<serde_json::Value>::deserialize(deserializer)?;
+    let Some(mut shape) = shape else {
+        return Ok(None);
+    };
+    let value_type = shape
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| DeError::custom("a value needs a type"))?;
+    let value = shape
+        .get_mut("value")
+        .map(serde_json::Value::take)
+        .ok_or_else(|| DeError::custom("a value needs a value"))?;
+    Ok(Some(CaptureValue::new(&value_type, value.to_string())))
 }
 
 /// Reports written before planners existed used the language model.
