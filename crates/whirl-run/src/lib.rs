@@ -9,7 +9,8 @@
 //! `whirl-report`.
 //!
 //! The entry point is [`run_files`], configured by [`RunSettings`] and
-//! [`FlowFlags`]. The CLI also reaches the pieces it needs before a run:
+//! [`FlowFlags`] (with the browser-only [`WebFlags`]). The CLI also
+//! reaches the pieces it needs before a run:
 //! input dedup, setup-flow discovery, `--var` parsing, and the [`cache`]
 //! diagnostics of `whirl check`.
 
@@ -21,6 +22,6 @@ mod runner;
 mod vars;
 
 pub use artifacts::{ArtifactsError, dedup_flows};
-pub use flow::{FlowFlags, setup_path_for};
+pub use flow::{FlowFlags, WebFlags, setup_path_for};
 pub use runner::{RunSettings, RunnerError, run_files};
 pub use vars::{VarsFileError, parse_var_flag, parse_variables_file};

@@ -1,9 +1,13 @@
 //! The browser shim boundary of `docs/engineering/shim-protocol.md`:
 //! spawning `<node> <shim-js>`, the JSON-Lines request/response protocol,
 //! the external per-step watchdog, clean shutdown, and the shim launch
-//! resolution of protocol section 8. [`wire`] maps AST nodes to the wire
-//! JSON, and [`bundle`] names the installed bundle's layout for
-//! `whirl install`.
+//! resolution of protocol section 8. [`BrowserOptions`] and
+//! [`StartFlowParams::from_options`] map a flow's resolved browser
+//! options to the `startFlow` params, the typed wire values ([`Locator`],
+//! [`PageExpect`], [`AssertSpec`], [`ReadSubject`], [`MockPattern`],
+//! [`MockResponse`]) carry resolved AST nodes into a [`StepCommand`]
+//! without exposing the wire JSON, and [`bundle`] names the installed
+//! bundle's layout for `whirl install`.
 //!
 //! One [`ShimClient`] owns one shim child process (one worker slot). A
 //! background task reads stdout and dispatches responses to their
@@ -18,7 +22,7 @@ use std::time::Duration;
 use std::{env, fs, io};
 
 use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value as Json;
 use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
@@ -26,9 +30,12 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, timeout, timeout_at};
 use tracing::{Instrument as _, debug, debug_span, warn};
+use whirl_lang::ast::snapshot::MaxDiff;
+use whirl_lang::ast::{self, ScrollMotion};
 
 pub mod bundle;
-pub mod wire;
+mod context;
+mod wire;
 
 use bundle::{BUNDLE_NODE, BUNDLE_SHIM_JS, BUNDLE_VERSION_FILE, SHIM_JS_ENV, WHIRL_VERSION};
 
@@ -165,6 +172,12 @@ pub struct HelloResult {
     pub ffmpeg_path:        Option<String>,
 }
 
+pub use context::{BrowserOptions, Features, Recording, VideoOutput};
+pub use wire::{
+    AssertSpec, Locator, MockPattern, MockResponse, PageExpect, ReadSubject, Resolve,
+    response_name_for_http,
+};
+
 /// `startFlow` viewport params.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub struct ViewportParams {
@@ -184,7 +197,8 @@ pub struct VideoParams {
     pub fps:        Option<u8>,
 }
 
-/// `startFlow` params (protocol section 3).
+/// `startFlow` params (protocol section 3). Built from a flow's
+/// [`BrowserOptions`] by [`StartFlowParams::from_options`].
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StartFlowParams {
@@ -254,9 +268,11 @@ pub struct MockHits {
     pub hits: u64,
 }
 
-/// A step command's own params (protocol section 4). Locator, PAGE
-/// expectation, assert spec, and capture source/filter bodies come from
-/// [`wire`] as JSON values.
+/// A step command's own params (protocol section 4). Locators, the
+/// PAGE expectation, assert specs, and read subjects are the typed wire
+/// values ([`Locator`], [`PageExpect`], [`AssertSpec`], [`ReadSubject`]);
+/// a scroll motion and a snapshot's `maxDiff` are AST values, encoded
+/// when the command is sent.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "cmd", content = "params", rename_all = "camelCase")]
 pub enum StepCommand {
@@ -272,13 +288,12 @@ pub enum StepCommand {
         method: String,
         url:    String,
     },
-    /// `MOCK` (protocol section 4.6): `pattern` is an anchored regular
-    /// expression for the request URL.
+    /// `MOCK` (protocol section 4.6).
     Mock {
         id:       u32,
         method:   String,
-        pattern:  String,
-        response: Json,
+        pattern:  MockPattern,
+        response: MockResponse,
     },
     Popup {
         name: String,
@@ -293,54 +308,56 @@ pub enum StepCommand {
         url: String,
     },
     Click {
-        locator: Json,
+        locator: Locator,
         /// `left`, `right`, or `middle`.
         button:  String,
     },
     Dblclick {
-        locator: Json,
+        locator: Locator,
     },
     Fill {
-        locator: Json,
+        locator: Locator,
         value:   String,
     },
     Type {
-        locator: Json,
+        locator: Locator,
         text:    String,
     },
     Press {
-        locator: Option<Json>,
+        locator: Option<Locator>,
         key:     String,
     },
     /// `CHECK` / `UNCHECK`.
     Checkbox {
-        locator: Json,
+        locator: Locator,
         checked: bool,
     },
     SelectOption {
-        locator: Json,
+        locator: Locator,
         label:   String,
     },
     Hover {
-        locator: Json,
+        locator: Locator,
     },
     /// `DRAG`: `locator` is the element to drag.
     Drag {
-        locator: Json,
-        target:  Json,
+        locator: Locator,
+        target:  Locator,
     },
-    /// `SCROLL`: `locator` is null for the page.
+    /// `SCROLL`: `locator` is `None` for the page; `motion` is `None`
+    /// for into view.
     Scroll {
-        locator: Option<Json>,
-        motion:  Json,
+        locator: Option<Locator>,
+        #[serde(serialize_with = "wire::serialize_scroll_motion")]
+        motion:  Option<ScrollMotion>,
     },
     Upload {
-        locator: Json,
+        locator: Locator,
         path:    String,
     },
     /// `DROP`: `path` is absolute, as for `UPLOAD`.
     Drop {
-        locator: Json,
+        locator: Locator,
         path:    String,
     },
     Screenshot {
@@ -349,10 +366,11 @@ pub enum StepCommand {
     #[serde(rename_all = "camelCase")]
     Snapshot {
         /// The element to capture, or `None` for the full page.
-        target:          Option<Json>,
-        masks:           Vec<Json>,
+        target:          Option<Locator>,
+        masks:           Vec<Locator>,
         pixel_threshold: f64,
-        max_diff:        Json,
+        #[serde(serialize_with = "wire::serialize_max_diff")]
+        max_diff:        MaxDiff,
         baseline_path:   String,
         actual_path:     String,
         diff_path:       String,
@@ -370,20 +388,20 @@ pub enum StepCommand {
     /// is given (SPEC 7.4); result [`AriaSnapshotResult`]. With `settle`,
     /// the shim first waits for the network to go quiet (protocol 4.9).
     AriaSnapshot {
-        locator: Option<Json>,
+        locator: Option<Locator>,
         settle:  bool,
     },
     Page {
-        expect: Json,
+        expect: PageExpect,
     },
     /// State checks and tab closure (protocol 4.3).
     Assert {
-        spec: Json,
+        spec: AssertSpec,
     },
     /// One non-waiting read of a page subject (protocol 4.4); result
     /// [`ReadResult`].
     Read {
-        subject: Json,
+        subject: ReadSubject,
     },
     /// A named response's status, URL, headers, and optionally its body
     /// (protocol 4.5); result [`ResponseReadResult`].
@@ -399,7 +417,7 @@ pub enum StepCommand {
     /// A settled PNG of an element or the viewport for `JUDGE` (protocol
     /// 4.9); result `{"pngBase64": "..."}`.
     JudgeScreenshot {
-        locator: Option<Json>,
+        locator: Option<Locator>,
     },
     /// A strict locator for a snapshot element (protocol 4.8); result
     /// [`GeneratedLocator`].
@@ -471,13 +489,37 @@ pub struct RequestReadResult {
 }
 
 /// `generateLocator` result (protocol section 4.8).
-#[derive(Clone, Debug, Deserialize, PartialEq)]
-#[serde(tag = "type", rename_all = "camelCase")]
+#[derive(Clone, Debug, PartialEq)]
 pub enum GeneratedLocator {
-    /// A strict locator, as wire segments (protocol 4.1).
-    Locator { locator: Json },
-    /// No strict locator exists, and why.
+    /// A strict locator (protocol 4.1), decoded from its wire segments
+    /// into a locator a file could write.
+    Locator { locator: ast::Locator },
+    /// No strict locator exists, and why. A locator with a segment a
+    /// file cannot write, such as `ref`, is unstable too: the cache
+    /// cannot hold it.
     Unstable { reason: String },
+}
+
+/// The `generateLocator` result as the shim writes it.
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+enum GeneratedLocatorFrame {
+    Locator { locator: Json },
+    Unstable { reason: String },
+}
+
+impl<'de> Deserialize<'de> for GeneratedLocator {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(match GeneratedLocatorFrame::deserialize(deserializer)? {
+            GeneratedLocatorFrame::Locator { locator } => match wire::locator_from_wire(&locator) {
+                Some(locator) => Self::Locator { locator },
+                None => Self::Unstable {
+                    reason: "the generated locator is malformed".to_owned(),
+                },
+            },
+            GeneratedLocatorFrame::Unstable { reason } => Self::Unstable { reason },
+        })
+    }
 }
 
 /// `ariaSnapshot` result (protocol section 4).
@@ -966,6 +1008,8 @@ fn step_frame(command: &StepCommand) -> (String, serde_json::Map<String, Json>) 
 mod tests {
     use std::{fs, process};
 
+    use whirl_lang::ast::ScrollDirection;
+
     use super::*;
 
     #[test]
@@ -1064,7 +1108,8 @@ mod tests {
 
     #[test]
     fn step_commands_serialize_to_their_wire_names() {
-        let locator = serde_json::json!([{"type": "testid", "id": "x"}]);
+        let locator_json = serde_json::json!([{"type": "testid", "id": "x"}]);
+        let locator = Locator(locator_json.clone());
         let cases = [
             (
                 StepCommand::Visit {
@@ -1079,14 +1124,14 @@ mod tests {
                     button:  "right".to_owned(),
                 },
                 "click",
-                serde_json::json!({"locator": locator, "button": "right"}),
+                serde_json::json!({"locator": locator_json, "button": "right"}),
             ),
             (
                 StepCommand::Dblclick {
                     locator: locator.clone(),
                 },
                 "dblclick",
-                serde_json::json!({"locator": locator}),
+                serde_json::json!({"locator": locator_json}),
             ),
             (
                 StepCommand::Fill {
@@ -1094,7 +1139,7 @@ mod tests {
                     value:   "text".to_owned(),
                 },
                 "fill",
-                serde_json::json!({"locator": locator, "value": "text"}),
+                serde_json::json!({"locator": locator_json, "value": "text"}),
             ),
             (
                 StepCommand::Type {
@@ -1102,7 +1147,7 @@ mod tests {
                     text:    "424242".to_owned(),
                 },
                 "type",
-                serde_json::json!({"locator": locator, "text": "424242"}),
+                serde_json::json!({"locator": locator_json, "text": "424242"}),
             ),
             (
                 StepCommand::Press {
@@ -1118,7 +1163,7 @@ mod tests {
                     checked: true,
                 },
                 "checkbox",
-                serde_json::json!({"locator": locator, "checked": true}),
+                serde_json::json!({"locator": locator_json, "checked": true}),
             ),
             (
                 StepCommand::SelectOption {
@@ -1126,27 +1171,27 @@ mod tests {
                     label:   "Blue".to_owned(),
                 },
                 "selectOption",
-                serde_json::json!({"locator": locator, "label": "Blue"}),
+                serde_json::json!({"locator": locator_json, "label": "Blue"}),
             ),
             (
                 StepCommand::Hover {
                     locator: locator.clone(),
                 },
                 "hover",
-                serde_json::json!({"locator": locator}),
+                serde_json::json!({"locator": locator_json}),
             ),
             (
                 StepCommand::Drag {
                     locator: locator.clone(),
-                    target:  serde_json::json!([{"type": "testid", "id": "done"}]),
+                    target:  Locator(serde_json::json!([{"type": "testid", "id": "done"}])),
                 },
                 "drag",
-                serde_json::json!({"locator": locator, "target": [{"type": "testid", "id": "done"}]}),
+                serde_json::json!({"locator": locator_json, "target": [{"type": "testid", "id": "done"}]}),
             ),
             (
                 StepCommand::Scroll {
                     locator: None,
-                    motion:  serde_json::json!({"type": "chunk", "direction": "down"}),
+                    motion:  Some(ScrollMotion::Chunk(ScrollDirection::Down)),
                 },
                 "scroll",
                 serde_json::json!({"locator": null, "motion": {"type": "chunk", "direction": "down"}}),
@@ -1157,7 +1202,7 @@ mod tests {
                     path:    "/abs/file.txt".to_owned(),
                 },
                 "upload",
-                serde_json::json!({"locator": locator, "path": "/abs/file.txt"}),
+                serde_json::json!({"locator": locator_json, "path": "/abs/file.txt"}),
             ),
             (
                 StepCommand::Drop {
@@ -1165,7 +1210,7 @@ mod tests {
                     path:    "/abs/report.csv".to_owned(),
                 },
                 "drop",
-                serde_json::json!({"locator": locator, "path": "/abs/report.csv"}),
+                serde_json::json!({"locator": locator_json, "path": "/abs/report.csv"}),
             ),
             (
                 StepCommand::Screenshot {
@@ -1183,7 +1228,7 @@ mod tests {
                     target:          None,
                     masks:           vec![],
                     pixel_threshold: 0.2,
-                    max_diff:        serde_json::json!({"type": "pixels", "value": 0}),
+                    max_diff:        MaxDiff::Pixels(0),
                 },
                 "snapshot",
                 serde_json::json!({
@@ -1232,21 +1277,21 @@ mod tests {
             ),
             (
                 StepCommand::Page {
-                    expect: serde_json::json!({"kind": "path", "value": "/dashboard"}),
+                    expect: PageExpect(serde_json::json!({"kind": "path", "value": "/dashboard"})),
                 },
                 "page",
                 serde_json::json!({"expect": {"kind": "path", "value": "/dashboard"}}),
             ),
             (
                 StepCommand::Assert {
-                    spec: serde_json::json!({"subject": {"type": "url"}}),
+                    spec: AssertSpec(serde_json::json!({"subject": {"type": "url"}})),
                 },
                 "assert",
                 serde_json::json!({"spec": {"subject": {"type": "url"}}}),
             ),
             (
                 StepCommand::Read {
-                    subject: serde_json::json!({"type": "title"}),
+                    subject: ReadSubject(serde_json::json!({"type": "title"})),
                 },
                 "read",
                 serde_json::json!({"subject": {"type": "title"}}),

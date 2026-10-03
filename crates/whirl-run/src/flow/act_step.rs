@@ -16,7 +16,7 @@ use whirl_report::model::{
     ActActionReport, ActJevUsage, ActReport, ActUsage, StepError, StepWarning,
 };
 use whirl_shim::{
-    AriaSnapshotResult, ReadResult, ShimClient, StepCommand, StepOutcome, StepRequest,
+    AriaSnapshotResult, Locator, ReadResult, ShimClient, StepCommand, StepOutcome, StepRequest,
 };
 
 use super::{EntryState, FlowExec, StepBudget, StepEnd, StepNode, entry_timeout_error};
@@ -214,7 +214,7 @@ impl FlowExec<'_> {
         &mut self,
         node: StepNode<'_>,
         instruction: &Instruction,
-        scope: Option<Json>,
+        scope: Option<Locator>,
         title: &str,
         budget: ActBudget,
         client: &mut ShimClient,
