@@ -14,7 +14,7 @@ use tokio::fs;
 use tokio::task::{JoinSet, spawn_blocking};
 use tracing::{Instrument as _, debug, info, info_span, warn};
 
-use crate::lang::ast::File;
+use crate::lang::ast::{File, FileOption};
 use crate::report::model::{FileReport, FlowRoles, RunReport, SETUP_ENTRY, Status, Timing};
 use crate::run::act::{
     ActPlanner, JevClient, JevPlanner, JevSetupError, LlmPlanner, ModelClient, ModelSetupError,
@@ -61,6 +61,12 @@ pub(crate) enum RunnerError {
     /// the Jev client could not be built.
     #[error(transparent)]
     Jev(#[from] JevSetupError),
+    /// A runtime error (exit 3): a flow uses `JUDGE` and Whirl has no
+    /// credentials for its model's provider (SPEC 9.8).
+    #[error(
+        "JUDGE needs credentials for the model {model}; set the provider's key, such as ANTHROPIC_API_KEY or OPENAI_API_KEY"
+    )]
+    JudgeCredentials { model: String },
     /// A usage error (exit 4): `--save-storage` needs a single file.
     #[error("--save-storage requires a single input file, got {count}")]
     SaveStorageManyFiles { count: usize },
@@ -117,11 +123,20 @@ pub(crate) async fn run_files(
             launch,
             planner,
             model,
+            judge_models,
             workers,
             settings,
         } = spawn_blocking(move || PreparedRun::try_new(&files, &setups, settings))
             .await
             .expect("run preparation does not panic")?;
+        // JUDGE fails before any flow starts without credentials (SPEC 9.8).
+        if let Some(client) = &model {
+            for name in judge_models {
+                if !client.has_credentials(&name).await {
+                    return Err(RunnerError::JudgeCredentials { model: name });
+                }
+            }
+        }
         let stop = Arc::new(AtomicBool::new(false));
         let settings = Arc::new(settings);
 
@@ -213,16 +228,18 @@ fn act_planner(model: Arc<ModelClient>, jev: bool) -> Result<Arc<dyn ActPlanner>
 /// Filesystem preparation runs on the blocking pool, including path
 /// canonicalization, artifact collision checks, and installed-shim lookup.
 struct PreparedRun {
-    setup_jobs: Vec<FlowJob>,
-    main_jobs:  Vec<FlowJob>,
-    state_dir:  PathBuf,
-    launch:     ShimLaunch,
+    setup_jobs:   Vec<FlowJob>,
+    main_jobs:    Vec<FlowJob>,
+    state_dir:    PathBuf,
+    launch:       ShimLaunch,
     /// Built only when a flow uses `ACT` (SPEC 7.4).
-    planner:    Option<Arc<dyn ActPlanner>>,
+    planner:      Option<Arc<dyn ActPlanner>>,
     /// Built only when a flow asks a language model (SPEC 6.3, 7.4).
-    model:      Option<Arc<ModelClient>>,
-    workers:    usize,
-    settings:   RunSettings,
+    model:        Option<Arc<ModelClient>>,
+    /// The literal `model` options of the files that use `JUDGE`.
+    judge_models: Vec<String>,
+    workers:      usize,
+    settings:     RunSettings,
 }
 
 impl PreparedRun {
@@ -266,6 +283,17 @@ impl PreparedRun {
         } else {
             None
         };
+        // An interpolated model name is checked when its flow runs.
+        let judge_models = all_files
+            .iter()
+            .filter(|file| file.uses_judge())
+            .filter_map(|file| {
+                file.model_option().and_then(|line| match &line.option {
+                    FileOption::Model(value) => value.as_literal(),
+                    _ => None,
+                })
+            })
+            .collect();
         let planner = match &model {
             Some(model) if all_files.iter().any(|file| file.uses_act()) => {
                 Some(act_planner(Arc::clone(model), settings.jev)?)
@@ -309,6 +337,7 @@ impl PreparedRun {
             launch,
             planner,
             model,
+            judge_models,
             workers,
             settings,
         })
@@ -621,6 +650,7 @@ fn synthetic_outcome(job: &FlowJob, status: Status, message: &str) -> FlowOutcom
                     warnings: Vec::new(),
                     ai: None,
                     extract: None,
+                    judge: None,
                 }],
                 captures: Vec::new(),
                 artifacts: Vec::new(),

@@ -30,7 +30,7 @@ Schemas: [check](check.schema.json), [run report](report.schema.json).
 | `unused-capture` | A capture is never read; warning |
 | `redundant-presence` | The following assertion requires presence; warning |
 | `unasserted-http-status` | An independent HTTP entry has no status assertion; warning |
-| `act-without-model` | A file uses `ACT`, `ai:`, or `EXTRACT` without a `model` option |
+| `act-without-model` | A file uses `ACT`, `ai:`, `EXTRACT`, or `JUDGE` without a `model` option |
 | `unknown-model` | The `model` option names a model the catalog cannot route |
 | `ai-count` | An `ai:` target is counted; it names one element |
 | `cache-invalid` | A flow's AI cache is not a valid version 1 file; path is the cache file |
@@ -39,6 +39,9 @@ Schemas: [check](check.schema.json), [run report](report.schema.json).
 | `unknown-extract` | A check reads an `EXTRACT` name that no earlier line defines |
 | `extract-schema-unsupported` | An `EXTRACT` schema uses a keyword or format outside the supported subset |
 | `extract-unsettled` | `EXTRACT` directly follows an interaction with no check between them; warning |
+| `judge-without-images` | A file uses `JUDGE`, and the catalog says its model does not accept images |
+| `judge-images-unknown` | A file uses `JUDGE`, and the catalog does not say whether its model accepts images; warning |
+| `judge-alone` | An entry has `JUDGE` and no `ASSERT` that waits for the state it judges; warning |
 | `filter-type` | A check's subject, filters, predicate, and literal expected value cannot work together, such as `text toHex` or `status == "200"` |
 
 Locations use 1-based Unicode character positions, not bytes or UTF-16 units.
@@ -86,7 +89,15 @@ An `EXTRACT` step (SPEC 7.6) fails with `extract-schema` when the answer does
 not match its schema, `extract-ref` when a link field names no link, and
 `extract-model` for a model error. It has an `extract` object: `model`, the
 `value` as `{type, value}` like a capture, absent when the model found no
-value, and `usage` in the shape of the `act` usage. A file that ran `MOCK`
+value, and `usage` in the shape of the `act` usage.
+
+A `JUDGE` step (SPEC 9.8) has the kind `judge`. It fails with `judge-false`
+when the model answers `no`: `expected` is the claim and `actual` the model's
+reason. It passes with the warning `judge-unsure` when the model answers
+`unsure`. A model error is `judge-model`. It has a `judge` object: `model`,
+the `verdict` (`yes`, `no`, or `unsure`) and the masked `reason`, both absent
+when the step ended before the model answered, and `usage` in the shape of
+the `act` usage. A file that ran `MOCK`
 lines has `mocks`: each with its `line`, `method`, resolved `url`, and
 `hits`, the number of requests it served. Codes are stable; message text may
 change and must not be parsed. Secret masking covers diagnostic action logs in

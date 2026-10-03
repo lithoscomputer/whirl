@@ -29,7 +29,7 @@ use crate::report::model::SnapshotReport;
 pub(super) mod wire;
 
 /// The protocol version this Whirl speaks (protocol section 3).
-pub(crate) const PROTOCOL: u64 = 6;
+pub(crate) const PROTOCOL: u64 = 7;
 
 /// Environment variable naming the built shim entry (protocol section 8).
 pub(crate) const SHIM_JS_ENV: &str = "WHIRL_SHIM_JS";
@@ -412,6 +412,11 @@ pub(crate) enum StepCommand {
     /// [`RequestReadResult`].
     ReadRequest {
         name: String,
+    },
+    /// A settled PNG of an element or the viewport for `JUDGE` (protocol
+    /// 4.9); result `{"pngBase64": "..."}`.
+    JudgeScreenshot {
+        locator: Option<Json>,
     },
     /// A strict locator for a snapshot element (protocol 4.8); result
     /// [`GeneratedLocator`].

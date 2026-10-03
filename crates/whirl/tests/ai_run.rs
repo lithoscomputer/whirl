@@ -730,3 +730,174 @@ fn an_extract_answer_outside_its_schema_fails_the_entry() {
     let step = &steps(&dir)[1];
     assert_eq!(step["error"]["code"], "extract-schema");
 }
+
+/// A `JUDGE` answer.
+fn verdict(verdict: &str, reason: &str) -> Json {
+    json!({"verdict": verdict, "reason": reason})
+}
+
+#[test]
+fn judge_passes_on_yes_and_sends_the_screenshot_and_the_outline() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.answer(&[verdict("yes", "the total is the sum of the items")]);
+    let flow = dir.file(
+        "judge.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{ORDER}\
+             ASSERT testid:summary visible\n\
+             JUDGE testid:summary \"the total matches the sum of the line items\"\n"
+        ),
+    );
+    let output = twin.run(&dir, &flow, &[]);
+    assert_eq!(
+        exit_code(&output),
+        0,
+        "{}{}",
+        stdout_text(&output),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let step = &steps(&dir)[2];
+    assert_eq!(step["kind"], "judge");
+    assert_eq!(
+        step["text"],
+        "JUDGE testid:summary \"the total matches the sum of the line items\""
+    );
+    assert_eq!(step["judge"]["model"], "gpt-test");
+    assert_eq!(step["judge"]["verdict"], "yes");
+    assert_eq!(step["judge"]["reason"], "the total is the sum of the items");
+    assert_eq!(step["judge"]["usage"]["modelCalls"], 1);
+    let html = fs::read_to_string(dir.path.join("report.html")).expect("the HTML report exists");
+    assert!(
+        html.contains(
+            "<dt>Verdict</dt><dd>yes</dd><dt>Reason</dt><dd>the total is the sum of the items</dd>"
+        ),
+        "{html}"
+    );
+    let log = twin.request_log();
+    assert!(
+        log.contains("the total matches the sum of the line items"),
+        "{log}"
+    );
+    // The twin checks the image part but does not log it.
+    assert!(log.contains("Screenshot:"), "{log}");
+    assert!(log.contains("Plate $8.00"), "{log}");
+    assert!(!log.contains("heading \\\"Order\\\""), "{log}");
+}
+
+#[test]
+fn judge_fails_on_no_with_the_models_reason() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.answer(&[verdict("no", "the page shows an error banner")]);
+    let flow = dir.file(
+        "judge.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{ORDER}\
+             ASSERT testid:summary visible\n\
+             JUDGE \"the page shows no error message\"\n\
+             ASSERT url exists\n"
+        ),
+    );
+    let output = twin.run(&dir, &flow, &[]);
+    assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
+    let stdout = stdout_text(&output);
+    assert!(stdout.contains("judge-false"), "{stdout}");
+    assert!(
+        stdout.contains("the page shows an error banner"),
+        "{stdout}"
+    );
+    let steps = steps(&dir);
+    let error = &steps[2]["error"];
+    assert_eq!(error["code"], "judge-false");
+    assert_eq!(error["expected"], "the page shows no error message");
+    assert_eq!(error["actual"], "the page shows an error banner");
+    assert_eq!(steps[2]["judge"]["verdict"], "no");
+    assert_eq!(
+        steps[3]["status"], "skipped",
+        "the entry stops at the failed JUDGE"
+    );
+}
+
+#[test]
+fn judge_warns_on_unsure_and_the_entry_goes_on() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.answer(&[verdict("unsure", "the chart is cut off")]);
+    let flow = dir.file(
+        "judge.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{ORDER}\
+             ASSERT testid:summary visible\n\
+             JUDGE \"the chart trends upward\"\n\
+             ASSERT url exists\n"
+        ),
+    );
+    let output = twin.run(&dir, &flow, &[]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    assert_eq!(warning_codes(&dir), ["judge-unsure"]);
+    let steps = steps(&dir);
+    assert_eq!(steps[2]["status"], "passed");
+    assert_eq!(steps[2]["judge"]["verdict"], "unsure");
+    assert_eq!(steps[3]["status"], "passed");
+    assert!(
+        stdout_text(&output).contains("the chart is cut off"),
+        "{}",
+        stdout_text(&output)
+    );
+}
+
+#[test]
+fn a_judge_claim_masks_secrets_and_never_uses_the_cache() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.answer(&[verdict("yes", "it shows hunter2")]);
+    let flow = dir.file(
+        "judge.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{ORDER}\
+             ASSERT testid:summary visible\n\
+             JUDGE \"the page greets {{{{env.SECRET}}}}\"\n"
+        ),
+    );
+    let output = twin.run_with_args(&dir, &flow, &[("SECRET", "hunter2")], &["--cache=only"]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    let log = twin.request_log();
+    assert!(!log.contains("greets hunter2"), "{log}");
+    assert!(log.contains("greets "), "{log}");
+    let step = &steps(&dir)[2];
+    assert_eq!(step["judge"]["reason"], "it shows ***");
+    assert!(cache_of(&flow).is_none());
+}
+
+#[test]
+fn judge_without_credentials_stops_the_run_before_any_flow() {
+    let dir = TestDir::new();
+    let flow = dir.file(
+        "judge.whirl",
+        &format!(
+            "[Options]\nmodel: anthropic/claude-sonnet-5\n{ORDER}\
+             ASSERT testid:summary visible\n\
+             JUDGE \"the page shows no error message\"\n"
+        ),
+    );
+    let shim_js = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../shim/dist/index.js");
+    let output = Command::new(env!("CARGO_BIN_EXE_whirl"))
+        .env("WHIRL_NODE", "node")
+        .env("WHIRL_SHIM_JS", shim_js)
+        .env_remove("WHIRL_LLM_ENDPOINT")
+        .env_remove("ANTHROPIC_API_KEY")
+        .current_dir(&dir.path)
+        .arg("--artifacts")
+        .arg(dir.path.join("artifacts"))
+        .arg(&flow)
+        .output()
+        .expect("the whirl binary should run");
+    assert_eq!(exit_code(&output), 3, "{}", stdout_text(&output));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("JUDGE needs credentials for the model anthropic/claude-sonnet-5"),
+        "{stderr}"
+    );
+    assert!(!dir.path.join("artifacts").exists());
+}

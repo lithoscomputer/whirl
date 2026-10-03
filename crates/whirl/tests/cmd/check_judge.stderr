@@ -1,0 +1,9 @@
+text-model.whirl:2:8: error: JUDGE sends a screenshot, and the model `deepseek/deepseek-v4-flash` does not accept images
+  model: deepseek/deepseek-v4-flash
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+alone.whirl:4:1: warning: JUDGE does not retry; add an ASSERT before it that waits for the state the claim describes
+  JUDGE "the page shows no error message"
+  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+no-model.whirl:3:1: error: JUDGE needs a `model` option naming the language model to ask
+  JUDGE "the page shows no error message"
+  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

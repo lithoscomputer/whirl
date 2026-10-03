@@ -16,9 +16,9 @@ use crate::lang::ast::{
 };
 use crate::lang::fmt::render_snapshot_target;
 use crate::report::model::{
-    ActReport, AiReport, CaptureValue, EntryReport, ExtractReport, FileReport, MockReport,
-    ReportViewport, RuntimeMetadata, SETUP_ENTRY, SnapshotReport, Status, StepError, StepKind,
-    StepReport, StepWarning, Timing,
+    ActReport, AiReport, CaptureValue, EntryReport, ExtractReport, FileReport, JudgeReport,
+    MockReport, ReportViewport, RuntimeMetadata, SETUP_ENTRY, SnapshotReport, Status, StepError,
+    StepKind, StepReport, StepWarning, Timing,
 };
 use crate::run::act::{ActPlanner, Instruction, ModelClient};
 use crate::run::artifacts;
@@ -33,6 +33,7 @@ mod act_step;
 mod ai_step;
 mod check_step;
 mod extract_step;
+mod judge_step;
 mod snapshot;
 use snapshot::SnapshotSettings;
 
@@ -414,6 +415,7 @@ enum StepNode<'a> {
     Action(&'a ast::Action),
     Page(&'a ast::Page),
     Assert(&'a ast::Assert),
+    Judge(&'a ast::Judge),
     Capture(&'a ast::Capture),
 }
 
@@ -423,6 +425,7 @@ impl<'a> StepNode<'a> {
             Self::Action(step) => step.line,
             Self::Page(step) => step.line,
             Self::Assert(step) => step.line,
+            Self::Judge(step) => step.line,
             Self::Capture(step) => step.line,
         }
     }
@@ -438,6 +441,7 @@ impl<'a> StepNode<'a> {
             },
             Self::Page(step) => &step.text,
             Self::Assert(step) => &step.text,
+            Self::Judge(step) => &step.text,
             Self::Capture(step) => &step.text,
         }
     }
@@ -447,6 +451,7 @@ impl<'a> StepNode<'a> {
             Self::Action(_) => StepKind::Action,
             Self::Page(_) => StepKind::Page,
             Self::Assert(_) => StepKind::Assert,
+            Self::Judge(_) => StepKind::Judge,
             Self::Capture(_) => StepKind::Capture,
         }
     }
@@ -457,6 +462,7 @@ impl<'a> StepNode<'a> {
             Self::Action(step) => step.timeout,
             Self::Page(step) => step.timeout,
             Self::Assert(step) => step.timeout,
+            Self::Judge(step) => step.timeout,
             Self::Capture(step) => step.timeout,
         };
         timeout.map(DurationLit::millis)
@@ -470,6 +476,7 @@ fn entry_steps(entry: &ast::Entry) -> Vec<StepNode<'_>> {
     let page = entry.page.iter().map(StepNode::Page);
     let checks = entry.checks.iter().map(|check| match check {
         ast::CheckStep::Assert(assert) => StepNode::Assert(assert),
+        ast::CheckStep::Judge(judge) => StepNode::Judge(judge),
         ast::CheckStep::Capture(capture) => StepNode::Capture(capture),
     });
     actions.chain(page).chain(checks).collect()
@@ -572,6 +579,8 @@ enum PreparedStep {
     },
     /// An `EXTRACT` line (SPEC 7.6).
     Extract(extract_step::ExtractPlan),
+    /// A `JUDGE` line (SPEC 9.8).
+    Judge(judge_step::JudgePlan),
     /// A check with a subject, evaluated in Rust (SPEC 9).
     Check(check_step::PreparedCheck),
     Capture(check_step::PreparedCapture),
@@ -693,6 +702,14 @@ impl FlowExec<'_> {
             StepNode::Capture(capture) => self
                 .prepare_capture(capture, implicit_response)
                 .map(PreparedStep::Capture),
+            StepNode::Judge(judge) => Ok(PreparedStep::Judge(judge_step::JudgePlan {
+                claim: Instruction::try_new(&judge.claim, &mut self.vars)?,
+                scope: judge
+                    .scope
+                    .as_ref()
+                    .map(|scope| self.locator(scope, None))
+                    .transpose()?,
+            })),
         }
     }
 
@@ -1079,6 +1096,7 @@ struct StepRun {
     snapshot:    Option<SnapshotReport>,
     ai:          Option<AiReport>,
     extract:     Option<ExtractReport>,
+    judge:       Option<JudgeReport>,
     warnings:    Vec<StepWarning>,
 }
 
@@ -1092,6 +1110,7 @@ impl StepRun {
             act: None,
             ai: None,
             extract: None,
+            judge: None,
             warnings: Vec::new(),
         }
     }
@@ -1171,6 +1190,7 @@ impl FlowExec<'_> {
         let started = Instant::now();
         let span = debug_span!("step", line = node.line(), step_kind = ?node.kind());
         let mut extract = None;
+        let mut judge = None;
         let (end, act, mut spend) = match prepared {
             None => {
                 let budget = act_step::ActBudget {
@@ -1183,6 +1203,7 @@ impl FlowExec<'_> {
                     .instrument(span)
                     .await;
                 extract = run.extract;
+                judge = run.judge;
                 (run.end, run.act, run.spend)
             }
             Some(PreparedStep::Command(command)) => {
@@ -1234,6 +1255,23 @@ impl FlowExec<'_> {
                 extract = report;
                 (end, None, ai_step::AiSpend::default())
             }
+            Some(PreparedStep::Judge(plan)) => {
+                let budget = act_step::ActBudget {
+                    timeout_ms,
+                    entry_capped,
+                    entry_budget_ms,
+                };
+                let (end, report, warnings) = self
+                    .run_judge(node, plan, &title, budget, client, state)
+                    .instrument(span)
+                    .await;
+                judge = report;
+                let spend = ai_step::AiSpend {
+                    warnings,
+                    ..ai_step::AiSpend::default()
+                };
+                (end, None, spend)
+            }
             Some(PreparedStep::Check(mut check)) => {
                 let budget = check_step::LineBudget {
                     timeout_ms,
@@ -1276,6 +1314,7 @@ impl FlowExec<'_> {
             act,
             ai,
             extract,
+            judge,
             warnings: spend.warnings,
         }
     }
@@ -1417,6 +1456,7 @@ impl FlowExec<'_> {
                     warnings:    Vec::new(),
                     ai:          None,
                     extract:     None,
+                    judge:       None,
                 });
                 continue;
             }
@@ -1436,6 +1476,7 @@ impl FlowExec<'_> {
                 warnings: run.warnings,
                 ai: run.ai,
                 extract: run.extract,
+                judge: run.judge,
             });
             if status != Status::Passed {
                 entry_status = status;
@@ -1503,6 +1544,7 @@ fn skipped_entry(file: &File, entry: &ast::Entry, vars: &VarStore) -> EntryRepor
             warnings:    Vec::new(),
             ai:          None,
             extract:     None,
+            judge:       None,
         })
         .collect();
     EntryReport {
@@ -1551,6 +1593,7 @@ impl EntryReport {
             warnings:    Vec::new(),
             ai:          None,
             extract:     None,
+            judge:       None,
         });
         self
     }

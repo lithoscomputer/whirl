@@ -3,7 +3,10 @@
 //! `buildActPrompt`, `buildStepTwoPrompt`, and `buildObserveUserMessage`),
 //! the `ai:` target prompt (SPEC 6.3), ported from its
 //! `buildObserveSystemPrompt`, the `EXTRACT` prompts (SPEC 7.6), ported from
-//! its `buildExtractSystemPrompt` and `buildExtractUserPrompt`, and the
+//! its `buildExtractSystemPrompt` and `buildExtractUserPrompt`, the `JUDGE`
+//! prompt (SPEC 9.8), adapted from the evidence rules of its verifier
+//! (`packages/core/lib/v3/verifier/prompts/fusedOutcome.ts`) and the YES/NO
+//! evaluator of `packages/core/lib/v3LegacyEvaluator.ts`, and the
 //! text-argument prompt of its Jev path (browserbase/stagehand#2953).
 //!
 //! Whirl's changes: element IDs are Playwright AI-snapshot refs rather than
@@ -95,6 +98,41 @@ pub(crate) fn extract_system_prompt() -> String {
          of the link elements, such as e12, copied exactly from the [ref=...] marks. Do not \
          attempt to extract links directly from the text.",
     )
+}
+
+/// The system prompt of a `JUDGE` call (SPEC 9.8).
+pub(crate) fn judge_system_prompt() -> String {
+    collapse_whitespace(
+        "You are an expert evaluator of a web page. You decide whether a claim about the page \
+         holds, and you answer yes, no, or unsure with a concise reason.
+
+         You will be given:
+         1. a claim about the page
+         2. a hierarchical accessibility tree of the page, or of one element of it
+         3. a screenshot of the same part of the page
+
+         Judge only from the accessibility tree and the screenshot. Do not use outside or \
+         current-world knowledge to override what they show. Do not assume anything that they \
+         do not show: an unseen redirect, a hidden element, or a value that is not on the page. \
+         Ignore small differences that do not change what the claim means, such as \
+         capitalization, spacing, or formatting. Answer yes when the evidence shows the claim \
+         holds, and no when the evidence shows it does not. Answer unsure when the evidence is \
+         missing, cut off, or ambiguous.",
+    )
+}
+
+/// The text of a `JUDGE` call's user message: the claim, its
+/// placeholders, and the snapshot. The screenshot follows it.
+pub(crate) fn judge_message(claim: &str, placeholders: &[String], snapshot: &str) -> String {
+    let placeholders = if placeholders.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\nThe claim uses placeholders for hidden values: {}.",
+            placeholders.join(", ")
+        )
+    };
+    format!("Claim: {claim}{placeholders}\nAccessibility Tree: \n{snapshot}\nScreenshot:")
 }
 
 /// The user message of an `EXTRACT` call: the instruction, its

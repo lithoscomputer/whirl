@@ -68,6 +68,7 @@ pub(crate) enum StepKind {
     Action,
     Page,
     Assert,
+    Judge,
     Capture,
 }
 
@@ -141,6 +142,9 @@ pub(crate) struct StepReport {
     /// What an `EXTRACT` step read (SPEC 7.6).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) extract:     Option<ExtractReport>,
+    /// What a `JUDGE` step's model answered (SPEC 9.8).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) judge:       Option<JudgeReport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) snapshot:    Option<SnapshotReport>,
     /// Notices that do not fail the step, each with a stable code.
@@ -228,6 +232,21 @@ pub(crate) struct AiTargetReport {
     /// For a healed target, the locator the cache held.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) cached:      Option<String>,
+}
+
+/// A `JUDGE` step's verdict, the model's reason, and what the call used
+/// (SPEC 9.8).
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct JudgeReport {
+    pub(crate) model:   String,
+    /// `yes`, `no`, or `unsure`; absent when the call failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) verdict: Option<String>,
+    /// The model's reason, masked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) reason:  Option<String>,
+    pub(crate) usage:   ActUsage,
 }
 
 /// What an `EXTRACT` step read and what its model call used (SPEC 7.6).

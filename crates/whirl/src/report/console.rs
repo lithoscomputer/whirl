@@ -151,6 +151,7 @@ mod tests {
             warnings: Vec::new(),
             ai: None,
             extract: None,
+            judge: None,
         }
     }
 

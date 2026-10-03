@@ -199,3 +199,23 @@ class SummaryTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_judge_steps_count_and_the_verdict_tasks_grade_their_answer(self):
+        judge = {"model": "m", "verdict": "no", "reason": "r", "usage": {"modelCalls": 1, "inputTokens": 900, "outputTokens": 20, "costUsdMicros": 4}}
+        said_no = step("failed", "judge-false", duration_ms=800)
+        said_no["judge"] = judge
+        path = "x/judge-wrong-total.judge-false.whirl"
+        report = file_report(path, "failed", [entry("Judge.", "failed", [said_no])])
+        result = eval_act.classify(report, "m")
+        self.assertEqual(result.task, "judge-wrong-total")
+        self.assertEqual(result.outcome, "pass")
+        self.assertEqual((result.model_calls, result.duration_ms, result.cost_usd_micros), (1, 800, 4))
+        said_yes = file_report(path, "passed", [entry("Judge.", "passed", [step()])])
+        self.assertEqual(eval_act.classify(said_yes, "m").outcome, "fail")
+
+        path = "x/judge-address.unsure.whirl"
+        unsure = step()
+        unsure["warnings"] = [{"code": "judge-unsure", "message": "m"}]
+        self.assertEqual(eval_act.classify(file_report(path, "passed", [entry("J.", "passed", [unsure])]), "m").task, "judge-address")
+        self.assertEqual(eval_act.classify(file_report(path, "passed", [entry("J.", "passed", [unsure])]), "m").outcome, "pass")
+        self.assertEqual(eval_act.classify(file_report(path, "passed", [entry("J.", "passed", [step()])]), "m").outcome, "fail")

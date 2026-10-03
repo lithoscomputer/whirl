@@ -288,10 +288,19 @@ impl File {
             .any(|action| matches!(action.kind, ActionKind::Act { .. }))
     }
 
-    /// True when any line asks a language model: `ACT`, `EXTRACT`, or a
-    /// locator with an `ai:` target (SPEC 6.3, 7.4, 7.6).
+    /// True when any entry has a `JUDGE` line (SPEC 9.8).
+    pub(crate) fn uses_judge(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|entry| entry.judges().next().is_some())
+    }
+
+    /// True when any line asks a language model: `ACT`, `EXTRACT`,
+    /// `JUDGE`, or a locator with an `ai:` target (SPEC 6.3, 7.4, 7.6,
+    /// 9.8).
     pub(crate) fn uses_ai(&self) -> bool {
         self.uses_act()
+            || self.uses_judge()
             || self
                 .entries
                 .iter()
@@ -1062,10 +1071,12 @@ pub(crate) struct Capture {
     pub(crate) text:    String,
 }
 
-/// One check line of an entry (SPEC 9, 10): an `ASSERT` or a `CAPTURE`.
+/// One check line of an entry (SPEC 9, 10): an `ASSERT`, a `JUDGE`, or a
+/// `CAPTURE`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum CheckStep {
     Assert(Assert),
+    Judge(Judge),
     Capture(Capture),
 }
 
@@ -1073,9 +1084,31 @@ impl CheckStep {
     pub(crate) fn line(&self) -> u32 {
         match self {
             Self::Assert(assert) => assert.line,
+            Self::Judge(judge) => judge.line,
             Self::Capture(capture) => capture.line,
         }
     }
+
+    /// The line's source text.
+    pub(crate) fn text(&self) -> &str {
+        match self {
+            Self::Assert(assert) => &assert.text,
+            Self::Judge(judge) => &judge.text,
+            Self::Capture(capture) => &capture.text,
+        }
+    }
+}
+
+/// A `JUDGE [locator] "claim"` line (SPEC 9.8).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Judge {
+    /// The element the model sees; `None` for the page.
+    pub(crate) scope:   Option<Locator>,
+    pub(crate) claim:   Value,
+    pub(crate) timeout: Option<DurationLit>,
+    pub(crate) line:    u32,
+    pub(crate) span:    Span,
+    pub(crate) text:    String,
 }
 
 /// One entry: actions, then an optional `PAGE` line, then check lines in
@@ -1096,7 +1129,7 @@ impl Entry {
     pub(crate) fn asserts(&self) -> impl Iterator<Item = &Assert> {
         self.checks.iter().filter_map(|check| match check {
             CheckStep::Assert(assert) => Some(assert),
-            CheckStep::Capture(_) => None,
+            CheckStep::Judge(_) | CheckStep::Capture(_) => None,
         })
     }
 
@@ -1104,7 +1137,15 @@ impl Entry {
     pub(crate) fn captures(&self) -> impl Iterator<Item = &Capture> {
         self.checks.iter().filter_map(|check| match check {
             CheckStep::Capture(capture) => Some(capture),
-            CheckStep::Assert(_) => None,
+            CheckStep::Assert(_) | CheckStep::Judge(_) => None,
+        })
+    }
+
+    /// The entry's `JUDGE` lines, in source order.
+    pub(crate) fn judges(&self) -> impl Iterator<Item = &Judge> {
+        self.checks.iter().filter_map(|check| match check {
+            CheckStep::Judge(judge) => Some(judge),
+            CheckStep::Assert(_) | CheckStep::Capture(_) => None,
         })
     }
 

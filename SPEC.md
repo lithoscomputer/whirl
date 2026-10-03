@@ -7,7 +7,7 @@ Whirl is a command-line tool that runs web UI tests written in plain text files.
 
 ## 1. Design principles
 
-1. **Closed vocabulary.** The language has a fixed set of actions, subjects, filters, and predicates. There are no conditionals, loops, functions, or user-defined keywords. A flow that needs branching is two files. `ACT` (section 7.4), `ai:` targets (section 6.3), and `EXTRACT` (section 7.6) are fixed keywords too, but what a language model chooses for them can change from run to run, so a flow asserts the result it expects. The AI cache (section 12.1) records each choice, so later runs replay it.
+1. **Closed vocabulary.** The language has a fixed set of actions, subjects, filters, and predicates. There are no conditionals, loops, functions, or user-defined keywords. A flow that needs branching is two files. `ACT` (section 7.4), `ai:` targets (section 6.3), `EXTRACT` (section 7.6), and `JUDGE` (section 9.8) are fixed keywords too, but what a language model chooses for them can change from run to run, so a flow asserts the result it expects. The AI cache (section 12.1) records each choice, so later runs replay it.
 2. **No waits in the language.** Actions auto-wait for their target. Assertions retry until they pass or time out. The format has no `SLEEP` and no `WAIT`.
 3. **Semantic locators first.** The locator grammar puts `role:` and `label:` in front and makes raw CSS the visually distinct escape hatch.
 4. **One flow per file, top to bottom.** A file is a linear sequence of entries. Execution order is textual order. A failure stops the file.
@@ -103,13 +103,14 @@ file          := [Options-section] entry+
 entry         := browser-entry | http-entry
 browser-entry := action+ [PAGE-line] check-line*
 http-entry    := HTTP-request check-line*
-check-line    := ASSERT-line | CAPTURE-line
+check-line    := ASSERT-line | JUDGE-line | CAPTURE-line
 ```
 
 - The optional `[Options]` section appears once, before the first entry.
 - A **browser entry** is one or more browser action lines, then an optional
   `PAGE` line, then zero or more check lines, in that order. A check line is
-  an `ASSERT` line (section 9) or a `CAPTURE` line (section 10).
+  an `ASSERT` line (section 9), a `JUDGE` line (section 9.8), or a `CAPTURE`
+  line (section 10).
 - An **HTTP entry** is one independent `HTTP` request, then zero or more
   check lines for that response. It has no `PAGE` line and cannot contain
   browser actions or a second request.
@@ -955,7 +956,7 @@ PAGE matches /regex/
 
 ## 9. Asserts
 
-An `ASSERT` line holds one check. Check lines run in the order written. The first failing check fails the entry.
+An `ASSERT` line holds one check. Check lines run in the order written. The first failing check fails the entry; a `JUDGE` line (section 9.8) fails it when the model answers `no`, and not when it answers `unsure`.
 
 ```
 assert := "ASSERT" check [ "@" duration ]
@@ -1181,6 +1182,69 @@ Response checks and request checks do not retry. A false predicate, a type misma
 
 Each failure has a stable report code: `assert` for a false predicate, `type-mismatch`, `filter-error`, `missing-value`, `eval` for an exception in an `eval` script, `eval-result` for an `eval` result outside the contract of section 10, `strictness`, and `read` for a subject that cannot be read, such as `value` on an element that is not an input or a `RESPONSE` body over the limit. See section 16 and [machine-readable output](docs/engineering/machine-output.md).
 
+### 9.8 JUDGE
+
+`JUDGE` asks the language model named by the `model` option whether a claim
+about the page holds:
+
+```whirl
+[Options]
+model: anthropic/claude-sonnet-5
+
+VISIT /checkout
+ASSERT testid:summary visible
+JUDGE testid:summary "the total matches the sum of the line items"
+JUDGE "the page shows no error message"
+```
+
+`JUDGE [locator] "claim"` is a check line, like `ASSERT`. It can appear only in
+a browser entry. It runs once, when the entry reaches it; by then, the check
+lines before it have passed. It does not retry, so put an `ASSERT` before it
+that waits for the state the claim describes. `whirl check` warns with
+`judge-alone` when its entry has no `ASSERT`. A locator before the
+claim limits what the model sees to one element, as the scope of `ACT` does
+(section 7.4): it waits for its element, must match exactly one (section 6.2),
+and every segment carries a prefix.
+
+The model sees:
+
+- the claim, with masked values as placeholders (section 7.4),
+- the AI snapshot of the selected tab, or of the element, without link URLs,
+- a screenshot of the element, or of the viewport without a locator. Whirl
+  captures frames until two in a row are identical, as `SNAPSHOT` does. It
+  uses at most half of the time left in the step timeout, then sends the last
+  frame, so the model call keeps the rest.
+
+The prompt tells it to judge only from the outline and the screenshot, not to
+use outside knowledge, not to assume anything that they do not show, to ignore
+small differences that do not change what the claim means, and to answer
+`unsure` when the evidence is missing, cut off, or ambiguous.
+
+The model answers `yes`, `no`, or `unsure`, with a reason:
+
+- `yes` passes.
+- `no` fails the entry with the code `judge-false` and the model's reason.
+- `unsure` passes with the warning `judge-unsure` and the model's reason. The
+  entry goes on.
+
+A model error is `judge-model`, under the rules of `ACT`: content filtering and
+an input larger than the model's context fail the entry (exit 1), and other
+model errors are runtime errors (exit 3). The step timeout, and a locator that
+matches nothing, fail the entry as for any step. A run whose files use `JUDGE`
+fails before any flow starts, with a runtime error (exit 3), when Whirl has no
+credentials for the `model` option's provider.
+
+The `model` option must name a model that the catalog marks as accepting
+images; `whirl check` reports any other as the error `judge-without-images`.
+A model whose image support the catalog does not know is the warning
+`judge-images-unknown`. With `WHIRL_LLM_ENDPOINT` (section 13), neither
+applies. The AI cache (section 12.1) never records `JUDGE`, so `--cache=only`
+still calls the model.
+
+The step's report text is the authored line. The JSON report adds a `judge`
+object to the step: the model, the verdict, the reason, and the token usage and
+cost of the model call.
+
 ## 10. Captures
 
 A `CAPTURE` line extracts a value into a variable for later lines.
@@ -1240,6 +1304,7 @@ Whirl masks every value sourced from `env.*` in the textual output it generates:
 - **Failure.** The first failing step fails the entry, and a failed entry stops its file; remaining entries in that file are skipped and reported as skipped. Other files still run. On failure Whirl saves a full-page screenshot and, with `--trace`, a Playwright trace to the artifacts directory.
 - **Navigation.** `VISIT` completes when the new document reaches `DOMContentLoaded`: the HTML is parsed and its synchronous scripts have run. It does not wait for the `load` event, because images, fonts, iframes, and media hold `load` open for reasons a flow never asserted, and every later line waits for what it needs anyway: actions wait for their element to be actionable, asserts and `PAGE` retry. A page that only becomes usable after `load` needs an assert on that state before an `EVAL` or `SCREENSHOT`, which run once without waiting.
 - **Retries.** Page checks and page captures read their value again on the schedule of section 9.7 until they pass or the step timeout expires. Response checks, response captures, and `eval` captures read once.
+- **JUDGE.** A `JUDGE` line runs once, after the check lines before it in its entry pass. Its screenshot, snapshot, and model call share its step timeout, so a `JUDGE` line that needs more sets its own `@duration`.
 - **ACT.** An `ACT` line is one step. Its snapshots, model calls, Jev requests, and actions share its step timeout. Model calls take seconds, so an `ACT` line that needs more than the step timeout sets its own, such as `@60s`.
 - **Timeouts.** Each action, PAGE, assert, and capture line gets the step timeout (`step-timeout` option, default 10s); `VISIT` gets the navigation timeout (`nav-timeout` option, default 30s). A trailing `@duration` on any such line overrides its own budget: `CLICK "Generate report" @60s`. The optional `entry-timeout` option caps an entry's total time across all of its lines; when it expires, the in-flight step fails with an entry-timeout error. An entry without one is still bounded by its per-step timeouts. The suffix must be bare: a line’s final bare token of the form `@duration` is always its timeout, and a quoted `"@60s"` is an ordinary value. Timeouts are enforced from outside the page, so they hold even when the page cannot respond — an `EVAL` script blocking the renderer or returning a Promise that never settles. When a timed-out step cannot be cancelled cleanly, Whirl closes that flow's browser context; if closing also stalls, it terminates and restarts only that worker's shim process. Either way the flow fails and reports normally, and other files are unaffected.
 - **Setup.** Files with a `setup` option run after their setup flows. Whirl first runs every distinct setup flow named by the inputs, once each and in parallel like any files, then runs the remaining files, each starting from its setup flow's saved state with the setup flow's captures as `{{setup.name}}`. A setup flow that is also an input runs once, as the setup. A failed setup flow reports normally, and each of its dependents reports a `[setup]` failure naming the setup flow and its first failing step, without opening a browser. Setup flows are one level deep.
@@ -1549,7 +1614,7 @@ Rust source, configuration, and project setup follow the [Brynary Rust Style Gui
 - **JSON diagnostics.** `whirl check --json` writes one version 1 JSON document to stdout, containing `exitCode` and `diagnostics`, with no diagnostic text on stderr. Each diagnostic includes a stable code, severity, path, line, column, length, message, and expected alternatives. Positions are 1-based Unicode character positions; locations unavailable for input or I/O errors are null. CLI argument syntax errors still use the ordinary usage message.
 - **Parse errors** (exit 2) are reported with file, line, column, a caret under the offending token, and the expected alternatives. `whirl check` surfaces them without launching a browser. Lint warnings do not change the exit code. Whirl warns about a capture that is never used, about an HTTP entry without a `status` check, and about a `count >= 1` assert directly followed by a check on the same locator, only when the following check requires at least one element. A `hidden` check or a count comparison that accepts zero does not make the presence check redundant. `whirl check` reports a check whose types cannot work, such as `text toHex` or `url > 3`, as the error `filter-type`. It reports an invalid literal regex, JSONPath, or XPath as a parse error. A file with an `[Asserts]` or `[Captures]` section is the parse error `sections-removed`, and a file that mixes such sections with check lines is the parse error `mixed-check-syntax` (section 4.1).
 - **Test failures** (exit 1) report the failing step the same way, plus expected versus actual and the artifacts. Check failures use the codes of section 9.7.
-- **Warnings** do not change a step's status or the exit code. Each has a stable code in the JSON report: `unused-mock` (section 7.5); `cache-miss`, `healed`, `uncached`, `cache-secret`, and `cache-unstable` (section 12.1). `whirl check` reports `cache-stale-entry` as a warning and `cache-invalid`, `ai-count`, `unknown-extract`, `duplicate-extract`, and `extract-schema-unsupported` as errors, and `extract-unsettled` as a warning.
+- **Warnings** do not change a step's status or the exit code. Each has a stable code in the JSON report: `unused-mock` (section 7.5); `cache-miss`, `healed`, `uncached`, `cache-secret`, and `cache-unstable` (section 12.1). `whirl check` reports `cache-stale-entry` as a warning and `cache-invalid`, `ai-count`, `unknown-extract`, `duplicate-extract`, `extract-schema-unsupported`, and `judge-without-images` as errors, and `extract-unsettled`, `judge-alone`, and `judge-images-unknown` as warnings. A `JUDGE` that answers `unsure` is the step warning `judge-unsure`, and one that answers `no` fails with `judge-false`.
 - **Runtime errors** (exit 3) cover shim crashes, missing browsers, and similar environmental failures.
 
 ## 17. Grammar
@@ -1562,7 +1627,8 @@ option-line= key , ":" , value , { value } ;
 entry      = browser-entry | http-entry ;
 browser-entry = action , { action } , [ page ] , { check-line } ;
 http-entry = http-request , { http-check-line } ;
-check-line = assert | capture ;
+check-line = assert | judge | capture ;
+judge      = "JUDGE" , [ locator ] , value , [ step-timeout ] ;   (* prefixed segments only *)
 http-check-line = http-assert | http-capture ;
 
 action     = action-body , [ step-timeout ] | snapshot | mock | extract ;
@@ -1695,7 +1761,7 @@ Deferred beyond V1 (candidate V2 features, not promised):
 - Request-count assertions, and `MOCK` responses served from a HAR file.
 - The Hurl features that the check vocabulary does not adopt: the `sha256`, `md5`, `cookie`, `certificate`, `redirects`, `duration`, `ip`, `version`, `variable`, and `rawbytes` queries; `file,…;` values; and following redirects in HTTP entries.
 - Per-entry `[Options]` overrides and mobile device emulation.
-- An LLM-as-judge assertion (a `JUDGE` keyword with an explicit model option and advisory rather than hard-failing verdicts).
+- Retrying a `JUDGE` that answers `no`, and a `JUDGE` that sees only a screenshot.
 - A step-two prompt for `ACT` that sends only the part of the snapshot that changed.
 - External schema files for `EXTRACT`, and a cache for `EXTRACT` results.
 - `--jev` for `ai:` targets, segments after an `ai:` segment, and `ai:` with `count`.
