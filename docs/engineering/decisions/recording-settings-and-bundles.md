@@ -34,7 +34,7 @@ Whirl MUST NOT expose a command or flag before it works.
 
 Recording creation MUST resolve settings as `whirl run` does (SPEC section
 13): the built-in defaults, then the flow's `[Options]`, then `-O`. It MUST
-use the shared resolver, `lang::cli_options`.
+use the shared resolver, `whirl_lang::CliOptions`.
 
 A `*.sim.json` recording MUST store every effective execution setting,
 including defaults and command-line overrides. It MUST NOT store output or

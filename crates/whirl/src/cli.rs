@@ -18,19 +18,17 @@ use clap::{Args, CommandFactory as _, Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use tokio::runtime::Runtime;
-
-use crate::lang::cli_options::{CliOptions, OptionFlag};
-use crate::lang::lint::{
-    Lint, ModelFacts, Severity, lint_act, lint_file_with, lint_setup_refs, setup_capture_uses,
+use whirl_ai::ModelCatalog;
+use whirl_check::validate_literals;
+use whirl_lang::{
+    CliOptions, Lint, ModelFacts, OptionFlag, ParseError, Severity, ast, format_file, lint_act,
+    lint_file_with, lint_setup_refs, parse_file, setup_capture_uses,
 };
-use crate::lang::parse::{ParseError, parse_file};
-use crate::lang::{ast, fmt};
-use crate::report::metadata::ReportMetadata;
-use crate::report::model::Status;
-use crate::report::{console, html, json, junit};
-use crate::run::act::ModelCatalog;
-use crate::run::cache::{self, CacheMode};
-use crate::run::{artifacts, flow, runner, vars};
+use whirl_report::model::Status;
+use whirl_report::{ReportMetadata, aggregate, console, html, json, junit};
+use whirl_run::cache::{self, CacheMode};
+use whirl_run::{FlowFlags, RunSettings, RunnerError};
+
 use crate::{doctor, install, telemetry};
 
 /// Outcome of one invocation, ordered by SPEC 13 precedence: `max` of two
@@ -232,8 +230,8 @@ struct RunArgs {
     jev: bool,
 
     /// What to do with each flow's AI cache.
-    #[arg(long, value_name = "MODE", value_enum, default_value_t = CacheMode::Replay)]
-    cache: CacheMode,
+    #[arg(long, value_name = "MODE", value_enum, default_value_t = CacheModeArg::Replay)]
+    cache: CacheModeArg,
 
     /// Start each file's browser from this saved state.
     #[arg(long, value_name = "FILE")]
@@ -266,6 +264,30 @@ struct RunArgs {
     /// Removed; use -O user-agent=UA.
     #[arg(long, value_name = "UA", hide = true)]
     user_agent: Option<String>,
+}
+
+/// The `--cache` flag's values (SPEC 12.1), as clap parses them. The
+/// runner's [`CacheMode`] carries the same three modes without the
+/// argument-parser derive.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, clap::ValueEnum)]
+enum CacheModeArg {
+    /// Replay hits; resolve misses with the model; never write.
+    #[default]
+    Replay,
+    /// As `replay`, then write the cache of each file that passed.
+    Update,
+    /// Fail a miss instead of asking the model.
+    Only,
+}
+
+impl From<CacheModeArg> for CacheMode {
+    fn from(mode: CacheModeArg) -> Self {
+        match mode {
+            CacheModeArg::Replay => Self::Replay,
+            CacheModeArg::Update => Self::Update,
+            CacheModeArg::Only => Self::Only,
+        }
+    }
 }
 
 /// Runs the CLI for the given argv (including the program name) and
@@ -441,13 +463,17 @@ struct ParsedInput {
     source: String,
 }
 
-/// Parses every input. Files that parse are returned even when others
-/// fail, so `check` can lint and report everything in one pass.
+/// Parses every input and checks its literal filter arguments (SPEC
+/// 17.1). Files that parse are returned even when others fail, so `check`
+/// can lint and report everything in one pass.
 fn parse_inputs(sources: Vec<(PathBuf, String)>) -> (Vec<ParsedInput>, Vec<ParseError>) {
     let mut parsed = Vec::new();
     let mut errors = Vec::new();
     for (path, source) in sources {
-        match parse_file(&path, &source) {
+        match parse_file(&path, &source).and_then(|file| {
+            validate_literals(&file, &source)?;
+            Ok(file)
+        }) {
             Ok(file) => parsed.push(ParsedInput { file, source }),
             Err(error) => errors.push(error),
         }
@@ -633,7 +659,7 @@ fn check_inputs(
     let mut setups: Vec<ParsedInput> = Vec::new();
     let mut setup_of: Vec<(usize, PathBuf)> = Vec::new();
     for (index, input) in inputs.iter().enumerate() {
-        let Some(path) = flow::setup_path_for(&input.file) else {
+        let Some(path) = whirl_run::setup_path_for(&input.file) else {
             continue;
         };
         let Some(canonical) = path.canonicalize().ok() else {
@@ -657,7 +683,10 @@ fn check_inputs(
             continue;
         }
         match fs::read_to_string(&path) {
-            Ok(source) => match parse_file(&path, &source) {
+            Ok(source) => match parse_file(&path, &source).and_then(|file| {
+                validate_literals(&file, &source)?;
+                Ok(file)
+            }) {
                 Ok(mut file) => {
                     options.apply(&mut file);
                     setups.push(ParsedInput { file, source });
@@ -847,7 +876,7 @@ fn fmt_command(check: bool, paths: &[PathBuf]) -> Exit {
     }
     let mut exit = Exit::Success;
     for input in &parsed {
-        let formatted = fmt::format_file(&input.file);
+        let formatted = format_file(&input.file);
         if formatted == input.source.replace("\r\n", "\n") {
             continue;
         }
@@ -897,13 +926,13 @@ fn build_base_vars(args: &RunArgs) -> Result<Vec<(String, String)>, UsageError> 
             message: format!("cannot read variables file '{}': {error}", path.display()),
         })?;
         entries.extend(
-            vars::parse_variables_file(&source).map_err(|error| UsageError {
+            whirl_run::parse_variables_file(&source).map_err(|error| UsageError {
                 message: format!("variables file '{}': {error}", path.display()),
             })?,
         );
     }
     for flag in &args.var {
-        entries.push(vars::parse_var_flag(flag).map_err(|error| UsageError {
+        entries.push(whirl_run::parse_var_flag(flag).map_err(|error| UsageError {
             message: format!("--var {flag}: {error}"),
         })?);
     }
@@ -956,7 +985,7 @@ fn check_save_state_inputs(
         return Ok(());
     };
     let inputs: Vec<PathBuf> = sources.iter().map(|(path, _)| path.clone()).collect();
-    let Ok(flows) = artifacts::dedup_flows(&inputs) else {
+    let Ok(flows) = whirl_run::dedup_flows(&inputs) else {
         return Ok(());
     };
     if flows.len() > 1 {
@@ -1151,7 +1180,7 @@ fn run_command(args: &RunArgs) -> Exit {
     if let Some(metadata) = &mut metadata {
         metadata.select(paths());
     }
-    let settings = runner::RunSettings {
+    let settings = RunSettings {
         source_hashes: checked
             .inputs
             .iter()
@@ -1166,14 +1195,14 @@ fn run_command(args: &RunArgs) -> Exit {
         jobs: args.jobs,
         fail_fast: args.fail_fast,
         out_dir: args.artifacts.clone().unwrap_or_else(|| args.out.clone()),
-        flags: flow::FlowFlags {
+        flags: FlowFlags {
             trace:            args.trace,
             video:            args.video,
             video_fps:        args.video_fps,
             har:              args.har,
             update_snapshots: args.update_snapshots,
             save_state:       args.save_state.clone(),
-            cache:            args.cache,
+            cache:            args.cache.into(),
             headed:           args.headed,
             load_state:       args.load_state.clone(),
         },
@@ -1189,7 +1218,7 @@ fn run_command(args: &RunArgs) -> Exit {
             return Exit::Runtime;
         }
     };
-    match runtime.block_on(runner::run_files(&files, &setups, &settings)) {
+    match runtime.block_on(whirl_run::run_files(&files, &setups, &settings)) {
         Ok(report) => {
             print_out(console::render(&report).trim_end());
             if settings.flags.cache != CacheMode::Update
@@ -1208,7 +1237,7 @@ fn run_command(args: &RunArgs) -> Exit {
             let report_exit = write_reports(args, &document);
             run_exit.max(report_exit)
         }
-        Err(error @ runner::RunnerError::SaveStateManyFiles { .. }) => {
+        Err(error @ RunnerError::SaveStateManyFiles { .. }) => {
             print_err(&format!("whirl: error: {error}"));
             Exit::Usage
         }
@@ -1314,8 +1343,6 @@ fn same_inode(_left: &Path, _right: &Path) -> bool {
 
 /// Saved results are data, never executable configuration.
 fn report_command(args: &ReportArgs) -> Exit {
-    use crate::report::aggregate;
-
     let prepared = (|| -> anyhow::Result<_> {
         check_report_destination(
             &args.html,

@@ -1,0 +1,662 @@
+//! Run orchestration (SPEC 12, 13): input dedup, artifact-directory
+//! planning, the worker pool with one reused shim process per slot,
+//! fail-fast scheduling, and assembly of the run report.
+
+use std::collections::{HashMap, VecDeque};
+use std::num::NonZeroUsize;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
+use std::{env, path, process, thread};
+
+use tokio::fs;
+use tokio::task::{JoinSet, spawn_blocking};
+use tracing::{Instrument as _, debug, info, info_span, warn};
+use whirl_ai::{
+    ActPlanner, JevClient, JevPlanner, JevSetupError, LlmPlanner, ModelClient, ModelSetupError,
+};
+use whirl_lang::ast::{File, FileOption};
+use whirl_report::model::{FileReport, FlowRoles, RunReport, SETUP_ENTRY, Status, Timing};
+use whirl_shim::{ShimClient, ShimError, ShimLaunch, resolve_launch};
+
+use crate::artifacts::{self, ArtifactsError, Flow};
+use crate::flow::{FlowFlags, FlowOutcome, FlowRun, SetupHandoff, run_flow, setup_path_for};
+
+/// Everything a run needs beyond its parsed files.
+#[derive(Clone, Debug)]
+pub struct RunSettings {
+    /// Worker slots (SPEC 12); `None` uses the logical CPU count.
+    pub jobs:          Option<usize>,
+    pub fail_fast:     bool,
+    /// The `--out` directory (possibly relative).
+    pub out_dir:       PathBuf,
+    pub flags:         FlowFlags,
+    /// `--variables-file` entries then `--var` flags, in order.
+    pub base_vars:     Vec<(String, String)>,
+    /// Hashes of the exact source bytes that the CLI parsed, keyed by input
+    /// path.
+    pub source_hashes: HashMap<PathBuf, String>,
+    /// `--jev`: plan `ACT` with Jev first (SPEC 7.4, 13).
+    pub jev:           bool,
+}
+
+/// A failure before any flow runs.
+#[derive(Debug, thiserror::Error)]
+pub enum RunnerError {
+    /// A runtime error (exit 3).
+    #[error(transparent)]
+    Artifacts(#[from] ArtifactsError),
+    /// A runtime error (exit 3).
+    #[error(transparent)]
+    Shim(#[from] ShimError),
+    /// A runtime error (exit 3): a flow uses `ACT` and the model client
+    /// could not be built.
+    #[error(transparent)]
+    Model(#[from] ModelSetupError),
+    /// A runtime error (exit 3): `--jev` is set, a flow uses `ACT`, and
+    /// the Jev client could not be built.
+    #[error(transparent)]
+    Jev(#[from] JevSetupError),
+    /// A runtime error (exit 3): a flow uses `JUDGE` and Whirl has no
+    /// credentials for its model's provider (SPEC 9.8).
+    #[error(
+        "JUDGE needs credentials for the model {model}; set the provider's key, such as ANTHROPIC_API_KEY or OPENAI_API_KEY"
+    )]
+    JudgeCredentials { model: String },
+    /// A usage error (exit 4): `--save-state` needs a single file.
+    #[error("--save-state requires a single input file, got {count}")]
+    SaveStateManyFiles { count: usize },
+}
+
+/// One scheduled flow: its parsed file, its artifact directories, and
+/// its place in the setup graph (SPEC 12).
+struct FlowJob {
+    file:            File,
+    canonical:       PathBuf,
+    report_dir:      PathBuf,
+    abs_dir:         PathBuf,
+    roles:           FlowRoles,
+    /// The canonical path of this file's `setup` flow, when it has one.
+    setup_canonical: Option<PathBuf>,
+    /// Where this flow saves its final state when other files depend on
+    /// it.
+    state_out:       Option<PathBuf>,
+}
+
+/// What a finished setup flow leaves for its dependents: the handoff on
+/// success, or the message dependents report on failure.
+enum SetupResult {
+    Ready(SetupHandoff),
+    Failed(String),
+}
+
+/// Runs every input file and returns the run report. `files` is the
+/// expanded, parsed input list in command-line order; duplicates (by
+/// canonical path) run once (SPEC 14). `setups` holds the parsed `setup`
+/// flows of those files that are not inputs themselves. Setup flows run
+/// first, once each, and their dependents start from the saved state
+/// (SPEC 12).
+pub async fn run_files(
+    files: &[File],
+    setups: &[File],
+    settings: &RunSettings,
+) -> Result<RunReport, RunnerError> {
+    async {
+        let started = Instant::now();
+        let mut timing = Timing::start();
+        info!(
+            file_count = files.len(),
+            setup_count = setups.len(),
+            "run started"
+        );
+        let files = files.to_vec();
+        let setups = setups.to_vec();
+        let settings = settings.clone();
+        let PreparedRun {
+            setup_jobs,
+            main_jobs,
+            state_dir,
+            launch,
+            planner,
+            model,
+            judge_models,
+            workers,
+            settings,
+        } = spawn_blocking(move || PreparedRun::try_new(&files, &setups, settings))
+            .await
+            .expect("run preparation does not panic")?;
+        // JUDGE fails before any flow starts without credentials (SPEC 9.8).
+        if let Some(client) = &model {
+            for name in judge_models {
+                if !client.has_credentials(&name).await {
+                    return Err(RunnerError::JudgeCredentials { model: name });
+                }
+            }
+        }
+        let stop = Arc::new(AtomicBool::new(false));
+        let settings = Arc::new(settings);
+
+        let mut reports = Vec::new();
+        let mut handoffs: HashMap<PathBuf, SetupResult> = HashMap::new();
+        if !setup_jobs.is_empty() {
+            if let Err(error) = fs::create_dir_all(&state_dir).await {
+                return Err(RunnerError::Artifacts(ArtifactsError::Canonicalize {
+                    path:   state_dir,
+                    source: error,
+                }));
+            }
+            let setup_jobs: Arc<[FlowJob]> = Arc::from(setup_jobs);
+            let outcomes = WorkerSet::new(
+                setup_jobs.clone(),
+                Arc::new(HashMap::new()),
+                settings.clone(),
+                &launch,
+                planner.clone(),
+                model.clone(),
+                stop.clone(),
+            )
+            .run(workers)
+            .await;
+            for (job, outcome) in setup_jobs.iter().zip(outcomes) {
+                let Some(outcome) = outcome else {
+                    continue;
+                };
+                let result = if outcome.report.status == Status::Passed {
+                    SetupResult::Ready(SetupHandoff {
+                        storage_path: job
+                            .state_out
+                            .clone()
+                            .expect("every setup job has a state path"),
+                        captures:     outcome.captures,
+                        secrets:      outcome.secrets,
+                    })
+                } else {
+                    SetupResult::Failed(setup_failure_message(&job.file, &outcome.report))
+                };
+                handoffs.insert(job.canonical.clone(), result);
+                reports.push(outcome.report);
+            }
+        }
+
+        let main_jobs: Arc<[FlowJob]> = Arc::from(main_jobs);
+        let outcomes = WorkerSet::new(
+            main_jobs.clone(),
+            Arc::new(handoffs),
+            settings,
+            &launch,
+            planner,
+            model,
+            stop,
+        )
+        .run(workers)
+        .await;
+        reports.extend(outcomes.into_iter().flatten().map(|outcome| outcome.report));
+        // The saved setup states hold session cookies; do not leave them
+        // behind (SPEC 11).
+        let _ = fs::remove_dir_all(&state_dir).await;
+
+        info!(file_count = reports.len(), "run finished");
+        timing.finish();
+        Ok(RunReport {
+            timing,
+            duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            files: reports,
+        })
+    }
+    .instrument(info_span!("run"))
+    .await
+}
+
+/// The run's `ACT` planner (SPEC 7.4): the language model, or with `--jev`
+/// Jev first and the language model as its fallback.
+fn act_planner(model: Arc<ModelClient>, jev: bool) -> Result<Arc<dyn ActPlanner>, RunnerError> {
+    let llm: Arc<dyn ActPlanner> = Arc::new(LlmPlanner::new(model.clone()));
+    if !jev {
+        return Ok(llm);
+    }
+    Ok(Arc::new(JevPlanner::new(
+        JevClient::from_env()?,
+        llm,
+        model,
+    )))
+}
+
+/// Filesystem preparation runs on the blocking pool, including path
+/// canonicalization, artifact collision checks, and installed-shim lookup.
+struct PreparedRun {
+    setup_jobs:   Vec<FlowJob>,
+    main_jobs:    Vec<FlowJob>,
+    state_dir:    PathBuf,
+    launch:       ShimLaunch,
+    /// Built only when a flow uses `ACT` (SPEC 7.4).
+    planner:      Option<Arc<dyn ActPlanner>>,
+    /// Built only when a flow asks a language model (SPEC 6.3, 7.4).
+    model:        Option<Arc<ModelClient>>,
+    /// The literal `model` options of the files that use `JUDGE`.
+    judge_models: Vec<String>,
+    workers:      usize,
+    settings:     RunSettings,
+}
+
+impl PreparedRun {
+    fn try_new(
+        files: &[File],
+        setups: &[File],
+        mut settings: RunSettings,
+    ) -> Result<Self, RunnerError> {
+        let inputs: Vec<PathBuf> = files.iter().map(|file| file.path.clone()).collect();
+        let requested = artifacts::dedup_flows(&inputs)?;
+        if settings.flags.save_state.is_some() && requested.len() > 1 {
+            return Err(RunnerError::SaveStateManyFiles {
+                count: requested.len(),
+            });
+        }
+        let cwd = PathBuf::from(".");
+
+        // Setup flows are planned first so they run first and dedup against
+        // inputs that name the same file.
+        let mut setup_paths: Vec<PathBuf> = Vec::new();
+        for file in files {
+            if let Some(path) = setup_path_for(file)
+                && !setup_paths.contains(&path)
+            {
+                setup_paths.push(path);
+            }
+        }
+        let planned: Vec<PathBuf> = setup_paths.iter().chain(inputs.iter()).cloned().collect();
+        let flows = artifacts::plan_flows(&settings.out_dir, &cwd, &planned)?;
+        let setup_canonicals: Vec<PathBuf> = flows
+            .iter()
+            .take(artifacts::dedup_flows(&setup_paths)?.len())
+            .map(|flow| flow.canonical.clone())
+            .collect();
+        let state_dir = env::temp_dir().join(format!("whirl-setup-{}", process::id()));
+        let launch = resolve_launch()?;
+
+        let all_files: Vec<&File> = files.iter().chain(setups.iter()).collect();
+        let model = if all_files.iter().any(|file| file.uses_ai()) {
+            Some(Arc::new(ModelClient::from_env()?))
+        } else {
+            None
+        };
+        // An interpolated model name is checked when its flow runs.
+        let judge_models = all_files
+            .iter()
+            .filter(|file| file.uses_judge())
+            .filter_map(|file| {
+                file.model_option().and_then(|line| match &line.option {
+                    FileOption::Model(value) => value.as_literal(),
+                    _ => None,
+                })
+            })
+            .collect();
+        let planner = match &model {
+            Some(model) if all_files.iter().any(|file| file.uses_act()) => {
+                Some(act_planner(Arc::clone(model), settings.jev)?)
+            }
+            _ => None,
+        };
+        let requested_canonicals: Vec<PathBuf> =
+            requested.into_iter().map(|(_, path)| path).collect();
+        let jobs = build_jobs(
+            &all_files,
+            &flows,
+            &setup_canonicals,
+            &requested_canonicals,
+            &state_dir,
+        )?;
+        let (setup_jobs, main_jobs): (Vec<FlowJob>, Vec<FlowJob>) = jobs
+            .into_iter()
+            .partition(|job| setup_canonicals.contains(&job.canonical));
+        let workers = settings
+            .jobs
+            .unwrap_or_else(default_jobs)
+            .clamp(1, setup_jobs.len().max(main_jobs.len()).max(1));
+
+        // Normalize CLI paths once, before workers construct wire messages.
+        for input in [
+            &mut settings.flags.load_state,
+            &mut settings.flags.save_state,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            *input = path::absolute(&*input).map_err(|source| ArtifactsError::Canonicalize {
+                path: input.clone(),
+                source,
+            })?;
+        }
+        Ok(Self {
+            setup_jobs,
+            main_jobs,
+            state_dir,
+            launch,
+            planner,
+            model,
+            judge_models,
+            workers,
+            settings,
+        })
+    }
+}
+
+/// The default worker count: the logical CPU count (SPEC 12).
+fn default_jobs() -> usize {
+    thread::available_parallelism().map_or(1, NonZeroUsize::get)
+}
+
+/// Pairs each planned flow with its parsed file, its absolute artifact
+/// directory, and its setup relationship.
+fn build_jobs(
+    files: &[&File],
+    flows: &[Flow],
+    setup_canonicals: &[PathBuf],
+    requested_canonicals: &[PathBuf],
+    state_dir: &Path,
+) -> Result<Vec<FlowJob>, RunnerError> {
+    let canonical_of = |input: &Path| -> Option<PathBuf> {
+        flows
+            .iter()
+            .find(|flow| flow.input == input)
+            .map(|flow| flow.canonical.clone())
+            .or_else(|| input.canonicalize().ok())
+    };
+    flows
+        .iter()
+        .map(|flow| {
+            let file = files
+                .iter()
+                .find(|file| file.path == flow.input)
+                .or_else(|| {
+                    files
+                        .iter()
+                        .find(|file| canonical_of(&file.path).as_ref() == Some(&flow.canonical))
+                })
+                .expect("every planned flow came from an input or setup file");
+            let abs_dir = path::absolute(&flow.dir).map_err(|source| {
+                RunnerError::Artifacts(ArtifactsError::Canonicalize {
+                    path: flow.dir.clone(),
+                    source,
+                })
+            })?;
+            let is_setup = setup_canonicals.contains(&flow.canonical);
+            let setup_canonical = setup_path_for(file).and_then(|path| canonical_of(&path));
+            Ok(FlowJob {
+                file: (*file).clone(),
+                canonical: flow.canonical.clone(),
+                report_dir: flow.dir.clone(),
+                abs_dir,
+                roles: FlowRoles {
+                    requested: requested_canonicals.contains(&flow.canonical),
+                    setup:     is_setup,
+                },
+                setup_canonical,
+                state_out: is_setup.then(|| {
+                    state_dir.join(format!("{}.json", artifacts::path_hash(&flow.canonical)))
+                }),
+            })
+        })
+        .collect()
+}
+
+/// Owns scheduling data shared by this batch's workers. The queue lock
+/// never crosses an await. Results return through the worker tasks.
+struct WorkQueue {
+    jobs:     Arc<[FlowJob]>,
+    handoffs: Arc<HashMap<PathBuf, SetupResult>>,
+    settings: Arc<RunSettings>,
+    launch:   ShimLaunch,
+    planner:  Option<Arc<dyn ActPlanner>>,
+    model:    Option<Arc<ModelClient>>,
+    pending:  Mutex<VecDeque<usize>>,
+    stop:     Arc<AtomicBool>,
+}
+
+impl WorkQueue {
+    fn next_job(&self) -> Option<usize> {
+        let mut pending = self
+            .pending
+            .lock()
+            .expect("queue users do not panic while holding the lock");
+        if self.settings.fail_fast && self.stop.load(Ordering::SeqCst) {
+            return None;
+        }
+        pending.pop_front()
+    }
+
+    fn record_outcome(&self, outcome: &FlowOutcome) {
+        if outcome.report.status != Status::Passed {
+            self.stop.store(true, Ordering::SeqCst);
+        }
+    }
+}
+
+/// Owns a batch's queue and worker tasks. Dropping the set aborts its
+/// tasks; the normal path joins every worker after it shuts down its shim.
+struct WorkerSet {
+    queue: Arc<WorkQueue>,
+    tasks: JoinSet<Vec<(usize, FlowOutcome)>>,
+}
+
+impl WorkerSet {
+    fn new(
+        jobs: Arc<[FlowJob]>,
+        handoffs: Arc<HashMap<PathBuf, SetupResult>>,
+        settings: Arc<RunSettings>,
+        launch: &ShimLaunch,
+        planner: Option<Arc<dyn ActPlanner>>,
+        model: Option<Arc<ModelClient>>,
+        stop: Arc<AtomicBool>,
+    ) -> Self {
+        let pending = Mutex::new((0..jobs.len()).collect());
+        Self {
+            queue: Arc::new(WorkQueue {
+                jobs,
+                handoffs,
+                settings,
+                launch: launch.clone(),
+                planner,
+                model,
+                pending,
+                stop,
+            }),
+            tasks: JoinSet::new(),
+        }
+    }
+
+    async fn run(mut self, workers: usize) -> Vec<Option<FlowOutcome>> {
+        let count = self.queue.jobs.len();
+        for worker_index in 0..workers.min(count) {
+            self.tasks.spawn(
+                Worker::new(self.queue.clone())
+                    .run()
+                    .instrument(info_span!("worker", worker_index)),
+            );
+        }
+        let mut results: Vec<Option<FlowOutcome>> = (0..count).map(|_| None).collect();
+        while let Some(result) = self.tasks.join_next().await {
+            // Worker panics are bugs. JoinSet aborts the remaining tasks
+            // on unwind, rather than detaching their shim processes.
+            for (index, outcome) in result.expect("a worker task does not panic") {
+                results[index] = Some(outcome);
+            }
+        }
+        results
+    }
+}
+
+/// One worker owns and reuses its shim client across scheduled files.
+struct Worker {
+    queue:  Arc<WorkQueue>,
+    client: Option<ShimClient>,
+}
+
+impl Worker {
+    fn new(queue: Arc<WorkQueue>) -> Self {
+        Self {
+            queue,
+            client: None,
+        }
+    }
+
+    async fn run(mut self) -> Vec<(usize, FlowOutcome)> {
+        let mut results = Vec::new();
+        while let Some(index) = self.queue.next_job() {
+            debug!(job_index = index, "starting flow job");
+            let mut timing = Timing::start();
+            let mut outcome = self.run_job(index).await;
+            timing.finish();
+            outcome.report.timing = timing;
+            let job = &self.queue.jobs[index];
+            outcome.report.roles = Some(job.roles);
+            outcome.report.source_sha256 = Some(
+                self.queue
+                    .settings
+                    .source_hashes
+                    .get(&job.file.path)
+                    .expect("every parsed flow has its source hash")
+                    .clone(),
+            );
+            debug!(job_index = index, status = ?outcome.report.status, "flow job finished");
+            self.queue.record_outcome(&outcome);
+            results.push((index, outcome));
+        }
+        if let Some(client) = self.client.take() {
+            // Reports are already complete; shutdown is best effort.
+            if client.shutdown().await.is_err() {
+                warn!("worker shim shutdown failed");
+            }
+        }
+        results
+    }
+
+    /// Spawn and complete the handshake before the client becomes usable.
+    async fn ensure_client(&mut self) -> Result<(), ShimError> {
+        if self.client.as_ref().is_some_and(ShimClient::is_alive) {
+            return Ok(());
+        }
+        debug!(restarting = self.client.is_some(), "starting shim process");
+        if let Some(mut previous) = self.client.take() {
+            previous.kill().await;
+        }
+        let mut client = ShimClient::spawn(&self.queue.launch)?;
+        if let Err(error) = client.hello().await {
+            warn!("shim handshake failed");
+            client.kill().await;
+            return Err(error);
+        }
+        self.client = Some(client);
+        Ok(())
+    }
+
+    /// Failed setup dependencies never start a browser. A failed spawn or
+    /// handshake affects only this job; the next job retries.
+    async fn run_job(&mut self, index: usize) -> FlowOutcome {
+        // Clone the shared owner so the job borrow does not borrow the
+        // worker while it replaces its client.
+        let queue = self.queue.clone();
+        let job = &queue.jobs[index];
+        let setup = match job
+            .setup_canonical
+            .as_ref()
+            .map(|path| queue.handoffs.get(path))
+        {
+            None => None,
+            Some(Some(SetupResult::Ready(handoff))) => Some(handoff),
+            Some(Some(SetupResult::Failed(message))) => {
+                return synthetic_outcome(job, Status::Failed, message);
+            }
+            Some(None) => {
+                return synthetic_outcome(job, Status::Failed, "the setup flow did not run");
+            }
+        };
+        if let Err(error) = self.ensure_client().await {
+            return synthetic_outcome(job, Status::Error, &error.to_string());
+        }
+        let client = self
+            .client
+            .as_mut()
+            .expect("the worker's client was just spawned or verified alive");
+        let settings = &queue.settings;
+        let run = FlowRun {
+            file: &job.file,
+            canonical: &job.canonical,
+            report_dir: &job.report_dir,
+            abs_dir: &job.abs_dir,
+            flags: &settings.flags,
+            base_vars: &settings.base_vars,
+            setup,
+            state_out: job.state_out.as_deref(),
+            planner: queue.planner.as_deref(),
+            model: queue.model.as_deref(),
+        };
+        run_flow(&run, client).await
+    }
+}
+
+/// The message a dependent reports when its setup flow failed: the setup
+/// file and the first failing step's error.
+fn setup_failure_message(setup: &File, report: &FileReport) -> String {
+    let detail = report
+        .entries
+        .iter()
+        .flat_map(|entry| &entry.steps)
+        .find_map(|step| step.error.as_ref().map(|error| error.message.clone()))
+        .unwrap_or_else(|| format!("{:?}", report.status).to_lowercase());
+    format!("setup flow '{}' failed: {detail}", setup.path.display())
+}
+
+/// A file that could not start at all: a synthetic `[setup]` case, a
+/// runtime error for a dead shim or a failure for a failed setup flow.
+fn synthetic_outcome(job: &FlowJob, status: Status, message: &str) -> FlowOutcome {
+    use whirl_report::model::{EntryReport, StepError, StepKind, StepReport};
+
+    FlowOutcome {
+        report:   FileReport {
+            timing: Timing::default(),
+            source_sha256: None,
+            roles: None,
+            runtime: None,
+            path: job.file.path.to_string_lossy().into_owned(),
+            status,
+            duration_ms: 0,
+            artifacts_dir: job.report_dir.to_string_lossy().into_owned(),
+            blocked_hosts: Vec::new(),
+            blocked_host_rules: Vec::new(),
+            settings: Vec::new(),
+            warnings: Vec::new(),
+            artifacts: Vec::new(),
+            entries: vec![EntryReport {
+                name: SETUP_ENTRY.to_owned(),
+                line: 0,
+                status,
+                duration_ms: 0,
+                steps: vec![StepReport {
+                    line: 0,
+                    kind: StepKind::Action,
+                    text: SETUP_ENTRY.to_owned(),
+                    status,
+                    duration_ms: 0,
+                    error: Some(StepError {
+                        code: "setup-failed".to_owned(),
+                        message: message.to_owned(),
+                        ..StepError::default()
+                    }),
+                    snapshot: None,
+                    act: None,
+                    warnings: Vec::new(),
+                    ai: None,
+                    extract: None,
+                    judge: None,
+                    goal: None,
+                }],
+                captures: Vec::new(),
+                artifacts: Vec::new(),
+            }],
+            mocks: Vec::new(),
+        },
+        captures: Vec::new(),
+        secrets:  Vec::new(),
+    }
+}
