@@ -1217,6 +1217,7 @@ dependencies = [
 [[package]]
 name = "kernel-sdk"
 version = "0.119.0"
+source = "git+https://github.com/brynary/kernel-rust-sdk?rev=9342f36028000a6703cb1936a9c279cc4e9bf456#9342f36028000a6703cb1936a9c279cc4e9bf456"
 dependencies = [
  "bytes",
  "chrono",

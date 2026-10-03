@@ -42,9 +42,9 @@ import {
 	fieldStringOrNull,
 } from "./params.js";
 import type {
-	ConnectConfig,
 	AssertSpec,
 	BrowserEngine,
+	ConnectConfig,
 	EndFlowParams,
 	EndFlowResult,
 	ErrorKind,

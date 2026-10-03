@@ -8,9 +8,8 @@ repository.workspace = true
 description = "Kernel hosted Chromium browsers as a Whirl browser provider"
 
 [dependencies]
-# A path dependency on the local checkout while the SDK is unreleased; a
-# real change pins a git rev.
-kernel-sdk = { path = "/Users/bhelmkamp/p/brynary/kernel-rust-sdk" }
+# The SDK has no crates.io release yet, so pin its commit on GitHub.
+kernel-sdk = { git = "https://github.com/brynary/kernel-rust-sdk", rev = "9342f36028000a6703cb1936a9c279cc4e9bf456" }
 tracing.workspace = true
 whirl-lang = { path = "../whirl-lang" }
 whirl-shim = { path = "../whirl-shim" }
