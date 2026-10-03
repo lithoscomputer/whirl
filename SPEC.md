@@ -71,7 +71,7 @@ A **value** is written in one of two forms:
 
 - **Quoted**: `"..."` with backslash escapes `\"`, `\\`, `\n`, `\t`, and `\u{XXXX}`.
 - **Bare**: a single token with no whitespace, no `"`, and no `#`. Bare and quoted forms are interchangeable, with five reservations:
-  - A line's final bare token of the form `@duration` always parses as the step timeout (section 12), so that value must stay quoted (`"@60s"`).
+  - On a line that can take a step timeout (section 12), a final bare token of the form `@duration` always parses as the timeout, so that value must stay quoted (`"@60s"`). Option lines and HTTP header lines take no timeout, so there such a token is a value.
   - In a typed comparison (section 9.6), a bare typed literal and its quoted form differ: `42` is a number and `"42"` is a string.
   - In `ASSERT` and `CAPTURE` lines, a bare role name cannot be a subject, state, or predicate keyword such as `text` or `visible`, because that word ends the locator. Quote it: `role:button "visible" visible`.
   - In `DRAG` and `SCROLL`, a bare `to` is a keyword, and in `SCROLL` so is a bare `down`, `up`, `left`, or `right` at the end of the line. Quote them to match the text: `DRAG "to" to testid:done`, `SCROLL "down"`.
@@ -526,11 +526,11 @@ ASSERT json:$.status == RUNNING
 CAPTURE test_id: json:$.id
 ```
 
-A JSON body starts with `{` or `[` on the line after the headers and ends when
-its outer value closes. Whirl validates its template-aware JSON structure while
-parsing and preserves its authored text. If no `Content-Type` header is present,
-Whirl sends `Content-Type: application/json`. An explicit header remains
-authoritative.
+A JSON body starts with `{` or `[` on the first line after the headers that is
+not blank or a comment, and ends when its outer value closes. Whirl validates
+its template-aware JSON structure while parsing and preserves its authored text.
+If no `Content-Type` header is present, Whirl sends
+`Content-Type: application/json`. An explicit header remains authoritative.
 
 A fenced text body starts and ends with three backticks on their own lines. The
 newline after the opening fence and the newline before the closing fence are
@@ -1113,7 +1113,7 @@ Page checks retry until they pass or the step timeout expires. Response checks r
 
 Inside an HTTP entry (section 7.3), omit `response:NAME`: `status`, `header:HEADER`, `location`, `body`, `bytes`, `json:PATH`, and `xpath:EXPR` examine that entry's response. These implicit forms are invalid in a browser entry.
 
-`NAME` in `attr:` and `HEADER` in `header:` are attribute names: a letter or underscore, then letters, digits, underscores, or hyphens. So `attr:aria-expanded` and `header:content-type` are valid. The formal grammar (section 17) calls this production `attr-name`. Header names support value interpolation.
+`NAME` in `attr:` and `HEADER` in `header:` are attribute names: a letter or underscore, then letters, digits, underscores, or hyphens. So `attr:aria-expanded` and `header:content-type` are valid. The grammar (section 17) calls this form `attr_name`. Header names support value interpolation.
 
 Normalization collapses each run of whitespace to one space, trims both ends, and removes zero-width spaces and soft hyphens.
 
@@ -1729,135 +1729,360 @@ Rust source, configuration, and project setup follow the [Brynary Rust Style Gui
 
 ## 17. Grammar
 
-```ebnf
-file       = [ options ] , entry , { entry } ;
-options    = "[Options]" , { option-line } ;
-option-line= key , ":" , value , { value } ;
+This section defines the syntax of a `.whirl` file completely. The grammar is
+a parsing expression grammar (PEG), in the notation of
+[pest](https://pest.rs/book/grammars/syntax.html). Whirl's tests run it
+against the parser on every sample file and on a set of edge cases.
 
-entry      = browser-entry | http-entry ;
-browser-entry = action , { action } , [ page ] , { check-line } ;
-http-entry = http-request , { http-check-line } ;
-check-line = assert | judge | capture ;
-judge      = "JUDGE" , [ locator ] , value , [ step-timeout ] ;   (* prefixed segments only *)
-http-check-line = http-assert | http-capture ;
+| Notation | Meaning |
+| --- | --- |
+| `a ~ b` | `a`, then `b` |
+| `a \| b` | `a`, or else `b`. The first alternative that matches wins. |
+| `a?`, `a*`, `a+` | Zero or one, zero or more, one or more. A repetition takes as much as it can and never gives any back. |
+| `a{n}`, `a{n, m}` | Exactly `n`, or `n` to `m` |
+| `&a`, `!a` | `a` must follow, or must not follow. Neither uses any input. |
+| `"x"`, `'a'..'z'` | Literal text, which is case-sensitive, and a range of characters |
+| `r = { }` | A rule. `_{ }` marks a helper rule, and `@{ }` a rule that matches one token. |
+| `SOI`, `EOI`, `ANY` | The start of the input, the end of the input, and any character |
+| `WHITE_SPACE` | A character with the Unicode `White_Space` property |
+| `ASCII_DIGIT`, `ASCII_ALPHA`, ... | A character of that ASCII class |
 
-action     = action-body , [ step-timeout ] | snapshot | mock | extract ;
-extract    = "EXTRACT" , artifact-name , [ locator ] , value , [ step-timeout ]
-           , [ json-object ] ;   (* schema: section 7.6 *)
-snapshot   = "SNAPSHOT" , artifact-name , [ locator ] , [ step-timeout ]
-           , { snapshot-option } ;   (* prefixed segments only; 6.1 *)
-snapshot-option = "snapshot-mask:" , ( locator | "none" )
-                | "snapshot-max-diff:" , value
-                | "snapshot-pixel-threshold:" , value ;
-action-body = "VISIT" , value
-           | "RESPONSE" , artifact-name , http-method , value
-           | ( "POPUP" | "TAB" | "CLOSE" ) , artifact-name
-           | ( "CLICK" | "RIGHTCLICK" | "MIDDLECLICK" ) , locator
-           | "DBLCLICK" , locator
-           | "FILL" , locator , value
-           | "TYPE" , locator , value
-           | "PRESS" , [ locator ] , value
-           | "CHECK" , locator
-           | "UNCHECK" , locator
-           | "SELECT" , locator , value
-           | "HOVER" , locator
-           | "DRAG" , locator , "to" , locator
-           | "SCROLL" , locator
-           | "SCROLL" , [ locator ] , scroll-motion
-           | "UPLOAD" , locator , "file:" , value
-           | "DROP" , locator , "file:" , value
-           | "SCREENSHOT" , artifact-name
-           | "EVAL" , value
-           | "ACT" , [ locator ] , value
-           | "GOAL" , value   (* default timeout 2 minutes; section 7.7 *)
-           | "STORE" , ( "local" | "session" | "cookie" ) , value , value ;
+Numbers in comments are sections of this specification.
 
-mock       = "MOCK" , http-method , value
-           , ( status-code , { http-header } , [ http-body ] | "failed" ) ;
-status-code = digit , digit , digit ;   (* 200 to 599 *)
+```pest
+// ---------------------------------------------------------------- Files (4)
 
-http-request = http-headline , { http-header } , [ http-body ] ;
-http-headline = "HTTP" , http-method , value , [ step-timeout ] ;
-http-header = attr-name , ":" , value ;
-http-body  = json-object | json-array | fenced-text ;
+file = { SOI ~ gap ~ options? ~ entries ~ ws* ~ comment? ~ EOI }
 
-page       = "PAGE" , ( value | "matches" , regex ) , [ step-timeout ] ;
+// HTTP entries can come first. The first browser entry starts with VISIT,
+// after any MOCK lines.
+entries = _{
+    http_entry* ~ first_browser_entry ~ (http_entry | browser_entry)*
+  | http_entry+
+}
+first_browser_entry = { mock_action* ~ visit_action ~ browser_action* ~ page_line? ~ check_line* }
+browser_entry       = { browser_action+ ~ page_line? ~ check_line* }
+http_entry          = { http_action ~ http_check_line* }
 
-assert     = "ASSERT" , assert-body , [ step-timeout ] ;
-assert-body = locator , state-check
-           | "tab:" , artifact-name , "closed"
-           | subject , { filter } , [ "not" ] , predicate ;
-http-assert = "ASSERT" , response-field , { filter } , [ "not" ] , predicate
-            , [ step-timeout ] ;
-state-check= "visible" | "hidden" | "enabled" | "disabled"
-           | "checked" | "unchecked" | "focused" ;
+// ---------------------------------------------------------------- Lines (3)
 
-subject    = locator , extractor
-           | "url" | "title"
-           | "eval" , value
-           | "response:" , artifact-name , response-field
-           | "request:" , artifact-name , request-field
-           | "extract:" , artifact-name ;
-request-field = "method" | "url" | "header:" , value | "body" | "bytes"
-              | json-path | xpath-expr ;
-extractor  = "text" | "value" | "count" | "attr:" , attr-name ;
-response-field = "status" | "header:" , value | "location" | "body" | "bytes"
-               | json-path | xpath-expr ;
+// A line ends with LF or CRLF. A CR alone is white space.
+NL      = _{ "\r\n" | "\n" }
+ws      = _{ !NL ~ WHITE_SPACE }
+comment =  { "#" ~ (!NL ~ ANY)* }
+// Blank lines and comment lines.
+gap     = _{ (ws* ~ comment? ~ NL)* }
+// The end of a line, and the blank and comment lines after it.
+eol     = _{ ws* ~ comment? ~ (NL ~ gap | EOI) }
+// The end of a line that can hold a step timeout (12).
+tail    = _{ (ws+ ~ timeout)? ~ eol }
+// The end of a keyword or other fixed word.
+kw_end  = _{ &(WHITE_SPACE | "#" | EOI) }
 
-filter     = "count" | "first" | "last" | "nth" , index
-           | "split" , value | "regex" , regex
-           | "replace" , value , value | "replaceRegex" , regex , value
-           | "toString" | "toInt" | "toFloat" | "toHex"
-           | "toDate" , value | "dateFormat" , value
-           | "daysAfterNow" | "daysBeforeNow"
-           | "base64Decode" | "base64Encode"
-           | "base64UrlSafeDecode" | "base64UrlSafeEncode"
-           | "utf8Decode" | "utf8Encode" | "charsetDecode" , value
-           | "urlQueryParam" , value | "urlEncode" | "urlDecode"
-           | "htmlEscape" | "htmlUnescape"
-           | json-path | xpath-expr ;
-json-path  = "json:" , value ;    (* RFC 9535; one bare token or one quoted value *)
-xpath-expr = "xpath:" , value ;   (* XPath 1.0; one bare token or one quoted value *)
+// ---------------------------------------------------------------- Tokens and values (3.1, 11)
 
-predicate  = ( "==" | "!=" | ">" | ">=" | "<" | "<="
-             | "startsWith" | "endsWith" | "contains" ) , expected
-           | "matches" , regex
-           | "exists" | "isBoolean" | "isEmpty" | "isFloat" | "isInteger"
-           | "isIpv4" | "isIpv6" | "isIsoDate" | "isList" | "isNumber"
-           | "isObject" | "isString" | "isUuid" ;
-expected   = value | json-literal ;   (* typed reading: section 9.6 *)
+// A token joins bare and quoted parts with no white space between them.
+token  = @{ part+ }
+part   = _{ quoted | bare }
+bare   = _{ ("\\{" | var_ref | !("{{" | "\"" | "#" | WHITE_SPACE) ~ ANY)+ }
+quoted = _{ "\"" ~ ("\\" ~ escape | var_ref | !("\"" | "\\" | "{{" | NL) ~ ANY)* ~ "\"" }
+escape = _{ "\"" | "\\" | "n" | "t" | "{" | "u{" ~ scalar ~ "}" }
+// The hex digits of a Unicode scalar value, with any leading zeros.
+scalar = _{
+    "0"* ~ ("10" ~ hex{4} | hex_nz ~ hex{4} | !surrogate ~ hex_nz ~ hex{3} | hex_nz ~ hex{0, 2}) ~ &"}"
+  | "0"+ ~ &"}"
+}
+hex       = _{ ASCII_HEX_DIGIT }
+hex_nz    = _{ '1'..'9' | 'a'..'f' | 'A'..'F' }
+surrogate = _{ ("d" | "D") ~ ('8'..'9' | 'a'..'f' | 'A'..'F') }
+var_ref   = _{ "{{" ~ ("env." | "setup.")? ~ ident ~ "}}" }
 
-capture    = "CAPTURE" , name , ":" , subject , { filter } , [ step-timeout ] ;
-http-capture = "CAPTURE" , name , ":" , response-field , { filter } , [ step-timeout ] ;
-http-method = uppercase-letter , { uppercase-letter } ;
+ident     = _{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+attr_name = _{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-")* }
+// A tab, response, extract, screenshot, or snapshot name.
+name      = @{ attr_name ~ kw_end }
 
-locator    = segment , { ">>" , segment } ;
-segment    = ( "role:" | "role~:" ) , name , [ value ]
-           | "ai:" , value     (* the last segment only; 6.3 *)
-           | ( "label" | "placeholder" | "text" | "alt"
-             | "title" ) , [ "~" ] , ":" , value
-           | ( "testid:" | "css:" | "frame:" ) , value
-           | "nth:" , index    (* never the first segment *)
-           | value ;             (* default engine; actions only — see 6.1 *)
+// A value: any token except the line's final step timeout.
+arg           = _{ !final_timeout ~ token }
+timeout       = @{ "@" ~ ASCII_DIGIT+ ~ ("ms" | "s") ~ kw_end }
+final_timeout = _{ timeout ~ ws* ~ (comment | NL | EOI) }
+// The final value of a line.
+last_arg      = _{ token ~ tail }
 
-step-timeout = "@" , duration ;
-scroll-motion = "down" | "up" | "left" | "right" | "to" , percent ;
-percent    = digit , { digit } , [ "." , digit , { digit } ] , "%" ;   (* 0% to 100% *)
-value      = quoted-string | bare-token ;
-name       = letter-or-underscore , { letter-digit-underscore } ;
-artifact-name = letter-or-underscore , { letter-digit-underscore | "-" } ;
-attr-name  = letter-or-underscore , { letter-digit-underscore | "-" } ;
-regex      = "/" , pattern , "/" , [ flags ] ;
-index      = [ "-" ] , digit , { digit } ;
-json-literal = json-array | json-object ;   (* on one line; section 3.1 *)
+// ---------------------------------------------------------------- Options (5)
+
+options     = { ws* ~ "[Options]" ~ eol ~ option_line* }
+option_line = { ws* ~ (allow_hosts | snapshot_setting | option) ~ eol }
+option      = { option_key ~ ":" ~ (part+ | ws+ ~ token) }
+option_key  = {
+    "base" | "browser" | "viewport" | "step-timeout" | "entry-timeout" | "nav-timeout"
+  | "dialogs" | "reduced-motion" | "storage" | "user-agent" | "setup" | "model"
+}
+allow_hosts = { "allow-hosts:" ~ (part+ | ws+ ~ token) ~ (ws+ ~ token)* }
+
+// Snapshot settings, in [Options] and below a SNAPSHOT (7).
+snapshot_setting         = { snapshot_mask | snapshot_max_diff | snapshot_pixel_threshold }
+snapshot_mask            = { "snapshot-mask:" ~ ws* ~ (mask_none | mask) }
+mask_none                = @{ "none" ~ &eol }
+snapshot_max_diff        = { "snapshot-max-diff:" ~ setting_value }
+snapshot_pixel_threshold = { "snapshot-pixel-threshold:" ~ setting_value }
+setting_value            = _{ !final_timeout ~ part+ | ws+ ~ arg }
+
+// ---------------------------------------------------------------- Locators (6)
+
+// Every segment is one token. A role segment can take the next token as
+// its accessible name.
+role_type       = @{ "role" ~ "~"? ~ ":" ~ ident ~ kw_end }
+nth_segment     = @{ "nth:" ~ "-"? ~ ASCII_DIGIT+ ~ kw_end }
+frame_segment   = @{ "frame:" ~ part+ }
+ai_segment      = @{ "ai:" ~ part+ }
+engine_segment  = @{ (text_prefix | "testid:" | "css:") ~ part+ }
+default_segment = @{ !final_timeout ~ !prefix ~ part+ }
+text_prefix     = _{ ("label" | "placeholder" | "text" | "alt" | "title") ~ "~"? ~ ":" }
+prefix          = _{ text_prefix | "role" ~ "~"? ~ ":" | "testid:" | "frame:" | "ai:" | "css:" | "nth:" }
+sep             = _{ ws+ ~ ">>" ~ kw_end ~ ws+ ~ &token }
+// Any token after a role type, except `>>` and a final step timeout.
+role_name       = @{ !(">>" ~ kw_end) ~ !final_timeout ~ token }
+
+// The shape of every locator: nth: never comes first, ai: comes last, and
+// each frame: is followed by an element segment.
+shape       = _{ (shape_group ~ sep)* ~ (ai_segment | !frame_segment ~ shape_group) ~ !sep }
+shape_group = _{ !nth_segment ~ !ai_segment ~ (role_type ~ (ws+ ~ role_name)? | token) ~ (sep ~ nth_segment)* }
+
+// A locator's segments end in a different place in each kind of line, so
+// each kind has its own rule.
+
+// The rest of the line: CLICK, RIGHTCLICK, MIDDLECLICK, DBLCLICK, HOVER,
+// CHECK, UNCHECK.
+target     = { &shape ~ target_seg ~ (sep ~ target_seg)* }
+target_seg = _{ role_type ~ (ws+ ~ role_name)? | nth_segment | frame_segment | ai_segment | engine_segment | default_segment }
+
+// Before a final value: FILL, TYPE, SELECT, PRESS, UPLOAD, DROP.
+value_target     = { &shape ~ value_target_seg ~ (sep ~ value_target_seg)* }
+value_target_seg = _{ role_type ~ (ws+ ~ !last_arg ~ role_name)? | nth_segment | frame_segment | ai_segment | engine_segment | default_segment }
+
+// The scope of ACT, EXTRACT, and JUDGE: every segment has a prefix.
+scope     = { &shape ~ scope_seg ~ (sep ~ scope_seg)* }
+scope_seg = _{ role_type ~ (ws+ ~ !last_arg ~ role_name)? | nth_segment | frame_segment | ai_segment | engine_segment }
+
+// Either side of DRAG: a bare `to` is never part of it.
+drag_target = { &shape ~ drag_seg ~ (sep ~ drag_seg)* }
+drag_seg    = _{ role_type ~ (ws+ ~ !bare_to ~ role_name)? | nth_segment | frame_segment | ai_segment | engine_segment | !bare_to ~ default_segment }
+bare_to     = @{ "to" ~ kw_end }
+
+// SCROLL: a bare `to`, and a direction at the end of the line, are never
+// part of it.
+scroll_target = { &shape ~ scroll_seg ~ (sep ~ scroll_seg)* }
+scroll_seg    = _{ role_type ~ (ws+ ~ !bare_to ~ !final_direction ~ role_name)? | nth_segment | frame_segment | ai_segment | engine_segment | !bare_to ~ !final_direction ~ default_segment }
+final_direction = _{ direction ~ tail }
+
+// The target of SNAPSHOT: every segment has a prefix.
+snapshot_target = { &shape ~ snapshot_seg ~ (sep ~ snapshot_seg)* }
+snapshot_seg    = _{ role_type ~ (ws+ ~ role_name)? | nth_segment | frame_segment | ai_segment | engine_segment }
+
+// A snapshot mask: every segment has a prefix, and none is ai:.
+mask     = { &shape ~ mask_seg ~ (sep ~ mask_seg)* }
+mask_seg = _{ role_type ~ (ws+ ~ role_name)? | nth_segment | frame_segment | engine_segment }
+
+// ASSERT: every segment has a prefix, and a state or extractor ends it.
+assert_locator = { &shape ~ assert_seg ~ (sep ~ assert_seg)* }
+assert_seg     = _{ role_type ~ (ws+ ~ !state ~ !extractor_word ~ role_name)? | nth_segment | frame_segment | ai_segment | engine_segment }
+
+// CAPTURE: every segment has a prefix, and an extractor ends it.
+capture_locator = { &shape ~ capture_seg ~ (sep ~ capture_seg)* }
+capture_seg     = _{ role_type ~ (ws+ ~ !extractor_word ~ role_name)? | nth_segment | frame_segment | ai_segment | engine_segment }
+
+// ---------------------------------------------------------------- Actions (7)
+
+mock_action    = { ws* ~ mock }
+visit_action   = { ws* ~ visit }
+http_action    = { ws* ~ http }
+browser_action = {
+    ws* ~ (
+        mock | visit | response | named_action | element_action | input_action | press
+      | drag | scroll | file_action | snapshot | eval | act | goal | extract | store
+    )
+}
+
+visit          = { "VISIT" ~ kw_end ~ ws+ ~ arg ~ tail }
+response       = { "RESPONSE" ~ kw_end ~ ws+ ~ name ~ ws+ ~ method ~ ws+ ~ arg ~ tail }
+named_action   = { ("POPUP" | "TAB" | "CLOSE" | "SCREENSHOT") ~ kw_end ~ ws+ ~ name ~ tail }
+element_action = { ("CLICK" | "RIGHTCLICK" | "MIDDLECLICK" | "DBLCLICK" | "HOVER" | "CHECK" | "UNCHECK") ~ kw_end ~ ws+ ~ target ~ tail }
+input_action   = { ("FILL" | "TYPE" | "SELECT") ~ kw_end ~ ws+ ~ value_target ~ ws+ ~ arg ~ tail }
+// With one value, PRESS takes it as the key.
+press          = { "PRESS" ~ kw_end ~ ws+ ~ (value_target ~ ws+ ~ &arg)? ~ arg ~ tail }
+drag           = { "DRAG" ~ kw_end ~ ws+ ~ drag_target ~ ws+ ~ bare_to ~ ws+ ~ drag_target ~ tail }
+scroll         = { "SCROLL" ~ kw_end ~ ws+ ~ ((scroll_target ~ ws+)? ~ motion ~ &tail | scroll_target) ~ tail }
+motion         = { direction | bare_to ~ ws+ ~ percent }
+direction      = @{ ("down" | "up" | "left" | "right") ~ kw_end }
+percent        = @{ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? ~ "%" ~ kw_end }
+file_action    = { ("UPLOAD" | "DROP") ~ kw_end ~ ws+ ~ value_target ~ ws+ ~ file_path ~ tail }
+file_path      = @{ "file:" ~ part+ }
+snapshot       = { "SNAPSHOT" ~ kw_end ~ ws+ ~ name ~ (ws+ ~ snapshot_target)? ~ tail ~ snapshot_option* }
+snapshot_option = { ws* ~ snapshot_setting ~ eol }
+eval           = { "EVAL" ~ kw_end ~ ws+ ~ arg ~ tail }
+act            = { "ACT" ~ kw_end ~ ws+ ~ (scope ~ ws+ ~ &arg)? ~ arg ~ tail }
+goal           = { "GOAL" ~ kw_end ~ ws+ ~ arg ~ tail }
+extract        = { "EXTRACT" ~ kw_end ~ ws+ ~ name ~ ws+ ~ (scope ~ ws+ ~ &arg)? ~ arg ~ tail ~ schema? }
+store          = { "STORE" ~ kw_end ~ ws+ ~ store_scope ~ ws+ ~ arg ~ ws+ ~ arg ~ tail }
+store_scope    = @{ ("local" | "session" | "cookie") ~ kw_end }
+
+// HTTP requests and mocks (7.3, 7.5).
+http        = { "HTTP" ~ kw_end ~ ws+ ~ method ~ ws+ ~ arg ~ tail ~ http_header* ~ http_body? }
+mock        = { "MOCK" ~ kw_end ~ ws+ ~ method ~ ws+ ~ token ~ ws+ ~ (mock_failed ~ eol | status ~ eol ~ http_header* ~ http_body?) }
+mock_failed = @{ "failed" ~ kw_end }
+status      = @{ '2'..'5' ~ ASCII_DIGIT{2} ~ kw_end }
+method      = @{ ASCII_ALPHA_UPPER+ ~ kw_end }
+http_header = { ws* ~ header_name ~ ":" ~ kw_end ~ ws+ ~ token ~ eol }
+header_name = @{ attr_name }
+http_body   = _{ json_body | fenced_body }
+json_body   = { (!NL ~ json_space)* ~ (json_object | json_array) ~ (!NL ~ json_space)* ~ (NL ~ gap | EOI) }
+fenced_body = { ws* ~ "```" ~ NL ~ fenced_line* ~ ws* ~ "```" ~ ws* ~ (NL ~ gap | EOI) }
+fenced_line = _{ !(ws* ~ "```" ~ ws* ~ (NL | EOI)) ~ ("\\{" | var_ref | !("{{" | NL) ~ ANY)* ~ NL }
+// An EXTRACT schema (7.6): a JSON object without {{ }}.
+schema      = { (!NL ~ json_space)* ~ plain_object ~ (!NL ~ json_space)* ~ (NL ~ gap | EOI) }
+
+// ---------------------------------------------------------------- PAGE and checks (8, 9, 10)
+
+page_line  = { ws* ~ "PAGE" ~ kw_end ~ ws+ ~ ("matches" ~ kw_end ~ ws+ ~ regex | !("matches" ~ kw_end) ~ arg) ~ tail }
+check_line = _{ assert_line | judge_line | capture_line }
+
+assert_line  = { ws* ~ "ASSERT" ~ kw_end ~ ws+ ~ (tab_check | state_check | value_check) ~ tail }
+tab_check    = { tab_ref ~ ws+ ~ "closed" ~ kw_end }
+tab_ref      = @{ "tab:" ~ attr_name ~ kw_end }
+state_check  = { assert_locator ~ ws+ ~ state }
+state        = @{ ("visible" | "hidden" | "enabled" | "disabled" | "checked" | "unchecked" | "focused") ~ kw_end }
+value_check  = { assert_subject ~ filters ~ predicate_part }
+judge_line   = { ws* ~ "JUDGE" ~ kw_end ~ ws+ ~ (scope ~ ws+ ~ &arg)? ~ arg ~ tail }
+capture_line = { ws* ~ "CAPTURE" ~ kw_end ~ ws+ ~ capture_name ~ ":" ~ ws* ~ capture_subject ~ filters ~ tail }
+capture_name = @{ ident }
+
+// In an HTTP entry, checks and captures read its response (7.3).
+http_check_line   = _{ http_assert_line | http_capture_line }
+http_assert_line  = { ws* ~ "ASSERT" ~ kw_end ~ ws+ ~ response_field ~ filters ~ predicate_part ~ tail }
+http_capture_line = { ws* ~ "CAPTURE" ~ kw_end ~ ws+ ~ capture_name ~ ":" ~ ws* ~ response_field ~ filters ~ tail }
+
+// Subjects (9.2).
+assert_subject   = _{ other_subject | element_subject }
+capture_subject  = _{ other_subject | capture_element }
+other_subject    = _{ extract_ref | request_subject | response_subject | url | title | eval_subject }
+element_subject  = { assert_locator ~ ws+ ~ extractor }
+capture_element  = { capture_locator ~ ws+ ~ extractor }
+extractor        = @{ extractor_word }
+extractor_word   = _{ ("text" | "value" | "count") ~ kw_end | "attr:" ~ attr_name ~ kw_end }
+extract_ref      = @{ "extract:" ~ attr_name ~ kw_end }
+request_subject  = { request_ref ~ ws+ ~ request_field }
+request_ref      = @{ "request:" ~ attr_name ~ kw_end }
+request_field    = { ("method" | "url" | "body" | "bytes") ~ kw_end | json_query | xpath_query | header_field }
+response_subject = { response_ref ~ ws+ ~ response_field }
+response_ref     = @{ "response:" ~ attr_name ~ kw_end }
+response_field   = { ("status" | "location" | "body" | "bytes") ~ kw_end | json_query | xpath_query | header_field }
+header_field     = @{ "header:" ~ part+ }
+json_query       = @{ "json:" ~ (quoted | bare) ~ kw_end }
+xpath_query      = @{ "xpath:" ~ (quoted | bare) ~ kw_end }
+url              = @{ "url" ~ kw_end }
+title            = @{ "title" ~ kw_end }
+eval_subject     = { "eval" ~ kw_end ~ ws+ ~ arg }
+
+// Filters (9.5).
+filters = _{ (ws+ ~ filter)* }
+filter  = {
+    json_query
+  | xpath_query
+  | "nth" ~ kw_end ~ ws+ ~ index
+  | ("split" | "urlQueryParam" | "toDate" | "dateFormat" | "charsetDecode") ~ kw_end ~ ws+ ~ arg
+  | "replace" ~ kw_end ~ ws+ ~ arg ~ ws+ ~ arg
+  | "regex" ~ kw_end ~ ws+ ~ regex
+  | "replaceRegex" ~ kw_end ~ ws+ ~ regex ~ ws+ ~ arg
+  | (
+        "count" | "first" | "last" | "toString" | "toInt" | "toFloat" | "toHex"
+      | "daysAfterNow" | "daysBeforeNow" | "base64Decode" | "base64Encode"
+      | "base64UrlSafeDecode" | "base64UrlSafeEncode" | "utf8Decode" | "utf8Encode"
+      | "urlEncode" | "urlDecode" | "htmlEscape" | "htmlUnescape"
+    ) ~ kw_end
+}
+index = @{ "-"? ~ ASCII_DIGIT+ ~ kw_end }
+
+// Predicates (9.4). A value that starts with [ or with one { is a JSON
+// literal (3.1).
+predicate_part = _{ (ws+ ~ negation)? ~ ws+ ~ predicate }
+negation       = @{ "not" ~ kw_end }
+predicate      = {
+    "matches" ~ kw_end ~ ws+ ~ regex
+  | compare ~ ws+ ~ (&json_start ~ json_literal | !json_start ~ arg)
+  | word_predicate
+}
+compare        = @{ ("==" | "!=" | ">=" | "<=" | ">" | "<" | "startsWith" | "endsWith" | "contains") ~ kw_end }
+word_predicate = @{
+    (
+        "exists" | "isBoolean" | "isEmpty" | "isFloat" | "isInteger" | "isIpv4" | "isIpv6"
+      | "isIsoDate" | "isList" | "isNumber" | "isObject" | "isString" | "isUuid"
+    ) ~ kw_end
+}
+json_start     = _{ "[" | "{" ~ !"{" }
+regex          = @{ "/" ~ ("\\" ~ (!NL ~ ANY) | !("/" | NL) ~ ANY)* ~ "/" ~ ("i" | "s" | "m")* ~ kw_end }
+
+// ---------------------------------------------------------------- JSON (3.1, 7.3, 7.6)
+
+// RFC 8259 JSON. In a body or a JSON literal, a {{name}} reference can
+// stand for a value or sit inside a string, and \{{ writes a literal {{.
+json_space  = _{ " " | "\t" | "\r" | "\n" }
+json_object = { "{" ~ json_space* ~ (json_member ~ (json_space* ~ "," ~ json_space* ~ json_member)*)? ~ json_space* ~ "}" }
+json_member = _{ json_string ~ json_space* ~ ":" ~ json_space* ~ json_value }
+json_array  = { "[" ~ json_space* ~ (json_value ~ (json_space* ~ "," ~ json_space* ~ json_value)*)? ~ json_space* ~ "]" }
+json_value  = _{ var_ref | json_object | json_array | json_string | json_number | "true" | "false" | "null" }
+json_string = @{ "\"" ~ (json_escape | "\\{{" | var_ref | !("\"" | "\\" | "{{" | '\u{00}'..'\u{1F}') ~ ANY)* ~ "\"" }
+json_escape = _{ "\\" ~ ("\"" | "\\" | "/" | "b" | "f" | "n" | "r" | "t" | "u" ~ json_unit) }
+// A \u escape of a surrogate names a pair.
+json_unit   = _{
+    ("d" | "D") ~ ('8'..'9' | 'a'..'b' | 'A'..'B') ~ hex{2} ~ "\\u" ~ ("d" | "D") ~ ('c'..'f' | 'C'..'F') ~ hex{2}
+  | !surrogate ~ hex{4}
+}
+json_number = @{ "-"? ~ ("0" | ASCII_NONZERO_DIGIT ~ ASCII_DIGIT*) ~ ("." ~ ASCII_DIGIT+)? ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)? }
+
+// A JSON literal ends on its line.
+json_literal = { line_object | line_array }
+line_space   = _{ " " | "\t" | !NL ~ "\r" }
+line_object  = { "{" ~ line_space* ~ (line_member ~ (line_space* ~ "," ~ line_space* ~ line_member)*)? ~ line_space* ~ "}" }
+line_member  = _{ json_string ~ line_space* ~ ":" ~ line_space* ~ line_value }
+line_array   = { "[" ~ line_space* ~ (line_value ~ (line_space* ~ "," ~ line_space* ~ line_value)*)? ~ line_space* ~ "]" }
+line_value   = _{ var_ref | line_object | line_array | json_string | json_number | "true" | "false" | "null" }
+
+// JSON with no {{ anywhere.
+plain_object = { "{" ~ json_space* ~ (plain_member ~ (json_space* ~ "," ~ json_space* ~ plain_member)*)? ~ json_space* ~ "}" }
+plain_member = _{ plain_string ~ json_space* ~ ":" ~ json_space* ~ plain_value }
+plain_array  = { "[" ~ json_space* ~ (plain_value ~ (json_space* ~ "," ~ json_space* ~ plain_value)*)? ~ json_space* ~ "]" }
+plain_value  = _{ plain_object | plain_array | plain_string | json_number | "true" | "false" | "null" }
+plain_string = @{ "\"" ~ (json_escape | !("\"" | "\\" | "{{" | '\u{00}'..'\u{1F}') ~ ANY)* ~ "\"" }
 ```
 
-`json-object` and `json-array` are JSON values. In an HTTP body, the outer
-delimiter can span lines; in a `json-literal`, the value ends on the same line.
-Interpolation is permitted as defined in sections 7.3 and 11. `fenced-text` is
-the text between lines that contain only three backticks. Comments and blank
-lines may appear between any two structural lines and are not part of the
-grammar. Inside a body they are body text.
+### 17.1 Rules outside the grammar
+
+A file must also follow these rules. `whirl check` reports a file that breaks
+one as a parse error.
+
+1. A literal option value has the form that section 5 gives for its key. A
+   literal `snapshot-max-diff` or `snapshot-pixel-threshold` value has the form
+   that section 7 gives. A value with a `{{name}}` reference is checked when
+   the file runs.
+2. The snapshot settings of one scope follow the duplicate rules of section 7.
+3. A regex is valid ECMAScript in Unicode mode (section 3.1).
+4. A literal `json:` argument is an RFC 9535 JSONPath query, and a literal
+   `xpath:` argument is an XPath 1.0 expression (section 9.5).
+5. A literal `header:` argument, after its escapes apply, is an `attr_name`
+   (section 9.2).
+6. The header names of one `HTTP` or `MOCK` line are unique, ignoring ASCII
+   case (section 7.3).
+7. A literal `toDate` or `dateFormat` argument is a `chrono` format, and a
+   literal `charsetDecode` argument is a WHATWG Encoding Standard label
+   (section 9.5).
+8. In a typed comparison, a bare bytes literal decodes (sections 3.1 and 9.6).
+9. A `percent` is at most 100, read as a 64-bit floating-point number.
+10. An `index` or `nth_segment` number fits in a signed 64-bit integer. A step
+    timeout's number fits in an unsigned 64-bit integer; with a larger number,
+    the token is an ordinary value.
+11. A JSON number fits in a 64-bit floating-point number, and JSON arrays and
+    objects nest at most 127 deep.
 
 ## 18. Non-goals and deferred features
 
