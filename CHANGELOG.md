@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- When Chromium refuses a screenshot for a moment ("Unable to capture screenshot"), as it can on a busy machine, take it again within the step's time. `SNAPSHOT`, `SCREENSHOT`, and `JUDGE` failed with a runtime error instead.
+
 ## 0.20.0 (2026-09-28)
 
 - Read a plain number that a model writes as text, such as `"$1,299.00"`, as the number where an `EXTRACT` schema wants a number and does not allow a string, instead of failing with `extract-schema`. Any other text still fails. In the evals, Gemini 3.5 Flash-Lite's EXTRACT pass rate rose from 0.78 to 0.94.
