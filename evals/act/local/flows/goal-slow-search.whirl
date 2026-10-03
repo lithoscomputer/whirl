@@ -1,5 +1,5 @@
 [Options]
-base: {{env.EVAL_BASE}}
+app-url: {{env.EVAL_BASE}}
 model: {{model}}
 
 # GOAL: search results arrive from a slow request after the search is sent.

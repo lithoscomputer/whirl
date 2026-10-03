@@ -94,7 +94,7 @@ Creates the browser context and page for one flow. Params:
 Result: `{"browserVersion": "...", "nodeVersion": "...", "playwrightVersion": "...", "userAgent": "...", "videoFps": 60 | null}`. These are the active browser, Node process, and Playwright library versions, plus the context's actual `navigator.userAgent`, plus the frame rate of the flow's recording (`null` without `video`). Older protocol 1 shims may omit these additive fields; reports then use null values. Rust applies secret masking to the user agent before reporting it.
 
 - `allowHosts: null` means all hosts are allowed. When it is a list, Rust has
-  already appended the `base` host. `blockHosts: null` blocks no host. When
+  already appended the `app-url` host. `blockHosts: null` blocks no host. When
   either is a list, the shim routes all requests and disables service
   workers. It aborts a request whose hostname matches a `blockHosts` glob,
   even one that `allowHosts` allows, and then a request whose hostname
@@ -194,7 +194,7 @@ Commands and their extra params (result `{}` unless noted):
 
 | cmd | params |
 | --- | --- |
-| `visit` | `url` (absolute; Rust resolved `base`); resolves at the new document's `DOMContentLoaded`, not `load` |
+| `visit` | `url` (absolute; Rust resolved `app-url`); resolves at the new document's `DOMContentLoaded`, not `load` |
 | `response` | `name`, `method`, `url` (absolute) — select the first matching request from the selected tab in the current entry and await its response headers |
 | `mock` | `id`, `method`, `pattern`, `response` (section 4.6) — register a mock at once |
 | `http` | `name`, `method`, `url` (absolute), `headers` (array of `[name, value]` pairs), `body` (string or null) — send a request without browser cookies and name its completed response |
@@ -441,7 +441,7 @@ false for an `http` step and in Firefox, which give the exact bytes.
 ```
 
 `id` is the `MOCK` line; `endFlow` reports hits by it. Rust resolves the URL
-against `base`, normalizes it, drops the fragment, escapes the ECMAScript
+against `app-url`, normalizes it, drops the fragment, escapes the ECMAScript
 syntax characters, and turns each `*` into `.*`. `pattern` is anchored and
 has no flags. The shim tests it against the request URL without its
 fragment. `body` is the complete response body as text, or `null` for an

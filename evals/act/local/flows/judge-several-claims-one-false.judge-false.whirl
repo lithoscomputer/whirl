@@ -1,5 +1,5 @@
 [Options]
-base: {{env.EVAL_BASE}}
+app-url: {{env.EVAL_BASE}}
 model: {{model}}
 
 # JUDGE: several claims about the same view; the second is false, so the

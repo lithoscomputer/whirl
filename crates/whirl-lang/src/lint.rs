@@ -1021,7 +1021,7 @@ fn collect_setup_refs(file: &File) -> Vec<VarRef<'_>> {
     for line in &file.options {
         match &line.option {
             FileOption::Snapshot(option) => collect_snapshot_refs(option, line.line, &mut refs),
-            FileOption::Base(value)
+            FileOption::AppUrl(value)
             | FileOption::Storage(value)
             | FileOption::UserAgent(value)
             | FileOption::Setup(value)

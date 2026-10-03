@@ -1,5 +1,5 @@
 [Options]
-base: {{env.EVAL_BASE}}
+app-url: {{env.EVAL_BASE}}
 model: {{model}}
 
 # ai: on a list that arrives from a slow request after the page loads.

@@ -73,7 +73,7 @@ test("a block-hosts glob wins over allow-hosts and names its rule", () => {
 		option: "block-hosts",
 		glob: "ads.example.com",
 	});
-	// The base host that Rust appends to allow-hosts is blocked too.
+	// The app-url host that Rust appends to allow-hosts is blocked too.
 	assert.equal(policy("127.0.0.1")?.option, "block-hosts");
 	assert.deepEqual(policy("evil.io"), {
 		host: "evil.io",

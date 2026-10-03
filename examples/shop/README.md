@@ -12,7 +12,7 @@ mise run example:test
 ```
 
 The task builds Whirl, starts the app on an available loopback port, waits for
-`/health`, and runs the flows with `-O base=URL`, `--trace`, JSON, and JUnit reports.
+`/health`, and runs the flows with `-O app-url=URL`, `--trace`, JSON, and JUnit reports.
 It stops the app even when a flow fails. Reports, traces, screenshots, and the
 server log are in `whirl-artifacts/example/`.
 

@@ -110,7 +110,7 @@ measurements are their sums.
 
 ```whirl
 [Options]
-base: {{env.EVAL_BASE}}
+app-url: {{env.EVAL_BASE}}
 model: {{model}}
 
 # Choose from a dropdown that is not a select element.

@@ -1,5 +1,5 @@
 [Options]
-base: http://127.0.0.1:4173
+app-url: http://127.0.0.1:4173
 setup: login.whirl
 
 # The setup flow supplies the signed-in session and email capture.

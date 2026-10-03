@@ -1,5 +1,5 @@
 [Options]
-base: {{env.EVAL_BASE}}
+app-url: {{env.EVAL_BASE}}
 model: {{model}}
 
 # JUDGE: the element does not show the evidence; the task passes when the

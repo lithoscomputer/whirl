@@ -249,7 +249,7 @@ struct RunArgs {
     #[arg(long, value_name = "PATH", hide = true)]
     save_storage: Option<PathBuf>,
 
-    /// Removed; use -O base=URL.
+    /// Removed; use -O app-url=URL.
     #[arg(long, value_name = "URL", hide = true)]
     base: Option<String>,
 
@@ -948,7 +948,7 @@ fn check_removed_flags(args: &RunArgs) -> Result<(), UsageError> {
             "--save-storage",
             "--save-state",
         ),
-        (args.base.is_some(), "--base", "-O base=URL"),
+        (args.base.is_some(), "--base", "-O app-url=URL"),
         (
             args.step_timeout.is_some(),
             "--step-timeout",

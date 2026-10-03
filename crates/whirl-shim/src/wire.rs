@@ -189,7 +189,7 @@ pub(crate) fn serialize_max_diff<S: Serializer>(
 /// the `u` flag, so it escapes only syntax characters.
 fn mock_pattern(url: &str) -> Result<String, String> {
     let mut parsed = url::Url::parse(url)
-        .map_err(|_| format!("MOCK needs an absolute HTTP URL or a path with base: {url}"))?;
+        .map_err(|_| format!("MOCK needs an absolute HTTP URL or a path with app-url: {url}"))?;
     if !matches!(parsed.scheme(), "http" | "https") {
         return Err(format!("MOCK only serves HTTP and HTTPS requests: {url}"));
     }

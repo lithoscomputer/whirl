@@ -1,5 +1,5 @@
 [Options]
-base: {{env.EVAL_BASE}}
+app-url: {{env.EVAL_BASE}}
 model: {{model}}
 
 # No tab says "invoices"; the Billing tab holds them.

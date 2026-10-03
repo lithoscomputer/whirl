@@ -2176,7 +2176,7 @@ fn parse_page_body(
 
 /// Reads the head of a `name: value` line (SPEC 3.1): the text before
 /// the token's first colon, and its span. White space must follow the
-/// colon, so `base:x` is an error. `None` when the token holds no colon.
+/// colon, so `app-url:x` is an error. `None` when the token holds no colon.
 fn colon_head(token: &RawToken) -> Result<Option<(String, Span)>, LineError> {
     let Some(RawPart::Bare { text, .. }) = token.parts.first() else {
         return Ok(None);
@@ -2343,7 +2343,7 @@ fn validate_snapshot_option<'a>(
 }
 
 pub const OPTION_KEYS: [&str; 18] = [
-    "base",
+    "app-url",
     "browser",
     "viewport",
     "step-timeout",
@@ -2461,7 +2461,7 @@ fn parse_option_line(first: &RawToken, cursor: &mut Cursor) -> Result<FileOption
         ])
     };
     match key.as_str() {
-        "base" => Ok(FileOption::Base(value)),
+        "app-url" => Ok(FileOption::AppUrl(value)),
         "browser" => {
             let parse = |text: &str| text.parse::<BrowserKind>().ok();
             Ok(FileOption::Browser(option_shape(value, parse, &[
@@ -4057,7 +4057,7 @@ mod tests {
 
     const SPEC_EXAMPLE: &str = r#"# checkout.whirl — buy a widget as a signed-in user.
 [Options]
-base: https://shop.example.com
+app-url: https://shop.example.com
 viewport: 1280x800
 
 # Log in.
@@ -4088,7 +4088,7 @@ ASSERT alert:* text contains "Added to cart"
     fn the_spec_example_parses_end_to_end() {
         let file = parse(SPEC_EXAMPLE);
         assert_eq!(file.options.len(), 2);
-        assert!(matches!(file.options[0].option, FileOption::Base(_)));
+        assert!(matches!(file.options[0].option, FileOption::AppUrl(_)));
         assert!(matches!(
             file.options[1].option,
             FileOption::Viewport(OptionValue::Literal(Viewport {
@@ -4230,7 +4230,7 @@ ASSERT alert:* text contains "Added to cart"
         );
         assert_eq!(lines[1], "  speed: fast");
         assert_eq!(lines[2], "  ^^^^^");
-        assert!(lines[3].starts_with("  expected one of: base, browser,"));
+        assert!(lines[3].starts_with("  expected one of: app-url, browser,"));
     }
 
     #[test]
@@ -4512,7 +4512,7 @@ ASSERT status == 202
 
     #[test]
     fn check_lines_need_an_entry() {
-        let error = parse_err("[Options]\nbase: http://x\nASSERT url == /\n");
+        let error = parse_err("[Options]\napp-url: http://x\nASSERT url == /\n");
         assert_eq!(error.line, 3);
         assert!(error.message.contains("must follow an entry's actions"));
     }
@@ -4967,14 +4967,14 @@ ASSERT status == 202
 
     #[test]
     fn every_option_key_parses() {
-        let source = "[Options]\nbase: https://shop.example.com\nbrowser: firefox\nviewport: 1280x800\nstep-timeout: 5s\nentry-timeout: 90s\nnav-timeout: 500ms\nallow-hosts: example.com *.example.com\ndialogs: accept\nreduced-motion: reduce\nstorage: auth/state.json\nuser-agent: \"Whirl/1 (test)\"\nsetup: sign-in.whirl\nVISIT /\n";
+        let source = "[Options]\napp-url: https://shop.example.com\nbrowser: firefox\nviewport: 1280x800\nstep-timeout: 5s\nentry-timeout: 90s\nnav-timeout: 500ms\nallow-hosts: example.com *.example.com\ndialogs: accept\nreduced-motion: reduce\nstorage: auth/state.json\nuser-agent: \"Whirl/1 (test)\"\nsetup: sign-in.whirl\nVISIT /\n";
         let file = parse(source);
         assert_eq!(file.options.len(), 12);
         let options: Vec<&FileOption> = file.options.iter().map(|line| &line.option).collect();
-        let FileOption::Base(base) = options[0] else {
-            panic!("expected base");
+        let FileOption::AppUrl(app_url) = options[0] else {
+            panic!("expected app-url");
         };
-        assert_eq!(lit(base), "https://shop.example.com");
+        assert_eq!(lit(app_url), "https://shop.example.com");
         assert_eq!(
             *options[1],
             FileOption::Browser(OptionValue::Literal(BrowserKind::Firefox))
@@ -5059,7 +5059,7 @@ ASSERT status == 202
         let error = parse_err("[Options]\nspeed: fast\nVISIT /\n");
         assert_eq!(error.message, "unknown option key `speed`");
         assert_eq!((error.line, error.column, error.len), (2, 1, 5));
-        assert!(error.expected.iter().any(|alt| alt == "base"));
+        assert!(error.expected.iter().any(|alt| alt == "app-url"));
     }
 
     #[test]
@@ -5091,7 +5091,7 @@ ASSERT status == 202
 
     #[test]
     fn options_after_the_first_entry_are_an_error() {
-        let error = parse_err("VISIT /\n[Options]\nbase: x\n");
+        let error = parse_err("VISIT /\n[Options]\napp-url: x\n");
         assert!(
             error.message.contains("[Options]"),
             "message: {}",

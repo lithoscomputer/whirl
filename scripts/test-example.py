@@ -21,20 +21,20 @@ def main():
         server = subprocess.Popen([sys.executable, str(ROOT / "examples/shop/app.py"), "--port", "0"], stdout=subprocess.PIPE, stderr=log, text=True)
         try:
             # The app prints its URL only after it has bound an available port.
-            base = server.stdout.readline().strip()
-            if not base.startswith("http://127.0.0.1:"):
+            app_url = server.stdout.readline().strip()
+            if not app_url.startswith("http://127.0.0.1:"):
                 raise RuntimeError("Sample app failed to start; see " + str(reports / "server.log"))
             deadline = time.monotonic() + 10
             while True:
                 try:
-                    with urllib.request.urlopen(base + "/health", timeout=1) as response:
+                    with urllib.request.urlopen(app_url + "/health", timeout=1) as response:
                         if response.status == 200:
                             break
                 except (urllib.error.URLError, TimeoutError):
                     if time.monotonic() >= deadline:
                         raise RuntimeError("Sample app readiness timed out")
                     time.sleep(0.1)
-            command = [os.environ.get("WHIRL_BIN", str(ROOT / "target/debug/whirl")), "run", "-O", f"base={base}", "--trace", "--report-json", str(reports / "report.json"), "--report-junit", str(reports / "junit.xml"), "--out", str(reports / "flows")]
+            command = [os.environ.get("WHIRL_BIN", str(ROOT / "target/debug/whirl")), "run", "-O", f"app-url={app_url}", "--trace", "--report-json", str(reports / "report.json"), "--report-junit", str(reports / "junit.xml"), "--out", str(reports / "flows")]
             if args.update_snapshots:
                 command.append("--update-snapshots")
             command.append(str(ROOT / "examples/shop/flows"))

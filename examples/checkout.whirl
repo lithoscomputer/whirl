@@ -2,7 +2,7 @@
 # suite. It parses and lints (whirl check examples/checkout.whirl) but
 # needs a live site to run.
 [Options]
-base: https://shop.example.com
+app-url: https://shop.example.com
 viewport: 1280x800
 
 # Log in.

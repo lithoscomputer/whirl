@@ -610,7 +610,7 @@ fn render_option(option: &FileOption) -> String {
     let plain = |value: &Value| render_value(value, ValueCtx::Plain);
     match option {
         FileOption::Snapshot(option) => render_snapshot_option(option),
-        FileOption::Base(value) => format!("base: {}", plain(value)),
+        FileOption::AppUrl(value) => format!("app-url: {}", plain(value)),
         FileOption::Browser(value) => format!(
             "browser: {}",
             render_option_value(value, |browser| browser.as_str().to_owned())
@@ -973,7 +973,7 @@ mod tests {
         option.span = ZERO;
         match &mut option.option {
             FileOption::Snapshot(value) => scrub_snapshot_option(value),
-            FileOption::Base(value)
+            FileOption::AppUrl(value)
             | FileOption::Storage(value)
             | FileOption::UserAgent(value)
             | FileOption::Setup(value)
@@ -1255,9 +1255,9 @@ mod tests {
     /// Valid sources covering every construct; each must round-trip.
     const FIXTURES: [&str; 21] = [
         // The SPEC section 2 example.
-        "# checkout.whirl \u{2014} buy a widget as a signed-in user.\n[Options]\nbase: https://shop.example.com\nviewport: 1280x800\n\n# Log in.\nVISIT /login\n\nFILL \"Email\" alice@example.com\nFILL \"Password\" {{env.TEST_PASSWORD}}\nCLICK button:\"Sign in\"\nPAGE /dashboard\nASSERT heading:\"Welcome back\" visible\nASSERT testid:user-menu text == Alice\n\n# Find a product.\nFILL placeholder:\"Search products\" widget\nPRESS Enter\nASSERT url contains \"q=widget\"\nASSERT testid:result-card count >= 1\nCAPTURE first_product: testid:result-card >> nth:1 >> link:* attr:href\n\n# Add it to the cart.\nVISIT {{first_product}}\nCLICK \"Add to cart\"\nASSERT testid:cart-badge text == 1\nASSERT alert:* text contains \"Added to cart\"\n",
+        "# checkout.whirl \u{2014} buy a widget as a signed-in user.\n[Options]\napp-url: https://shop.example.com\nviewport: 1280x800\n\n# Log in.\nVISIT /login\n\nFILL \"Email\" alice@example.com\nFILL \"Password\" {{env.TEST_PASSWORD}}\nCLICK button:\"Sign in\"\nPAGE /dashboard\nASSERT heading:\"Welcome back\" visible\nASSERT testid:user-menu text == Alice\n\n# Find a product.\nFILL placeholder:\"Search products\" widget\nPRESS Enter\nASSERT url contains \"q=widget\"\nASSERT testid:result-card count >= 1\nCAPTURE first_product: testid:result-card >> nth:1 >> link:* attr:href\n\n# Add it to the cart.\nVISIT {{first_product}}\nCLICK \"Add to cart\"\nASSERT testid:cart-badge text == 1\nASSERT alert:* text contains \"Added to cart\"\n",
         // Every option key, including interpolated values.
-        "[Options]\nbase: https://example.com\nbrowser: webkit\nviewport: 800x600\nstep-timeout: 5s\nentry-timeout: 90s\nnav-timeout: 45s\nallow-hosts: example.com *.example.com\ndialogs: accept\nreduced-motion: reduce\nstorage: auth/state.json\nuser-agent: \"Mozilla/5.0 (Whirl)\"\nsetup: sign-in.whirl\nVISIT /\n",
+        "[Options]\napp-url: https://example.com\nbrowser: webkit\nviewport: 800x600\nstep-timeout: 5s\nentry-timeout: 90s\nnav-timeout: 45s\nallow-hosts: example.com *.example.com\ndialogs: accept\nreduced-motion: reduce\nstorage: auth/state.json\nuser-agent: \"Mozilla/5.0 (Whirl)\"\nsetup: sign-in.whirl\nVISIT /\n",
         "[Options]\nbrowser: {{engine}}\nviewport: {{size}}\nstep-timeout: {{t}}\nVISIT /\n",
         // Every action form.
         "VISIT /a\nCLICK \"Add to cart\"\nRIGHTCLICK \"report.pdf\"\nMIDDLECLICK link:Docs\nDBLCLICK text:~\"added\"\nFILL \"Email\" alice@example.com\nTYPE \"Code\" 424242\nPRESS Enter\nPRESS label:Search \"Control+A\"\nCHECK \"Remember me\"\nUNCHECK checkbox:\"Spam\"\nSELECT \"Country\" \"United States\"\nHOVER testid:menu\nDRAG \"Write spec\" to testid:done\nDRAG \"to\" to listitem:\"to\"\nSCROLL testid:feed\nSCROLL down\nSCROLL dialog:Filters up\nSCROLL to 50%\nSCROLL testid:board to 33.5%\nSCROLL \"down\"\nSCROLL \"to\" left\nUPLOAD \"Avatar\" file:images/cat.png\nDROP \"Drop files here\" file:reports/q3.csv\nDROP testid:dropzone file:{{report}}\nSCREENSHOT overview\nSNAPSHOT header\nEVAL \"window.scrollTo(0, 0)\"\nSTORE local onboarding:done yes\nSTORE local \"welcome seen\" {{env.SEEN}}\nSTORE session draft hi\nSTORE cookie chat_version v1\nVISIT /u/{{setup.user_id}}\n",
@@ -1276,9 +1276,9 @@ mod tests {
         // Escapes and interpolation.
         "VISIT /\nFILL \"Says \\\"hi\\\"\" \"a\\tb\\nc\\\\d\"\nFILL \"U\" \"\\u{1F600}ok\"\nFILL \"B\" \"\\{{literal\"\nVISIT a\\{{b\nVISIT {{base_url}}/next\nFILL \"P\" {{env.SECRET}}\n",
         // Comments everywhere.
-        "# top\n[Options] # inline options\nbase: https://x # inline base\n\n# name entry one\nVISIT / # go\n# between actions\nCLICK x\nPAGE / # landed\n# before check\nASSERT url == / # eq\n# before cap\nCAPTURE c: url # cap\n\n# name entry two\nVISIT /two\n# trailing comment\n",
+        "# top\n[Options] # inline options\napp-url: https://x # inline app-url\n\n# name entry one\nVISIT / # go\n# between actions\nCLICK x\nPAGE / # landed\n# before check\nASSERT url == / # eq\n# before cap\nCAPTURE c: url # cap\n\n# name entry two\nVISIT /two\n# trailing comment\n",
         // Blank-line and spacing noise.
-        "\n\n[Options]\n\n\nbase:    https://x\n\n\nVISIT     /\n\n\nPAGE      /\n\n\n\nVISIT   /b\n\n",
+        "\n\n[Options]\n\n\napp-url:    https://x\n\n\nVISIT     /\n\n\nPAGE      /\n\n\n\nVISIT   /b\n\n",
         // CRLF line endings.
         "VISIT /\r\nPAGE /\r\nASSERT url == /\r\n",
         // Empty sections keep their headers.
@@ -1559,8 +1559,8 @@ CAPTURE email: frame:"#payment iframe" >> label:Email value
     #[test]
     fn normalizes_blank_lines() {
         assert_eq!(
-            fmt("\n[Options]\n\nbase: https://x\n\n\nVISIT /\n\n\nPAGE /\n\n\n\nVISIT /b\n\n"),
-            "[Options]\nbase: https://x\n\nVISIT /\nPAGE /\n\nVISIT /b\n"
+            fmt("\n[Options]\n\napp-url: https://x\n\n\nVISIT /\n\n\nPAGE /\n\n\n\nVISIT /b\n\n"),
+            "[Options]\napp-url: https://x\n\nVISIT /\nPAGE /\n\nVISIT /b\n"
         );
     }
 

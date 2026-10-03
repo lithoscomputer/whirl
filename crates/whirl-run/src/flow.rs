@@ -146,7 +146,7 @@ fn resolve_option<T: Clone>(
 
 /// Resolves a file's options at file start (SPEC 5, 11): only
 /// variables-file entries, `--var` flags, and `{{env.NAME}}` are
-/// available; the `base` host is appended to `allow-hosts` when that
+/// available; the `app-url` host is appended to `allow-hosts` when that
 /// option is set. `canonical` is the flow's canonical path (SPEC 14): a
 /// file's `storage` path resolves relative to it, like `UPLOAD` paths and
 /// snapshot baselines.
@@ -167,7 +167,7 @@ impl ResolvedOptions {
             }),
             vars,
         )?;
-        let mut base = None;
+        let mut app_url = None;
         let mut browser = BrowserKind::Chromium;
         let mut viewport = DEFAULT_VIEWPORT;
         let mut step_timeout_ms = DEFAULT_STEP_TIMEOUT_MS;
@@ -187,7 +187,7 @@ impl ResolvedOptions {
             let line = option.line;
             match &option.option {
                 FileOption::Snapshot(_) => {}
-                FileOption::Base(value) => base = Some(vars.resolve(value)?),
+                FileOption::AppUrl(value) => app_url = Some(vars.resolve(value)?),
                 FileOption::Browser(value) => {
                     browser = resolve_option(value, "browser", line, vars, |text| {
                         text.parse::<BrowserKind>().ok()
@@ -262,7 +262,7 @@ impl ResolvedOptions {
             browser: BrowserOptions {
                 engine: browser,
                 viewport,
-                base,
+                app_url,
                 allow_hosts,
                 block_hosts,
                 dialogs,
@@ -546,8 +546,8 @@ enum BuildError {
     Snapshot(#[from] OptionsError),
     #[error("{0}")]
     Var(#[from] VarError),
-    #[error("relative URL '{url}' needs the base option")]
-    NoBase { url: String },
+    #[error("relative URL '{url}' needs the app-url option")]
+    NoAppUrl { url: String },
     /// A check or capture argument that is invalid after interpolation,
     /// such as a JSONPath query.
     #[error("{0}")]
@@ -558,7 +558,7 @@ impl BuildError {
     /// The stable report code of the failure.
     fn code(&self) -> &'static str {
         match self {
-            Self::Snapshot(_) | Self::Var(_) | Self::NoBase { .. } => "variable-resolution",
+            Self::Snapshot(_) | Self::Var(_) | Self::NoAppUrl { .. } => "variable-resolution",
             Self::Check(_) => "filter-error",
         }
     }
@@ -765,10 +765,10 @@ impl FlowExec<'_> {
     fn resolve_url(&mut self, value: &ast::Value) -> Result<String, BuildError> {
         let resolved = self.resolve(value)?;
         if resolved.starts_with('/') {
-            let Some(base) = self.options.browser.base.as_deref() else {
-                return Err(BuildError::NoBase { url: resolved });
+            let Some(app_url) = self.options.browser.app_url.as_deref() else {
+                return Err(BuildError::NoAppUrl { url: resolved });
             };
-            Ok(format!("{}{resolved}", base.trim_end_matches('/')))
+            Ok(format!("{}{resolved}", app_url.trim_end_matches('/')))
         } else {
             Ok(resolved)
         }

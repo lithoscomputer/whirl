@@ -250,7 +250,8 @@ pub enum OptionValue<T> {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FileOption {
     Snapshot(snapshot::SnapshotOption),
-    Base(Value),
+    /// `app-url: URL`, the URL of the app under test (SPEC 5).
+    AppUrl(Value),
     Browser(OptionValue<BrowserKind>),
     Viewport(OptionValue<Viewport>),
     StepTimeout(OptionValue<DurationLit>),
@@ -280,7 +281,7 @@ impl FileOption {
     pub fn key(&self) -> &'static str {
         match self {
             Self::Snapshot(option) => option.key(),
-            Self::Base(_) => "base",
+            Self::AppUrl(_) => "app-url",
             Self::Browser(_) => "browser",
             Self::Viewport(_) => "viewport",
             Self::StepTimeout(_) => "step-timeout",
