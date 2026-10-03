@@ -28,6 +28,17 @@ EXTRACT null fix (`extract-missing-coupon` 0/9 -> 9/9) and the login page
 tasks (`goal-heal-renamed` and the two `judge-several-claims` tasks). The
 p50 step time grew by the settle wait.
 
+## Live set
+
+The live set on real websites, 3 runs per task on the four default models,
+before and after idea 1 (`2026-09-28-live-before-settle.md` and
+`2026-09-28-live.md`): every good run passed both ways (96/96). With the wait,
+`vantech-journal` took 1.08 model calls instead of 2.0, since the model no
+longer read the page before it finished loading; a model step's p50 time
+grew by 0.7-1.6 s, as real pages keep loading longer. `apartments` failed its
+precheck on every run (it has since been removed), and `bidnet` and `amazon` on some, before any model
+step.
+
 ## Kept
 
 1. **Wait for the page to settle before a model reads it.** Full set, 3
@@ -47,6 +58,20 @@ p50 step time grew by the settle wait.
    ways; a batch with a false claim still fails on it 10/10. Batched Gemini
    answered `no` where alone it answered `unsure` for a claim whose evidence
    was out of view.
+
+## Kept later, on robustness
+
+- **A click argument that names no mouse button is a left click.** Full
+  local set, 3 runs, five models: the default models unchanged beyond
+  noise (luna 0.992 -> 1.000, terra 0.996 -> 0.992, both Geminis flat);
+  GLM 5.3 Flash, which often adds such arguments, ACT pass 0.806 -> 0.883.
+  One `right-click-menu` run became a left click that its check then
+  failed.
+- **A plain number written as text reads as a number where EXTRACT wants
+  one.** The six EXTRACT tasks, 6 runs, five models: Gemini 3.5 Flash-Lite
+  0.778 -> 0.944 (`extract-slow-products` 0/6 -> 6/6). The change touches
+  only answers that would fail the schema check, so the other models'
+  differences on `extract-cheapest-price` are noise.
 
 ## Discarded
 

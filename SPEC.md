@@ -637,6 +637,12 @@ matching Whirl action, with that action's actionability and strictness rules:
 | `scrollLeft` | `SCROLL locator left` |
 | `scrollRight` | `SCROLL locator right` |
 
+A `click` takes one optional argument, `right` or `middle`, for that mouse
+button. Whirl ignores any other `click` argument, such as an empty string or
+the element's text, and clicks with the left button; it ignores any argument
+to a method that takes none, such as `hover`. The other methods' arguments
+carry meaning, so a wrong number of them fails the line.
+
 For `dragAndDrop`, the element is the one to drag, and the one argument is the
 ref of the element to drop it on, such as `e12`. That ref must be in the
 snapshot and name another element. For `scrollTo`, the one argument is a
@@ -933,6 +939,12 @@ it.
 A string with `"format": "uri"` is a link. The model answers it with the ref
 of a link element in the snapshot, and Whirl reads that element's `href` and
 resolves it against the page URL, so the value is an absolute URL.
+
+Where the schema wants a number and does not allow a string, a string that is
+a plain number reads as that number: an optional minus sign, currency sign
+(`$`, `€`, `£`, or `¥`), and thousands commas, and an optional trailing `%`,
+as in `"$1,299.00"`, which reads as `1299.00`. Any other string stays a
+string, and the answer does not match the schema.
 
 JSON numbers keep their exact text (section 9.3). A null answer, or an empty
 string without a schema, is a missing value (section 9.2).
