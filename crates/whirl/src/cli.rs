@@ -952,9 +952,9 @@ fn check_save_state_inputs(
     args: &RunArgs,
     sources: &[(PathBuf, String)],
 ) -> Result<(), UsageError> {
-    if args.save_state.is_none() {
+    let Some(destination) = args.save_state.as_deref() else {
         return Ok(());
-    }
+    };
     let inputs: Vec<PathBuf> = sources.iter().map(|(path, _)| path.clone()).collect();
     let Ok(flows) = artifacts::dedup_flows(&inputs) else {
         return Ok(());
@@ -967,6 +967,24 @@ fn check_save_state_inputs(
             ),
         });
     }
+    check_report_destination(
+        destination,
+        inputs.iter().map(PathBuf::as_path).chain(
+            [
+                args.load_state.as_deref(),
+                args.variables_file.as_deref(),
+                args.report_json.as_deref(),
+                args.report_html.as_deref(),
+                args.report_junit.as_deref(),
+                args.report_metadata.as_deref(),
+            ]
+            .into_iter()
+            .flatten(),
+        ),
+    )
+    .map_err(|error| UsageError {
+        message: error.to_string().replace("HTML report", "Saved state"),
+    })?;
     Ok(())
 }
 
@@ -1271,12 +1289,27 @@ fn check_report_destination<'a>(
     };
     for path in inputs {
         anyhow::ensure!(
-            identity(path).ok().as_ref() != Some(&target),
+            identity(path).ok().as_ref() != Some(&target) && !same_inode(html, path),
             "HTML report destination conflicts with '{}'",
             path.display()
         );
     }
     Ok(())
+}
+
+/// Canonical paths do not detect two hard links to the same file.
+#[cfg(unix)]
+fn same_inode(left: &Path, right: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (fs::metadata(left), fs::metadata(right)) {
+        (Ok(left), Ok(right)) => left.dev() == right.dev() && left.ino() == right.ino(),
+        _ => false,
+    }
+}
+
+#[cfg(not(unix))]
+fn same_inode(_left: &Path, _right: &Path) -> bool {
+    false
 }
 
 /// Saved results are data, never executable configuration.

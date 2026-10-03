@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<title>Shared state</title>
+<p id="storage"></p><p id="database"></p><button type="button">Change</button>
+<script>
+  document.querySelector('#storage').textContent = localStorage.account + '/' + sessionStorage.tab;
+  const opening = indexedDB.open('accounts', 1);
+  let database;
+  opening.onupgradeneeded = () => opening.result.createObjectStore('people', { autoIncrement: true });
+  opening.onsuccess = () => {
+    database = opening.result;
+    const read = database.transaction('people').objectStore('people').get(7);
+    read.onsuccess = () => {
+      const person = read.result;
+      document.querySelector('#database').textContent = person
+        ? person.name + '/' + [...person.bytes] + '/' + (person.bytes.buffer === person.alias.buffer) + '/' + Object.hasOwn(person, 'optional')
+        : 'empty';
+    };
+  };
+  document.querySelector('button').onclick = () => {
+    localStorage.account = 'Grace';
+    sessionStorage.tab = 'changed';
+    const transaction = database.transaction('people', 'readwrite');
+    const store = transaction.objectStore('people');
+    const add = store.add({ name: 'temporary' });
+    add.onsuccess = () => store.delete(add.result);
+    transaction.oncomplete = () => document.querySelector('#storage').textContent = 'Grace/changed';
+  };
+</script>
+</html>

@@ -58,6 +58,13 @@ import type {
 import { assertNever, ShimError } from "./protocol.js";
 import { runRead } from "./reads.js";
 import {
+	captureState,
+	readState,
+	restoreState,
+	writeState,
+} from "./shared-state/adapter.js";
+import type { SharedState } from "./shared-state/format.js";
+import {
 	retryUnableToCapture,
 	runSnapshot,
 	settledScreenshot,
@@ -113,6 +120,10 @@ function resolveUserAgent(value: string | null) {
 }
 
 interface FlowState {
+	readonly state: SharedState | undefined;
+	readonly stateInput: string | null;
+	readonly stateOrigins: Set<string>;
+	readonly stateStorageOrigins: Set<string>;
 	readonly context: BrowserContext;
 	readonly page: Page;
 	readonly tabs: FlowTabs;
@@ -691,6 +702,10 @@ export class PlaywrightDriver implements ShimDriver {
 				"video recording needs Playwright's ffmpeg, which is missing; run `whirl install chromium`",
 			);
 		}
+		const state =
+			params.storageStatePath === null
+				? undefined
+				: await readState(params.storageStatePath);
 		const browser = await this.#ensureBrowser(params.browser, params.headed);
 		const userAgent = resolveUserAgent(params.userAgent);
 		const contextOptions: BrowserContextOptions = {
@@ -698,9 +713,6 @@ export class PlaywrightDriver implements ShimDriver {
 				width: params.viewport.width,
 				height: params.viewport.height,
 			},
-			...(params.storageStatePath === null
-				? {}
-				: { storageState: params.storageStatePath }),
 			...(userAgent === undefined ? {} : { userAgent }),
 			...(params.reducedMotion === null
 				? {}
@@ -733,6 +745,35 @@ export class PlaywrightDriver implements ShimDriver {
 				receipt.received = token;
 			}
 		});
+		const page = await context.newPage();
+		const stateOrigins = new Set<string>();
+		const stateStorageOrigins = new Set<string>();
+		const watchStateOrigin = (target: Page): void => {
+			target.on("framenavigated", (frame) => {
+				if (frame === target.mainFrame() && /^https?:/.test(frame.url()))
+					stateStorageOrigins.add(new URL(frame.url()).origin);
+			});
+		};
+		watchStateOrigin(page);
+		context.on("page", watchStateOrigin);
+		let stateExpiredCookies = 0;
+		try {
+			if (state !== undefined)
+				stateExpiredCookies = await restoreState(context, page, state);
+		} catch {
+			await context.close();
+			throw new ShimError(
+				"internal",
+				"Cannot restore saved state: browser rejected its cookies or IndexedDB data",
+			);
+		}
+		for (const scope of state?.pages?.find((item) => item.id === "main")
+			?.origins ?? [])
+			stateOrigins.add(scope.origin);
+		page.on("framenavigated", (frame) => {
+			if (frame === page.mainFrame() && /^https?:/.test(frame.url()))
+				stateOrigins.add(new URL(frame.url()).origin);
+		});
 		const blockedHosts = new BlockedHostLog();
 		const hostPolicy = createHostPolicy(params.allowHosts, params.blockHosts);
 		if (params.allowHosts !== null || params.blockHosts !== null) {
@@ -750,7 +791,6 @@ export class PlaywrightDriver implements ShimDriver {
 		const network = new FlowNetwork(context, hostPolicy, blockedHosts);
 		const activity = new PageActivity();
 		activity.watch(context);
-		const page = await context.newPage();
 		const tabs = new FlowTabs(context, page, params.dialogs);
 		let recorder: ScreencastRecorder | null = null;
 		if (
@@ -776,6 +816,10 @@ export class PlaywrightDriver implements ShimDriver {
 			}
 		}
 		this.#flow = {
+			state,
+			stateInput: params.storageStatePath,
+			stateOrigins,
+			stateStorageOrigins,
 			context,
 			page,
 			tabs,
@@ -798,12 +842,15 @@ export class PlaywrightDriver implements ShimDriver {
 			playwrightVersion: this.playwrightVersion,
 			userAgent: await page.evaluate(() => navigator.userAgent),
 			videoFps,
+			stateExpiredCookies,
+			stateRedacted: state?.redacted ?? false,
 		};
 	}
 
 	async endFlow(params: EndFlowParams): Promise<EndFlowResult> {
 		const flow = this.#requireFlow();
 		this.#flow = null;
+		flow.network.stopCollecting();
 		if (flow.traceActive) {
 			// A null tracePath discards the running trace.
 			if (params.tracePath === null) {
@@ -814,8 +861,23 @@ export class PlaywrightDriver implements ShimDriver {
 			}
 		}
 		if (params.saveStoragePath !== null) {
-			await mkdir(dirname(params.saveStoragePath), { recursive: true });
-			await flow.context.storageState({ path: params.saveStoragePath });
+			try {
+				const state = await captureState(
+					flow.context,
+					flow.page,
+					flow.stateOrigins,
+					flow.state,
+					flow.stateStorageOrigins,
+				);
+				await writeState(
+					params.saveStoragePath,
+					state,
+					flow.stateInput === null ? [] : [flow.stateInput],
+				);
+			} catch (error) {
+				await flow.context.close();
+				throw error;
+			}
 		}
 		// The screencast recorder finalizes while the page is still alive; a
 		// failure surfaces after the context is closed so nothing leaks.

@@ -1,0 +1,121 @@
+{
+  "format": "whirl-state",
+  "version": 1,
+  "redacted": false,
+  "cookies": [
+    {
+      "name": "sid",
+      "value": "fixture",
+      "domain": "app.example.test",
+      "hostOnly": true,
+      "path": "/",
+      "expires": null,
+      "httpOnly": true,
+      "secure": true,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "shared",
+      "value": "domain-cookie",
+      "domain": "example.test",
+      "hostOnly": false,
+      "path": "/",
+      "expires": 4102444800,
+      "httpOnly": false,
+      "secure": true,
+      "sameSite": null
+    }
+  ],
+  "origins": [
+    {
+      "origin": "https://app.example.test",
+      "localStorage": [
+        {
+          "name": "account",
+          "value": "Ada"
+        }
+      ],
+      "indexedDB": [
+        {
+          "name": "accounts",
+          "version": 1,
+          "stores": [
+            {
+              "name": "people",
+              "keyPath": null,
+              "autoIncrement": true,
+              "nextKey": 50,
+              "indexes": [],
+              "records": [
+                {
+                  "key": 7,
+                  "value": {
+                    "name": "Ada",
+                    "bytes": "CxYhLA==",
+                    "alias": "CxYhLA==",
+                    "optional": null
+                  },
+                  "binary": [
+                    {
+                      "path": [
+                        "value",
+                        "bytes"
+                      ],
+                      "type": "Uint8Array",
+                      "object": 0,
+                      "buffer": 0,
+                      "bufferLength": 4,
+                      "byteOffset": 0,
+                      "byteLength": 4
+                    },
+                    {
+                      "path": [
+                        "value",
+                        "alias"
+                      ],
+                      "type": "DataView",
+                      "object": 1,
+                      "buffer": 0,
+                      "bufferLength": 4,
+                      "byteOffset": 0,
+                      "byteLength": 4
+                    }
+                  ],
+                  "undefinedPaths": [
+                    [
+                      "value",
+                      "optional"
+                    ]
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "origin": "https://login.example.test",
+      "localStorage": []
+    }
+  ],
+  "pages": [
+    {
+      "id": "main",
+      "origins": [
+        {
+          "origin": "https://app.example.test",
+          "sessionStorage": [
+            {
+              "name": "tab",
+              "value": "prepared"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "metadata": {
+    "purpose": "shared conformance fixture"
+  }
+}
