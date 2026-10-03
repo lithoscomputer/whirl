@@ -285,7 +285,7 @@ pub(crate) fn state_assert_wire<E>(
     }))
 }
 
-/// The wire spec of a `tab:NAME closed` check (protocol section 4.3).
+/// The wire spec of a `window:NAME closed` check (protocol section 4.3).
 pub(crate) fn tab_closed_wire(name: &Ident) -> Json {
     json!({"subject": {"type": "tab", "name": name.text}, "check": {"type": "closed"}})
 }
@@ -340,7 +340,7 @@ mod tests {
         let locator = locator_from_wire(&wire).expect("a locator");
         assert_eq!(
             render_snapshot_target(&locator),
-            r#"frame:iframe[title='Pay'] >> role:dialog Cart >> label:"First name" >> nth:1"#
+            r#"frame:iframe[title='Pay'] >> dialog:Cart >> label:"First name" >> nth:1"#
         );
         let parsed = parse_locator(&render_snapshot_target(&locator)).expect("the text parses");
         assert_eq!(
@@ -423,7 +423,7 @@ mod tests {
             AssertBody::ElementState { locator, state } => {
                 state_assert_wire(locator, *state, &mut resolve).unwrap()
             }
-            AssertBody::TabClosed { name } => tab_closed_wire(name),
+            AssertBody::WindowClosed { name } => tab_closed_wire(name),
             AssertBody::Check(_) => panic!("checks with a subject never reach the shim"),
         }
     }
@@ -446,13 +446,12 @@ mod tests {
     fn every_segment_type_converts_to_protocol_json() {
         assert_eq!(
             click_locator(
-                "role:button \"Sign in\" >> role~:button >> label:Email >> placeholder~:Search \
-                 >> text:\"Add to cart\" >> alt:Logo >> title~:Info >> testid:cart-badge \
-                 >> css:\".foo > .bar\" >> nth:1"
+                "button:\"Sign in\" >> dialog:* >> button:~Sign >> label:Email >> placeholder:~Search >> text:\"Add to cart\" >> alt:Logo >> title:~Info >> testid:cart-badge >> css:\".foo > .bar\" >> nth:1"
             ),
             json!([
                 {"type": "role", "role": "button", "name": "Sign in", "exact": true},
-                {"type": "role", "role": "button", "name": null, "exact": false},
+                {"type": "role", "role": "dialog", "name": null, "exact": true},
+                {"type": "role", "role": "button", "name": "Sign", "exact": false},
                 {"type": "label", "text": "Email", "exact": true},
                 {"type": "placeholder", "text": "Search", "exact": false},
                 {"type": "text", "text": "Add to cart", "exact": true},
@@ -464,7 +463,7 @@ mod tests {
             ])
         );
         assert_eq!(
-            click_locator("label~:mail >> text~:go >> alt~:logo >> title:Info"),
+            click_locator("label:~mail >> text:~go >> alt:~logo >> title:Info"),
             json!([
                 {"type": "label", "text": "mail", "exact": false},
                 {"type": "text", "text": "go", "exact": false},
@@ -549,7 +548,7 @@ mod tests {
     #[test]
     fn tab_closed_asserts_convert_to_protocol_json() {
         assert_eq!(
-            assert_json("tab:payment closed"),
+            assert_json("window:payment closed"),
             json!({"subject": {"type": "tab", "name": "payment"}, "check": {"type": "closed"}})
         );
     }
@@ -580,7 +579,7 @@ mod tests {
             }))
         );
         assert_eq!(
-            read_json("a: role:link \"Docs\" attr:href"),
+            read_json("a: link:\"Docs\" attr:href"),
             Some(json!({
                 "type": "element",
                 "locator": [{"type": "role", "role": "link", "name": "Docs", "exact": true}],

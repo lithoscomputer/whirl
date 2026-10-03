@@ -233,7 +233,7 @@ fn act_clicks_the_element_the_model_chooses() {
         "click.whirl",
         &format!(
             "[Options]\nmodel: gpt-test\n{SHOP}ACT \"add the item to the cart\"\n\
-             ASSERT role:heading \"Added\" visible\n"
+             ASSERT heading:\"Added\" visible\n"
         ),
     );
     let output = twin.run(&dir, &flow, &[]);
@@ -244,12 +244,12 @@ fn act_clicks_the_element_the_model_chooses() {
     assert_eq!(step["act"]["model"], "gpt-test");
     assert_eq!(
         step["act"]["actions"][0]["line"],
-        "CLICK role:button \"Add to cart\""
+        "CLICK button:\"Add to cart\""
     );
     assert_eq!(step["act"]["usage"]["modelCalls"], 1);
     let html = fs::read_to_string(dir.path.join("report.html")).expect("the HTML report exists");
     assert!(
-        html.contains("<code>CLICK role:button &quot;Add to cart&quot;</code> the button"),
+        html.contains("<code>CLICK button:&quot;Add to cart&quot;</code> the button"),
         "the HTML report shows what ACT ran"
     );
 
@@ -294,7 +294,7 @@ fn a_masked_value_fills_the_page_but_never_reaches_the_model() {
     assert!(!report.contains(secret), "report:\n{report}");
     assert_eq!(
         act_step(&dir)["act"]["actions"][0]["line"],
-        "FILL role:textbox \"Password\" \"%env.WHIRL_ACT_SECRET%\""
+        "FILL textbox:\"Password\" \"%env.WHIRL_ACT_SECRET%\""
     );
 }
 
@@ -311,7 +311,7 @@ fn a_two_step_action_plans_again_on_a_fresh_snapshot() {
          <div id=menu hidden><button onclick=\\\"document.querySelector('h1').textContent='Large chosen'\\\">\
          Large</button></div>\"\n\
          ACT \"choose Large from the size dropdown\"\n\
-         ASSERT role:heading \"Large chosen\" visible\n",
+         ASSERT heading:\"Large chosen\" visible\n",
     );
     let output = twin.run(&dir, &flow, &[]);
     let stdout = stdout_text(&output);
@@ -319,10 +319,7 @@ fn a_two_step_action_plans_again_on_a_fresh_snapshot() {
 
     let step = act_step(&dir);
     assert_eq!(step["act"]["usage"]["modelCalls"], 2);
-    assert_eq!(
-        step["act"]["actions"][1]["line"],
-        "CLICK role:button \"Large\""
-    );
+    assert_eq!(step["act"]["actions"][1]["line"], "CLICK button:\"Large\"");
     let log = twin.request_log();
     assert!(log.contains("step 1 of 2"), "log:\n{log}");
     assert!(
@@ -383,7 +380,7 @@ fn act_right_clicks_when_the_model_names_the_right_button() {
         "right-click.whirl",
         &format!(
             "[Options]\nmodel: gpt-test\n{FILES}ACT \"right-click report.pdf\"\n\
-             ASSERT role:heading \"Menu\" visible\n"
+             ASSERT heading:\"Menu\" visible\n"
         ),
     );
     let output = twin.run(&dir, &flow, &[]);
@@ -391,7 +388,7 @@ fn act_right_clicks_when_the_model_names_the_right_button() {
     assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
     assert_eq!(
         act_step(&dir)["act"]["actions"][0]["line"],
-        "RIGHTCLICK role:button \"report.pdf\""
+        "RIGHTCLICK button:\"report.pdf\""
     );
     let log = twin.request_log();
     assert!(
@@ -447,7 +444,7 @@ fn act_drags_an_element_onto_the_target_the_model_names() {
         "drag.whirl",
         &format!(
             "[Options]\nmodel: gpt-test\n{}ACT \"drag the card to Done\"\n\
-             ASSERT role:heading \"Dropped\" visible\n",
+             ASSERT heading:\"Dropped\" visible\n",
             visit_html(BOARD)
         ),
     );
@@ -456,7 +453,7 @@ fn act_drags_an_element_onto_the_target_the_model_names() {
     assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
     assert_eq!(
         act_step(&dir)["act"]["actions"][0]["line"],
-        "DRAG role:button \"Card\" to role:button \"Done\""
+        "DRAG button:\"Card\" to button:\"Done\""
     );
     let log = twin.request_log();
     assert!(log.contains("choose the dragAndDrop method"), "log:\n{log}");
@@ -579,7 +576,7 @@ fn act_works_in_every_engine_when_requested() {
             "click.whirl",
             &format!(
                 "[Options]\nmodel: gpt-test\n{}ACT \"add the item to the cart\"\n\
-                 ASSERT role:heading \"Added\" visible\n",
+                 ASSERT heading:\"Added\" visible\n",
                 visit_html(page)
             ),
         );
@@ -646,7 +643,7 @@ fn a_replaced_element_is_planned_again_on_a_fresh_snapshot() {
         "rerender.whirl",
         &format!(
             "[Options]\nmodel: gpt-test\n{}ACT \"add the item to the cart\" @30s\n\
-             ASSERT role:heading \"Added\" visible\n",
+             ASSERT heading:\"Added\" visible\n",
             rerendering_shop(&[300])
         ),
     );
@@ -657,7 +654,7 @@ fn a_replaced_element_is_planned_again_on_a_fresh_snapshot() {
     assert_eq!(step["act"]["usage"]["modelCalls"], 2);
     assert_eq!(
         step["act"]["actions"][0]["line"],
-        "CLICK role:button \"Add to cart\""
+        "CLICK button:\"Add to cart\""
     );
 }
 
@@ -703,7 +700,7 @@ fn a_click_on_a_folded_wrapper_reaches_the_element_inside_it() {
         "folded.whirl",
         &format!(
             "[Options]\nmodel: gpt-test\n{}ACT \"choose Canada from the country dropdown\" @30s\n\
-             ASSERT role:heading \"Canada chosen\" visible\n",
+             ASSERT heading:\"Canada chosen\" visible\n",
             visit_html(page)
         ),
     );
@@ -730,7 +727,7 @@ fn a_scoped_act_shows_the_model_only_that_element() {
         "scoped.whirl",
         &format!(
             "[Options]\nmodel: gpt-test\n{}ACT css:form \"click Buy\" @30s\n\
-             ASSERT role:heading \"Bought\" visible\n",
+             ASSERT heading:\"Bought\" visible\n",
             visit_html(page)
         ),
     );
@@ -774,7 +771,7 @@ fn a_scoped_act_shows_the_model_each_iframe_by_its_name() {
     assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
     assert_eq!(
         act_step(&dir)["act"]["actions"][0]["line"],
-        "SCROLL role:iframe \"Live chat\""
+        "SCROLL iframe:\"Live chat\""
     );
     let log = twin.request_log();
     for line in [
@@ -803,7 +800,7 @@ fn act_reaches_a_button_in_a_closed_shadow_root() {
         "closed.whirl",
         &format!(
             "[Options]\nmodel: gpt-test\n{}ACT \"click the Deep button\" @30s\n\
-             ASSERT role:heading \"clicked\" visible\n",
+             ASSERT heading:\"clicked\" visible\n",
             visit_html(page)
         ),
     );
@@ -830,7 +827,7 @@ fn act_selects_a_radio_that_a_styled_overlay_covers() {
         "radio.whirl",
         &format!(
             "[Options]\nmodel: gpt-test\n{}ACT \"choose the Medium size\" @10s\n\
-             ASSERT role:radio \"Medium\" checked\n",
+             ASSERT radio:\"Medium\" checked\n",
             visit_html(page)
         ),
     );
@@ -866,7 +863,7 @@ fn a_fill_that_the_field_does_not_keep_fails_the_entry() {
     assert_eq!(step["error"]["code"], "act-fill-mismatch");
     assert_eq!(
         step["error"]["message"],
-        "act-fill-mismatch: after FILL role:textbox \"Code\" \"ABC-12345\", the field holds \"ABC-\""
+        "act-fill-mismatch: after FILL textbox:\"Code\" \"ABC-12345\", the field holds \"ABC-\""
     );
 }
 
@@ -909,7 +906,7 @@ fn typed_text_keeps_the_characters_the_instruction_quotes() {
     assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
     assert_eq!(
         act_step(&dir)["act"]["actions"][0]["line"],
-        "FILL role:textbox \"Search\" \"AbC 123\""
+        "FILL textbox:\"Search\" \"AbC 123\""
     );
 }
 
@@ -1047,7 +1044,7 @@ fn act_clicks_a_button_whose_name_playwright_quotes() {
         "quoted-name.whirl",
         &format!(
             "[Options]\nmodel: gpt-test\n{}ACT \"set the status to live\"\n\
-             ASSERT role:heading \"Live\" visible\n",
+             ASSERT heading:\"Live\" visible\n",
             visit_html(LIVE_STATUS)
         ),
     );
@@ -1056,7 +1053,7 @@ fn act_clicks_a_button_whose_name_playwright_quotes() {
     assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
     assert_eq!(
         act_step(&dir)["act"]["actions"][0]["line"],
-        "CLICK role:button \"Status: live\""
+        "CLICK button:\"Status: live\""
     );
     let log = twin.request_log();
     assert!(
@@ -1075,7 +1072,7 @@ fn jev_picks_a_button_whose_name_playwright_quotes() {
         "jev-quoted-name.whirl",
         &format!(
             "[Options]\nmodel: gpt-test\n{}ACT \"set the status to live\"\n\
-             ASSERT role:heading \"Live\" visible\n",
+             ASSERT heading:\"Live\" visible\n",
             visit_html(LIVE_STATUS)
         ),
     );
@@ -1085,7 +1082,7 @@ fn jev_picks_a_button_whose_name_playwright_quotes() {
     let step = act_step(&dir);
     assert_eq!(
         step["act"]["actions"][0]["line"],
-        "CLICK role:button \"Status: live\""
+        "CLICK button:\"Status: live\""
     );
     assert_eq!(step["act"]["actions"][0]["plannedBy"], "jev");
     assert_eq!(step["act"]["usage"]["modelCalls"], 0);
@@ -1111,7 +1108,7 @@ fn a_ref_in_a_name_cannot_redirect_jevs_pick() {
         "jev-ref-in-name.whirl",
         &format!(
             "[Options]\nmodel: gpt-test\n{}ACT \"delete the file\"\n\
-             ASSERT role:heading \"Deleted\" visible\n",
+             ASSERT heading:\"Deleted\" visible\n",
             visit_html(REF_IN_NAME)
         ),
     );
@@ -1121,7 +1118,7 @@ fn a_ref_in_a_name_cannot_redirect_jevs_pick() {
     let step = act_step(&dir);
     assert_eq!(
         step["act"]["actions"][0]["line"],
-        "CLICK role:button \"Delete [ref=e3]\""
+        "CLICK button:\"Delete [ref=e3]\""
     );
     assert_eq!(step["act"]["actions"][0]["plannedBy"], "jev");
     assert_eq!(step["act"]["usage"]["modelCalls"], 0);
@@ -1151,7 +1148,7 @@ fn jev_picks_a_button_whose_name_starts_and_ends_with_a_slash() {
         "jev-slash-name.whirl",
         &format!(
             "[Options]\nmodel: gpt-test\n{}ACT \"call the api\"\n\
-             ASSERT role:heading \"Called\" visible\n",
+             ASSERT heading:\"Called\" visible\n",
             visit_html(SLASH_NAME)
         ),
     );
@@ -1159,10 +1156,7 @@ fn jev_picks_a_button_whose_name_starts_and_ends_with_a_slash() {
     let stdout = stdout_text(&output);
     assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
     let step = act_step(&dir);
-    assert_eq!(
-        step["act"]["actions"][0]["line"],
-        "CLICK role:button \"/api/\""
-    );
+    assert_eq!(step["act"]["actions"][0]["line"], "CLICK button:\"/api/\"");
     assert_eq!(step["act"]["actions"][0]["plannedBy"], "jev");
     assert_eq!(step["act"]["usage"]["modelCalls"], 0);
     let log = twin.request_log();
@@ -1204,7 +1198,7 @@ fn jev_reads_a_region_that_its_own_heading_names_by_that_heading() {
         "jev-heading-region.whirl",
         &format!(
             "[Options]\nmodel: gpt-test\n{}ACT \"move the tram ride to Sunday\"\n\
-             ASSERT role:heading \"Moved to Sunday\" visible\n",
+             ASSERT heading:\"Moved to Sunday\" visible\n",
             visit_html(DAYS)
         ),
     );
@@ -1214,7 +1208,7 @@ fn jev_reads_a_region_that_its_own_heading_names_by_that_heading() {
     let step = act_step(&dir);
     assert_eq!(
         step["act"]["actions"][0]["line"],
-        "DRAG role:button \"Tram ride\" to role:region"
+        "DRAG button:\"Tram ride\" to region:*"
     );
     assert_eq!(step["act"]["actions"][0]["plannedBy"], "jev");
     assert_eq!(step["act"]["usage"]["modelCalls"], 0);
@@ -1242,7 +1236,7 @@ fn jev_acts_without_a_model_call_when_it_is_sure() {
         "jev-click.whirl",
         &format!(
             "[Options]\nmodel: gpt-test\n{SHOP}ACT \"add the item to the cart\"\n\
-             ASSERT role:heading \"Added\" visible\n"
+             ASSERT heading:\"Added\" visible\n"
         ),
     );
     let output = twin.run_jev(&dir, &flow, &[]);
@@ -1254,7 +1248,7 @@ fn jev_acts_without_a_model_call_when_it_is_sure() {
     assert_eq!(step["act"]["actions"][0]["plannedBy"], "jev");
     assert_eq!(
         step["act"]["actions"][0]["line"],
-        "CLICK role:button \"Add to cart\""
+        "CLICK button:\"Add to cart\""
     );
     assert_eq!(step["act"]["usage"]["modelCalls"], 0);
     // 1000 Jev input tokens at the catalog's $0.042 per million; no model
@@ -1280,7 +1274,7 @@ fn jev_right_clicks_without_a_model_call() {
         "jev-right-click.whirl",
         &format!(
             "[Options]\nmodel: gpt-test\n{FILES}ACT \"right-click report.pdf\"\n\
-             ASSERT role:heading \"Menu\" visible\n"
+             ASSERT heading:\"Menu\" visible\n"
         ),
     );
     let output = twin.run_jev(&dir, &flow, &[]);
@@ -1290,7 +1284,7 @@ fn jev_right_clicks_without_a_model_call() {
     assert_eq!(step["act"]["actions"][0]["plannedBy"], "jev");
     assert_eq!(
         step["act"]["actions"][0]["line"],
-        "RIGHTCLICK role:button \"report.pdf\""
+        "RIGHTCLICK button:\"report.pdf\""
     );
     assert_eq!(step["act"]["usage"]["modelCalls"], 0);
 }
@@ -1346,7 +1340,7 @@ fn jev_scrolls_inside_the_iframe_that_its_title_names() {
     let step = act_step(&dir);
     assert_eq!(
         step["act"]["actions"][0]["line"],
-        "SCROLL role:iframe \"Incident history\" to 50%"
+        "SCROLL iframe:\"Incident history\" to 50%"
     );
     assert_eq!(step["act"]["actions"][0]["plannedBy"], "jev");
     assert_eq!(step["act"]["usage"]["modelCalls"], 0);
@@ -1396,7 +1390,7 @@ fn jev_drags_without_a_model_call_when_it_is_sure() {
         "jev-drag-sure.whirl",
         &format!(
             "[Options]\nmodel: gpt-test\n{}ACT \"drag the card to Done\"\n\
-             ASSERT role:heading \"Dropped\" visible\n",
+             ASSERT heading:\"Dropped\" visible\n",
             visit_html(BOARD)
         ),
     );
@@ -1406,7 +1400,7 @@ fn jev_drags_without_a_model_call_when_it_is_sure() {
     let step = act_step(&dir);
     assert_eq!(
         step["act"]["actions"][0]["line"],
-        "DRAG role:button \"Card\" to role:button \"Done\""
+        "DRAG button:\"Card\" to button:\"Done\""
     );
     assert_eq!(step["act"]["actions"][0]["plannedBy"], "jev");
     assert_eq!(step["act"]["usage"]["modelCalls"], 0);
@@ -1428,7 +1422,7 @@ fn jev_leaves_an_unsure_drag_to_the_model() {
         "jev-drag.whirl",
         &format!(
             "[Options]\nmodel: gpt-test\n{}ACT \"drag the card to Done\"\n\
-             ASSERT role:heading \"Dropped\" visible\n",
+             ASSERT heading:\"Dropped\" visible\n",
             visit_html(BOARD)
         ),
     );
@@ -1458,7 +1452,7 @@ fn an_unsure_jev_leaves_the_step_to_the_model_with_its_likely_matches() {
         "jev-unsure.whirl",
         &format!(
             "[Options]\nmodel: gpt-test\n{}ACT \"share it\"\n\
-             ASSERT role:heading \"Shared\" visible\n",
+             ASSERT heading:\"Shared\" visible\n",
             visit_html(TWO_BUTTONS)
         ),
     );
@@ -1494,7 +1488,7 @@ fn a_failed_jev_request_leaves_the_step_to_the_model() {
         "jev-error.whirl",
         &format!(
             "[Options]\nmodel: gpt-test\n{SHOP}ACT \"add the item to the cart\"\n\
-             ASSERT role:heading \"Added\" visible\n"
+             ASSERT heading:\"Added\" visible\n"
         ),
     );
     let output = twin.run_jev(&dir, &flow, &[]);
@@ -1529,7 +1523,7 @@ fn jev_fills_a_masked_value_that_never_reaches_it() {
     assert_eq!(step["act"]["actions"][0]["plannedBy"], "jev");
     assert_eq!(
         step["act"]["actions"][0]["line"],
-        "FILL role:textbox \"Password\" \"%env.WHIRL_ACT_SECRET%\""
+        "FILL textbox:\"Password\" \"%env.WHIRL_ACT_SECRET%\""
     );
 }
 
@@ -1574,7 +1568,7 @@ fn jev_reads_unquoted_text_to_type_with_a_small_model_call() {
     assert_eq!(step["act"]["actions"][0]["plannedBy"], "jev");
     assert_eq!(
         step["act"]["actions"][0]["line"],
-        "FILL role:textbox \"Last name\" \"Lovelace\""
+        "FILL textbox:\"Last name\" \"Lovelace\""
     );
     assert_eq!(step["act"]["usage"]["modelCalls"], 1);
     let log = twin.request_log();
@@ -1607,7 +1601,7 @@ fn jev_looks_at_every_named_element_when_no_control_fits() {
         "jev-broad.whirl",
         &format!(
             "[Options]\nmodel: gpt-test\n{}ACT \"open the menu\"\n\
-             ASSERT role:heading \"Opened\" visible\n",
+             ASSERT heading:\"Opened\" visible\n",
             visit_html(page)
         ),
     );
@@ -1641,7 +1635,7 @@ fn copies_of_one_control_in_one_item_share_jevs_vote() {
         "jev-copies.whirl",
         &format!(
             "[Options]\nmodel: gpt-test\n{}ACT \"add the blue mug to the cart\"\n\
-             ASSERT role:heading \"Added\" visible\n",
+             ASSERT heading:\"Added\" visible\n",
             visit_html(page)
         ),
     );
@@ -1667,7 +1661,7 @@ fn jev_clicks_the_named_option_of_a_custom_listbox() {
         "jev-listbox.whirl",
         &format!(
             "[Options]\nmodel: gpt-test\n{}ACT \"choose Portugal from the country list\"\n\
-             ASSERT role:heading \"Portugal chosen\" visible\n",
+             ASSERT heading:\"Portugal chosen\" visible\n",
             visit_html(page)
         ),
     );
@@ -1677,7 +1671,7 @@ fn jev_clicks_the_named_option_of_a_custom_listbox() {
     let step = act_step(&dir);
     assert_eq!(
         step["act"]["actions"][0]["line"],
-        "CLICK role:option \"Portugal\""
+        "CLICK option:\"Portugal\""
     );
     assert_eq!(step["act"]["actions"][0]["plannedBy"], "jev");
     assert_eq!(step["act"]["usage"]["modelCalls"], 0);
@@ -1704,7 +1698,7 @@ fn jev_opens_a_custom_dropdown_and_chooses_the_named_option() {
         "jev-dropdown.whirl",
         &format!(
             "[Options]\nmodel: gpt-test\n{}ACT \"choose Blue from the color dropdown\"\n\
-             ASSERT role:heading \"Blue chosen\" visible\n",
+             ASSERT heading:\"Blue chosen\" visible\n",
             visit_html(page)
         ),
     );
@@ -1714,8 +1708,8 @@ fn jev_opens_a_custom_dropdown_and_chooses_the_named_option() {
     let step = act_step(&dir);
     let actions = step["act"]["actions"].as_array().expect("actions");
     assert_eq!(actions.len(), 2);
-    assert_eq!(actions[0]["line"], "CLICK role:button \"Choose a color\"");
-    assert_eq!(actions[1]["line"], "CLICK role:listitem");
+    assert_eq!(actions[0]["line"], "CLICK button:\"Choose a color\"");
+    assert_eq!(actions[1]["line"], "CLICK listitem:*");
     assert!(actions.iter().all(|action| action["plannedBy"] == "jev"));
     assert_eq!(step["act"]["usage"]["modelCalls"], 0);
     assert_eq!(step["act"]["usage"]["jev"]["requests"], 3);

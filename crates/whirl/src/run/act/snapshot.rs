@@ -67,13 +67,13 @@ impl Fingerprint {
 }
 
 impl SnapshotNode {
-    /// The element as a Whirl locator, such as `role:button "Sign in"`.
-    /// It describes the element for reports; it is not guaranteed to be
-    /// unique on the page.
+    /// The element as a Whirl locator, such as `button:"Sign in"`. It
+    /// describes the element for reports; it is not guaranteed to be
+    /// unique on the page, and a role such as `generic` has no prefix.
     pub(crate) fn locator_text(&self) -> String {
         match &self.name {
-            Some(name) => format!("role:{} {}", self.role, quote(name)),
-            None => format!("role:{}", self.role),
+            Some(name) => format!("{}:{}", self.role, quote(name)),
+            None => format!("{}:*", self.role),
         }
     }
 }
@@ -509,13 +509,13 @@ mod tests {
     fn indexes_every_ref_with_its_role_and_name() {
         let snapshot = PageSnapshot::parse(SNAPSHOT);
         let target = snapshot.target("e4").expect("e4 is in the snapshot");
-        assert_eq!(target.locator_text(), r#"role:textbox "Email""#);
+        assert_eq!(target.locator_text(), r#"textbox:"Email""#);
         let target = snapshot.target("e5").expect("e5 is in the snapshot");
-        assert_eq!(target.locator_text(), r#"role:button "Say \"hi\"""#);
+        assert_eq!(target.locator_text(), r#"button:"Say \"hi\"""#);
         let target = snapshot.target("e1").expect("e1 is in the snapshot");
-        assert_eq!(target.locator_text(), "role:generic");
+        assert_eq!(target.locator_text(), "generic:*");
         let target = snapshot.target("f1e2").expect("framed refs are indexed");
-        assert_eq!(target.locator_text(), r#"role:button "Pay""#);
+        assert_eq!(target.locator_text(), r#"button:"Pay""#);
     }
 
     #[test]
@@ -524,7 +524,7 @@ mod tests {
             "- iframe \"Incident history\" [ref=e4]:\n  - paragraph [ref=f1e2]: Resolved\n",
         );
         let target = snapshot.target("e4").expect("e4 is in the snapshot");
-        assert_eq!(target.locator_text(), r#"role:iframe "Incident history""#);
+        assert_eq!(target.locator_text(), r#"iframe:"Incident history""#);
     }
 
     #[test]
@@ -556,7 +556,7 @@ mod tests {
         );
         assert_eq!(
             snapshot.target("e3").map(|target| target.locator_text()),
-            Some(r#"role:link "Docs""#.to_owned())
+            Some(r#"link:"Docs""#.to_owned())
         );
     }
 
@@ -593,15 +593,15 @@ mod tests {
     fn a_quoted_line_names_its_element_as_the_unquoted_line_does() {
         let snapshot = PageSnapshot::parse(QUOTED);
         for (element, locator) in [
-            ("e2", r#"role:button "Status: live""#),
-            ("e3", r#"role:button "It's: here""#),
-            ("e4", r#"role:button "Both \"a\" and 'b': x""#),
-            ("e5", r#"role:region "Q3: plan""#),
-            ("e6", r#"role:link "x #y""#),
-            ("e7", r#"role:textbox "Note: x""#),
-            ("e8", r#"role:button "{it's}""#),
-            ("e9", r#"role:button "tick `x`""#),
-            ("f1e2", r#"role:button "In: frame""#),
+            ("e2", r#"button:"Status: live""#),
+            ("e3", r#"button:"It's: here""#),
+            ("e4", r#"button:"Both \"a\" and 'b': x""#),
+            ("e5", r#"region:"Q3: plan""#),
+            ("e6", r#"link:"x #y""#),
+            ("e7", r#"textbox:"Note: x""#),
+            ("e8", r#"button:"{it's}""#),
+            ("e9", r#"button:"tick `x`""#),
+            ("f1e2", r#"button:"In: frame""#),
         ] {
             let target = snapshot
                 .target(element)
@@ -675,26 +675,20 @@ mod tests {
     fn a_name_cannot_change_which_ref_a_line_names() {
         let snapshot = PageSnapshot::parse(CRAFTED).of_page();
         for (element, locator) in [
-            ("e1", "role:generic"),
-            ("e2", r#"role:heading "Crafted""#),
-            ("e3", r#"role:button "Save""#),
-            ("e4", r#"role:button "Delete [ref=e9]""#),
-            (
-                "e5",
-                r#"role:button "Say \"hi\" \\ back ] [ref=e2] [active]""#,
-            ),
-            ("e6", r#"role:button "x\" [ref=e1] [cursor=pointer]""#),
-            ("e7", r#"role:button "Status: [ref=e9] live""#),
-            (
-                "e8",
-                r#"role:button "Go [checked] [active] [cursor=pointer]""#,
-            ),
-            ("e9", "role:paragraph"),
-            ("e10", "role:list"),
-            ("e11", "role:listitem"),
-            ("e12", r#"role:textbox "Note [ref=e4]""#),
-            ("e17", "role:generic"),
-            ("e18", r#"role:button "Mixed""#),
+            ("e1", "generic:*"),
+            ("e2", r#"heading:"Crafted""#),
+            ("e3", r#"button:"Save""#),
+            ("e4", r#"button:"Delete [ref=e9]""#),
+            ("e5", r#"button:"Say \"hi\" \\ back ] [ref=e2] [active]""#),
+            ("e6", r#"button:"x\" [ref=e1] [cursor=pointer]""#),
+            ("e7", r#"button:"Status: [ref=e9] live""#),
+            ("e8", r#"button:"Go [checked] [active] [cursor=pointer]""#),
+            ("e9", "paragraph:*"),
+            ("e10", "list:*"),
+            ("e11", "listitem:*"),
+            ("e12", r#"textbox:"Note [ref=e4]""#),
+            ("e17", "generic:*"),
+            ("e18", r#"button:"Mixed""#),
         ] {
             let target = snapshot
                 .target(element)
@@ -742,19 +736,19 @@ mod tests {
     fn a_name_between_slashes_keeps_its_slashes() {
         let snapshot = PageSnapshot::parse(SLASHES);
         for (element, locator) in [
-            ("e2", r#"role:button "/api/""#),
-            ("e3", r#"role:button "/""#),
-            ("e4", r#"role:button "//""#),
-            ("e5", r#"role:button "/a\"b\\c/""#),
-            ("e6", r#"role:button "/x/ [ref=e9] /""#),
-            ("e7", r#"role:button "/a: b/""#),
-            ("e8", r#"role:button "/it's/""#),
-            ("e9", r#"role:button "/a #b/""#),
-            ("e10", r#"role:button "/a/b""#),
-            ("e11", r#"role:link "/docs/""#),
-            ("e12", r#"role:heading "/title/""#),
-            ("e13", "role:paragraph"),
-            ("e14", r#"role:textbox "/field/""#),
+            ("e2", r#"button:"/api/""#),
+            ("e3", r#"button:"/""#),
+            ("e4", r#"button:"//""#),
+            ("e5", r#"button:"/a\"b\\c/""#),
+            ("e6", r#"button:"/x/ [ref=e9] /""#),
+            ("e7", r#"button:"/a: b/""#),
+            ("e8", r#"button:"/it's/""#),
+            ("e9", r#"button:"/a #b/""#),
+            ("e10", r#"button:"/a/b""#),
+            ("e11", r#"link:"/docs/""#),
+            ("e12", r#"heading:"/title/""#),
+            ("e13", "paragraph:*"),
+            ("e14", r#"textbox:"/field/""#),
         ] {
             let target = snapshot
                 .target(element)
@@ -782,10 +776,10 @@ mod tests {
             "  - button \"a\\ud800b\" [ref=e19]\n",
         ));
         for (element, locator) in [
-            ("e8", "role:button \"a\u{7f}b\""),
-            ("e9", "role:button \"a\u{1}b\""),
-            ("e12", "role:textbox \"p\u{1}q\""),
-            ("e19", "role:button \"a\u{fffd}b\""),
+            ("e8", "button:\"ab\""),
+            ("e9", "button:\"ab\""),
+            ("e12", "textbox:\"pq\""),
+            ("e19", "button:\"a�b\""),
         ] {
             let target = snapshot
                 .target(element)

@@ -35,7 +35,7 @@ test("the driver runs a flow against a data: URL in chromium", {
 		});
 		await driver.runStep("assert", {
 			timeoutMs: 5000,
-			title: 'role:heading "Hello" visible',
+			title: 'heading:"Hello" visible',
 			spec: {
 				subject: {
 					type: "locator",

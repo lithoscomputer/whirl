@@ -1,4 +1,0 @@
-bin.name = "whirl"
-args = ["fmt", "old.whirl"]
-fs.sandbox = true
-status = "success"

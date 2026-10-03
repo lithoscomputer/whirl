@@ -4,9 +4,9 @@
 ./duplicate-header.whirl:3:1: error: invalid or duplicate HTTP header name
   x-test: two
   ^^^^^^^
-./first-action.whirl:1:1: error: expected HTTP METHOD url
+./first-action.whirl:1:6: error: expected an uppercase HTTP method like GET or POST
   HTTP order GET /
-  ^^^^
+       ^^^^^
 ./method.whirl:1:6: error: expected an uppercase HTTP method like GET or POST
   HTTP get /
        ^^^

@@ -8,7 +8,7 @@
       "model": "anthropic/claude-sonnet-5",
       "actions": [
         {
-          "line": "FILL role:spinbutton \"Quantity of Red mug\" \"1\"",
+          "line": "FILL spinbutton:\"Quantity of Red mug\" \"1\"",
           "fingerprints": [
             {
               "role": "spinbutton",
@@ -17,7 +17,7 @@
           ]
         },
         {
-          "line": "CLICK role:button \"Proceed to checkout\"",
+          "line": "CLICK button:\"Proceed to checkout\"",
           "fingerprints": [
             {
               "role": "button",

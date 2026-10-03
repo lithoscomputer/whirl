@@ -7,6 +7,17 @@
 - Accept a JSON array as the body of an `HTTP` or `MOCK` line, as the SPEC allows. A body line that starts with `[` was read as a section header, so every array body was a parse error.
 - Report `MOCK` lines that no `VISIT` follows before the file's first `VISIT` as a parse error: a file of only `MOCK` lines, or `MOCK` lines followed by `HTTP`, `PAGE`, or a check line. The first browser entry must start with `VISIT` after any `MOCK` lines, and a check before it had no page to read.
 - In a JSON body or JSON literal, read `\\{{name}}` inside a string as an escaped backslash before the reference, as the run already did. `whirl check` did not see the reference, and a JSON literal in a text comparison compared the wrong text.
+- Start a comment only at a `#` at the start of a line or after white space. A `#` inside a token is text, so `VISIT /docs#install` keeps its fragment and `css:#submit` works without quotes. The rest of the token was a comment before, which silently dropped a URL's fragment, such as the `#/cart` of `ASSERT url == https://shop.example.com/#/cart`.
+- Simplify the syntax so that every line reads left to right, one token at a time. This changes existing flows:
+  - Every ARIA role is a locator prefix, and `role:` is gone: `role:button "Sign in"` is now `button:"Sign in"`, `role~:button Sign` is `button:~Sign`, and a role with any name is `dialog:*`. The roles are the ones Playwright accepts, except `generic`, `none`, and `presentation`.
+  - Prefixes are strict: in a locator, a bare colon always marks a prefix, and an unknown one is a parse error. Quote unprefixed text that holds a colon, and quote `>>` to match it as text.
+  - Browser tabs are windows: `TAB payment` is now `WINDOW payment`, and `ASSERT tab:payment closed` is `ASSERT window:payment closed`. The lint codes are `duplicate-window` and `unknown-window`.
+  - A bare value cannot start with `@`: a bare `@` token is always the step timeout and must end its line. Quote a value such as `"@60s"`.
+  - A `name: value` line needs a space after the colon, in options, `CAPTURE` lines, headers, and snapshot settings: `base:x` is an error.
+  - The `~` of a substring match follows the colon, for roles and text prefixes alike: `text~:Added` is now `text:~Added`.
+  - A quoted string joins a token only right after a prefix, as in `label:"First name"` or `button:~"Sign in"`. A `json:` or `xpath:` argument follows this rule like any other prefix value; it no longer has a rule of its own.
+  - A first token with a prefix after `ACT`, `EXTRACT`, or `JUDGE` starts the scope, so `ACT css:form` alone is an error. `DRAG` needs no quotes on a `to` that is text, and a bare direction or `to` right after `SCROLL` is always the motion.
+  - The removed `[Asserts]` and `[Captures]` sections are unknown sections, and `whirl fmt` no longer rewrites them. The `sections-removed` and `mixed-check-syntax` errors are gone.
 
 ## 0.20.0 (2026-09-28)
 

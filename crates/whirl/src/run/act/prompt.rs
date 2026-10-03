@@ -464,8 +464,8 @@ mod tests {
             "sign in as %env.USER%",
             &["%env.USER%".to_owned()],
             &[
-                "FILL role:textbox Email \"%env.USER%\"".to_owned(),
-                "CLICK role:button Go (failed: timeout)".to_owned(),
+                "FILL textbox:Email \"%env.USER%\"".to_owned(),
+                "CLICK button:Go (failed: timeout)".to_owned(),
             ],
             "- button \"Sign in\" [ref=e2]",
         );
@@ -473,7 +473,7 @@ mod tests {
         assert!(message.contains(DRAG_RULE));
         assert!(message.contains("the following variables to be used in the action: %env.USER%"));
         assert!(message.contains(
-            "Steps taken so far:\n1. FILL role:textbox Email \"%env.USER%\"\n2. CLICK role:button Go (failed: timeout)\n"
+            "Steps taken so far:\n1. FILL textbox:Email \"%env.USER%\"\n2. CLICK button:Go (failed: timeout)\n"
         ));
         assert!(message.ends_with("Accessibility Tree: \n- button \"Sign in\" [ref=e2]\n"));
         assert!(goal_message("x", &[], &[], "").contains("Steps taken so far:\nnone\n"));

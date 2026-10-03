@@ -16,7 +16,7 @@ use super::{EntryState, FlowExec, PreparedStep, StepEnd, StepNode, entry_timeout
 use crate::check::PredicateKind;
 use crate::lang::ast::{self, Locator, LocatorSegment, SegmentKind};
 use crate::lang::fmt::render_snapshot_target;
-use crate::lang::parse::parse_locator;
+use crate::lang::parse::{is_role, parse_locator};
 use crate::report::model::{
     ActReport, AiReport, AiTargetReport, ExtractReport, JudgeReport, StepError, StepWarning,
 };
@@ -539,12 +539,25 @@ impl FlowExec<'_> {
             .map_err(|_| ("cache-unstable", "the locator generator failed".to_owned()))?;
         match serde_json::from_value::<GeneratedLocator>(result) {
             Ok(GeneratedLocator::Locator { locator }) => {
-                let text = wire::locator_from_wire(&locator)
-                    .map(|locator| render_snapshot_target(&locator))
-                    .ok_or((
+                let locator = wire::locator_from_wire(&locator).ok_or((
+                    "cache-unstable",
+                    "the generated locator is malformed".to_owned(),
+                ))?;
+                if let Some(role) =
+                    locator
+                        .segments
+                        .iter()
+                        .find_map(|segment| match &segment.kind {
+                            SegmentKind::Role { role, .. } if !is_role(role) => Some(role),
+                            _ => None,
+                        })
+                {
+                    return Err((
                         "cache-unstable",
-                        "the generated locator is malformed".to_owned(),
-                    ))?;
+                        format!("the role `{role}` has no locator prefix"),
+                    ));
+                }
+                let text = render_snapshot_target(&locator);
                 if self.vars.mask(&text) != text {
                     return Err((
                         "cache-secret",

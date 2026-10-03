@@ -420,7 +420,7 @@ FILL placeholder:"Search things" widget
 CLICK testid:save-button
 PRESS placeholder:"Search things" "Enter"
 SCREENSHOT overview
-ASSERT role:heading "Form page" visible
+ASSERT heading:"Form page" visible
 ASSERT label:Email value == alice@example.com
 ASSERT label:Code value == 4242
 ASSERT css:"#typed-keys" text == 4242
@@ -431,13 +431,13 @@ ASSERT css:"#press-result" text == enter-pressed
 ASSERT css:"#saved" text == saved
 ASSERT css:"li.item" count >= 3
 ASSERT css:"li.item" >> nth:1 text == Two
-ASSERT text~:"rder #ABC" visible
+ASSERT text:~"rder #ABC" visible
 ASSERT testid:order text matches /Order #\w+/
 ASSERT css:"#spaced" text matches /^spaced text$/
 ASSERT testid:state attr:data-state == open
 ASSERT css:"#ghost" hidden
-ASSERT role:button "Disabled btn" disabled
-ASSERT role:button Save enabled
+ASSERT button:"Disabled btn" disabled
+ASSERT button:Save enabled
 ASSERT label:Terms checked
 ASSERT label:Subscribe unchecked
 ASSERT url contains form.html
@@ -448,7 +448,7 @@ CAPTURE next_path: css:"#next-link" attr:href
 # Follow the captured link.
 VISIT {{next_path}}
 PAGE /second.html
-ASSERT role:heading "Second page" visible
+ASSERT heading:"Second page" visible
 
 # Revisit with the captured query value.
 VISIT /second.html?q={{order_id}}
@@ -491,10 +491,10 @@ fn check_and_uncheck_handle_hidden_inputs_and_role_switches() {
          ASSERT label:Notifications checked\n\
          UNCHECK \"Notifications\"\n\
          ASSERT label:Notifications unchecked\n\
-         CHECK role:switch \"Dark mode\"\n\
-         ASSERT role:switch \"Dark mode\" checked\n\
-         UNCHECK role:switch \"Dark mode\"\n\
-         ASSERT role:switch \"Dark mode\" unchecked\n",
+         CHECK switch:\"Dark mode\"\n\
+         ASSERT switch:\"Dark mode\" checked\n\
+         UNCHECK switch:\"Dark mode\"\n\
+         ASSERT switch:\"Dark mode\" unchecked\n",
     );
     let output = run_whirl(&dir, &["--base", &server.base(), "switch.whirl"]);
     let stdout = stdout_text(&output);
@@ -544,7 +544,7 @@ fn visit_completes_at_domcontentloaded_while_a_subresource_stalls_load() {
         "slow.whirl",
         &format!(
             "[Options]\nbase: {base}\nnav-timeout: 3s\n\n\
-             VISIT /slow-load.html\nASSERT role:heading \"Parsed\" visible\n",
+             VISIT /slow-load.html\nASSERT heading:\"Parsed\" visible\n",
             base = server.base()
         ),
     );
@@ -655,8 +655,8 @@ fn rightclick_and_middleclick_press_their_buttons() {
         "buttons.whirl",
         r##"VISIT /buttons.html
 RIGHTCLICK "report.pdf"
-ASSERT role:menu "File actions" visible
-ASSERT role:menuitem Rename visible
+ASSERT menu:"File actions" visible
+ASSERT menuitem:Rename visible
 
 MIDDLECLICK css:"#counter"
 ASSERT css:"#counter" text == "click 0, auxclick 1, contextmenu 0"
@@ -777,13 +777,13 @@ VISIT /scroll.html
 ASSERT eval "{{y}} === document.documentElement.clientHeight" == true
 
 SCROLL to 100%
-ASSERT role:button "Back to top" visible
+ASSERT button:"Back to top" visible
 ASSERT css:"#feed li" count == 25
 
 SCROLL down
 SCROLL to 0%
 ASSERT eval "window.scrollY" == 0
-ASSERT role:button "Back to top" hidden
+ASSERT button:"Back to top" hidden
 
 VISIT /scroll.html
 SCROLL testid:load-more
@@ -793,14 +793,14 @@ SCROLL text:"Filter 3" down
 ASSERT eval "document.querySelector('#filters-body').scrollTop === document.querySelector('#filters-body').clientHeight" == true
 
 # A dialog cannot scroll, so the list inside it does.
-SCROLL role:dialog Filters to 0%
+SCROLL dialog:Filters to 0%
 ASSERT eval "document.querySelector('#filters-body').scrollTop" == 0
 
-SCROLL role:region Terms to 100%
-ASSERT role:button "I agree" enabled
+SCROLL region:Terms to 100%
+ASSERT button:"I agree" enabled
 
 # Already at the end: the step passes and nothing moves.
-SCROLL role:region Terms down
+SCROLL region:Terms down
 
 SCROLL testid:board right
 ASSERT eval "document.querySelector('[data-testid=board]').scrollLeft" == 400
@@ -976,7 +976,7 @@ fn a_middle_click_on_a_link_follows_each_engines_own_rule() {
     // opener that POPUP cannot name, and WebKit follows the link.
     let flows = [
         ("chromium", "ASSERT url endsWith /buttons.html\n"),
-        ("firefox", "POPUP docs\nTAB docs\nPAGE /second.html\n"),
+        ("firefox", "POPUP docs\nWINDOW docs\nPAGE /second.html\n"),
         ("webkit", "PAGE /second.html\n"),
     ];
     for (engine, rest) in flows {
@@ -985,7 +985,7 @@ fn a_middle_click_on_a_link_follows_each_engines_own_rule() {
         }
         dir.file(
             "middle.whirl",
-            &format!("VISIT /buttons.html\nMIDDLECLICK role:link Docs\n{rest}"),
+            &format!("VISIT /buttons.html\nMIDDLECLICK link:Docs\n{rest}"),
         );
         let output = run_whirl(&dir, &[
             "--base",
@@ -1442,7 +1442,7 @@ fn trace_video_and_har_artifacts_follow_their_flags() {
     // the video and network log exist.
     dir.file(
         "pass.whirl",
-        "VISIT /second.html\nASSERT role:heading \"Second page\" visible\n",
+        "VISIT /second.html\nASSERT heading:\"Second page\" visible\n",
     );
     let output = run_whirl(&dir, &[
         "--base",
@@ -1508,11 +1508,11 @@ fn fail_fast_stops_scheduling_after_the_first_failure() {
     );
     dir.file(
         "b_later.whirl",
-        "VISIT /second.html\nASSERT role:heading \"Second page\" visible\n",
+        "VISIT /second.html\nASSERT heading:\"Second page\" visible\n",
     );
     dir.file(
         "c_later.whirl",
-        "VISIT /second.html\nASSERT role:heading \"Second page\" visible\n",
+        "VISIT /second.html\nASSERT heading:\"Second page\" visible\n",
     );
     // One worker runs the files in order: the first fails, so the later
     // files are never scheduled and never appear in the report.
@@ -1599,7 +1599,7 @@ fn frame_locators_wait_for_a_frame_created_after_the_action() {
             r##"[Options]
 base: {}
 VISIT /frames.html
-CLICK role:button "Load frame"
+CLICK button:"Load frame"
 FILL frame:"#delayed" >> label:Email late@example.com
 ASSERT frame:"#delayed" >> label:Email value == late@example.com
 "##,
@@ -1644,18 +1644,18 @@ fn popups_are_named_without_switching_and_return_after_self_closure() {
             r#"[Options]
 base: {}
 VISIT /popups.html
-CLICK role:button "Pay with provider"
+CLICK button:"Pay with provider"
 POPUP payment
-ASSERT role:heading Checkout visible
-TAB payment
+ASSERT heading:Checkout visible
+WINDOW payment
 FILL label:Name Alice
-ASSERT role:heading "Confirm payment" visible
+ASSERT heading:"Confirm payment" visible
 CAPTURE name: label:Name value
-CLICK role:button Alert
-ASSERT role:button Dismissed visible
-CLICK role:button Confirm
-ASSERT tab:payment closed @5s
-TAB main
+CLICK button:Alert
+ASSERT button:Dismissed visible
+CLICK button:Confirm
+ASSERT window:payment closed @5s
+WINDOW main
 ASSERT text:"Payment complete" visible
 FILL label:Customer {{{{name}}}}
 ASSERT label:Customer value == Alice
@@ -1677,11 +1677,11 @@ fn popup_closure_before_click_delivery_fails_the_action() {
             r#"[Options]
 base: {}
 VISIT /popups.html
-CLICK role:button "Pay with provider"
+CLICK button:"Pay with provider"
 POPUP payment
-TAB payment
+WINDOW payment
 EVAL "setTimeout(() => window.close(), 50)"
-CLICK role:button Unavailable
+CLICK button:Unavailable
 "#,
             site.base()
         ),
@@ -1689,7 +1689,7 @@ CLICK role:button Unavailable
     let output = run_whirl(&dir, &["early-close.whirl"]);
     assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
     assert!(
-        stdout_text(&output).contains("step: CLICK role:button Unavailable"),
+        stdout_text(&output).contains("step: CLICK button:Unavailable"),
         "{}",
         stdout_text(&output)
     );
@@ -1710,19 +1710,19 @@ fn named_tabs_support_nested_popups_and_explicit_close() {
             r#"[Options]
 base: {}
 VISIT /popups.html
-CLICK role:button "Pay with provider"
+CLICK button:"Pay with provider"
 POPUP payment
-TAB payment
-CLICK role:button Receipt
+WINDOW payment
+CLICK button:Receipt
 POPUP receipt
-TAB receipt
+WINDOW receipt
 PAGE /second.html
 CLOSE receipt
-ASSERT tab:receipt closed
-TAB payment
+ASSERT window:receipt closed
+WINDOW payment
 CLOSE payment
-TAB main
-ASSERT role:heading Checkout visible
+WINDOW main
+ASSERT heading:Checkout visible
 "#,
             site.base()
         ),
@@ -1741,7 +1741,7 @@ fn a_popup_from_an_earlier_entry_does_not_satisfy_popup() {
             r#"[Options]
 base: {}
 VISIT /popups.html
-CLICK role:button "Pay with provider"
+CLICK button:"Pay with provider"
 ASSERT text:"Provider ready" visible
 POPUP stale @300ms
 "#,
@@ -1767,10 +1767,10 @@ fn selecting_a_closed_tab_fails_without_switching_implicitly() {
             r#"[Options]
 base: {}
 VISIT /popups.html
-CLICK role:button "Pay with provider"
+CLICK button:"Pay with provider"
 POPUP payment
 CLOSE payment
-TAB payment
+WINDOW payment
 "#,
             site.base()
         ),
@@ -1778,7 +1778,7 @@ TAB payment
     let output = run_whirl(&dir, &["closed.whirl"]);
     assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
     assert!(
-        stdout_text(&output).contains("tab payment is closed"),
+        stdout_text(&output).contains("window payment is closed"),
         "{}",
         stdout_text(&output)
     );
@@ -1791,7 +1791,7 @@ fn multiple_unnamed_popups_fail_strictly() {
     dir.file("multiple.whirl", &format!(r#"[Options]
 base: {}
 VISIT /popups.html
-CLICK role:button "Open two"
+CLICK button:"Open two"
 EVAL "await new Promise(resolve => {{ const observer = new MutationObserver(() => {{ if (document.body.dataset.popups === '2') {{ observer.disconnect(); resolve(); }} }}); if (document.body.dataset.popups === '2') resolve(); else observer.observe(document.body, {{attributes: true}}); }})"
 POPUP payment @1s
 "#, site.base()));
@@ -1815,7 +1815,7 @@ fn response_assertions_and_captures_observe_the_request_before_click_returns() {
 base: {}
 VISIT /network.html
 EVAL "await fetch('/api/orders')"
-CLICK role:button "Place order"
+CLICK button:"Place order"
 EVAL "await window.orderRequest"
 RESPONSE order POST /api/orders
 ASSERT response:order status == 201
@@ -1862,7 +1862,7 @@ fn response_selection_does_not_replace_a_failed_request_with_a_successful_retry(
             r#"[Options]
 base: {}
 VISIT /network.html
-CLICK role:button "Retry order"
+CLICK button:"Retry order"
 EVAL "await window.orderRequest"
 RESPONSE order POST /api/orders
 ASSERT response:order status == 201
@@ -1889,7 +1889,7 @@ fn response_selection_excludes_requests_from_previous_entries() {
             r#"[Options]
 base: {}
 VISIT /network.html
-CLICK role:button "Place order"
+CLICK button:"Place order"
 ASSERT text:"Order confirmed" visible
 RESPONSE stale POST /api/orders @300ms
 "#,
@@ -1916,21 +1916,21 @@ fn responses_from_cross_origin_frames_and_popup_navigation_are_observed() {
             r##"[Options]
 base: {}
 VISIT /network.html
-CLICK frame:"#checkout" >> role:button "Place order"
+CLICK frame:"#checkout" >> button:"Place order"
 RESPONSE embedded POST {cross}/api/orders
 ASSERT response:embedded status == 201
-CLICK role:button "Open checkout"
+CLICK button:"Open checkout"
 POPUP checkout
-TAB checkout
+WINDOW checkout
 RESPONSE navigation GET /network.html?embedded=1
 ASSERT response:navigation status == 200
-CLICK role:button "Place order"
+CLICK button:"Place order"
 RESPONSE order POST /api/orders
 ASSERT response:order json:$.id == order-42
 CLOSE checkout
-ASSERT tab:checkout closed
+ASSERT window:checkout closed
 ASSERT response:order json:$.status == paid
-TAB main
+WINDOW main
 "##,
             site.base()
         ),
@@ -1956,11 +1956,11 @@ fn response_selection_does_not_use_another_tabs_requests() {
             r#"[Options]
 base: {}
 VISIT /network.html
-CLICK role:button "Place order"
+CLICK button:"Place order"
 EVAL "await window.orderRequest"
-CLICK role:button "Open checkout"
+CLICK button:"Open checkout"
 POPUP checkout
-TAB checkout
+WINDOW checkout
 RESPONSE wrong POST /api/orders @300ms
 "#,
             site.base()
@@ -1985,7 +1985,7 @@ fn missing_json_fields_do_not_pass_inequality_assertions() {
             r#"[Options]
 base: {}
 VISIT /network.html
-CLICK role:button "Place order"
+CLICK button:"Place order"
 RESPONSE order POST /api/orders
 ASSERT response:order json:$.missing != paid
 "#,
@@ -2413,8 +2413,8 @@ fn html_report_is_portable_and_preserves_results_and_author_context() {
     fs::remove_dir_all(dir.artifacts()).expect("remove source media");
     let url = reqwest::Url::from_file_path(&moved).expect("file URL");
     dir.file("verify.whirl", &format!(r#"VISIT "{url}"
-ASSERT role:heading "Critical browser evidence" visible
-ASSERT role:heading "Page access" visible
+ASSERT heading:"Critical browser evidence" visible
+ASSERT heading:"Page access" visible
 ASSERT css:article count == 2
 ASSERT css:article[data-status=passed] count == 1
 ASSERT css:article[data-status=failed] count == 1
@@ -3677,7 +3677,7 @@ fn snapshot_masks_use_the_selected_tab_and_strict_frame_owners() {
     let dir = TestDir::new();
     let source = |script: &str, mask: &str| {
         format!(
-            "[Options]\nviewport: 200x200\nVISIT /popups.html\nCLICK role:button \"Pay with provider\"\nPOPUP extra\nTAB extra\nVISIT /snapshot-frames.html\nASSERT frame:iframe >> nth:0 >> testid:patch >> nth:0 visible\nASSERT frame:iframe >> nth:1 >> testid:patch >> nth:0 visible\nEVAL \"{script}\"\nSNAPSHOT frames @2s\nsnapshot-mask: {mask}\n"
+            "[Options]\nviewport: 200x200\nVISIT /popups.html\nCLICK button:\"Pay with provider\"\nPOPUP extra\nWINDOW extra\nVISIT /snapshot-frames.html\nASSERT frame:iframe >> nth:0 >> testid:patch >> nth:0 visible\nASSERT frame:iframe >> nth:1 >> testid:patch >> nth:0 visible\nEVAL \"{script}\"\nSNAPSHOT frames @2s\nsnapshot-mask: {mask}\n"
         )
     };
     let mask = "frame:iframe >> nth:0 >> testid:patch";
@@ -4114,7 +4114,7 @@ fn element_snapshots_use_the_selected_tab_and_nested_cross_origin_frames() {
     let dir = TestDir::new();
     let source = |query: &str| {
         format!(
-            "[Options]\nviewport: 200x200\nVISIT /popups.html\nCLICK role:button \"Pay with provider\"\nPOPUP extra\nTAB extra\nVISIT /snapshot-element.html?{query}\nSNAPSHOT tab testid:target @2s\nVISIT /snapshot-element-frames.html?{query}\nSNAPSHOT framed frame:\"#outer\" >> frame:\"#inner\" >> testid:target @5s\n"
+            "[Options]\nviewport: 200x200\nVISIT /popups.html\nCLICK button:\"Pay with provider\"\nPOPUP extra\nWINDOW extra\nVISIT /snapshot-element.html?{query}\nSNAPSHOT tab testid:target @2s\nVISIT /snapshot-element-frames.html?{query}\nSNAPSHOT framed frame:\"#outer\" >> frame:\"#inner\" >> testid:target @5s\n"
         )
     };
     dir.file("frames.whirl", &source(""));
@@ -4159,7 +4159,7 @@ fn element_snapshots_use_the_selected_tab_and_nested_cross_origin_frames() {
         .map(|step| step["snapshot"]["target"].clone())
         .collect();
     assert_eq!(failed, [serde_json::json!(
-        "frame:\"#outer\" >> frame:\"#inner\" >> testid:target"
+        "frame:#outer >> frame:#inner >> testid:target"
     )]);
 }
 
@@ -4354,7 +4354,7 @@ Content-Type: text/html
 <h1>Virtual page</h1>
 ```
 VISIT /virtual.html
-ASSERT role:heading "Virtual page" visible
+ASSERT heading:"Virtual page" visible
 "#,
             site.base()
         ),

@@ -211,7 +211,7 @@ fn an_ai_target_clicks_the_one_element_the_model_finds() {
         "click.whirl",
         &format!(
             "[Options]\nmodel: gpt-test\n{SHOP}CLICK ai:\"the add to cart button\"\n\
-             ASSERT role:heading \"Added\" visible\n"
+             ASSERT heading:\"Added\" visible\n"
         ),
     );
     let output = twin.run(&dir, &flow, &[]);
@@ -224,7 +224,7 @@ fn an_ai_target_clicks_the_one_element_the_model_finds() {
     );
     assert_eq!(
         click["ai"]["targets"][0]["locator"],
-        "role:button \"Add to cart\""
+        "button:\"Add to cart\""
     );
     assert_eq!(click["ai"]["usage"]["modelCalls"], 1);
     let log = twin.request_log();
@@ -279,7 +279,7 @@ fn an_ai_check_and_capture_read_the_element_the_model_finds() {
         &format!(
             "[Options]\nmodel: gpt-test\n{SHOP}ASSERT ai:\"the page title\" text == Shop\n\
              CAPTURE second: ai:\"the second button\" text\n\
-             ASSERT role:button {{{{second}}}} visible\n"
+             ASSERT button:{{{{second}}}} visible\n"
         ),
     );
     let output = twin.run(&dir, &flow, &[]);
@@ -297,7 +297,7 @@ fn an_ai_target_asks_again_until_the_element_appears() {
          setTimeout(() => { const b = document.createElement('button'); b.textContent = 'Late'; \
          b.onclick = () => { document.querySelector('h1').textContent = 'Clicked'; }; \
          document.body.append(b); }, 1000)</script>\"\n\
-         CLICK ai:\"the late button\" @10s\nASSERT role:heading Clicked visible\n",
+         CLICK ai:\"the late button\" @10s\nASSERT heading:Clicked visible\n",
     );
     let output = twin.run(&dir, &flow, &[]);
     assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
@@ -328,7 +328,7 @@ fn buy_flow(dir: &TestDir, button: &str) -> PathBuf {
             "[Options]\nmodel: gpt-test\n\
              VISIT \"data:text/html,<h1>Shop</h1><button data-testid=wish>Wish list</button>\
              <button onclick=\\\"document.querySelector('h1').textContent='Bought'\\\">{button}</button>\"\n\
-             CLICK ai:\"the buy button\"\nASSERT role:heading Bought visible\n"
+             CLICK ai:\"the buy button\"\nASSERT heading:Bought visible\n"
         ),
     )
 }
@@ -367,7 +367,7 @@ fn the_cache_records_a_target_and_later_runs_replay_it_without_the_model() {
                 "occurrence": 1,
                 "target": "ai:\"the buy button\"",
                 "model": "gpt-test",
-                "locator": "role:button \"Buy now\"",
+                "locator": "button:\"Buy now\"",
                 "fingerprint": {"role": "button", "name": "Buy now"}
             }]
         }))
@@ -408,14 +408,14 @@ fn a_redesign_heals_the_target_and_update_rewrites_the_entry() {
     assert_eq!(warning_codes(&dir), ["healed"]);
     let target = &steps(&dir)[1]["ai"]["targets"][0];
     assert_eq!(target["cache"], "healed");
-    assert_eq!(target["cached"], "role:button \"Buy now\"");
-    assert_eq!(target["locator"], "role:button Purchase");
+    assert_eq!(target["cached"], "button:\"Buy now\"");
+    assert_eq!(target["locator"], "button:Purchase");
 
     twin.answer(&[found(&["e4"])]);
     let output = twin.run_with_args(&dir, &flow, &[], &["--cache", "update"]);
     assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
     let cache = cache_of(&flow).expect("the cache exists");
-    assert_eq!(cache["entries"][0]["locator"], "role:button Purchase");
+    assert_eq!(cache["entries"][0]["locator"], "button:Purchase");
 }
 
 #[test]
@@ -489,7 +489,7 @@ fn act_flow(dir: &TestDir, button: &str) -> PathBuf {
             "[Options]\nmodel: gpt-test\n\
              VISIT \"data:text/html,<h1>Shop</h1>\
              <button onclick=\\\"document.querySelector('h1').textContent='Added'\\\">{button}</button>\"\n\
-             ACT \"add the item to the cart\"\nASSERT role:heading Added visible\n"
+             ACT \"add the item to the cart\"\nASSERT heading:Added visible\n"
         ),
     )
 }
@@ -513,7 +513,7 @@ fn an_act_line_is_cached_and_replays_without_the_model() {
                 "occurrence": 1,
                 "model": "gpt-test",
                 "actions": [{
-                    "line": "CLICK role:button \"Add to cart\"",
+                    "line": "CLICK button:\"Add to cart\"",
                     "fingerprints": [{"role": "button", "name": "Add to cart"}]
                 }]
             }]
@@ -547,7 +547,7 @@ fn a_cached_act_line_heals_when_the_page_changes() {
     assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
     let act = &steps(&dir)[1]["act"];
     assert_eq!(act["cache"], "healed");
-    assert_eq!(act["cached"], json!(["CLICK role:button \"Add to cart\""]));
+    assert_eq!(act["cached"], json!(["CLICK button:\"Add to cart\""]));
     assert_eq!(warning_codes(&dir), ["healed"]);
 }
 
@@ -575,7 +575,7 @@ fn a_cached_act_line_stores_a_secret_as_its_reference() {
     assert!(!cache.to_string().contains(secret), "{cache}");
     assert_eq!(
         cache["entries"][0]["actions"][0]["line"],
-        "FILL role:textbox Password \"{{env.WHIRL_AI_SECRET}}\""
+        "FILL textbox:Password \"{{env.WHIRL_AI_SECRET}}\""
     );
 
     // The replay types the current value of the variable.
@@ -599,13 +599,13 @@ fn an_act_action_that_fails_heals_once_with_a_new_plan() {
          <button style='position:absolute;top:200px' \
          onclick=\\\"document.querySelector('h1').textContent='Bought'\\\">Buy now</button>\
          <div style='position:fixed;top:0;left:0;width:100%;height:100px;background:white'>Banner</div>\"\n\
-         ACT \"buy the item\" @6s\nASSERT role:heading Bought visible\n",
+         ACT \"buy the item\" @6s\nASSERT heading:Bought visible\n",
     );
     let output = twin.run(&dir, &flow, &[]);
     assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
     let act = &steps(&dir)[1]["act"];
     assert_eq!(act["usage"]["modelCalls"], 2);
-    assert_eq!(act["actions"][0]["line"], "CLICK role:button \"Buy now\"");
+    assert_eq!(act["actions"][0]["line"], "CLICK button:\"Buy now\"");
 }
 
 #[test]
@@ -627,7 +627,7 @@ fn the_generator_prefers_a_test_id_and_names_an_iframe_by_its_title() {
     assert_eq!(cache["entries"][0]["locator"], "testid:pay-now");
     assert_eq!(
         cache["entries"][1]["locator"],
-        "frame:iframe[title='Payment'] >> role:textbox Card"
+        "frame:iframe[title='Payment'] >> textbox:Card"
     );
 }
 
@@ -658,7 +658,7 @@ fn extract_reads_a_typed_value_that_later_checks_read() {
              ASSERT extract:order json:$.items count == 2\n\
              ASSERT extract:order json:$.coupon not exists\n\
              CAPTURE first: extract:order json:$.items[0]\n\
-             ASSERT text~:{{{{first}}}} visible\n"
+             ASSERT text:~{{{{first}}}} visible\n"
         ),
     );
     let output = twin.run(&dir, &flow, &[]);
@@ -986,14 +986,14 @@ fn a_goal_runs_actions_until_done_and_the_cache_replays_its_path() {
         .map(|action| action["line"].as_str().expect("a line"))
         .collect();
     assert_eq!(lines, [
-        "FILL role:textbox \"Quantity\" \"2\"",
-        "CLICK role:button \"Add to cart\""
+        "FILL textbox:\"Quantity\" \"2\"",
+        "CLICK button:\"Add to cart\""
     ]);
     assert_eq!(warning_codes(&dir), ["cache-miss"]);
     let log = twin.request_log();
     assert!(
         log.contains(
-            "Steps taken so far: 1. FILL role:textbox \\\"Quantity\\\" \\\"2\\\" 2. CLICK role:button"
+            "Steps taken so far: 1. FILL textbox:\\\"Quantity\\\" \\\"2\\\" 2. CLICK button:"
         ),
         "{log}"
     );
@@ -1002,7 +1002,7 @@ fn a_goal_runs_actions_until_done_and_the_cache_replays_its_path() {
     assert_eq!(cache["entries"][0]["line"], "GOAL \"add two to the cart\"");
     assert_eq!(
         cache["entries"][0]["actions"][0]["line"],
-        "FILL role:textbox Quantity \"2\""
+        "FILL textbox:Quantity \"2\""
     );
 
     // The replay makes no model call: the twin has no answer left.
@@ -1068,11 +1068,11 @@ fn a_failed_goal_action_goes_back_to_the_model() {
     let log = twin.request_log();
     assert_eq!(exit_code(&output), 0, "{}{log}", stdout_text(&output));
     let actions = steps(&dir)[1]["goal"]["actions"].clone();
-    assert_eq!(actions[0]["line"], "FILL role:button \"Add to cart\" \"2\"");
+    assert_eq!(actions[0]["line"], "FILL button:\"Add to cart\" \"2\"");
     assert!(actions[0]["error"].is_string(), "{actions}");
     assert!(actions[1].get("error").is_none(), "{actions}");
     assert!(
-        log.contains("1. FILL role:button \\\"Add to cart\\\" \\\"2\\\" (failed: "),
+        log.contains("1. FILL button:\\\"Add to cart\\\" \\\"2\\\" (failed: "),
         "{log}"
     );
     // The cache holds only the actions that ran.
@@ -1099,7 +1099,7 @@ fn a_goal_heals_from_the_current_page_when_a_cached_line_misses() {
                 "model": "gpt-test",
                 "actions": [
                     {"line": "FILL label:Quantity 2", "fingerprints": [{"role": "textbox", "name": "Quantity"}]},
-                    {"line": "CLICK role:button Buy", "fingerprints": [{"role": "button", "name": "Buy"}]}
+                    {"line": "CLICK button:Buy", "fingerprints": [{"role": "button", "name": "Buy"}]}
                 ]
             }]
         })
@@ -1121,7 +1121,7 @@ fn a_goal_heals_from_the_current_page_when_a_cached_line_misses() {
     assert_eq!(goal["usage"]["modelCalls"], 3);
     assert_eq!(goal["actions"][0]["plannedBy"], "cache");
     assert_eq!(goal["actions"][1]["plannedBy"], "llm");
-    assert_eq!(goal["cached"][1], "CLICK role:button Buy");
+    assert_eq!(goal["cached"][1], "CLICK button:Buy");
     assert_eq!(warning_codes(&dir), ["healed"]);
     assert!(
         log.contains("Steps taken so far: 1. FILL label:Quantity 2 Accessibility"),
@@ -1130,7 +1130,7 @@ fn a_goal_heals_from_the_current_page_when_a_cached_line_misses() {
     let cache = cache_of(&flow).expect("the cache is written");
     assert_eq!(
         cache["entries"][0]["actions"][1]["line"],
-        "CLICK role:button \"Add to cart\""
+        "CLICK button:\"Add to cart\""
     );
 }
 
@@ -1161,7 +1161,7 @@ fn a_goal_sends_secrets_as_placeholders_and_caches_their_reference() {
     let cache = cache_of(&flow).expect("the cache is written");
     assert_eq!(
         cache["entries"][0]["actions"][0]["line"],
-        "FILL role:textbox Quantity \"{{env.QTY}}\""
+        "FILL textbox:Quantity \"{{env.QTY}}\""
     );
 }
 
@@ -1277,8 +1277,8 @@ fn a_goal_finds_a_renamed_element_again_and_replays_the_rest_of_its_path() {
                 "occurrence": 1,
                 "model": "gpt-test",
                 "actions": [
-                    {"line": "FILL role:textbox Quantity \"2\"", "fingerprints": [{"role": "textbox", "name": "Quantity"}]},
-                    {"line": "CLICK role:button Buy", "fingerprints": [{"role": "button", "name": "Buy"}]}
+                    {"line": "FILL textbox:Quantity \"2\"", "fingerprints": [{"role": "textbox", "name": "Quantity"}]},
+                    {"line": "CLICK button:Buy", "fingerprints": [{"role": "button", "name": "Buy"}]}
                 ]
             }]
         })
@@ -1300,7 +1300,7 @@ fn a_goal_finds_a_renamed_element_again_and_replays_the_rest_of_its_path() {
     let cache = cache_of(&flow).expect("the cache is written");
     assert_eq!(
         cache["entries"][0]["actions"][1]["line"],
-        "CLICK role:button \"Add to cart\""
+        "CLICK button:\"Add to cart\""
     );
 }
 

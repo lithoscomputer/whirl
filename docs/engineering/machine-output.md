@@ -12,8 +12,6 @@ Schemas: [check](check.schema.json), [run report](report.schema.json).
 | Code | Meaning |
 | --- | --- |
 | `parse-error` | Invalid flow syntax; `expected` lists alternatives when available |
-| `mixed-check-syntax` | A file uses both `[Asserts]` or `[Captures]` sections and `ASSERT` or `CAPTURE` lines |
-| `sections-removed` | A file has an `[Asserts]` or `[Captures]` section; `whirl fmt` rewrites it |
 | `input-selection` | Missing input path or no selected flow files |
 | `input-io` | An input could not be read |
 | `setup-io` | A setup flow could not be found or read |
@@ -25,8 +23,8 @@ Schemas: [check](check.schema.json), [run report](report.schema.json).
 | `duplicate-artifact` | An artifact name is repeated |
 | `duplicate-response` | A response name is used twice in one file |
 | `unknown-response` | A check reads a response or request name that no earlier line defines |
-| `duplicate-tab` | A tab name is used twice in one file |
-| `unknown-tab` | A line names a tab that no earlier line opens |
+| `duplicate-window` | A window name is used twice in one file |
+| `unknown-window` | A line names a window that no earlier line opens |
 | `unused-capture` | A capture is never read; warning |
 | `redundant-presence` | The following assertion requires presence; warning |
 | `unasserted-http-status` | An independent HTTP entry has no status assertion; warning |
