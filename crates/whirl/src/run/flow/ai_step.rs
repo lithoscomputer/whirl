@@ -304,6 +304,7 @@ impl FlowExec<'_> {
                 &mut probe,
                 StepCommand::AriaSnapshot {
                     locator: Some(wire),
+                    settle:  false,
                 },
                 client,
                 state,
@@ -407,7 +408,10 @@ impl FlowExec<'_> {
         let result = self
             .act_shim_call(
                 line,
-                StepCommand::AriaSnapshot { locator: scope },
+                StepCommand::AriaSnapshot {
+                    locator: scope,
+                    settle:  true,
+                },
                 client,
                 state,
             )

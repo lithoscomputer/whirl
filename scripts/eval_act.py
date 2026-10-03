@@ -16,6 +16,8 @@ import statistics
 import subprocess
 import sys
 import threading
+import time
+import urllib.parse
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -225,6 +227,16 @@ def shortfalls(tasks, models, results, n):
 
 
 class QuietHandler(http.server.SimpleHTTPRequestHandler):
+    """Serves the site. A `delay=MS` query parameter holds the response
+    that long, like a slow API on a real site."""
+
+    def do_GET(self):
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        delay = query.get("delay", ["0"])[0]
+        if delay.isdigit():
+            time.sleep(min(int(delay), 10_000) / 1000)
+        super().do_GET()
+
     def log_message(self, *args):
         pass
 

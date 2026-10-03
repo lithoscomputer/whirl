@@ -352,7 +352,7 @@ fn push_timeout(out: &mut String, timeout: Option<DurationLit>) {
 }
 
 /// Renders an action line (SPEC 7).
-fn render_action(action: &Action) -> String {
+pub(crate) fn render_action(action: &Action) -> String {
     let is_final = action.timeout.is_none();
     let mut out = match &action.kind {
         ActionKind::Http { method, url, .. } => {

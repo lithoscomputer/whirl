@@ -2,7 +2,9 @@
 //! screenshot of the page or the element, ask the model whether the claim
 //! holds, and pass on `yes`, fail on `no`, and warn on `unsure`.
 
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
+use std::{iter, mem};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
@@ -11,8 +13,10 @@ use serde_json::Value as Json;
 
 use super::act_step::{ActBudget, ActLine, act_failure, usage_report};
 use super::{EntryState, FlowExec, StepEnd, StepNode};
+use crate::lang::ast::{self, CheckStep};
+use crate::lang::fmt::render_snapshot_target;
 use crate::report::model::{JudgeReport, StepError, StepWarning};
-use crate::run::act::{Instruction, PageSnapshot, PlanUsage, Verdict, judge_message};
+use crate::run::act::{Instruction, JudgeAnswer, PageSnapshot, PlanUsage, Verdict, judge_message};
 use crate::run::shim::{AriaSnapshotResult, ShimClient, StepCommand};
 
 /// A `JUDGE` line ready to run.
@@ -28,6 +32,39 @@ pub(super) struct JudgePlan {
 #[serde(rename_all = "camelCase")]
 struct ScreenshotResult {
     png_base64: String,
+}
+
+/// The entry's `JUDGE` batches: runs of consecutive `JUDGE` lines with the
+/// same scope and timeout, keyed by the line of the first. One model call
+/// judges every claim of a batch on one screenshot (SPEC 9.8).
+pub(super) fn batches(entry: &ast::Entry) -> HashMap<u32, Vec<ast::Judge>> {
+    let key = |judge: &ast::Judge| {
+        (
+            judge.scope.as_ref().map(render_snapshot_target),
+            judge.timeout.map(ast::DurationLit::millis),
+        )
+    };
+    let mut batches = HashMap::new();
+    let mut run: Vec<ast::Judge> = Vec::new();
+    let mut close = |run: &mut Vec<ast::Judge>| {
+        if run.len() > 1 {
+            batches.insert(run[0].line, mem::take(run));
+        }
+        run.clear();
+    };
+    for check in &entry.checks {
+        match check {
+            CheckStep::Judge(judge) => {
+                if run.last().is_some_and(|last| key(last) != key(judge)) {
+                    close(&mut run);
+                }
+                run.push(judge.clone());
+            }
+            CheckStep::Assert(_) | CheckStep::Capture(_) => close(&mut run),
+        }
+    }
+    close(&mut run);
+    batches
 }
 
 /// Renames the codes of a model failure under `ACT`'s rules to
@@ -77,12 +114,17 @@ impl FlowExec<'_> {
             reason:  None,
             usage:   usage_report(PlanUsage::default(), false),
         };
+        // An earlier line of the batch already judged this claim.
+        if let Some(answer) = self.judge_answers.remove(&node.line()) {
+            return self.judge_verdict(&answer, &plan.claim, report);
+        }
 
         let snapshot = match self
             .act_shim_call(
                 &mut line,
                 StepCommand::AriaSnapshot {
                     locator: plan.scope.clone(),
+                    settle:  true,
                 },
                 client,
                 state,
@@ -132,9 +174,32 @@ impl FlowExec<'_> {
         };
         line.entry_start = capture.entry_start;
 
-        let placeholders = plan.claim.bindings().placeholders();
-        let text = judge_message(plan.claim.prompt(), &placeholders, snapshot.text());
-        let reply = model_client.judge(&model, &text, &png, line.deadline).await;
+        // Later lines of a batch are judged in the same call (SPEC 9.8).
+        let mut batch: Vec<(u32, Instruction)> = Vec::new();
+        if let Some(judges) = self.judge_batches.get(&node.line()).cloned() {
+            for judge in judges.iter().skip(1) {
+                let Ok(claim) = Instruction::try_new(&judge.claim, &mut self.vars) else {
+                    batch.clear();
+                    break;
+                };
+                batch.push((judge.line, claim));
+            }
+        }
+        let mut placeholders = plan.claim.bindings().placeholders();
+        for (_, claim) in &batch {
+            for placeholder in claim.bindings().placeholders() {
+                if !placeholders.contains(&placeholder) {
+                    placeholders.push(placeholder);
+                }
+            }
+        }
+        let claims: Vec<&str> = iter::once(plan.claim.prompt())
+            .chain(batch.iter().map(|(_, claim)| claim.prompt()))
+            .collect();
+        let text = judge_message(&claims, &placeholders, snapshot.text());
+        let reply = model_client
+            .judge(&model, &text, &png, claims.len(), line.deadline)
+            .await;
         let reply = match reply {
             Ok(reply) => reply,
             Err(error) => {
@@ -160,8 +225,19 @@ impl FlowExec<'_> {
             },
             false,
         );
-        let answer = match reply.answer {
-            Ok(answer) => answer,
+        let mut answers = match reply.answer {
+            Ok(answers) if answers.len() == claims.len() => answers.into_iter(),
+            Ok(answers) => {
+                let error = act_failure(
+                    "judge-model",
+                    &format!(
+                        "the model gave {} verdicts for {} claims",
+                        answers.len(),
+                        claims.len()
+                    ),
+                );
+                return (StepEnd::Failed(error), Some(report), Vec::new());
+            }
             Err(error) => {
                 let error = act_failure(
                     "judge-model",
@@ -170,6 +246,23 @@ impl FlowExec<'_> {
                 return (StepEnd::Failed(error), Some(report), Vec::new());
             }
         };
+        let Some(answer) = answers.next() else {
+            unreachable!("one answer for each claim, and there is at least one claim");
+        };
+        for ((line, _), answer) in batch.iter().zip(answers) {
+            self.judge_answers.insert(*line, answer);
+        }
+        self.judge_verdict(&answer, &plan.claim, report)
+    }
+
+    /// The step's end for one answer: `yes` passes, `no` fails with
+    /// `judge-false`, and `unsure` passes with `judge-unsure` (SPEC 9.8).
+    fn judge_verdict(
+        &self,
+        answer: &JudgeAnswer,
+        claim: &Instruction,
+        mut report: JudgeReport,
+    ) -> (StepEnd, Option<JudgeReport>, Vec<StepWarning>) {
         let reason = self.vars.mask(&answer.reason);
         report.verdict = Some(answer.verdict.as_str().to_owned());
         report.reason = Some(reason.clone());
@@ -179,7 +272,7 @@ impl FlowExec<'_> {
                 let error = StepError {
                     code:       "judge-false".to_owned(),
                     message:    format!("judge-false: {reason}"),
-                    expected:   Some(self.vars.mask(plan.claim.prompt())),
+                    expected:   Some(self.vars.mask(claim.prompt())),
                     actual:     Some(reason),
                     candidates: None,
                 };
@@ -190,7 +283,7 @@ impl FlowExec<'_> {
                     code:    "judge-unsure".to_owned(),
                     message: format!(
                         "the model is unsure whether \"{}\" holds: {reason}",
-                        self.vars.mask(plan.claim.prompt())
+                        self.vars.mask(claim.prompt())
                     ),
                 };
                 (StepEnd::Passed, Some(report), vec![warning])

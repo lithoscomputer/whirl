@@ -13,7 +13,7 @@ mod snapshot;
 pub(crate) use decision::{ActDecision, FollowUp, GoalStatus, PlannedAction};
 pub(crate) use instruction::Instruction;
 pub(crate) use jev::{JevClient, JevPlanner, JevSetupError};
-pub(crate) use model::{ModelCatalog, ModelClient, ModelSetupError, Verdict};
+pub(crate) use model::{JudgeAnswer, ModelCatalog, ModelClient, ModelSetupError, Verdict};
 pub(crate) use planner::{
     ActPlanner, LlmPlanner, PlanError, PlanRequest, PlanStep, PlanUsage, PlannedBy,
 };

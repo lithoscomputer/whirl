@@ -2,6 +2,7 @@
 //! resolution (SPEC 5, 11), entry and step execution with timeout
 //! budgeting (SPEC 12), failure artifacts, and the per-file report.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -20,7 +21,7 @@ use crate::report::model::{
     JudgeReport, MockReport, ReportViewport, RuntimeMetadata, SETUP_ENTRY, SnapshotReport, Status,
     StepError, StepKind, StepReport, StepWarning, Timing,
 };
-use crate::run::act::{ActPlanner, Instruction, ModelClient};
+use crate::run::act::{ActPlanner, Instruction, JudgeAnswer, ModelClient};
 use crate::run::artifacts;
 use crate::run::cache::{self, CacheMode};
 use crate::run::shim::{
@@ -594,25 +595,30 @@ enum PreparedStep {
 
 /// Mutable state of one flow run.
 struct FlowExec<'a> {
-    run:       &'a FlowRun<'a>,
-    options:   ResolvedOptions,
-    vars:      VarStore,
-    warnings:  Vec<String>,
+    run:           &'a FlowRun<'a>,
+    options:       ResolvedOptions,
+    vars:          VarStore,
+    warnings:      Vec<String>,
     /// True while the shim has an open flow (startFlow succeeded and no
     /// cancel closed it).
-    flow_open: bool,
+    flow_open:     bool,
     /// Every capture, unmasked, for a dependent file (SPEC 12).
-    captures:  Vec<(String, check::Value)>,
+    captures:      Vec<(String, check::Value)>,
     /// Responses read so far; a response never changes (SPEC 9.7).
-    responses: check_step::ResponseCache,
+    responses:     check_step::ResponseCache,
     /// Requests read so far, by `RESPONSE` name (SPEC 9.2).
-    requests:  check_step::RequestCache,
+    requests:      check_step::RequestCache,
     /// Every `MOCK` that ran, in order (SPEC 7.5).
-    mocks:     Vec<RegisteredMock>,
+    mocks:         Vec<RegisteredMock>,
     /// The flow's AI cache (SPEC 12.1).
-    cache:     cache::FlowCache,
+    cache:         cache::FlowCache,
     /// The values `EXTRACT` lines read (SPEC 7.6).
-    extracts:  extract_step::ExtractValues,
+    extracts:      extract_step::ExtractValues,
+    /// The entry's `JUDGE` batches: consecutive lines with the same scope
+    /// and timeout, by the line of the first (SPEC 9.8).
+    judge_batches: HashMap<u32, Vec<ast::Judge>>,
+    /// Answers that a batch's first line received for the later lines.
+    judge_answers: HashMap<u32, JudgeAnswer>,
 }
 
 /// The resolved header pairs and body of a request or a mocked response.
@@ -1469,6 +1475,8 @@ impl FlowExec<'_> {
             remaining_ms: self.options.entry_timeout_ms,
         };
         let mut entry_status = Status::Passed;
+        self.judge_batches = judge_step::batches(entry);
+        self.judge_answers.clear();
         let implicit_response = entry.actions.first().and_then(|action| {
             matches!(action.kind, ast::ActionKind::Http { .. })
                 .then(|| wire::independent_http_response(action.line))
@@ -1848,6 +1856,8 @@ pub(crate) async fn run_flow(run: &FlowRun<'_>, client: &mut ShimClient) -> Flow
             mocks: Vec::new(),
             cache: flow_cache,
             extracts: extract_step::ExtractValues::new(),
+            judge_batches: HashMap::new(),
+            judge_answers: HashMap::new(),
         };
         if let Some(error) = cache_error {
             exec.warnings.push(format!(

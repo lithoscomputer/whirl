@@ -60,9 +60,11 @@ pub(crate) fn wire_schema(schema: Option<&Json>) -> (Json, bool) {
     if types_of(schema) == ["object"] && schema.get("anyOf").is_none() {
         return (strict(schema), false);
     }
+    // The value may be null, so the model can say the page does not show
+    // it (SPEC 7.6).
     let root = json!({
         "type": "object",
-        "properties": {"value": strict(schema)},
+        "properties": {"value": {"anyOf": [strict(schema), {"type": "null"}]}},
         "required": ["value"],
         "additionalProperties": false
     });
@@ -383,7 +385,7 @@ mod tests {
         assert!(wrapped);
         assert_eq!(
             list["properties"]["value"],
-            json!({"type": "array", "items": {"type": "string"}})
+            json!({"anyOf": [{"type": "array", "items": {"type": "string"}}, {"type": "null"}]})
         );
         let (text, wrapped) = wire_schema(None);
         assert!(wrapped);

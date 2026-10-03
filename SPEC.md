@@ -594,6 +594,16 @@ ACT "add the first product to the cart"
 ASSERT testid:cart-badge text == 1
 ```
 
+Before each snapshot that a model reads, for `ACT`, `GOAL`, `ai:` targets,
+`EXTRACT`, and `JUDGE`, Whirl waits for the page to settle: until the
+document's DOM has loaded and no request has been open for 500 ms. WebSocket
+and event-stream requests do not count, and a request open for 2 seconds stops
+counting. The wait lasts at least 100 ms, so a request that the last action
+just started is seen, and at most 5 seconds or half of the step's remaining
+time. A page that does not settle is read as it is. Many pages load their
+content after the document, so a model that read the page at once would not
+see it. A cached locator's check (section 12.1) does not wait.
+
 Whirl takes a Playwright AI snapshot of the selected tab. The snapshot is an
 outline of the page's accessibility tree, and each element in it has a ref such
 as `e12`. Elements inside iframes are included, with refs such as `f1e3`. Whirl
@@ -917,7 +927,8 @@ adapts the schema for providers that need strict schemas: every object gets
 property that the schema does not require may be null, and an `enum` or
 `const` without a `type` gets the type of its values. A null answer for such
 a property counts as absent. A schema whose root is not an object is sent as
-an object with one `value` property and read back from it.
+an object with one `value` property, which may be null, and read back from
+it.
 
 A string with `"format": "uri"` is a link. The model answers it with the ref
 of a link element in the snapshot, and Whirl reads that element's `href` and
@@ -964,9 +975,12 @@ opens every shadow root that a page script attaches, as for `ACT`.
 Each model call receives the goal, with masked values as placeholders
 (section 7.4), the Whirl lines that already ran for this `GOAL`, each with its
 error when it failed, and the AI snapshot of the selected tab, without link
-URLs. The model answers with one action, in the form that `ACT` uses, or with
-`done`, or with `impossible` and a reason. Whirl checks an action as it checks
-an `ACT` answer and runs it as the matching Whirl action, with the methods of
+URLs. The model answers with actions in the form that `ACT` uses, or with
+`done`, or with `impossible` and a reason. An answer holds one action, or,
+to fill in a form, one action for each field that needs a value; they run in
+order on the page that the snapshot showed, and the first that fails stops the
+rest. Each counts as one action. Whirl checks each action as it checks an
+`ACT` answer and runs it as the matching Whirl action, with the methods of
 section 7.4. So `GOAL` cannot go to a URL, go back, reload the page, or upload
 or drop a file. A custom dropdown takes two actions: one opens it, and the
 next chooses the option. Each action gets at most the step timeout
@@ -992,9 +1006,17 @@ model errors are runtime errors (exit 3). `--jev` does not plan `GOAL`.
 
 The AI cache (section 12.1) records the lines that ran, so a later run replays
 them without a model call. A cached path is a straight list of lines, with no
-branches. When a cached line misses, the model plans the rest of the goal from
-the current page, and it sees the lines that already ran. The step reports the
-warning `healed`. A path that changes between runs heals on every run.
+branches. When a cached line misses because its element's role or name
+changed, as when the page renamed a button, Whirl asks the model to find that
+element again from the cached role and name, with an `ai:` target call
+(section 6.3). When the model finds exactly one, the line runs on it with its
+own method and arguments, and the rest of the path replays. After such a
+re-find, the model sees every line that ran and says whether the goal is done,
+as on any `GOAL` call. When a line misses in any other way, or the re-find
+finds no element or several, the model plans the rest of the goal from the
+current page, and it sees the lines that already ran. Either way the step
+reports the warning `healed`, and `--cache=update` stores the path that ran. A
+path that changes between runs heals on every run.
 
 The step's report text is the authored line. The JSON report adds a `goal`
 object to the step: the model, each action as a Whirl line with the
@@ -1305,6 +1327,12 @@ A model whose image support the catalog does not know is the warning
 applies. The AI cache (section 12.1) never records `JUDGE`, so `--cache=only`
 still calls the model.
 
+Consecutive `JUDGE` lines with the same scope and the same timeout are judged
+in one model call, on one snapshot and one screenshot, since nothing between
+them changes the page. The model answers each claim on its own, and each line
+passes or fails on its own answer, in order. The first line's report holds
+the call's usage; the later lines report no model call.
+
 The step's report text is the authored line. The JSON report adds a `judge`
 object to the step: the model, the verdict, the reason, and the token usage and
 cost of the model call.
@@ -1481,8 +1509,8 @@ On a miss, Whirl resolves the target, or plans the `ACT` line, with the model,
 as if no entry existed, in the rest of the step's time. When a cached `ACT`
 line misses after an earlier cached action ran, the model plans the rest of
 the instruction from the current page, as for step two of a two-step action.
-A cached `GOAL` line that misses continues from the current page in the same
-way (section 7.7). This is a heal. The step passes or fails on its new
+A cached `GOAL` line that misses finds its element again, or continues from
+the current page (section 7.7). This is a heal. The step passes or fails on its new
 result.
 
 **Modes.** `--cache` (section 13) selects what a run does with the file:

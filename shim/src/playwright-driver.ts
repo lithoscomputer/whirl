@@ -24,6 +24,7 @@ import { createHostAllowlist } from "./host-glob.js";
 import { nameIframes } from "./iframe-names.js";
 import { generateLocator } from "./locator-generator.js";
 import { buildLocator, describeLocator, frameOwners } from "./locators.js";
+import { PageActivity } from "./page-settle.js";
 import type { Params } from "./params.js";
 import {
 	decodeHttpParams,
@@ -111,6 +112,8 @@ interface FlowState {
 	readonly page: Page;
 	readonly tabs: FlowTabs;
 	readonly network: FlowNetwork;
+	/** Open requests, for the settle before a model's snapshot. */
+	readonly activity: PageActivity;
 	readonly mocks: FlowMocks;
 	readonly blockedHosts: Set<string>;
 	readonly traceActive: boolean;
@@ -735,6 +738,8 @@ export class PlaywrightDriver implements ShimDriver {
 			await context.tracing.start({ screenshots: true, snapshots: true });
 		}
 		const network = new FlowNetwork(context, params.allowHosts, blockedHosts);
+		const activity = new PageActivity();
+		activity.watch(context);
 		const page = await context.newPage();
 		const tabs = new FlowTabs(context, page, params.dialogs);
 		let recorder: ScreencastRecorder | null = null;
@@ -765,6 +770,7 @@ export class PlaywrightDriver implements ShimDriver {
 			page,
 			tabs,
 			network,
+			activity,
 			mocks,
 			blockedHosts,
 			traceActive: params.trace,
@@ -1277,11 +1283,16 @@ export class PlaywrightDriver implements ShimDriver {
 				// ACT's view of the page (SPEC 7.4): element refs such as
 				// [ref=e12] that a later `ref` locator segment resolves.
 				const deadline = new Deadline(timeoutMs);
+				// A model's view waits for the page's data first, with at
+				// most half of the step's time (SPEC 7.4).
+				if (params["settle"] === true) {
+					await flow.activity.settle(page, timeoutMs / 2);
+				}
 				let snapshot = "";
 				if (fieldArrayOrNull(params, "locator") === null) {
 					snapshot = await page.ariaSnapshot({
 						mode: "ai",
-						timeout: timeoutMs,
+						timeout: deadline.remainingMs(),
 					});
 				} else {
 					// ACT limited to one element (SPEC 7.4): the scope waits
@@ -1289,7 +1300,7 @@ export class PlaywrightDriver implements ShimDriver {
 					await this.#locatorAction(page, params, async (locator) => {
 						snapshot = await locator.ariaSnapshot({
 							mode: "ai",
-							timeout: timeoutMs,
+							timeout: deadline.remainingMs(),
 						});
 					});
 				}
