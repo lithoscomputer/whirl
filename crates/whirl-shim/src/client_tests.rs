@@ -11,8 +11,8 @@ use serde_json::json;
 use tokio::time::sleep;
 
 use super::{
-    EndFlowParams, Locator, ReadResult, ReadSubject, ShimClient, ShimLaunch, StartFlowParams,
-    StepCommand, StepOutcome, StepRequest, ViewportParams,
+    EndFlowParams, LaunchOrigin, Locator, ReadResult, ReadSubject, ShimClient, ShimLaunch,
+    StartFlowParams, StepCommand, StepOutcome, StepRequest, ViewportParams,
 };
 
 /// Launch parameters for the fake shim: `node` from `PATH` and the
@@ -23,6 +23,7 @@ fn fake_shim_launch() -> ShimLaunch {
     ShimLaunch {
         node: PathBuf::from("node"),
         shim_js,
+        origin: LaunchOrigin::Environment,
     }
 }
 

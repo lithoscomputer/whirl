@@ -68,6 +68,17 @@ const STDERR_TAIL_LIMIT: usize = 8 * 1024;
 pub struct ShimLaunch {
     pub node:    PathBuf,
     pub shim_js: PathBuf,
+    pub origin:  LaunchOrigin,
+}
+
+/// Where a [`ShimLaunch`] came from (protocol section 8). It decides which
+/// Node versions `whirl doctor` accepts.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LaunchOrigin {
+    /// `WHIRL_SHIM_JS` and `WHIRL_NODE`: a development runtime.
+    Environment,
+    /// The bundle `whirl install` provisioned, with its pinned Node.
+    Bundle,
 }
 
 /// A shim process or protocol failure. Protocol-level step errors are
@@ -143,6 +154,7 @@ fn resolve_launch_from(
         return Ok(ShimLaunch {
             node: env_node.unwrap_or_else(|| PathBuf::from(DEFAULT_NODE)),
             shim_js,
+            origin: LaunchOrigin::Environment,
         });
     }
     if let Some(data_dir) = data_dir {
@@ -155,7 +167,11 @@ fn resolve_launch_from(
             if installed.as_deref() != Some(WHIRL_VERSION) {
                 return Err(ShimError::BundleOutdated { installed });
             }
-            return Ok(ShimLaunch { node, shim_js });
+            return Ok(ShimLaunch {
+                node,
+                shim_js,
+                origin: LaunchOrigin::Bundle,
+            });
         }
     }
     Err(ShimError::NotInstalled)
@@ -1030,6 +1046,7 @@ mod tests {
         assert_eq!(launch, ShimLaunch {
             node:    PathBuf::from(DEFAULT_NODE),
             shim_js: PathBuf::from("/dev/shim.js"),
+            origin:  LaunchOrigin::Environment,
         });
     }
 
@@ -1071,6 +1088,7 @@ mod tests {
         assert_eq!(launch, ShimLaunch {
             node:    data_dir.join(BUNDLE_NODE),
             shim_js: data_dir.join(BUNDLE_SHIM_JS),
+            origin:  LaunchOrigin::Bundle,
         });
         fs::remove_dir_all(&data_dir).expect("temp dirs should be removable");
     }

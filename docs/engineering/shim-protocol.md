@@ -565,3 +565,7 @@ Rust resolves the shim in this order:
 
 Missing both is a runtime error (exit 3) with a remedy naming
 `whirl install`.
+
+`whirl doctor` requires the bundle's exact pinned Node. A development
+runtime from `WHIRL_NODE` may be any Node from the pinned major version
+up.
