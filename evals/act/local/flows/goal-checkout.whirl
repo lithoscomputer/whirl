@@ -1,0 +1,8 @@
+[Options]
+base: {{env.EVAL_BASE}}
+model: {{model}}
+
+# GOAL: several steps across two views, with a quantity and a select.
+VISIT /goal-checkout/
+GOAL "buy two blue mugs with express shipping for Ada Lovelace"
+ASSERT testid:confirmation text == "Order placed: 2 × Blue mug, express shipping, for Ada Lovelace"

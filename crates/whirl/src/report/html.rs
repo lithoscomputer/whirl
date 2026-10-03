@@ -415,6 +415,7 @@ fn render_entry(
             duration(step.duration_ms)
         )?;
         render_act(output, step)?;
+        render_goal(output, step)?;
         render_ai(output, step)?;
         render_extract(output, step)?;
         render_judge(output, step)?;
@@ -525,6 +526,55 @@ fn render_act(output: &mut impl io::Write, step: &StepReport) -> io::Result<()> 
             escape(&action.line),
             escape(&action.description)
         )?;
+    }
+    write!(output, "</dl>")
+}
+
+/// What a `GOAL` step ran and how it ended (SPEC 7.7).
+fn render_goal(output: &mut impl io::Write, step: &StepReport) -> io::Result<()> {
+    let Some(goal) = &step.goal else {
+        return Ok(());
+    };
+    write!(
+        output,
+        "<dl><dt>Model</dt><dd><code>{}</code> · {} call(s) · {} input and {} output tokens</dd>\
+         <dt>AI cache</dt><dd>{}</dd>",
+        escape(&goal.model),
+        goal.usage.model_calls,
+        goal.usage.input_tokens,
+        goal.usage.output_tokens,
+        escape(&goal.cache)
+    )?;
+    for line in goal.cached.iter().flatten() {
+        write!(
+            output,
+            "<dt>Cached</dt><dd><code>{}</code></dd>",
+            escape(line)
+        )?;
+    }
+    for action in &goal.actions {
+        let chosen_by = if action.planned_by == "cache" {
+            " · from the AI cache"
+        } else {
+            ""
+        };
+        write!(
+            output,
+            "<dt>Ran</dt><dd><code>{}</code> {}{chosen_by}",
+            escape(&action.line),
+            escape(&action.description)
+        )?;
+        if let Some(error) = &action.error {
+            write!(output, " · failed: {}", escape(error))?;
+        }
+        write!(output, "</dd>")?;
+    }
+    if let Some(end) = &goal.end {
+        write!(output, "<dt>Ended</dt><dd>{}", escape(end))?;
+        if let Some(reason) = &goal.reason {
+            write!(output, ": {}", escape(reason))?;
+        }
+        write!(output, "</dd>")?;
     }
     write!(output, "</dl>")
 }

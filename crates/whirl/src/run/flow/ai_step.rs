@@ -751,6 +751,7 @@ impl FlowExec<'_> {
                 PreparedStep::Check(_) | PreparedStep::Capture(_) => {
                     unreachable!("checks with a subject resolve their targets while they read")
                 }
+                PreparedStep::Goal(_) => unreachable!("GOAL has no locator"),
             }
         };
         let passed = matches!(end, StepEnd::Passed);

@@ -322,6 +322,101 @@
                           }
                         }
                       },
+                      "goal": {
+                        "type": "object",
+                        "required": [
+                          "model",
+                          "actions",
+                          "usage",
+                          "cache"
+                        ],
+                        "properties": {
+                          "model": {
+                            "type": "string"
+                          },
+                          "actions": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "required": [
+                                "line",
+                                "description"
+                              ],
+                              "properties": {
+                                "line": {
+                                  "type": "string"
+                                },
+                                "description": {
+                                  "type": "string"
+                                },
+                                "plannedBy": {
+                                  "enum": [
+                                    "llm",
+                                    "cache"
+                                  ]
+                                },
+                                "error": {
+                                  "type": "string",
+                                  "description": "Why the action failed; the model planned again."
+                                }
+                              }
+                            }
+                          },
+                          "end": {
+                            "enum": [
+                              "done",
+                              "impossible"
+                            ],
+                            "description": "How the model ended the goal; absent for a cache hit and for a step that ran out of actions or time."
+                          },
+                          "reason": {
+                            "type": "string",
+                            "description": "The model's reason for its last answer, masked."
+                          },
+                          "usage": {
+                            "type": "object",
+                            "required": [
+                              "modelCalls",
+                              "inputTokens",
+                              "outputTokens"
+                            ],
+                            "properties": {
+                              "modelCalls": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "inputTokens": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "outputTokens": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "costUsdMicros": {
+                                "type": "integer",
+                                "minimum": 0
+                              }
+                            }
+                          },
+                          "cache": {
+                            "enum": [
+                              "hit",
+                              "miss",
+                              "healed"
+                            ],
+                            "description": "The line's AI cache status (SPEC 12.1)."
+                          },
+                          "cached": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "For a healed line, the lines the cache held."
+                          }
+                        },
+                        "description": "What a GOAL step ran and how it ended (SPEC 7.7)."
+                      },
                       "ai": {
                         "type": "object",
                         "description": "What the step's ai: targets resolved to (SPEC 6.3).",

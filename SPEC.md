@@ -7,7 +7,7 @@ Whirl is a command-line tool that runs web UI tests written in plain text files.
 
 ## 1. Design principles
 
-1. **Closed vocabulary.** The language has a fixed set of actions, subjects, filters, and predicates. There are no conditionals, loops, functions, or user-defined keywords. A flow that needs branching is two files. `ACT` (section 7.4), `ai:` targets (section 6.3), `EXTRACT` (section 7.6), and `JUDGE` (section 9.8) are fixed keywords too, but what a language model chooses for them can change from run to run, so a flow asserts the result it expects. The AI cache (section 12.1) records each choice, so later runs replay it.
+1. **Closed vocabulary.** The language has a fixed set of actions, subjects, filters, and predicates. There are no conditionals, loops, functions, or user-defined keywords. A flow that needs branching is two files. `ACT` (section 7.4), `GOAL` (section 7.7), `ai:` targets (section 6.3), `EXTRACT` (section 7.6), and `JUDGE` (section 9.8) are fixed keywords too, but what a language model chooses for them can change from run to run, so a flow asserts the result it expects. The AI cache (section 12.1) records each choice, so later runs replay it.
 2. **No waits in the language.** Actions auto-wait for their target. Assertions retry until they pass or time out. The format has no `SLEEP` and no `WAIT`.
 3. **Semantic locators first.** The locator grammar puts `role:` and `label:` in front and makes raw CSS the visually distinct escape hatch.
 4. **One flow per file, top to bottom.** A file is a linear sequence of entries. Execution order is textual order. A failure stops the file.
@@ -156,7 +156,7 @@ The `[Options]` section holds `key: value` lines. V1 keys:
 | `storage` | file path | none | Saved storage state loaded into each file's browser context |
 | `user-agent` | alias or string | engine default | User agent string the browser sends and reports |
 | `setup` | file path | none | A flow that runs first; this file starts from its final state |
-| `model` | `provider/model` | none | The language model that `ACT` asks (section 7.4) |
+| `model` | `provider/model` | none | The language model that `ACT`, `GOAL`, `ai:` targets, `EXTRACT`, and `JUDGE` ask (sections 6.3, 7.4, 7.6, 7.7, 9.8) |
 | `snapshot-mask` | explicit locator or `none` | no masks | Mask matching elements in every `SNAPSHOT`; repeated lines form a list |
 | `snapshot-max-diff` | pixel count or percentage | `0` | Maximum different pixels allowed in a `SNAPSHOT` |
 | `snapshot-pixel-threshold` | number from 0 to 1 | `0.2` | Color distance above which a pixel counts as different |
@@ -939,6 +939,70 @@ The step's report text is the authored headline. The JSON report adds an
 `extract` object to the step: the model, the value with its type (masked as
 a capture is, section 14), and the token usage and cost of the model call.
 
+### 7.7 GOAL
+
+`GOAL "goal"` asks the language model named by the `model` option to reach a
+goal with several actions, one at a time. It takes no locator.
+
+```whirl
+[Options]
+model: anthropic/claude-sonnet-5
+
+VISIT /products
+GOAL "add two blue mugs to the cart and open the cart"
+ASSERT testid:cart-badge text == 2
+ASSERT role:heading "Your cart" visible
+```
+
+A `GOAL` must be the last action of its entry, and the entry must have an
+`ASSERT` that checks the result, because the model decides when the goal is
+done. `whirl check` reports any other `GOAL` as the error `goal-unchecked`.
+A file that uses `GOAL` needs the `model` option; without it, `whirl check`
+reports the error `act-without-model`. In a file that uses `GOAL`, Whirl
+opens every shadow root that a page script attaches, as for `ACT`.
+
+Each model call receives the goal, with masked values as placeholders
+(section 7.4), the Whirl lines that already ran for this `GOAL`, each with its
+error when it failed, and the AI snapshot of the selected tab, without link
+URLs. The model answers with one action, in the form that `ACT` uses, or with
+`done`, or with `impossible` and a reason. Whirl checks an action as it checks
+an `ACT` answer and runs it as the matching Whirl action, with the methods of
+section 7.4. So `GOAL` cannot go to a URL, go back, reload the page, or upload
+or drop a file. A custom dropdown takes two actions: one opens it, and the
+next chooses the option. Each action gets at most the step timeout
+(`step-timeout` option). An action that fails, as when its element never
+becomes actionable, does not end the step: the next call shows the model the
+failure, and the model plans again from a new snapshot.
+
+The step ends when:
+
+- the model answers `done`: the step passes, and the check lines run,
+- the model answers `impossible`: the entry fails with `goal-impossible` and
+  the model's reason,
+- 20 actions have run, or failed, and the answer after the 20th is not `done`:
+  the entry fails with `goal-limit`,
+- the time runs out: the entry fails with `timeout`. The default is 2 minutes,
+  not the step timeout; `@duration` overrides it, and `entry-timeout` caps it,
+  as for any step (section 12).
+
+An answer that `ACT` would reject fails the entry with `act-invalid-decision`.
+A model error is `goal-model`, under the rules of `ACT`: content filtering and
+an input larger than the model's context fail the entry (exit 1), and other
+model errors are runtime errors (exit 3). `--jev` does not plan `GOAL`.
+
+The AI cache (section 12.1) records the lines that ran, so a later run replays
+them without a model call. A cached path is a straight list of lines, with no
+branches. When a cached line misses, the model plans the rest of the goal from
+the current page, and it sees the lines that already ran. The step reports the
+warning `healed`. A path that changes between runs heals on every run.
+
+The step's report text is the authored line. The JSON report adds a `goal`
+object to the step: the model, each action as a Whirl line with the
+description of the element, who planned it (`llm` or `cache`), and its error
+when it failed, how the goal ended (`done` or `impossible`) with the model's
+reason, the cache status, a heal's cached lines, and the token usage and cost
+of the model calls.
+
 ## 8. PAGE
 
 ```
@@ -1306,7 +1370,7 @@ Whirl masks every value sourced from `env.*` in the textual output it generates:
 - **Retries.** Page checks and page captures read their value again on the schedule of section 9.7 until they pass or the step timeout expires. Response checks, response captures, and `eval` captures read once.
 - **JUDGE.** A `JUDGE` line runs once, after the check lines before it in its entry pass. Its screenshot, snapshot, and model call share its step timeout, so a `JUDGE` line that needs more sets its own `@duration`.
 - **ACT.** An `ACT` line is one step. Its snapshots, model calls, Jev requests, and actions share its step timeout. Model calls take seconds, so an `ACT` line that needs more than the step timeout sets its own, such as `@60s`.
-- **Timeouts.** Each action, PAGE, assert, and capture line gets the step timeout (`step-timeout` option, default 10s); `VISIT` gets the navigation timeout (`nav-timeout` option, default 30s). A trailing `@duration` on any such line overrides its own budget: `CLICK "Generate report" @60s`. The optional `entry-timeout` option caps an entry's total time across all of its lines; when it expires, the in-flight step fails with an entry-timeout error. An entry without one is still bounded by its per-step timeouts. The suffix must be bare: a line’s final bare token of the form `@duration` is always its timeout, and a quoted `"@60s"` is an ordinary value. Timeouts are enforced from outside the page, so they hold even when the page cannot respond — an `EVAL` script blocking the renderer or returning a Promise that never settles. When a timed-out step cannot be cancelled cleanly, Whirl closes that flow's browser context; if closing also stalls, it terminates and restarts only that worker's shim process. Either way the flow fails and reports normally, and other files are unaffected.
+- **Timeouts.** Each action, PAGE, assert, and capture line gets the step timeout (`step-timeout` option, default 10s); `VISIT` gets the navigation timeout (`nav-timeout` option, default 30s), and `GOAL` gets 2 minutes (section 7.7). A trailing `@duration` on any such line overrides its own budget: `CLICK "Generate report" @60s`. The optional `entry-timeout` option caps an entry's total time across all of its lines; when it expires, the in-flight step fails with an entry-timeout error. An entry without one is still bounded by its per-step timeouts. The suffix must be bare: a line’s final bare token of the form `@duration` is always its timeout, and a quoted `"@60s"` is an ordinary value. Timeouts are enforced from outside the page, so they hold even when the page cannot respond — an `EVAL` script blocking the renderer or returning a Promise that never settles. When a timed-out step cannot be cancelled cleanly, Whirl closes that flow's browser context; if closing also stalls, it terminates and restarts only that worker's shim process. Either way the flow fails and reports normally, and other files are unaffected.
 - **Setup.** Files with a `setup` option run after their setup flows. Whirl first runs every distinct setup flow named by the inputs, once each and in parallel like any files, then runs the remaining files, each starting from its setup flow's saved state with the setup flow's captures as `{{setup.name}}`. A setup flow that is also an input runs once, as the setup. A failed setup flow reports normally, and each of its dependents reports a `[setup]` failure naming the setup flow and its first failing step, without opening a browser. Setup flows are one level deep.
 - **Parallelism.** Files run in parallel across worker slots (`--jobs`, default: logical CPU count). A single file is never parallelized.
 - **Dialogs.** `alert`, `confirm`, and `prompt` dialogs are auto-dismissed by default. The `dialogs: accept` option auto-accepts them instead.
@@ -1319,8 +1383,8 @@ flow, and later runs replay it without a model call. The file is ordinary
 text for the repository: commit it and review its changes like the flow.
 
 The cache of `flows/checkout.whirl` is `flows/checkout.whirl-cache.json`.
-It records what each `ai:` target (section 6.3) and each `ACT` line (section
-7.4) resolved to:
+It records what each `ai:` target (section 6.3), each `ACT` line (section
+7.4), and each `GOAL` line (section 7.7) resolved to:
 
 ```json
 {
@@ -1356,7 +1420,7 @@ It records what each `ai:` target (section 6.3) and each `ACT` line (section
 ```
 
 **Key.** An entry belongs to one line of the flow. Its key is the `kind`
-(`ai-target` or `act`), the authored `line` before interpolation, without its
+(`ai-target`, `act`, or `goal`), the authored `line` before interpolation, without its
 comment, and the `occurrence` of that text among identical lines of the file,
 from 1 in file order. An `ai-target` entry also names its `target`: the
 authored locator with the `ai:` segment, because one line can have two, as in
@@ -1368,7 +1432,9 @@ of the key either.
 entry holds the `locator` of the element and its `fingerprint`: the element's
 ARIA role and accessible name, or `null` for an element without a name. An
 `act` entry holds the Whirl `line` of each action that ran, in order, with the
-fingerprint of each element in the line. Each locator comes from the locator
+fingerprint of each element in the line. A `goal` entry has the same form as
+an `act` entry; it holds the actions that ran and leaves out those that
+failed. Each locator comes from the locator
 generator below, not from the report text of section 7.4, which is not
 guaranteed to be unique. Entries follow the order of their lines in the flow.
 Whirl writes the file as JSON with two-space indentation, the keys in the order
@@ -1399,9 +1465,11 @@ every run and reports the warning `cache-unstable`.
 **Replay.** For an `ai:` target with an entry, Whirl waits for the cached
 locator for at most half of the step's remaining time. When it finds exactly
 one element with the same role and name as the fingerprint, the line runs on
-it with no model call: a hit. For an `ACT` line with an entry, Whirl runs each
-cached line in order, as if the flow held it, after the same fingerprint check;
-each action gets at most half of the line's remaining time. Everything else is
+it with no model call: a hit. For an `ACT` or `GOAL` line with an entry,
+Whirl runs each cached line in order, as if the flow held it, after the same
+fingerprint check; each action gets at most half of the line's remaining time.
+For `GOAL`, the step timeout stands in for the line's remaining time in both
+limits when it is shorter, so a heal starts soon. Everything else is
 a miss:
 
 - no entry for the line,
@@ -1413,7 +1481,9 @@ On a miss, Whirl resolves the target, or plans the `ACT` line, with the model,
 as if no entry existed, in the rest of the step's time. When a cached `ACT`
 line misses after an earlier cached action ran, the model plans the rest of
 the instruction from the current page, as for step two of a two-step action.
-This is a heal. The step passes or fails on its new result.
+A cached `GOAL` line that misses continues from the current page in the same
+way (section 7.7). This is a heal. The step passes or fails on its new
+result.
 
 **Modes.** `--cache` (section 13) selects what a run does with the file:
 
@@ -1425,8 +1495,8 @@ This is a heal. The step passes or fails on its new result.
   adds new entries, replaces healed ones, and removes the entries the run did
   not use. A file that fails writes nothing. A cache left with no entries is
   deleted.
-- `only`: a miss fails the step with `cache-miss`, and `ai:` targets and
-  `ACT` make no model calls. `EXTRACT`, `JUDGE`, and absence checks are never
+- `only`: a miss fails the step with `cache-miss`, and `ai:` targets,
+  `ACT`, and `GOAL` make no model calls. `EXTRACT`, `JUDGE`, and absence checks are never
   cached, so they still call the model.
 
 An `ai:` check with `hidden` or `not exists` that passes because the model
@@ -1614,7 +1684,7 @@ Rust source, configuration, and project setup follow the [Brynary Rust Style Gui
 - **JSON diagnostics.** `whirl check --json` writes one version 1 JSON document to stdout, containing `exitCode` and `diagnostics`, with no diagnostic text on stderr. Each diagnostic includes a stable code, severity, path, line, column, length, message, and expected alternatives. Positions are 1-based Unicode character positions; locations unavailable for input or I/O errors are null. CLI argument syntax errors still use the ordinary usage message.
 - **Parse errors** (exit 2) are reported with file, line, column, a caret under the offending token, and the expected alternatives. `whirl check` surfaces them without launching a browser. Lint warnings do not change the exit code. Whirl warns about a capture that is never used, about an HTTP entry without a `status` check, and about a `count >= 1` assert directly followed by a check on the same locator, only when the following check requires at least one element. A `hidden` check or a count comparison that accepts zero does not make the presence check redundant. `whirl check` reports a check whose types cannot work, such as `text toHex` or `url > 3`, as the error `filter-type`. It reports an invalid literal regex, JSONPath, or XPath as a parse error. A file with an `[Asserts]` or `[Captures]` section is the parse error `sections-removed`, and a file that mixes such sections with check lines is the parse error `mixed-check-syntax` (section 4.1).
 - **Test failures** (exit 1) report the failing step the same way, plus expected versus actual and the artifacts. Check failures use the codes of section 9.7.
-- **Warnings** do not change a step's status or the exit code. Each has a stable code in the JSON report: `unused-mock` (section 7.5); `cache-miss`, `healed`, `uncached`, `cache-secret`, and `cache-unstable` (section 12.1). `whirl check` reports `cache-stale-entry` as a warning and `cache-invalid`, `ai-count`, `unknown-extract`, `duplicate-extract`, `extract-schema-unsupported`, and `judge-without-images` as errors, and `extract-unsettled`, `judge-alone`, and `judge-images-unknown` as warnings. A `JUDGE` that answers `unsure` is the step warning `judge-unsure`, and one that answers `no` fails with `judge-false`.
+- **Warnings** do not change a step's status or the exit code. Each has a stable code in the JSON report: `unused-mock` (section 7.5); `cache-miss`, `healed`, `uncached`, `cache-secret`, and `cache-unstable` (section 12.1). `whirl check` reports `cache-stale-entry` as a warning and `cache-invalid`, `ai-count`, `unknown-extract`, `duplicate-extract`, `extract-schema-unsupported`, `judge-without-images`, and `goal-unchecked` as errors, and `extract-unsettled`, `judge-alone`, and `judge-images-unknown` as warnings. A `JUDGE` that answers `unsure` is the step warning `judge-unsure`, and one that answers `no` fails with `judge-false`.
 - **Runtime errors** (exit 3) cover shim crashes, missing browsers, and similar environmental failures.
 
 ## 17. Grammar
@@ -1659,6 +1729,7 @@ action-body = "VISIT" , value
            | "SCREENSHOT" , artifact-name
            | "EVAL" , value
            | "ACT" , [ locator ] , value
+           | "GOAL" , value   (* default timeout 2 minutes; section 7.7 *)
            | "STORE" , ( "local" | "session" | "cookie" ) , value , value ;
 
 mock       = "MOCK" , http-method , value
@@ -1765,3 +1836,4 @@ Deferred beyond V1 (candidate V2 features, not promised):
 - A step-two prompt for `ACT` that sends only the part of the snapshot that changed.
 - External schema files for `EXTRACT`, and a cache for `EXTRACT` results.
 - `--jev` for `ai:` targets, segments after an `ai:` segment, and `ai:` with `count`.
+- Branches in a cached `GOAL` path, `--jev` for `GOAL`, and later `GOAL` calls that send only the part of the snapshot that changed.

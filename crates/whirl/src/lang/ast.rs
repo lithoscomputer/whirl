@@ -288,6 +288,14 @@ impl File {
             .any(|action| matches!(action.kind, ActionKind::Act { .. }))
     }
 
+    /// True when any entry has a `GOAL` line (SPEC 7.7).
+    pub(crate) fn uses_goal(&self) -> bool {
+        self.entries
+            .iter()
+            .flat_map(|entry| &entry.actions)
+            .any(|action| matches!(action.kind, ActionKind::Goal { .. }))
+    }
+
     /// True when any entry has a `JUDGE` line (SPEC 9.8).
     pub(crate) fn uses_judge(&self) -> bool {
         self.entries
@@ -295,11 +303,12 @@ impl File {
             .any(|entry| entry.judges().next().is_some())
     }
 
-    /// True when any line asks a language model: `ACT`, `EXTRACT`,
-    /// `JUDGE`, or a locator with an `ai:` target (SPEC 6.3, 7.4, 7.6,
-    /// 9.8).
+    /// True when any line asks a language model: `ACT`, `GOAL`,
+    /// `EXTRACT`, `JUDGE`, or a locator with an `ai:` target (SPEC 6.3,
+    /// 7.4, 7.6, 7.7, 9.8).
     pub(crate) fn uses_ai(&self) -> bool {
         self.uses_act()
+            || self.uses_goal()
             || self.uses_judge()
             || self
                 .entries
@@ -539,6 +548,11 @@ pub(crate) enum ActionKind {
         scope:       Option<Locator>,
         instruction: Value,
     },
+    /// `GOAL "goal"` asks the file's model to reach a goal with several
+    /// element actions (SPEC 7.7).
+    Goal {
+        goal: Value,
+    },
     /// `EXTRACT name [locator] "instruction"` asks the file's model to read
     /// a value, shaped by an optional JSON Schema (SPEC 7.6).
     Extract {
@@ -746,6 +760,7 @@ impl ActionKind {
             | Self::Visit { .. }
             | Self::Screenshot { .. }
             | Self::Eval { .. }
+            | Self::Goal { .. }
             | Self::Store { .. } => Vec::new(),
         }
     }
@@ -780,6 +795,7 @@ impl ActionKind {
             | Self::Visit { .. }
             | Self::Screenshot { .. }
             | Self::Eval { .. }
+            | Self::Goal { .. }
             | Self::Store { .. } => Vec::new(),
         }
     }
@@ -813,6 +829,7 @@ impl ActionKind {
             | Self::Snapshot { .. }
             | Self::Eval { .. }
             | Self::Act { .. }
+            | Self::Goal { .. }
             | Self::Extract { .. }
             | Self::Store { .. } => None,
         }

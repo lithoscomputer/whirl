@@ -55,6 +55,35 @@ impl ActInference {
     }
 }
 
+/// How one `GOAL` answer goes on (SPEC 7.7).
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum GoalStatus {
+    Act,
+    Done,
+    Impossible,
+}
+
+/// The raw structured answer that [`goal_schema`] describes.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct GoalInference {
+    pub(crate) status: GoalStatus,
+    pub(crate) reason: String,
+    action:            Option<InferredAction>,
+}
+
+impl GoalInference {
+    /// The answer's action as a one-step `ACT` answer, so it goes through
+    /// [`PageSnapshot::decide`] like any answer.
+    pub(crate) fn into_act(self) -> ActInference {
+        ActInference {
+            action:   self.action,
+            two_step: false,
+        }
+    }
+}
+
 /// The methods the model may choose. Each maps to one Whirl verb.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -136,44 +165,10 @@ impl ActMethod {
 
 /// The JSON schema of [`ActInference`], sent with every model call.
 pub(crate) fn inference_schema() -> Json {
-    let methods: Vec<&str> = ActMethod::ALL
-        .iter()
-        .map(|method| method.wire_name())
-        .collect();
     json!({
         "type": "object",
         "properties": {
-            "action": {
-                "anyOf": [
-                    {
-                        "type": "object",
-                        "properties": {
-                            "elementId": {
-                                "type": "string",
-                                "description": "The ref of the element, copied from the accessibility tree without brackets, such as e12."
-                            },
-                            "description": {
-                                "type": "string",
-                                "description": "A description of the element and its purpose."
-                            },
-                            "method": {
-                                "type": "string",
-                                "enum": methods,
-                                "description": "The supported browser interaction method to execute."
-                            },
-                            "arguments": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                                "description": "The arguments to pass to the selected interaction method."
-                            }
-                        },
-                        "required": ["elementId", "description", "method", "arguments"],
-                        "additionalProperties": false
-                    },
-                    {"type": "null"}
-                ],
-                "description": "The element to act on, or null when no matching element exists."
-            },
+            "action": action_schema("The element to act on, or null when no matching element exists."),
             "twoStep": {
                 "type": "boolean",
                 "description": "Whether the selected interaction requires a second action to finish the request."
@@ -181,6 +176,67 @@ pub(crate) fn inference_schema() -> Json {
         },
         "required": ["action", "twoStep"],
         "additionalProperties": false
+    })
+}
+
+/// The schema of one `GOAL` answer (SPEC 7.7): go on with one action, or
+/// end the goal.
+pub(crate) fn goal_schema() -> Json {
+    json!({
+        "type": "object",
+        "properties": {
+            "status": {
+                "type": "string",
+                "enum": ["act", "done", "impossible"],
+                "description": "act to run one more action, done when the goal is complete, or impossible when it cannot be reached."
+            },
+            "reason": {
+                "type": "string",
+                "description": "A short reason for the answer."
+            },
+            "action": action_schema("The next action when status is act; otherwise null.")
+        },
+        "required": ["status", "reason", "action"],
+        "additionalProperties": false
+    })
+}
+
+/// The wire schema of one element action, or null.
+fn action_schema(description: &str) -> Json {
+    let methods: Vec<&str> = ActMethod::ALL
+        .iter()
+        .map(|method| method.wire_name())
+        .collect();
+    json!({
+        "anyOf": [
+            {
+                "type": "object",
+                "properties": {
+                    "elementId": {
+                        "type": "string",
+                        "description": "The ref of the element, copied from the accessibility tree without brackets, such as e12."
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "A description of the element and its purpose."
+                    },
+                    "method": {
+                        "type": "string",
+                        "enum": methods,
+                        "description": "The supported browser interaction method to execute."
+                    },
+                    "arguments": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "The arguments to pass to the selected interaction method."
+                    }
+                },
+                "required": ["elementId", "description", "method", "arguments"],
+                "additionalProperties": false
+            },
+            {"type": "null"}
+        ],
+        "description": description
     })
 }
 

@@ -901,3 +901,263 @@ fn judge_without_credentials_stops_the_run_before_any_flow() {
     );
     assert!(!dir.path.join("artifacts").exists());
 }
+
+const GOAL_SHOP: &str = "VISIT \"data:text/html,<h1>Shop</h1>\
+    <label>Quantity <input id=q></label>\
+    <button onclick=\\\"document.querySelector('output').textContent=document.querySelector('%23q').value\\\">Add to cart</button>\
+    <p>Cart: <output data-testid=cart></output></p>\"\n";
+
+/// A `GOAL` answer that runs one action.
+fn goal_act(element: &str, method: &str, arguments: &[&str]) -> Json {
+    json!({
+        "status": "act",
+        "reason": "one more step",
+        "action": {"elementId": element, "description": "an element", "method": method, "arguments": arguments}
+    })
+}
+
+/// A `GOAL` answer that ends the goal.
+fn goal_end(status: &str, reason: &str) -> Json {
+    json!({"status": status, "reason": reason, "action": null})
+}
+
+fn goal_flow(dir: &TestDir, goal: &str) -> PathBuf {
+    dir.file(
+        "goal.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{GOAL_SHOP}\
+             GOAL \"{goal}\"\n\
+             ASSERT testid:cart text == 2\n"
+        ),
+    )
+}
+
+#[test]
+fn a_goal_runs_actions_until_done_and_the_cache_replays_its_path() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.answer(&[
+        goal_act("e4", "fill", &["2"]),
+        goal_act("e5", "click", &[]),
+        goal_end("done", "the cart holds 2"),
+    ]);
+    let flow = goal_flow(&dir, "add two to the cart");
+    let output = twin.run_with_args(&dir, &flow, &[], &["--cache=update"]);
+    assert_eq!(
+        exit_code(&output),
+        0,
+        "{}{}",
+        stdout_text(&output),
+        twin.request_log()
+    );
+    let step = &steps(&dir)[1];
+    let goal = &step["goal"];
+    assert_eq!(goal["model"], "gpt-test");
+    assert_eq!(goal["end"], "done");
+    assert_eq!(goal["reason"], "the cart holds 2");
+    assert_eq!(goal["cache"], "miss");
+    assert_eq!(goal["usage"]["modelCalls"], 3);
+    let lines: Vec<&str> = goal["actions"]
+        .as_array()
+        .expect("actions")
+        .iter()
+        .map(|action| action["line"].as_str().expect("a line"))
+        .collect();
+    assert_eq!(lines, [
+        "FILL role:textbox \"Quantity\" \"2\"",
+        "CLICK role:button \"Add to cart\""
+    ]);
+    assert_eq!(warning_codes(&dir), ["cache-miss"]);
+    let log = twin.request_log();
+    assert!(
+        log.contains(
+            "Steps taken so far: 1. FILL role:textbox \\\"Quantity\\\" \\\"2\\\" 2. CLICK role:button"
+        ),
+        "{log}"
+    );
+    let cache = cache_of(&flow).expect("the cache is written");
+    assert_eq!(cache["entries"][0]["kind"], "goal");
+    assert_eq!(cache["entries"][0]["line"], "GOAL \"add two to the cart\"");
+    assert_eq!(
+        cache["entries"][0]["actions"][0]["line"],
+        "FILL role:textbox Quantity \"2\""
+    );
+
+    // The replay makes no model call: the twin has no answer left.
+    let output = twin.run(&dir, &flow, &[]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    let goal = &steps(&dir)[1]["goal"];
+    assert_eq!(goal["cache"], "hit");
+    assert_eq!(goal["usage"]["modelCalls"], 0);
+    assert_eq!(goal["actions"][1]["plannedBy"], "cache");
+    assert!(warning_codes(&dir).is_empty());
+    let html = fs::read_to_string(dir.path.join("report.html")).expect("the HTML report exists");
+    assert!(html.contains("<dt>AI cache</dt><dd>hit</dd>"), "{html}");
+}
+
+#[test]
+fn a_goal_the_model_calls_impossible_fails_with_its_reason() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.answer(&[goal_end("impossible", "the shop has no checkout")]);
+    let flow = goal_flow(&dir, "check out");
+    let output = twin.run(&dir, &flow, &[]);
+    assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
+    let step = &steps(&dir)[1];
+    assert_eq!(step["error"]["code"], "goal-impossible");
+    assert_eq!(step["error"]["actual"], "the shop has no checkout");
+    assert_eq!(step["goal"]["end"], "impossible");
+    assert!(cache_of(&flow).is_none());
+    let html = fs::read_to_string(dir.path.join("report.html")).expect("the HTML report exists");
+    assert!(
+        html.contains("<dt>Ended</dt><dd>impossible: the shop has no checkout</dd>"),
+        "{html}"
+    );
+}
+
+#[test]
+fn a_goal_stops_after_twenty_actions() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    let answers: Vec<Json> = (0..21).map(|_| goal_act("e5", "click", &[])).collect();
+    twin.answer(&answers);
+    let flow = goal_flow(&dir, "add two to the cart");
+    let output = twin.run(&dir, &flow, &[]);
+    assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
+    let step = &steps(&dir)[1];
+    assert_eq!(step["error"]["code"], "goal-limit");
+    assert_eq!(step["goal"]["actions"].as_array().map(Vec::len), Some(20));
+    assert_eq!(step["goal"]["usage"]["modelCalls"], 21);
+}
+
+#[test]
+fn a_failed_goal_action_goes_back_to_the_model() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    // Filling the button fails at once; the model then plans again.
+    twin.answer(&[
+        goal_act("e5", "fill", &["2"]),
+        goal_act("e4", "fill", &["2"]),
+        goal_act("e5", "click", &[]),
+        goal_end("done", "the cart holds 2"),
+    ]);
+    let flow = goal_flow(&dir, "add two to the cart");
+    let output = twin.run_with_args(&dir, &flow, &[], &["--cache=update"]);
+    let log = twin.request_log();
+    assert_eq!(exit_code(&output), 0, "{}{log}", stdout_text(&output));
+    let actions = steps(&dir)[1]["goal"]["actions"].clone();
+    assert_eq!(actions[0]["line"], "FILL role:button \"Add to cart\" \"2\"");
+    assert!(actions[0]["error"].is_string(), "{actions}");
+    assert!(actions[1].get("error").is_none(), "{actions}");
+    assert!(
+        log.contains("1. FILL role:button \\\"Add to cart\\\" \\\"2\\\" (failed: "),
+        "{log}"
+    );
+    // The cache holds only the actions that ran.
+    let cache = cache_of(&flow).expect("the cache is written");
+    assert_eq!(
+        cache["entries"][0]["actions"].as_array().map(Vec::len),
+        Some(2)
+    );
+}
+
+#[test]
+fn a_goal_heals_from_the_current_page_when_a_cached_line_misses() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    let flow = goal_flow(&dir, "add two to the cart");
+    fs::write(
+        dir.path.join("goal.whirl-cache.json"),
+        json!({
+            "version": 1,
+            "entries": [{
+                "kind": "goal",
+                "line": "GOAL \"add two to the cart\"",
+                "occurrence": 1,
+                "model": "gpt-test",
+                "actions": [
+                    {"line": "FILL label:Quantity 2", "fingerprints": [{"role": "textbox", "name": "Quantity"}]},
+                    {"line": "CLICK role:button Buy", "fingerprints": [{"role": "button", "name": "Buy"}]}
+                ]
+            }]
+        })
+        .to_string(),
+    )
+    .expect("the cache writes");
+    twin.answer(&[
+        goal_act("e5", "click", &[]),
+        goal_end("done", "the cart holds 2"),
+    ]);
+    let output = twin.run_with_args(&dir, &flow, &[], &["--cache=update"]);
+    let log = twin.request_log();
+    assert_eq!(exit_code(&output), 0, "{}{log}", stdout_text(&output));
+    let goal = &steps(&dir)[1]["goal"];
+    assert_eq!(goal["cache"], "healed");
+    assert_eq!(goal["actions"][0]["plannedBy"], "cache");
+    assert_eq!(goal["actions"][1]["plannedBy"], "llm");
+    assert_eq!(goal["cached"][1], "CLICK role:button Buy");
+    assert_eq!(warning_codes(&dir), ["healed"]);
+    assert!(
+        log.contains("Steps taken so far: 1. FILL label:Quantity 2 Accessibility"),
+        "{log}"
+    );
+    let cache = cache_of(&flow).expect("the cache is written");
+    assert_eq!(
+        cache["entries"][0]["actions"][1]["line"],
+        "CLICK role:button \"Add to cart\""
+    );
+}
+
+#[test]
+fn a_goal_miss_fails_with_cache_only() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    let flow = goal_flow(&dir, "add two to the cart");
+    let output = twin.run_with_args(&dir, &flow, &[], &["--cache=only"]);
+    assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
+    assert_eq!(steps(&dir)[1]["error"]["code"], "cache-miss");
+}
+
+#[test]
+fn a_goal_sends_secrets_as_placeholders_and_caches_their_reference() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.answer(&[
+        goal_act("e4", "fill", &["%env.QTY%"]),
+        goal_act("e5", "click", &[]),
+        goal_end("done", "added"),
+    ]);
+    let flow = goal_flow(&dir, "add {{env.QTY}} to the cart");
+    let output = twin.run_with_args(&dir, &flow, &[("QTY", "2")], &["--cache=update"]);
+    let log = twin.request_log();
+    assert_eq!(exit_code(&output), 0, "{}{log}", stdout_text(&output));
+    assert!(log.contains("Goal: add %env.QTY% to the cart"), "{log}");
+    let cache = cache_of(&flow).expect("the cache is written");
+    assert_eq!(
+        cache["entries"][0]["actions"][0]["line"],
+        "FILL role:textbox Quantity \"{{env.QTY}}\""
+    );
+}
+
+#[test]
+fn a_goal_that_runs_out_of_time_fails_with_timeout() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.answer(&[goal_act("e2", "click", &[])]);
+    let flow = dir.file(
+        "goal.whirl",
+        "[Options]\nmodel: gpt-test\n\
+         VISIT \"data:text/html,<button disabled>Buy</button>\"\n\
+         GOAL \"buy it\" @1s\n\
+         ASSERT url exists\n",
+    );
+    let output = twin.run(&dir, &flow, &[]);
+    let log = twin.request_log();
+    assert_eq!(exit_code(&output), 1, "{}{log}", stdout_text(&output));
+    let error = &steps(&dir)[1]["error"];
+    assert_eq!(error["code"], "timeout", "{error}");
+    assert_eq!(
+        error["message"],
+        "timeout: GOAL did not finish within 1000ms"
+    );
+}

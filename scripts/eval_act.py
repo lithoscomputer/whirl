@@ -1,4 +1,4 @@
-"""Compare language models on Whirl's ACT, ai: targets, EXTRACT, and JUDGE: run each model
+"""Compare language models on Whirl's ACT, GOAL, ai: targets, EXTRACT, and JUDGE: run each model
 against each eval task, then write a dated summary. See evals/act/README.md.
 
 Each task is a .whirl flow. Runs are kept under evals/act/runs/ and never
@@ -32,11 +32,15 @@ AMBIGUOUS_SUFFIX = ".ambiguous.whirl"
 # A task whose file name ends with this passes only when JUDGE answers no
 # (SPEC 9.8).
 JUDGE_FALSE_SUFFIX = ".judge-false.whirl"
+# A task whose file name ends with this passes only when GOAL answers
+# impossible (SPEC 7.7).
+IMPOSSIBLE_SUFFIX = ".impossible.whirl"
 # Each special suffix and the error code that makes its task pass.
 EXPECTED_FAILURES = {
     NO_MATCH_SUFFIX: "act-no-match",
     AMBIGUOUS_SUFFIX: "strictness",
     JUDGE_FALSE_SUFFIX: "judge-false",
+    IMPOSSIBLE_SUFFIX: "goal-impossible",
 }
 # A task whose file name ends with this passes only when the flow passes with
 # the step warning: JUDGE answers unsure.
@@ -147,10 +151,14 @@ def classify(file_report, model):
     ai_steps = [step for step in steps if step.get("ai") is not None]
     ai_steps += [step for step in steps if step.get("extract") is not None]
     ai_steps += [step for step in steps if step.get("judge") is not None]
+    ai_steps += [step for step in steps if step.get("goal") is not None]
     result = Result(name, model, "fail")
     if act_steps or ai_steps:
         usages = [step["act"]["usage"] for step in act_steps]
-        usages += [(step.get("ai") or step.get("extract") or step["judge"])["usage"] for step in ai_steps]
+        usages += [
+            (step.get("ai") or step.get("extract") or step.get("judge") or step["goal"])["usage"]
+            for step in ai_steps
+        ]
         act_steps = act_steps + ai_steps
         result.duration_ms = sum(step["durationMs"] for step in act_steps)
         result.model_calls = sum(usage["modelCalls"] for usage in usages)
