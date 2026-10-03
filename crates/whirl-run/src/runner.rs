@@ -16,12 +16,14 @@ use tracing::{Instrument as _, debug, info, info_span, warn};
 use whirl_ai::{
     ActPlanner, JevClient, JevPlanner, JevSetupError, LlmPlanner, ModelClient, ModelSetupError,
 };
-use whirl_lang::ast::{File, FileOption};
+use whirl_lang::ast::{BrowserKind, File, FileOption, OptionValue};
 use whirl_report::model::{FileReport, FlowRoles, RunReport, SETUP_ENTRY, Status, Timing};
+use whirl_shim::provider::{BrowserProvider, BrowserSource};
 use whirl_shim::{ShimClient, ShimError, ShimLaunch, resolve_launch};
 
 use crate::artifacts::{self, ArtifactsError, Flow};
 use crate::flow::{FlowFlags, FlowOutcome, FlowRun, SetupHandoff, run_flow, setup_path_for};
+use crate::leases::{self, LeaseError, RunLeases};
 
 /// Everything a run needs beyond its parsed files.
 #[derive(Clone, Debug)]
@@ -39,6 +41,8 @@ pub struct RunSettings {
     pub source_hashes: HashMap<PathBuf, String>,
     /// `--jev`: plan `ACT` with Jev first (SPEC 7.4, 13).
     pub jev:           bool,
+    /// Where the run's browsers come from.
+    pub browsers:      Arc<dyn BrowserProvider>,
 }
 
 /// A failure before any flow runs.
@@ -67,6 +71,10 @@ pub enum RunnerError {
     /// A usage error (exit 4): `--save-state` needs a single file.
     #[error("--save-state requires a single input file, got {count}")]
     SaveStateManyFiles { count: usize },
+    /// A usage error (exit 4) for an engine the provider lacks; otherwise a
+    /// runtime error (exit 3).
+    #[error(transparent)]
+    Leases(#[from] LeaseError),
 }
 
 /// One scheduled flow: its parsed file, its artifact directories, and
@@ -110,6 +118,11 @@ pub async fn run_files(
             setup_count = setups.len(),
             "run started"
         );
+        // Fail an impossible run before a lease costs anything.
+        leases::check_engines(
+            settings.browsers.as_ref(),
+            files.iter().chain(setups).filter_map(literal_engine),
+        )?;
         let files = files.to_vec();
         let setups = setups.to_vec();
         let settings = settings.clone();
@@ -134,6 +147,13 @@ pub async fn run_files(
                 }
             }
         }
+        let mut leases = RunLeases::acquire(
+            Arc::clone(&settings.browsers),
+            workers,
+            settings.flags.web.headed,
+        )
+        .await?;
+        let sources = leases.sources();
         let stop = Arc::new(AtomicBool::new(false));
         let settings = Arc::new(settings);
 
@@ -152,6 +172,7 @@ pub async fn run_files(
                 Arc::new(HashMap::new()),
                 settings.clone(),
                 &launch,
+                sources.clone(),
                 planner.clone(),
                 model.clone(),
                 stop.clone(),
@@ -185,6 +206,7 @@ pub async fn run_files(
             Arc::new(handoffs),
             settings,
             &launch,
+            sources,
             planner,
             model,
             stop,
@@ -192,6 +214,7 @@ pub async fn run_files(
         .run(workers)
         .await;
         reports.extend(outcomes.into_iter().flatten().map(|outcome| outcome.report));
+        leases.release().await;
         // The saved setup states hold session cookies; do not leave them
         // behind (SPEC 11).
         let _ = fs::remove_dir_all(&state_dir).await;
@@ -206,6 +229,18 @@ pub async fn run_files(
     }
     .instrument(info_span!("run"))
     .await
+}
+
+/// A file's literal `browser` option, with the file path for messages.
+/// The CLI has already folded `--browser` and `-O browser=` into the
+/// file's options.
+fn literal_engine(file: &File) -> Option<(&str, BrowserKind)> {
+    file.options.iter().find_map(|line| match &line.option {
+        FileOption::Browser(OptionValue::Literal(engine)) => {
+            Some((file.path.to_str().unwrap_or_default(), *engine))
+        }
+        _ => None,
+    })
 }
 
 /// The run's `ACT` planner (SPEC 7.4): the language model, or with `--jev`
@@ -407,6 +442,8 @@ struct WorkQueue {
     handoffs: Arc<HashMap<PathBuf, SetupResult>>,
     settings: Arc<RunSettings>,
     launch:   ShimLaunch,
+    /// The browser source of each worker slot, in slot order.
+    sources:  Arc<[BrowserSource]>,
     planner:  Option<Arc<dyn ActPlanner>>,
     model:    Option<Arc<ModelClient>>,
     pending:  Mutex<VecDeque<usize>>,
@@ -445,6 +482,7 @@ impl WorkerSet {
         handoffs: Arc<HashMap<PathBuf, SetupResult>>,
         settings: Arc<RunSettings>,
         launch: &ShimLaunch,
+        sources: Arc<[BrowserSource]>,
         planner: Option<Arc<dyn ActPlanner>>,
         model: Option<Arc<ModelClient>>,
         stop: Arc<AtomicBool>,
@@ -456,6 +494,7 @@ impl WorkerSet {
                 handoffs,
                 settings,
                 launch: launch.clone(),
+                sources,
                 planner,
                 model,
                 pending,
@@ -469,7 +508,7 @@ impl WorkerSet {
         let count = self.queue.jobs.len();
         for worker_index in 0..workers.min(count) {
             self.tasks.spawn(
-                Worker::new(self.queue.clone())
+                Worker::new(self.queue.clone(), worker_index)
                     .run()
                     .instrument(info_span!("worker", worker_index)),
             );
@@ -490,13 +529,16 @@ impl WorkerSet {
 struct Worker {
     queue:  Arc<WorkQueue>,
     client: Option<ShimClient>,
+    /// The worker's slot: which lease its flows use.
+    slot:   usize,
 }
 
 impl Worker {
-    fn new(queue: Arc<WorkQueue>) -> Self {
+    fn new(queue: Arc<WorkQueue>, slot: usize) -> Self {
         Self {
             queue,
             client: None,
+            slot,
         }
     }
 
@@ -590,6 +632,7 @@ impl Worker {
             state_out: job.state_out.as_deref(),
             planner: queue.planner.as_deref(),
             model: queue.model.as_deref(),
+            source: &queue.sources[self.slot],
         };
         run_flow(&run, client).await
     }

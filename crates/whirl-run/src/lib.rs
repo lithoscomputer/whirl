@@ -18,10 +18,12 @@ mod artifacts;
 pub mod cache;
 mod extract;
 mod flow;
+mod leases;
 mod runner;
 mod vars;
 
 pub use artifacts::{ArtifactsError, dedup_flows};
 pub use flow::{FlowFlags, WebFlags, setup_path_for};
+pub use leases::LeaseError;
 pub use runner::{RunSettings, RunnerError, run_files};
 pub use vars::{VarsFileError, parse_var_flag, parse_variables_file};

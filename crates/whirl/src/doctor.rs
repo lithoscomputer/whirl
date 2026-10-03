@@ -79,7 +79,7 @@ async fn inspect(browser: &str, progress: Progress<'_>) -> anyhow::Result<()> {
             "Playwright version is {}, expected {}; run `whirl install` (development: `mise run setup:shim`)", hello.playwright_version, install::PLAYWRIGHT_VERSION);
         progress(&format!("Shim protocol {}, Playwright {}: OK", hello.protocol, hello.playwright_version));
         let params = StartFlowParams {
-            browser: browser.to_owned(), headed: false,
+            browser: browser.to_owned(), headed: false, connect: None,
             viewport: ViewportParams { width: 1280, height: 720 },
             storage_state_path: None, dialogs: "dismiss".to_owned(), allow_hosts: None, block_hosts: None,
             nav_timeout_ms: 10_000, user_agent: None, reduced_motion: None,

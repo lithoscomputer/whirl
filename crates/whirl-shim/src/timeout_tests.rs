@@ -58,6 +58,7 @@ async fn unanswered_start_flow_kills_the_process() {
     let params = StartFlowParams {
         browser:            "chromium".to_owned(),
         headed:             false,
+        connect:            None,
         viewport:           ViewportParams {
             width:  1280,
             height: 720,

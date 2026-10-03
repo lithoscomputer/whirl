@@ -35,12 +35,13 @@ use whirl_lang::ast::{self, ScrollMotion};
 
 pub mod bundle;
 mod context;
+pub mod provider;
 mod wire;
 
 use bundle::{BUNDLE_NODE, BUNDLE_SHIM_JS, BUNDLE_VERSION_FILE, SHIM_JS_ENV, WHIRL_VERSION};
 
 /// The protocol version this Whirl speaks (protocol section 3).
-pub(crate) const PROTOCOL: u64 = 9;
+pub(crate) const PROTOCOL: u64 = 10;
 
 /// Environment variable naming the node executable (protocol section 8).
 pub(crate) const NODE_ENV: &str = "WHIRL_NODE";
@@ -197,6 +198,14 @@ pub struct VideoParams {
     pub fps:        Option<u8>,
 }
 
+/// `startFlow` connect params: the CDP websocket endpoint of a running
+/// Chromium that the shim attaches to instead of launching a browser.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectParams {
+    pub cdp_endpoint: String,
+}
+
 /// `startFlow` params (protocol section 3). Built from a flow's
 /// [`BrowserOptions`] by [`StartFlowParams::from_options`].
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -204,6 +213,8 @@ pub struct VideoParams {
 pub struct StartFlowParams {
     pub browser:            String,
     pub headed:             bool,
+    /// Attach to this browser over CDP; `None` launches one.
+    pub connect:            Option<ConnectParams>,
     pub viewport:           ViewportParams,
     pub storage_state_path: Option<String>,
     pub dialogs:            String,

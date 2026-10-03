@@ -273,9 +273,19 @@ export interface VideoConfig {
 	readonly fps: number | null;
 }
 
+/**
+ * A browser the shim attaches to instead of launching: the CDP
+ * websocket endpoint of a running Chromium, such as a hosted browser.
+ */
+export interface ConnectConfig {
+	readonly cdpEndpoint: string;
+}
+
 export interface StartFlowParams {
 	readonly browser: BrowserEngine;
 	readonly headed: boolean;
+	/** Attach over CDP when set; launch a local browser when null. */
+	readonly connect: ConnectConfig | null;
 	readonly viewport: ViewportSize;
 	readonly storageStatePath: string | null;
 	readonly dialogs: "dismiss" | "accept";

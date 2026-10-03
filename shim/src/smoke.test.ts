@@ -15,6 +15,7 @@ test("the driver runs a flow against a data: URL in chromium", {
 		await driver.startFlow({
 			browser: "chromium",
 			headed: false,
+			connect: null,
 			viewport: { width: 800, height: 600 },
 			storageStatePath: null,
 			dialogs: "dismiss",

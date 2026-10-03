@@ -7,7 +7,8 @@ use std::path::{Path, PathBuf};
 
 use whirl_lang::ast::{BrowserKind, DialogPolicy, ReducedMotion, Viewport};
 
-use crate::{StartFlowParams, VideoParams, ViewportParams};
+use crate::provider::BrowserSource;
+use crate::{ConnectParams, StartFlowParams, VideoParams, ViewportParams};
 
 /// The frame rate of Chromium recordings without `--video-fps` (SPEC 13).
 const DEFAULT_VIDEO_FPS: u8 = 60;
@@ -42,6 +43,9 @@ pub struct BrowserOptions {
     /// Browser user agent string; the engine default when unset (SPEC 5).
     pub user_agent:     Option<String>,
     pub nav_timeout_ms: u64,
+    /// Where the browser comes from: the worker's lease
+    /// ([`crate::provider`]).
+    pub source:         BrowserSource,
 }
 
 impl BrowserOptions {
@@ -98,6 +102,12 @@ impl StartFlowParams {
         Self {
             browser:            browser.engine.as_str().to_owned(),
             headed:             browser.headed,
+            connect:            match &browser.source {
+                BrowserSource::Launch => None,
+                BrowserSource::Attach { cdp_endpoint } => Some(ConnectParams {
+                    cdp_endpoint: cdp_endpoint.clone(),
+                }),
+            },
             viewport:           ViewportParams {
                 width:  browser.viewport.width,
                 height: browser.viewport.height,
@@ -173,6 +183,7 @@ mod tests {
             headed:         false,
             user_agent:     None,
             nav_timeout_ms: 30_000,
+            source:         BrowserSource::Launch,
         }
     }
 
@@ -183,6 +194,7 @@ mod tests {
         assert_eq!(params, StartFlowParams {
             browser:            "chromium".to_owned(),
             headed:             false,
+            connect:            None,
             viewport:           ViewportParams {
                 width:  1280,
                 height: 720,
@@ -219,6 +231,7 @@ mod tests {
             headed:         true,
             user_agent:     Some("chrome".to_owned()),
             nav_timeout_ms: 5_000,
+            source:         BrowserSource::Launch,
         };
         let recording = Recording {
             video: Some(VideoOutput {
@@ -236,6 +249,7 @@ mod tests {
         assert_eq!(params, StartFlowParams {
             browser:            "webkit".to_owned(),
             headed:             true,
+            connect:            None,
             viewport:           ViewportParams {
                 width:  800,
                 height: 600,
@@ -290,6 +304,22 @@ mod tests {
         let params =
             StartFlowParams::from_options(&browser, &Recording::default(), &Features::default());
         assert_eq!(params.allow_hosts, Some(vec!["shop.test".to_owned()]));
+    }
+
+    #[test]
+    fn an_attach_source_becomes_the_connect_params() {
+        let mut browser = options();
+        browser.source = BrowserSource::Attach {
+            cdp_endpoint: "wss://browser.test/cdp".to_owned(),
+        };
+        let params =
+            StartFlowParams::from_options(&browser, &Recording::default(), &Features::default());
+        assert_eq!(
+            params.connect,
+            Some(ConnectParams {
+                cdp_endpoint: "wss://browser.test/cdp".to_owned(),
+            })
+        );
     }
 
     #[test]

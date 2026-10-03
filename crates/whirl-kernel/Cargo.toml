@@ -1,0 +1,19 @@
+[package]
+name = "whirl-kernel"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Kernel hosted Chromium browsers as a Whirl browser provider"
+
+[dependencies]
+# A path dependency on the local checkout while the SDK is unreleased; a
+# real change pins a git rev.
+kernel-sdk = { path = "/Users/bhelmkamp/p/brynary/kernel-rust-sdk" }
+tracing.workspace = true
+whirl-lang = { path = "../whirl-lang" }
+whirl-shim = { path = "../whirl-shim" }
+
+[lints]
+workspace = true

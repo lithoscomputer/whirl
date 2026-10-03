@@ -16,6 +16,12 @@ Options:
       --headed
           Run with a visible browser window
 
+      --browser-provider <NAME>
+          Where browsers come from: launched beside Whirl, or hosted by Kernel (needs KERNEL_API_KEY; Chromium only)
+          
+          [default: local]
+          [possible values: local, kernel]
+
       --jobs <N>
           Worker slots for parallel files
 

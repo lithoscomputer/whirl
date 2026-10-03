@@ -50,9 +50,11 @@ Error object:
 ### `hello`
 
 Sent once after spawn. Params: `{}`. Result:
-`{"protocol": 9, "playwrightVersion": "1.62.1", "ffmpegPath": "abs path" | null}`.
+`{"protocol": 10, "playwrightVersion": "1.62.1", "ffmpegPath": "abs path" | null}`.
 `ffmpegPath` is Playwright's bundled ffmpeg, which every video recording
 needs; `null` means it is not installed. `whirl doctor` reports it.
+Protocol 10 adds `connect` to `startFlow`: a browser to attach to over
+CDP instead of launching one.
 Protocol 9 adds `blockHosts` to `startFlow` and gives each `blockedHosts`
 entry of `endFlow` its rule.
 Protocol 8 adds `settle` to `ariaSnapshot`.
@@ -75,6 +77,7 @@ Creates the browser context and page for one flow. Params:
 {
   "browser": "chromium" | "firefox" | "webkit",
   "headed": false,
+  "connect": {"cdpEndpoint": "wss://..."} | null,
   "viewport": {"width": 1280, "height": 720},
   "storageStatePath": "abs path" | null,
   "dialogs": "dismiss" | "accept",
@@ -93,6 +96,11 @@ Creates the browser context and page for one flow. Params:
 
 Result: `{"browserVersion": "...", "nodeVersion": "...", "playwrightVersion": "...", "userAgent": "...", "videoFps": 60 | null}`. These are the active browser, Node process, and Playwright library versions, plus the context's actual `navigator.userAgent`, plus the frame rate of the flow's recording (`null` without `video`). Older protocol 1 shims may omit these additive fields; reports then use null values. Rust applies secret masking to the user agent before reporting it.
 
+- `connect: null` launches `browser` beside the shim. A `connect` object
+  attaches to a running Chromium at `cdpEndpoint` with Playwright's
+  `connectOverCDP`; `browser` MUST then be `chromium`. The shim keys its one
+  browser by the endpoint, so a new endpoint attaches again. The runner gets
+  the endpoint from the worker slot's browser lease.
 - `allowHosts: null` means all hosts are allowed. When it is a list, Rust has
   already appended the `app-url` host. `blockHosts: null` blocks no host. When
   either is a list, the shim routes all requests and disables service
