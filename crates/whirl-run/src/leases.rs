@@ -9,7 +9,7 @@ use std::{fmt, mem, process};
 
 use tokio::task::JoinSet;
 use tokio::time::timeout;
-use tracing::warn;
+use tracing::{info, warn};
 use whirl_lang::ast::BrowserKind;
 use whirl_shim::provider::{
     BrowserLease, BrowserProvider, BrowserSource, LeaseRequest, ProviderError, RunId,
@@ -119,6 +119,11 @@ impl RunLeases {
         if let Some(error) = failure {
             run_leases.release().await;
             return Err(error.into());
+        }
+        for lease in &run_leases.leases {
+            if let Some(url) = &lease.live_view {
+                info!(provider = run_leases.provider.name(), lease = %lease.id, %url, "live view");
+            }
         }
         Ok(run_leases)
     }
