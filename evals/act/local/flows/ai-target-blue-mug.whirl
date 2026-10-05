@@ -1,0 +1,9 @@
+[Options]
+base: {{env.EVAL_BASE}}
+model: {{model}}
+
+# ai: find one button among identical ones by its row.
+VISIT /similar-buttons/
+CLICK ai:"the add to cart button for the blue mug" @60s
+ASSERT testid:cart text == "Blue mug"
+ASSERT testid:wishlist text == empty

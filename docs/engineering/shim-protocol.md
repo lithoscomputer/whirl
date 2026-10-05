@@ -50,9 +50,10 @@ Error object:
 ### `hello`
 
 Sent once after spawn. Params: `{}`. Result:
-`{"protocol": 5, "playwrightVersion": "1.62.1", "ffmpegPath": "abs path" | null}`.
+`{"protocol": 6, "playwrightVersion": "1.62.1", "ffmpegPath": "abs path" | null}`.
 `ffmpegPath` is Playwright's bundled ffmpeg, which every video recording
 needs; `null` means it is not installed. `whirl doctor` reports it.
+Protocol 6 adds `generateLocator` (section 4.8) for the AI cache.
 Protocol 5 adds `mock` and `readRequest` (sections 4.6 and 4.7) and the
 `mocks` fields of `startFlow` and `endFlow`.
 Protocol 4 requires the snapshot `target`, so an older shim cannot silently
@@ -211,6 +212,7 @@ Commands and their extra params (result `{}` unless noted):
 | `assert` | `spec` (section 4.3) — state checks and tab closure only |
 | `read` | `subject` (section 4.4); result `{"type": "value", "value": ...}` or `{"type": "missing", "reason": "no-element" \| "absent-attribute"}` |
 | `readResponse` | `name`, `body` (bool) (section 4.5); result `{"status": 201, "url": "...", "headers": [[name, value], ...], "bodyBase64": "..." \| null, "bodyError": "..." \| null, "bodyMayBeDecoded": false}` |
+| `generateLocator` | `ref`, `role`, `name` (or `null`) (section 4.8); result `{"type": "locator", "locator": [...]}` or `{"type": "unstable", "reason": "..."}` |
 | `readRequest` | `name` (section 4.7); result `{"method": "POST", "url": "...", "headers": [[name, value], ...], "bodyBase64": "..." \| null, "bodyError": "..." \| null}` |
 | `traceGroup` | none; opens one trace group named by `title` for the reads of one check |
 | `traceGroupEnd` | none; closes the group that `traceGroup` opened |
@@ -295,9 +297,11 @@ The mapping to Playwright calls is SPEC section 6.1.
 
 `ref` names an element from an `ariaSnapshot` result, such as `e12`, or `f1e3`
 inside an iframe. The shim resolves it with `page.locator("aria-ref=e12")`.
-Only Rust creates `ref` segments, as the only segment of an `ACT` action's
-locator, and only for refs in the latest snapshot. `.whirl` files have no
-syntax for them. For `click`, `dblclick`, `hover`, and both locators of `drag`
+Only Rust creates `ref` segments, as the only segment of a locator, and only
+for refs in the latest snapshot: for an `ACT` action, and in place of an
+`ai:` target (SPEC 6.3). `.whirl` files have no syntax for them. Rust resolves
+every `ai:` target before it sends a locator; a segment of type `ai` is error
+kind `"internal"`. For `click`, `dblclick`, `hover`, and both locators of `drag`
 on a `ref` locator, the shim points at the deepest descendant that shows the
 element's text, when one exists, instead of the element's center (SPEC 7.4).
 
@@ -450,6 +454,31 @@ sent them (`request.headersArray()`), and the body from `postDataBuffer()` as
 `bodyBase64`, which is empty for a request without a body. A body over the
 SPEC 1 MiB limit comes back as `bodyError` with `bodyBase64: null`. An unknown
 name is error kind `"internal"`.
+
+### 4.8 Generate a locator
+
+`generateLocator` turns the element behind a ref of the latest AI snapshot
+into a strict locator for the AI cache (SPEC 12.1). `role` and `name` are the
+element's, from that snapshot. The shim does not wait: a ref that no longer
+matches is `unstable`. It builds candidates in the order of SPEC 12.1:
+`testid` from `data-testid`, `role` with the name, `label` for each label of
+the element (its `<label>` elements, `aria-label`, or `aria-labelledby`),
+`placeholder`, and `text` for normalized text of at most 80 characters. A
+candidate counts only when one of its matches is the element itself. The first
+candidate with exactly one match wins. Otherwise the shim scopes each
+candidate with the nearest ancestor whose role is a landmark, `dialog`,
+`alertdialog`, `region`, or `article` and that has an `aria-label` or
+`aria-labelledby` name. Otherwise it adds `nth` to the first candidate that
+matched the element among others. An element inside an iframe gets one
+`frame` segment per iframe, each `iframe[title='...']`, `iframe[name='...']`,
+or `iframe[id='...']`, whichever matches one iframe in its parent. When no
+candidate works, or no attribute names an iframe alone, the result is
+`unstable` with the reason.
+
+Rust reads the fingerprint that it caches beside the locator, the element's
+role and accessible name, from the first line of the snapshot. To check a
+cached locator, it sends `ariaSnapshot` with that locator and reads the
+first line of the result the same way.
 
 ## 5. Timeouts
 

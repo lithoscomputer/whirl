@@ -1,0 +1,627 @@
+//! `ai:` target, AI cache, and heal acceptance tests (SPEC 6.3, 12.1):
+//! each test starts the `whirl` binary against the real shim and Chromium,
+//! and points `WHIRL_LLM_ENDPOINT` at an in-process OpenAI-compatible model
+//! twin whose answers the test scripts.
+
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::{env, fs, process};
+
+use reqwest::blocking::{Client as HttpClient, Response};
+use serde_json::{Value as Json, json};
+use tokio::net::TcpListener;
+use tokio::runtime::{Builder, Runtime};
+use twin_openai::config::{Config, Mode, RecordFormat};
+
+/// A unique temporary directory for one test, removed on drop.
+struct TestDir {
+    path: PathBuf,
+}
+
+impl TestDir {
+    fn new() -> Self {
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
+        let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = env::temp_dir().join(format!("whirl-ai-test-{}-{id}", process::id()));
+        fs::create_dir_all(&path).expect("temp dir should be creatable");
+        Self { path }
+    }
+
+    fn file(&self, name: &str, content: &str) -> PathBuf {
+        let path = self.path.join(name);
+        fs::write(&path, content).expect("temp file should be writable");
+        path
+    }
+}
+
+impl Drop for TestDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+/// The OpenAI-compatible model twin, served on its own runtime.
+struct ModelTwin {
+    _runtime: Runtime,
+    url:      String,
+    http:     HttpClient,
+}
+
+/// The twin scopes scenarios and request logs by bearer token.
+const API_KEY: &str = "act-acceptance";
+
+impl ModelTwin {
+    fn start() -> Self {
+        let runtime = Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .expect("the twin runtime should build");
+        let listener = runtime
+            .block_on(TcpListener::bind("127.0.0.1:0"))
+            .expect("the twin should bind a local port");
+        let url = format!(
+            "http://{}",
+            listener
+                .local_addr()
+                .expect("a bound listener has an address")
+        );
+        let app = twin_openai::build_app_with_config(Config {
+            bind_addr:               "127.0.0.1:0".parse().expect("valid address"),
+            require_auth:            true,
+            enable_admin:            true,
+            request_log_path:        None,
+            scenarios_path:          None,
+            allow_unmatched:         false,
+            mode:                    Mode::Twin,
+            upstream_url:            "https://api.openai.com".to_owned(),
+            upstream_responses_path: None,
+            upstream_api_key:        None,
+            recording_path:          None,
+            record_format:           RecordFormat::Semantic,
+            recording_append:        false,
+        })
+        .expect("the twin app should build");
+        runtime.spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("the twin should serve");
+        });
+        Self {
+            _runtime: runtime,
+            url,
+            http: HttpClient::new(),
+        }
+    }
+
+    /// Queues one scripted Chat Completions answer per scenario, in order.
+    fn script(&self, scripts: &[Json]) {
+        let scenarios: Vec<Json> = scripts
+            .iter()
+            .map(|script| json!({"matcher": {"endpoint": "chat.completions"}, "script": script}))
+            .collect();
+        let response = self
+            .http
+            .post(format!("{}/__admin/scenarios", self.url))
+            .bearer_auth(API_KEY)
+            .header("content-type", "application/json")
+            .body(json!({"scenarios": scenarios}).to_string())
+            .send()
+            .expect("the twin should accept scenarios");
+        assert!(response.status().is_success(), "{:?}", response.text());
+    }
+
+    /// Queues structured answers, one per model call.
+    fn answer(&self, answers: &[Json]) {
+        let scripts: Vec<Json> = answers
+            .iter()
+            .map(|answer| json!({"kind": "success", "structured_output": answer}))
+            .collect();
+        self.script(&scripts);
+    }
+
+    /// The twin's request log as text.
+    fn request_log(&self) -> String {
+        self.http
+            .get(format!("{}/__admin/requests", self.url))
+            .bearer_auth(API_KEY)
+            .send()
+            .and_then(Response::text)
+            .expect("the twin should return its request log")
+    }
+
+    /// Runs `whirl` on `flow` with the model endpoint pointing here.
+    fn run(&self, dir: &TestDir, flow: &Path, env: &[(&str, &str)]) -> Output {
+        self.run_with_args(dir, flow, env, &[])
+    }
+
+    fn run_with_args(
+        &self,
+        dir: &TestDir,
+        flow: &Path,
+        env: &[(&str, &str)],
+        args: &[&str],
+    ) -> Output {
+        let shim_js = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../shim/dist/index.js");
+        Command::new(env!("CARGO_BIN_EXE_whirl"))
+            .env("WHIRL_NODE", "node")
+            .env("WHIRL_SHIM_JS", shim_js)
+            .env("WHIRL_LLM_ENDPOINT", &self.url)
+            .env("WHIRL_LLM_API_KEY", API_KEY)
+            .envs(env.iter().copied())
+            .current_dir(&dir.path)
+            .arg("--artifacts")
+            .arg(dir.path.join("artifacts"))
+            .arg("--report-json")
+            .arg(dir.path.join("report.json"))
+            .arg("--report-html")
+            .arg(dir.path.join("report.html"))
+            .args(args)
+            .arg(flow)
+            .output()
+            .expect("the whirl binary should run")
+    }
+}
+
+fn exit_code(output: &Output) -> i32 {
+    output.status.code().expect("whirl should exit, not signal")
+}
+
+fn stdout_text(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+/// The JSON report's steps of the flow's first file.
+fn steps(dir: &TestDir) -> Vec<Json> {
+    let text = fs::read_to_string(dir.path.join("report.json")).expect("the JSON report exists");
+    let report: Json = serde_json::from_str(&text).expect("the JSON report parses");
+    report["files"][0]["entries"]
+        .as_array()
+        .expect("the file has entries")
+        .iter()
+        .flat_map(|entry| entry["steps"].as_array().cloned().unwrap_or_default())
+        .collect()
+}
+
+/// A model answer that lists the elements it found.
+fn found(elements: &[&str]) -> Json {
+    let elements: Vec<Json> = elements
+        .iter()
+        .map(|element| json!({"elementId": element, "description": "an element"}))
+        .collect();
+    json!({"elements": elements})
+}
+
+const SHOP: &str = "VISIT \"data:text/html,<h1>Shop</h1>\
+    <button onclick=\\\"document.querySelector('h1').textContent='Added'\\\">Add to cart</button>\
+    <button>Wish list</button>\"\n";
+
+#[test]
+fn an_ai_target_clicks_the_one_element_the_model_finds() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.answer(&[found(&["e3"])]);
+    let flow = dir.file(
+        "click.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{SHOP}CLICK ai:\"the add to cart button\"\n\
+             ASSERT role:heading \"Added\" visible\n"
+        ),
+    );
+    let output = twin.run(&dir, &flow, &[]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    let click = &steps(&dir)[1];
+    assert_eq!(click["ai"]["model"], "gpt-test");
+    assert_eq!(
+        click["ai"]["targets"][0]["target"],
+        "ai:\"the add to cart button\""
+    );
+    assert_eq!(
+        click["ai"]["targets"][0]["locator"],
+        "role:button \"Add to cart\""
+    );
+    assert_eq!(click["ai"]["usage"]["modelCalls"], 1);
+    let log = twin.request_log();
+    assert!(log.contains("the add to cart button"), "{log}");
+}
+
+#[test]
+fn an_ai_target_that_matches_two_elements_fails_with_strictness() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.answer(&[found(&["e3", "e4"])]);
+    let flow = dir.file(
+        "strict.whirl",
+        &format!("[Options]\nmodel: gpt-test\n{SHOP}CLICK ai:\"a button\"\n"),
+    );
+    let output = twin.run(&dir, &flow, &[]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 1, "{stdout}");
+    let click = &steps(&dir)[1];
+    assert_eq!(click["error"]["code"], "strictness");
+    let candidates = click["error"]["candidates"].to_string();
+    assert!(candidates.contains("Add to cart"), "{candidates}");
+    assert!(candidates.contains("Wish list"), "{candidates}");
+}
+
+#[test]
+fn an_ai_absence_check_passes_when_the_model_finds_nothing() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.answer(&[found(&[]), found(&[])]);
+    let flow = dir.file(
+        "absent.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{SHOP}ASSERT ai:\"an error banner\" hidden\n\
+             ASSERT ai:\"a sold-out label\" text not exists\n"
+        ),
+    );
+    let output = twin.run(&dir, &flow, &[]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    let steps = steps(&dir);
+    assert_eq!(steps[1]["ai"]["targets"][0]["cache"], "uncached");
+    assert_eq!(steps[2]["ai"]["targets"][0]["cache"], "uncached");
+}
+
+#[test]
+fn an_ai_check_and_capture_read_the_element_the_model_finds() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.answer(&[found(&["e2"]), found(&["e4"])]);
+    let flow = dir.file(
+        "read.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{SHOP}ASSERT ai:\"the page title\" text == Shop\n\
+             CAPTURE second: ai:\"the second button\" text\n\
+             ASSERT role:button {{{{second}}}} visible\n"
+        ),
+    );
+    let output = twin.run(&dir, &flow, &[]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+}
+
+#[test]
+fn an_ai_target_asks_again_until_the_element_appears() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.answer(&[found(&[]), found(&["e3"])]);
+    let flow = dir.file(
+        "late.whirl",
+        "[Options]\nmodel: gpt-test\nVISIT \"data:text/html,<h1>Shop</h1><script>\
+         setTimeout(() => { const b = document.createElement('button'); b.textContent = 'Late'; \
+         b.onclick = () => { document.querySelector('h1').textContent = 'Clicked'; }; \
+         document.body.append(b); }, 1000)</script>\"\n\
+         CLICK ai:\"the late button\" @10s\nASSERT role:heading Clicked visible\n",
+    );
+    let output = twin.run(&dir, &flow, &[]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    assert_eq!(steps(&dir)[1]["ai"]["usage"]["modelCalls"], 2);
+}
+
+/// The flow's AI cache as JSON, when it exists.
+fn cache_of(flow: &Path) -> Option<Json> {
+    let mut name = flow.file_name().expect("a file name").to_os_string();
+    name.push("-cache.json");
+    let text = fs::read_to_string(flow.with_file_name(name)).ok()?;
+    Some(serde_json::from_str(&text).expect("the cache is JSON"))
+}
+
+/// The step warnings' codes, in order.
+fn warning_codes(dir: &TestDir) -> Vec<String> {
+    steps(dir)
+        .iter()
+        .flat_map(|step| step["warnings"].as_array().cloned().unwrap_or_default())
+        .map(|warning| warning["code"].as_str().unwrap_or_default().to_owned())
+        .collect()
+}
+
+fn buy_flow(dir: &TestDir, button: &str) -> PathBuf {
+    dir.file(
+        "buy.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n\
+             VISIT \"data:text/html,<h1>Shop</h1><button data-testid=wish>Wish list</button>\
+             <button onclick=\\\"document.querySelector('h1').textContent='Bought'\\\">{button}</button>\"\n\
+             CLICK ai:\"the buy button\"\nASSERT role:heading Bought visible\n"
+        ),
+    )
+}
+
+#[test]
+fn the_cache_records_a_target_and_later_runs_replay_it_without_the_model() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    let flow = buy_flow(&dir, "Buy now");
+
+    // A replay run with no entry asks the model, warns, and writes nothing.
+    twin.answer(&[found(&["e4"])]);
+    let output = twin.run(&dir, &flow, &[]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    assert_eq!(warning_codes(&dir), ["cache-miss"]);
+    assert!(
+        stdout_text(&output).contains(
+            "AI cache: 1 step missed and 0 steps healed; run with --cache=update to write the cache"
+        ),
+        "{}",
+        stdout_text(&output)
+    );
+    assert_eq!(cache_of(&flow), None);
+
+    // An update run writes the entry.
+    twin.answer(&[found(&["e4"])]);
+    let output = twin.run_with_args(&dir, &flow, &[], &["--cache", "update"]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    assert_eq!(
+        cache_of(&flow),
+        Some(json!({
+            "version": 1,
+            "entries": [{
+                "kind": "ai-target",
+                "line": "CLICK ai:\"the buy button\"",
+                "occurrence": 1,
+                "target": "ai:\"the buy button\"",
+                "model": "gpt-test",
+                "locator": "role:button \"Buy now\"",
+                "fingerprint": {"role": "button", "name": "Buy now"}
+            }]
+        }))
+    );
+
+    // A replay run hits the entry: no model call and no warning. The twin
+    // has no answer queued, so any call would fail the run.
+    let calls = twin.request_log().matches("chat/completions").count();
+    let output = twin.run_with_args(&dir, &flow, &[], &["--cache", "only"]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    assert_eq!(
+        twin.request_log().matches("chat/completions").count(),
+        calls
+    );
+    assert_eq!(steps(&dir)[1]["ai"]["targets"][0]["cache"], "hit");
+    assert_eq!(steps(&dir)[1]["ai"]["usage"]["modelCalls"], 0);
+    assert!(warning_codes(&dir).is_empty());
+}
+
+#[test]
+fn a_redesign_heals_the_target_and_update_rewrites_the_entry() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    let flow = buy_flow(&dir, "Buy now");
+    twin.answer(&[found(&["e4"])]);
+    let output = twin.run_with_args(&dir, &flow, &[], &["--cache", "update"]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+
+    // The button's name changes: the fingerprint no longer fits.
+    buy_flow(&dir, "Purchase");
+    let output = twin.run_with_args(&dir, &flow, &[], &["--cache", "only"]);
+    assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
+    assert_eq!(steps(&dir)[1]["error"]["code"], "cache-miss");
+
+    twin.answer(&[found(&["e4"])]);
+    let output = twin.run(&dir, &flow, &[]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    assert_eq!(warning_codes(&dir), ["healed"]);
+    let target = &steps(&dir)[1]["ai"]["targets"][0];
+    assert_eq!(target["cache"], "healed");
+    assert_eq!(target["cached"], "role:button \"Buy now\"");
+    assert_eq!(target["locator"], "role:button Purchase");
+
+    twin.answer(&[found(&["e4"])]);
+    let output = twin.run_with_args(&dir, &flow, &[], &["--cache", "update"]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    let cache = cache_of(&flow).expect("the cache exists");
+    assert_eq!(cache["entries"][0]["locator"], "role:button Purchase");
+}
+
+#[test]
+fn update_removes_entries_the_run_did_not_use_and_a_failed_file_writes_nothing() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    let flow = buy_flow(&dir, "Buy now");
+    twin.answer(&[found(&["e4"])]);
+    let output = twin.run_with_args(&dir, &flow, &[], &["--cache", "update"]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    let written = cache_of(&flow).expect("the cache exists");
+
+    // A failing file writes nothing.
+    fs::write(
+        &flow,
+        fs::read_to_string(&flow)
+            .expect("the flow reads")
+            .replace("Bought visible", "Nothing visible @1s"),
+    )
+    .expect("the flow writes");
+    let output = twin.run_with_args(&dir, &flow, &[], &["--cache", "update"]);
+    assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
+    assert_eq!(cache_of(&flow), Some(written));
+
+    // A passing file without the line removes its entry, and the file.
+    dir.file("buy.whirl", "VISIT \"data:text/html,<h1>Shop</h1>\"\n");
+    let output = twin.run_with_args(&dir, &flow, &[], &["--cache", "update"]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    assert_eq!(cache_of(&flow), None);
+}
+
+#[test]
+fn a_locator_that_matches_two_elements_gets_nth_and_one_that_finds_none_is_not_cached() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.answer(&[found(&["e3"]), found(&["e4"])]);
+    let flow = dir.file(
+        "same.whirl",
+        "[Options]\nmodel: gpt-test\n\
+         VISIT \"data:text/html,<p>Item</p><p>Item</p><div><span>Other</span></div>\"\n\
+         ASSERT ai:\"the second item\" text == Item\n\
+         ASSERT ai:\"the other box\" text == Other\n",
+    );
+    let output = twin.run_with_args(&dir, &flow, &[], &["--cache", "update"]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    let steps = steps(&dir);
+    // `text:Item` matches both paragraphs, so the generator adds `nth:`.
+    assert_eq!(
+        steps[1]["ai"]["targets"][0]["locator"],
+        "text:Item >> nth:1"
+    );
+    assert_eq!(steps[1]["ai"]["targets"][0]["cache"], "miss");
+    // `text:Other` finds the span, not the box around it.
+    assert_eq!(steps[2]["ai"]["targets"][0]["cache"], "uncached");
+    assert_eq!(warning_codes(&dir), ["cache-miss", "cache-unstable"]);
+    let cache = cache_of(&flow).expect("the cache exists");
+    assert_eq!(cache["entries"].as_array().map(Vec::len), Some(1));
+}
+
+fn click(element_id: &str) -> Json {
+    json!({
+        "action": {"elementId": element_id, "description": "the button", "method": "click", "arguments": []},
+        "twoStep": false
+    })
+}
+
+fn act_flow(dir: &TestDir, button: &str) -> PathBuf {
+    dir.file(
+        "act.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n\
+             VISIT \"data:text/html,<h1>Shop</h1>\
+             <button onclick=\\\"document.querySelector('h1').textContent='Added'\\\">{button}</button>\"\n\
+             ACT \"add the item to the cart\"\nASSERT role:heading Added visible\n"
+        ),
+    )
+}
+
+#[test]
+fn an_act_line_is_cached_and_replays_without_the_model() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    let flow = act_flow(&dir, "Add to cart");
+    twin.answer(&[click("e3")]);
+    let output = twin.run_with_args(&dir, &flow, &[], &["--cache", "update"]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    assert_eq!(warning_codes(&dir), ["cache-miss"]);
+    assert_eq!(
+        cache_of(&flow),
+        Some(json!({
+            "version": 1,
+            "entries": [{
+                "kind": "act",
+                "line": "ACT \"add the item to the cart\"",
+                "occurrence": 1,
+                "model": "gpt-test",
+                "actions": [{
+                    "line": "CLICK role:button \"Add to cart\"",
+                    "fingerprints": [{"role": "button", "name": "Add to cart"}]
+                }]
+            }]
+        }))
+    );
+
+    let output = twin.run_with_args(&dir, &flow, &[], &["--cache", "only"]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    let act = &steps(&dir)[1]["act"];
+    assert_eq!(act["cache"], "hit");
+    assert_eq!(act["usage"]["modelCalls"], 0);
+    assert_eq!(act["actions"][0]["plannedBy"], "cache");
+}
+
+#[test]
+fn a_cached_act_line_heals_when_the_page_changes() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    let flow = act_flow(&dir, "Add to cart");
+    twin.answer(&[click("e3")]);
+    let output = twin.run_with_args(&dir, &flow, &[], &["--cache", "update"]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+
+    act_flow(&dir, "Add to bag");
+    let output = twin.run_with_args(&dir, &flow, &[], &["--cache", "only"]);
+    assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
+    assert_eq!(steps(&dir)[1]["error"]["code"], "cache-miss");
+
+    twin.answer(&[click("e3")]);
+    let output = twin.run(&dir, &flow, &[]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    let act = &steps(&dir)[1]["act"];
+    assert_eq!(act["cache"], "healed");
+    assert_eq!(act["cached"], json!(["CLICK role:button \"Add to cart\""]));
+    assert_eq!(warning_codes(&dir), ["healed"]);
+}
+
+#[test]
+fn a_cached_act_line_stores_a_secret_as_its_reference() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.answer(&[json!({
+        "action": {"elementId": "e3", "description": "password field", "method": "fill",
+                   "arguments": ["%env.WHIRL_AI_SECRET%"]},
+        "twoStep": false
+    })]);
+    let flow = dir.file(
+        "secret.whirl",
+        "[Options]\nmodel: gpt-test\n\
+         VISIT \"data:text/html,<h1>Login</h1><input type=password aria-label=Password>\"\n\
+         ACT \"type {{env.WHIRL_AI_SECRET}} into the password field\"\n\
+         ASSERT label:Password value == {{env.WHIRL_AI_SECRET}}\n",
+    );
+    let secret = "hunter2-cache-secret";
+    let env = [("WHIRL_AI_SECRET", secret)];
+    let output = twin.run_with_args(&dir, &flow, &env, &["--cache", "update"]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    let cache = cache_of(&flow).expect("the cache exists");
+    assert!(!cache.to_string().contains(secret), "{cache}");
+    assert_eq!(
+        cache["entries"][0]["actions"][0]["line"],
+        "FILL role:textbox Password \"{{env.WHIRL_AI_SECRET}}\""
+    );
+
+    // The replay types the current value of the variable.
+    let other = [("WHIRL_AI_SECRET", "another-secret")];
+    let output = twin.run_with_args(&dir, &flow, &other, &["--cache", "only"]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+}
+
+#[test]
+fn an_act_action_that_fails_heals_once_with_a_new_plan() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    // The model first picks the button under the banner, which never
+    // becomes clickable; the heal picks the other one.
+    twin.answer(&[click("e3"), click("e4")]);
+    let flow = dir.file(
+        "covered.whirl",
+        "[Options]\nmodel: gpt-test\n\
+         VISIT \"data:text/html,<h1>Shop</h1>\
+         <button style='position:absolute;top:10px'>Buy</button>\
+         <button style='position:absolute;top:200px' \
+         onclick=\\\"document.querySelector('h1').textContent='Bought'\\\">Buy now</button>\
+         <div style='position:fixed;top:0;left:0;width:100%;height:100px;background:white'>Banner</div>\"\n\
+         ACT \"buy the item\" @6s\nASSERT role:heading Bought visible\n",
+    );
+    let output = twin.run(&dir, &flow, &[]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    let act = &steps(&dir)[1]["act"];
+    assert_eq!(act["usage"]["modelCalls"], 2);
+    assert_eq!(act["actions"][0]["line"], "CLICK role:button \"Buy now\"");
+}
+
+#[test]
+fn the_generator_prefers_a_test_id_and_names_an_iframe_by_its_title() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.answer(&[found(&["e3"]), found(&["f1e3"])]);
+    let flow = dir.file(
+        "frame.whirl",
+        "[Options]\nmodel: gpt-test\n\
+         VISIT \"data:text/html,<h1>Pay</h1><button data-testid=pay-now>Pay now</button>\
+         <iframe title=Payment srcdoc='<label>Card <input></label>'></iframe>\"\n\
+         ASSERT ai:\"the pay button\" visible\n\
+         FILL ai:\"the card field in the payment frame\" 4242\n",
+    );
+    let output = twin.run_with_args(&dir, &flow, &[], &["--cache", "update"]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    let cache = cache_of(&flow).expect("the cache exists");
+    assert_eq!(cache["entries"][0]["locator"], "testid:pay-now");
+    assert_eq!(
+        cache["entries"][1]["locator"],
+        "frame:iframe[title='Payment'] >> role:textbox Card"
+    );
+}

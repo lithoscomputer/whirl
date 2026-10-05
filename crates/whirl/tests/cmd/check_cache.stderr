@@ -1,0 +1,2 @@
+./invalid.whirl-cache.json: error: './invalid.whirl-cache.json' is not a valid AI cache: version 7 is not version 1; delete it, or fix it and run with --cache=update
+./stale.whirl-cache.json: warning: the entry for `ACT "sign in"` (occurrence 1) matches no line of './stale.whirl'; the next passing run with --cache=update removes it

@@ -101,8 +101,11 @@ pub(crate) struct UnboundPlaceholder {
 /// stand for.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Instruction {
-    prompt:   String,
-    bindings: SecretBindings,
+    prompt:     String,
+    bindings:   SecretBindings,
+    /// Each `{{name}}` and `{{setup.name}}` reference the instruction used,
+    /// with its value, when the value holds no secret (SPEC 12.1).
+    references: Vec<(String, String)>,
 }
 
 impl Instruction {
@@ -111,6 +114,7 @@ impl Instruction {
     pub(crate) fn try_new(value: &Value, vars: &mut VarStore) -> Result<Self, VarError> {
         let mut prompt = String::new();
         let mut bindings = SecretBindings::default();
+        let mut references = Vec::new();
         for segment in &value.segments {
             let resolved = vars.resolve(&Value {
                 segments: vec![segment.clone()],
@@ -122,7 +126,14 @@ impl Instruction {
                 ValueSegment::EnvVar(name) => {
                     prompt.push_str(&bindings.bind(&format!("env.{name}"), &resolved));
                 }
-                ValueSegment::Var(_) | ValueSegment::SetupVar(_) => {
+                ValueSegment::Var(name) | ValueSegment::SetupVar(name) => {
+                    if vars.mask(&resolved) == resolved {
+                        let reference = match segment {
+                            ValueSegment::SetupVar(_) => format!("{{{{setup.{name}}}}}"),
+                            _ => format!("{{{{{name}}}}}"),
+                        };
+                        references.push((reference, resolved.clone()));
+                    }
                     redact_into(
                         &mut prompt,
                         &resolved,
@@ -132,7 +143,47 @@ impl Instruction {
                 }
             }
         }
-        Ok(Self { prompt, bindings })
+        Ok(Self {
+            prompt,
+            bindings,
+            references,
+        })
+    }
+
+    /// An argument as the AI cache writes it (SPEC 12.1): a quoted Whirl
+    /// value in which each `%env.NAME%` placeholder is the reference
+    /// `{{env.NAME}}`. Text equal to a variable the instruction used is that
+    /// variable's reference. `None` when the text holds a masked value that
+    /// no reference names, a `%secretN%` placeholder.
+    pub(crate) fn cache_value(&self, text: &str) -> Option<String> {
+        if let Some((reference, _)) = self.references.iter().find(|(_, value)| value == text) {
+            return Some(reference.clone());
+        }
+        let mut out = String::from("\"");
+        let mut rest = text;
+        while let Some(start) = rest.find('%') {
+            push_literal(&mut out, &rest[..start]);
+            let after = &rest[start + 1..];
+            match after.find('%') {
+                Some(end) if is_placeholder_name(&after[..end]) => {
+                    let name = &after[..end];
+                    if !name.starts_with("env.") {
+                        return None;
+                    }
+                    out.push_str("{{");
+                    out.push_str(name);
+                    out.push_str("}}");
+                    rest = &after[end + 1..];
+                }
+                _ => {
+                    out.push('%');
+                    rest = after;
+                }
+            }
+        }
+        push_literal(&mut out, rest);
+        out.push('"');
+        Some(out)
     }
 
     pub(crate) fn prompt(&self) -> &str {
@@ -170,6 +221,22 @@ impl Instruction {
             .into_iter()
             .find(|quoted| same_text(quoted, text))
             .unwrap_or(text)
+    }
+}
+
+/// Appends text to a quoted Whirl value with its escapes (SPEC 3.1), so a
+/// literal `{{` stays text.
+fn push_literal(out: &mut String, text: &str) {
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '{' if chars.peek() == Some(&'{') => out.push_str("\\{"),
+            _ => out.push(ch),
+        }
     }
 }
 
@@ -298,6 +365,30 @@ mod tests {
             },
             quoted: true,
         }
+    }
+
+    #[test]
+    fn the_cache_writes_placeholders_and_variables_as_references() {
+        let mut vars = VarStore::new();
+        vars.set_input("user", "ada");
+        let instruction = Instruction::try_new(
+            &value(vec![
+                ValueSegment::Literal("sign in as ".to_owned()),
+                ValueSegment::Var("user".to_owned()),
+            ]),
+            &mut vars,
+        )
+        .expect("resolves");
+        assert_eq!(instruction.cache_value("ada").as_deref(), Some("{{user}}"));
+        assert_eq!(
+            instruction.cache_value("%env.PASSWORD%!").as_deref(),
+            Some(r#""{{env.PASSWORD}}!""#)
+        );
+        assert_eq!(
+            instruction.cache_value(r#"50% off {{x}} "now""#).as_deref(),
+            Some(r#""50% off \{{x}} \"now\"""#)
+        );
+        assert_eq!(instruction.cache_value("%secret1%"), None);
     }
 
     #[test]

@@ -1,0 +1,7 @@
+[Options]
+base: {{env.EVAL_BASE}}
+model: {{model}}
+
+# ai: "a red tee" fits two cards, so the model must list both.
+VISIT /cheapest-red-shirt/
+CLICK ai:"the add to cart button of a red tee" @60s

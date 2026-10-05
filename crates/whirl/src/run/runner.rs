@@ -116,6 +116,7 @@ pub(crate) async fn run_files(
             state_dir,
             launch,
             planner,
+            model,
             workers,
             settings,
         } = spawn_blocking(move || PreparedRun::try_new(&files, &setups, settings))
@@ -140,6 +141,7 @@ pub(crate) async fn run_files(
                 settings.clone(),
                 &launch,
                 planner.clone(),
+                model.clone(),
                 stop.clone(),
             )
             .run(workers)
@@ -172,6 +174,7 @@ pub(crate) async fn run_files(
             settings,
             &launch,
             planner,
+            model,
             stop,
         )
         .run(workers)
@@ -195,8 +198,7 @@ pub(crate) async fn run_files(
 
 /// The run's `ACT` planner (SPEC 7.4): the language model, or with `--jev`
 /// Jev first and the language model as its fallback.
-fn act_planner(jev: bool) -> Result<Arc<dyn ActPlanner>, RunnerError> {
-    let model = Arc::new(ModelClient::from_env()?);
+fn act_planner(model: Arc<ModelClient>, jev: bool) -> Result<Arc<dyn ActPlanner>, RunnerError> {
     let llm: Arc<dyn ActPlanner> = Arc::new(LlmPlanner::new(model.clone()));
     if !jev {
         return Ok(llm);
@@ -217,6 +219,8 @@ struct PreparedRun {
     launch:     ShimLaunch,
     /// Built only when a flow uses `ACT` (SPEC 7.4).
     planner:    Option<Arc<dyn ActPlanner>>,
+    /// Built only when a flow asks a language model (SPEC 6.3, 7.4).
+    model:      Option<Arc<ModelClient>>,
     workers:    usize,
     settings:   RunSettings,
 }
@@ -257,10 +261,16 @@ impl PreparedRun {
         let launch = resolve_launch()?;
 
         let all_files: Vec<&File> = files.iter().chain(setups.iter()).collect();
-        let planner = if all_files.iter().any(|file| file.uses_act()) {
-            Some(act_planner(settings.jev)?)
+        let model = if all_files.iter().any(|file| file.uses_ai()) {
+            Some(Arc::new(ModelClient::from_env()?))
         } else {
             None
+        };
+        let planner = match &model {
+            Some(model) if all_files.iter().any(|file| file.uses_act()) => {
+                Some(act_planner(Arc::clone(model), settings.jev)?)
+            }
+            _ => None,
         };
         let requested_canonicals: Vec<PathBuf> =
             requested.into_iter().map(|(_, path)| path).collect();
@@ -298,6 +308,7 @@ impl PreparedRun {
             state_dir,
             launch,
             planner,
+            model,
             workers,
             settings,
         })
@@ -371,6 +382,7 @@ struct WorkQueue {
     settings: Arc<RunSettings>,
     launch:   ShimLaunch,
     planner:  Option<Arc<dyn ActPlanner>>,
+    model:    Option<Arc<ModelClient>>,
     pending:  Mutex<VecDeque<usize>>,
     stop:     Arc<AtomicBool>,
 }
@@ -408,6 +420,7 @@ impl WorkerSet {
         settings: Arc<RunSettings>,
         launch: &ShimLaunch,
         planner: Option<Arc<dyn ActPlanner>>,
+        model: Option<Arc<ModelClient>>,
         stop: Arc<AtomicBool>,
     ) -> Self {
         let pending = Mutex::new((0..jobs.len()).collect());
@@ -418,6 +431,7 @@ impl WorkerSet {
                 settings,
                 launch: launch.clone(),
                 planner,
+                model,
                 pending,
                 stop,
             }),
@@ -550,6 +564,7 @@ impl Worker {
             setup,
             state_out: job.state_out.as_deref(),
             planner: queue.planner.as_deref(),
+            model: queue.model.as_deref(),
         };
         run_flow(&run, client).await
     }
@@ -604,6 +619,7 @@ fn synthetic_outcome(job: &FlowJob, status: Status, message: &str) -> FlowOutcom
                     snapshot: None,
                     act: None,
                     warnings: Vec::new(),
+                    ai: None,
                 }],
                 captures: Vec::new(),
                 artifacts: Vec::new(),

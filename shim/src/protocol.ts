@@ -386,6 +386,7 @@ export type StepCommand =
 	| "read"
 	| "readResponse"
 	| "readRequest"
+	| "generateLocator"
 	| "traceGroup"
 	| "traceGroupEnd";
 
@@ -419,6 +420,7 @@ const stepCommandList: readonly StepCommand[] = [
 	"read",
 	"readResponse",
 	"readRequest",
+	"generateLocator",
 	"traceGroup",
 	"traceGroupEnd",
 ];
