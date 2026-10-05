@@ -81,6 +81,10 @@ export class FlowNetwork {
 		});
 	}
 
+	stopCollecting(): void {
+		this.#context.off("request", this.#onRequest);
+	}
+
 	readonly #onRequest = (request: Request): void => {
 		if (this.#requests.length >= maxRequestsPerEntry) {
 			this.#overflow = true;

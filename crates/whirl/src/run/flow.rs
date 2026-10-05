@@ -1876,11 +1876,22 @@ pub(crate) async fn run_flow(run: &FlowRun<'_>, client: &mut ShimClient) -> Flow
 
         let (flow_cache, cache_error) =
             cache::FlowCache::load(run.flags.cache, run.canonical, run.file);
+        let mut state_warnings = Vec::new();
+        if let Some(expired) = runtime_result
+            .get("stateExpiredCookies")
+            .and_then(Json::as_u64)
+            .filter(|count| *count > 0)
+        {
+            state_warnings.push(format!("Saved state: skipped {expired} expired cookie(s)"));
+        }
+        if runtime_result.get("stateRedacted").and_then(Json::as_bool) == Some(true) {
+            state_warnings.push("Loaded saved state contains redacted values".to_owned());
+        }
         let mut exec = FlowExec {
             run,
             options,
             vars,
-            warnings: Vec::new(),
+            warnings: state_warnings,
             flow_open: true,
             captures: Vec::new(),
             responses: check_step::ResponseCache::new(),
