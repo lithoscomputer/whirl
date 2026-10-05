@@ -269,10 +269,11 @@ def run_pass(set_name, model, tasks, env):
     option, flags = whirl_model(model)
     command = [
         whirl_binary(),
+        "run",
         *flags,
         "--var", f"model={option}",
         "--report-json", str(run_dir / "report.json"),
-        "--artifacts", str(run_dir / "artifacts"),
+        "--out", str(run_dir / "artifacts"),
         *[str(task.path) for task in tasks],
     ]
     with (run_dir / "stdout.txt").open("w") as stdout:

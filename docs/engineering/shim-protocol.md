@@ -50,9 +50,11 @@ Error object:
 ### `hello`
 
 Sent once after spawn. Params: `{}`. Result:
-`{"protocol": 8, "playwrightVersion": "1.62.1", "ffmpegPath": "abs path" | null}`.
+`{"protocol": 9, "playwrightVersion": "1.62.1", "ffmpegPath": "abs path" | null}`.
 `ffmpegPath` is Playwright's bundled ffmpeg, which every video recording
 needs; `null` means it is not installed. `whirl doctor` reports it.
+Protocol 9 adds `blockHosts` to `startFlow` and gives each `blockedHosts`
+entry of `endFlow` its rule.
 Protocol 8 adds `settle` to `ariaSnapshot`.
 Protocol 7 adds `judgeScreenshot` (section 4.9) for `JUDGE`.
 Protocol 6 adds `generateLocator` (section 4.8) for the AI cache.
@@ -77,6 +79,7 @@ Creates the browser context and page for one flow. Params:
   "storageStatePath": "abs path" | null,
   "dialogs": "dismiss" | "accept",
   "allowHosts": ["example.com", "*.example.com"] | null,
+  "blockHosts": ["*.analytics.example.com"] | null,
   "navTimeoutMs": 30000,
   "userAgent": "chrome" | "firefox" | "safari" | "literal string" | null,
   "reducedMotion": "reduce" | "no-preference" | null,
@@ -91,9 +94,12 @@ Creates the browser context and page for one flow. Params:
 Result: `{"browserVersion": "...", "nodeVersion": "...", "playwrightVersion": "...", "userAgent": "...", "videoFps": 60 | null}`. These are the active browser, Node process, and Playwright library versions, plus the context's actual `navigator.userAgent`, plus the frame rate of the flow's recording (`null` without `video`). Older protocol 1 shims may omit these additive fields; reports then use null values. Rust applies secret masking to the user agent before reporting it.
 
 - `allowHosts: null` means all hosts are allowed. When it is a list, Rust has
-  already appended the `base` host; the shim routes all requests and aborts
-  any whose hostname matches no glob, records the blocked hostname, blocks
-  WebSockets to non-matching hosts the same way, and disables service workers.
+  already appended the `base` host. `blockHosts: null` blocks no host. When
+  either is a list, the shim routes all requests and disables service
+  workers. It aborts a request whose hostname matches a `blockHosts` glob,
+  even one that `allowHosts` allows, and then a request whose hostname
+  matches no `allowHosts` glob. It records the blocked hostname with that
+  rule, and blocks WebSockets and independent `HTTP` requests the same way.
   Globs match the hostname only. `*.` prefixes do not match the apex.
   `data:` and `blob:` URLs are always allowed.
 - `dialogs` installs an auto-dismiss or auto-accept handler for alert,
@@ -145,11 +151,13 @@ Ends the flow and closes the context. Params:
 - `saveStoragePath` writes the context storage state before close.
 - `tracePath` exports the trace there; `null` discards a running trace.
 
-Result: `{"blockedHosts": ["host", ...], "videoPath": "abs path" | null, "videoSkipped": "reason" | null, "videoBlank": "reason" | null, "mocks": [{"id": 5, "hits": 2}, ...]}`.
+Result: `{"blockedHosts": [{"host": "a.example.com", "option": "block-hosts" | "allow-hosts", "glob": "*.example.com" | null}, ...], "videoPath": "abs path" | null, "videoSkipped": "reason" | null, "videoBlank": "reason" | null, "mocks": [{"id": 5, "hits": 2}, ...]}`.
 `mocks` lists every mock the flow registered, replaced ones included, in
 registration order, with the number of requests each served.
-`blockedHosts` is the sorted, de-duplicated set of hostnames blocked by
-`allowHosts` during the flow. `videoSkipped` says why the shim skipped a
+`blockedHosts` lists each hostname that a host rule blocked during the flow,
+once, sorted by hostname, with the first rule that blocked it: the
+`blockHosts` glob that matched, or `allow-hosts` with a null `glob` when no
+`allowHosts` glob matched. `videoSkipped` says why the shim skipped a
 requested recording, such as an ffmpeg failure. `videoBlank` says why a
 saved recording holds only a white frame, such as a failed capture of a
 crashed page; `videoPath` still names the recording. Rust reports each

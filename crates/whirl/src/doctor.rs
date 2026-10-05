@@ -81,7 +81,7 @@ async fn inspect(browser: &str, progress: Progress<'_>) -> anyhow::Result<()> {
         let params = StartFlowParams {
             browser: browser.to_owned(), headed: false,
             viewport: ViewportParams { width: 1280, height: 720 },
-            storage_state_path: None, dialogs: "dismiss".to_owned(), allow_hosts: None,
+            storage_state_path: None, dialogs: "dismiss".to_owned(), allow_hosts: None, block_hosts: None,
             nav_timeout_ms: 10_000, user_agent: None, reduced_motion: None,
             video: None, har_path: None, trace: false, open_shadow_roots: false, mocks: false,
         };

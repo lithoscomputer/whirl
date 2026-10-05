@@ -2,7 +2,9 @@
 
 use std::str::FromStr;
 
-use super::{BrowserKind, DialogPolicy, DurationLit, DurationUnit, ReducedMotion, Viewport};
+use super::{
+    BrowserKind, BrowserSimOrigin, DialogPolicy, DurationLit, DurationUnit, ReducedMotion, Viewport,
+};
 
 /// Conversion errors describe the required shape without retaining input
 /// that could have come from a secret environment variable.
@@ -90,6 +92,27 @@ impl FromStr for DialogPolicy {
             "dismiss" => Ok(Self::Dismiss),
             "accept" => Ok(Self::Accept),
             _ => Err(InvalidOptionValue("dismiss or accept")),
+        }
+    }
+}
+
+impl BrowserSimOrigin {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Build => "build",
+            Self::Recorded => "recorded",
+        }
+    }
+}
+
+impl FromStr for BrowserSimOrigin {
+    type Err = InvalidOptionValue;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        match text {
+            "build" => Ok(Self::Build),
+            "recorded" => Ok(Self::Recorded),
+            _ => Err(InvalidOptionValue("build or recorded")),
         }
     }
 }

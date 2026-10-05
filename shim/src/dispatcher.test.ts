@@ -46,7 +46,9 @@ class FakeDriver implements ShimDriver {
 	async endFlow(_params: EndFlowParams): Promise<EndFlowResult> {
 		this.log.push("endFlow");
 		return {
-			blockedHosts: ["a.example.com"],
+			blockedHosts: [
+				{ host: "a.example.com", option: "block-hosts", glob: "*.example.com" },
+			],
 			videoPath: null,
 			videoSkipped: null,
 			videoBlank: null,
@@ -146,6 +148,7 @@ const startFlowParams = JSON.stringify({
 	storageStatePath: null,
 	dialogs: "dismiss",
 	allowHosts: null,
+	blockHosts: null,
 	navTimeoutMs: 30000,
 	userAgent: null,
 	reducedMotion: null,
@@ -165,7 +168,7 @@ test("hello answers protocol 1, the Playwright version, and the ffmpeg path", as
 		id: 1,
 		ok: true,
 		result: {
-			protocol: 8,
+			protocol: 9,
 			playwrightVersion: "0.0.0-test",
 			ffmpegPath: "/fake/ffmpeg",
 		},
@@ -185,7 +188,9 @@ test("startFlow and endFlow round-trip through the driver", async (t) => {
 		id: 2,
 		ok: true,
 		result: {
-			blockedHosts: ["a.example.com"],
+			blockedHosts: [
+				{ host: "a.example.com", option: "block-hosts", glob: "*.example.com" },
+			],
 			videoPath: null,
 			videoSkipped: null,
 			videoBlank: null,

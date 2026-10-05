@@ -1,0 +1,4 @@
+[Options]
+storage: saved.state.json
+
+VISIT /

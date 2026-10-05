@@ -1,0 +1,86 @@
+Run files in browsers
+
+Usage: whirl run [OPTIONS] [PATH]...
+
+Arguments:
+  [PATH]...
+          Files to run; directories recurse to *.whirl
+
+Options:
+      --rerun-failed <REPORT>
+          Rerun whole failed or errored files from a JSON report
+
+      --browser <NAME>
+          Set the `browser` option, as `-O browser=NAME` does
+
+      --headed
+          Run with a visible browser window
+
+      --jobs <N>
+          Worker slots for parallel files
+
+      --var <k=v>
+          Define a variable (repeatable)
+
+      --variables-file <PATH>
+          Load variables from a file
+
+  -O <KEY=VALUE>
+          Set an option for every file, as in `-O browser=firefox` (repeatable)
+
+      --out <DIR>
+          Output directory for screenshots, traces, video, and other evidence
+          
+          [default: whirl-artifacts]
+
+      --trace
+          Record a Playwright trace per file; saved only when the file fails
+
+      --report-junit <PATH>
+          Write a JUnit XML report
+
+      --report-json <PATH>
+          Write a JSON report
+
+      --report-html <PATH>
+          Write a standalone HTML report with embedded recordings and screenshots
+
+      --report-metadata <PATH>
+          Read author-written report and flow descriptions from a JSON file
+
+      --fail-fast
+          Stop scheduling new files after the first failure
+
+      --update-snapshots
+          Write or refresh SNAPSHOT baselines instead of comparing
+
+      --video
+          Record a .webm video of each file's run
+
+      --video-fps <N>
+          Frames per second for --video on Chromium (1 to 60; default 60)
+
+      --har
+          Record a .har network log per file
+
+      --jev
+          Plan ACT with TypeSafe Jev first, falling back to the model option
+
+      --cache <MODE>
+          What to do with each flow's AI cache
+
+          Possible values:
+          - replay: Replay hits; resolve misses with the model; never write
+          - update: As `replay`, then write the cache of each file that passed
+          - only:   Fail a miss instead of asking the model
+          
+          [default: replay]
+
+      --load-state <FILE>
+          Start each file's browser from this saved state
+
+      --save-state <FILE>
+          Write the final browser state after a successful run of one file
+
+  -h, --help
+          Print help (see a summary with '-h')

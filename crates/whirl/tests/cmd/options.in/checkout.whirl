@@ -1,0 +1,2 @@
+VISIT /checkout
+ASSERT heading:Checkout visible

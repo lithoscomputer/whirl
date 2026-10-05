@@ -37,9 +37,13 @@ pub(crate) fn render(report: &RunReport) -> String {
         for warning in file.warning_lines() {
             let _ = writeln!(out, "  warning: {warning}");
         }
-        // The reports list every blocked host (SPEC 5).
-        for host in &file.blocked_hosts {
+        // The reports list every blocked host with its rule (SPEC 5), and
+        // the settings that this engine does not apply.
+        for host in file.blocked_host_lines() {
             let _ = writeln!(out, "  blocked host: {host}");
+        }
+        for setting in file.inactive_setting_lines() {
+            let _ = writeln!(out, "  inactive setting: {setting} (BrowserSim only)");
         }
     }
     for file in &report.files {
@@ -162,33 +166,37 @@ mod tests {
             duration_ms: 2_000,
             files:       vec![
                 FileReport {
-                    timing:        Timing::default(),
-                    source_sha256: None,
-                    roles:         None,
-                    runtime:       None,
-                    path:          "flows/pass.whirl".to_owned(),
-                    status:        Status::Passed,
-                    duration_ms:   1_234,
-                    artifacts_dir: "whirl-artifacts/flows/pass".to_owned(),
-                    blocked_hosts: vec!["cdn.example.com".to_owned()],
-                    warnings:      vec!["SCREENSHOT shot skipped: page crashed".to_owned()],
-                    artifacts:     Vec::new(),
-                    entries:       Vec::new(),
-                    mocks:         Vec::new(),
+                    timing:             Timing::default(),
+                    source_sha256:      None,
+                    roles:              None,
+                    runtime:            None,
+                    path:               "flows/pass.whirl".to_owned(),
+                    status:             Status::Passed,
+                    duration_ms:        1_234,
+                    artifacts_dir:      "whirl-artifacts/flows/pass".to_owned(),
+                    blocked_hosts:      vec!["cdn.example.com".to_owned()],
+                    blocked_host_rules: Vec::new(),
+                    settings:           Vec::new(),
+                    warnings:           vec!["SCREENSHOT shot skipped: page crashed".to_owned()],
+                    artifacts:          Vec::new(),
+                    entries:            Vec::new(),
+                    mocks:              Vec::new(),
                 },
                 FileReport {
-                    timing:        Timing::default(),
-                    source_sha256: None,
-                    roles:         None,
-                    runtime:       None,
-                    path:          "flows/fail.whirl".to_owned(),
-                    status:        Status::Failed,
-                    duration_ms:   700,
-                    artifacts_dir: "whirl-artifacts/flows/fail".to_owned(),
-                    blocked_hosts: Vec::new(),
-                    warnings:      Vec::new(),
-                    artifacts:     Vec::new(),
-                    entries:       vec![EntryReport {
+                    timing:             Timing::default(),
+                    source_sha256:      None,
+                    roles:              None,
+                    runtime:            None,
+                    path:               "flows/fail.whirl".to_owned(),
+                    status:             Status::Failed,
+                    duration_ms:        700,
+                    artifacts_dir:      "whirl-artifacts/flows/fail".to_owned(),
+                    blocked_hosts:      Vec::new(),
+                    blocked_host_rules: Vec::new(),
+                    settings:           Vec::new(),
+                    warnings:           Vec::new(),
+                    artifacts:          Vec::new(),
+                    entries:            vec![EntryReport {
                         name:        "Log in.".to_owned(),
                         line:        3,
                         status:      Status::Failed,
@@ -211,7 +219,7 @@ mod tests {
                         captures:    Vec::new(),
                         artifacts:   vec!["whirl-artifacts/flows/fail/failure.png".to_owned()],
                     }],
-                    mocks:         Vec::new(),
+                    mocks:              Vec::new(),
                 },
             ],
         }

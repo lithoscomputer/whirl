@@ -20,7 +20,8 @@ import { buildEvalExpression } from "./eval-support.js";
 import { FlowMocks } from "./flow-mocks.js";
 import { FlowNetwork } from "./flow-network.js";
 import { FlowTabs } from "./flow-tabs.js";
-import { createHostAllowlist } from "./host-glob.js";
+import type { BlockedHost } from "./host-glob.js";
+import { BlockedHostLog, createHostPolicy } from "./host-glob.js";
 import { nameIframes } from "./iframe-names.js";
 import { generateLocator } from "./locator-generator.js";
 import { buildLocator, describeLocator, frameOwners } from "./locators.js";
@@ -119,7 +120,7 @@ interface FlowState {
 	/** Open requests, for the settle before a model's snapshot. */
 	readonly activity: PageActivity;
 	readonly mocks: FlowMocks;
-	readonly blockedHosts: Set<string>;
+	readonly blockedHosts: BlockedHostLog;
 	readonly traceActive: boolean;
 	readonly video: {
 		readonly tempDir: string;
@@ -232,10 +233,9 @@ function streamsIndefinitely(request: {
 
 async function installHostFiltering(
 	context: BrowserContext,
-	allowHosts: readonly string[],
-	blockedHosts: Set<string>,
+	hostPolicy: (hostname: string) => BlockedHost | null,
+	blockedHosts: BlockedHostLog,
 ): Promise<void> {
-	const isAllowed = createHostAllowlist(allowHosts);
 	await context.route("**/*", async (route) => {
 		try {
 			const request = route.request();
@@ -245,8 +245,9 @@ async function installHostFiltering(
 				await route.continue();
 				return;
 			}
-			if (!isAllowed(url.hostname)) {
-				blockedHosts.add(url.hostname.toLowerCase());
+			const blocked = hostPolicy(url.hostname);
+			if (blocked !== null) {
+				blockedHosts.record(blocked);
 				await route.abort("blockedbyclient");
 				return;
 			}
@@ -277,8 +278,9 @@ async function installHostFiltering(
 				) {
 					break;
 				}
-				if (!isAllowed(target.hostname)) {
-					blockedHosts.add(target.hostname.toLowerCase());
+				const blockedHop = hostPolicy(target.hostname);
+				if (blockedHop !== null) {
+					blockedHosts.record(blockedHop);
 					await route.abort("blockedbyclient");
 					return;
 				}
@@ -314,11 +316,12 @@ async function installHostFiltering(
 		(_url) => true,
 		(webSocketRoute) => {
 			const url = new URL(webSocketRoute.url());
-			if (isAllowed(url.hostname)) {
+			const blocked = hostPolicy(url.hostname);
+			if (blocked === null) {
 				// Connect through; unhandled messages forward automatically.
 				webSocketRoute.connectToServer();
 			} else {
-				blockedHosts.add(url.hostname.toLowerCase());
+				blockedHosts.record(blocked);
 				webSocketRoute.close();
 			}
 		},
@@ -710,7 +713,9 @@ export class PlaywrightDriver implements ShimDriver {
 				: { recordHar: { path: params.harPath } }),
 			// Service workers can bypass request routing (SPEC sections 5
 			// and 7.5).
-			...(params.allowHosts === null && !params.mocks
+			...(params.allowHosts === null &&
+			params.blockHosts === null &&
+			!params.mocks
 				? {}
 				: { serviceWorkers: "block" as const }),
 		};
@@ -728,9 +733,10 @@ export class PlaywrightDriver implements ShimDriver {
 				receipt.received = token;
 			}
 		});
-		const blockedHosts = new Set<string>();
-		if (params.allowHosts !== null) {
-			await installHostFiltering(context, params.allowHosts, blockedHosts);
+		const blockedHosts = new BlockedHostLog();
+		const hostPolicy = createHostPolicy(params.allowHosts, params.blockHosts);
+		if (params.allowHosts !== null || params.blockHosts !== null) {
+			await installHostFiltering(context, hostPolicy, blockedHosts);
 		}
 		// After host filtering: the route registered last runs first, so a
 		// mock serves a request that allow-hosts would block (SPEC 7.5).
@@ -741,7 +747,7 @@ export class PlaywrightDriver implements ShimDriver {
 		if (params.trace) {
 			await context.tracing.start({ screenshots: true, snapshots: true });
 		}
-		const network = new FlowNetwork(context, params.allowHosts, blockedHosts);
+		const network = new FlowNetwork(context, hostPolicy, blockedHosts);
 		const activity = new PageActivity();
 		activity.watch(context);
 		const page = await context.newPage();
@@ -858,7 +864,7 @@ export class PlaywrightDriver implements ShimDriver {
 			videoPath = flow.video.finalPath;
 		}
 		return {
-			blockedHosts: [...flow.blockedHosts].sort(),
+			blockedHosts: flow.blockedHosts.list(),
 			videoPath,
 			videoSkipped,
 			videoBlank,
