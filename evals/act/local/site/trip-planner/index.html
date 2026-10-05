@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Lisbon weekend - Wayfarer</title>
+<style>
+  body { margin: 0; font-family: system-ui, sans-serif; color: #243238; background: #fbf8f3; }
+  header { display: flex; gap: 24px; padding: 12px 32px; border-bottom: 1px solid #e6dfd3; }
+  main { padding: 16px 32px; }
+  .days { display: flex; gap: 16px; }
+  .day { width: 260px; padding: 12px; background: #fff; border: 1px solid #e6dfd3; border-radius: 12px; }
+  .day h2 { margin: 0 0 8px; font-size: 17px; }
+  .day ol { min-height: 280px; margin: 0; padding: 0; list-style: none; }
+  .activity { margin-bottom: 8px; padding: 10px; background: #eef6f4; border-radius: 8px; touch-action: none; user-select: none; }
+  .activity span { display: block; color: #5b6b70; font-size: 13px; }
+  .activity.lifted { background: #d3ece6; box-shadow: 0 6px 14px #0003; }
+</style>
+</head>
+<body>
+<header>
+  <strong>Wayfarer</strong>
+  <nav aria-label="Trips"><a href="#">My trips</a> <a href="#">Saved places</a></nav>
+</header>
+<main>
+  <h1>Lisbon weekend</h1>
+  <p>Press and hold an activity to move it to another day.</p>
+  <div class="days">
+    <section class="day" aria-labelledby="friday">
+      <h2 id="friday">Friday, May 9</h2>
+      <ol>
+        <li class="activity"><strong>Check in at Casa do Rio</strong><span>3:00 PM</span></li>
+        <li class="activity"><strong>Tram 28 ride</strong><span>5:00 PM · 1 hour</span></li>
+        <li class="activity"><strong>Dinner in Alfama</strong><span>8:30 PM</span></li>
+      </ol>
+    </section>
+    <section class="day" aria-labelledby="saturday">
+      <h2 id="saturday">Saturday, May 10</h2>
+      <ol>
+        <li class="activity"><strong>Day trip to Sintra</strong><span>9:00 AM · 7 hours</span></li>
+        <li class="activity"><strong>Fado show</strong><span>9:30 PM</span></li>
+      </ol>
+    </section>
+    <section class="day" aria-labelledby="sunday">
+      <h2 id="sunday">Sunday, May 11</h2>
+      <ol>
+        <li class="activity"><strong>Belém Tower</strong><span>10:00 AM · 2 hours</span></li>
+      </ol>
+    </section>
+  </div>
+  <p role="status" data-testid="status"></p>
+</main>
+<script>
+  // The planner's own drag code, with pointer events and no native drag
+  // and drop. A drag starts once the button stays down 300ms; moving more
+  // than 5px sooner cancels it, so a swipe still scrolls on a phone.
+  const status = document.querySelector("[role=status]");
+  for (const item of document.querySelectorAll(".activity")) {
+    item.addEventListener("pointerdown", (event) => {
+      const start = { x: event.clientX, y: event.clientY };
+      let active = false;
+      const timer = setTimeout(() => {
+        active = true;
+        item.classList.add("lifted");
+        // Let elementFromPoint see the day under the item.
+        item.style.pointerEvents = "none";
+      }, 300);
+      const move = (moveEvent) => {
+        const dx = moveEvent.clientX - start.x;
+        const dy = moveEvent.clientY - start.y;
+        if (!active && Math.hypot(dx, dy) > 5) {
+          finish();
+          return;
+        }
+        if (active) item.style.transform = `translate(${dx}px, ${dy}px)`;
+      };
+      const up = (upEvent) => {
+        if (active) {
+          const list = document.elementFromPoint(upEvent.clientX, upEvent.clientY)?.closest(".day")?.querySelector("ol");
+          if (list && list !== item.parentElement) {
+            list.append(item);
+            const day = list.closest(".day").querySelector("h2").textContent;
+            status.textContent = `Moved ${item.querySelector("strong").textContent} to ${day}`;
+          }
+        }
+        finish();
+      };
+      const finish = () => {
+        clearTimeout(timer);
+        item.classList.remove("lifted");
+        item.style.pointerEvents = "";
+        item.style.transform = "";
+        document.removeEventListener("pointermove", move);
+        document.removeEventListener("pointerup", up);
+      };
+      document.addEventListener("pointermove", move);
+      document.addEventListener("pointerup", up);
+    });
+  }
+</script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+[Options]
+base: {{env.EVAL_BASE}}
+model: {{model}}
+
+# Scroll a photo strip to the right, not the page around it.
+VISIT /rental-listing/
+ACT "scroll the photo strip to the right" @60s
+[Asserts]
+eval "document.querySelector('[aria-label=Photos]').scrollLeft > 0" == true
+eval "[window.scrollX, window.scrollY]" == [0, 0]

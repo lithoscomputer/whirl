@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Brightdesk support console</title>
+<style>
+  body { margin: 0; font-family: system-ui, sans-serif; color: #1f2937; }
+  header { display: flex; gap: 24px; padding: 12px 24px; background: #111827; color: #fff; }
+  header span { margin-left: auto; }
+  [role=tablist] { display: flex; gap: 2px; padding: 8px 16px 0; background: #e5e7eb; }
+  [role=tab] { padding: 8px 16px; border: 0; border-radius: 8px 8px 0 0; background: #d1d5db; font: inherit; cursor: pointer; }
+  [role=tab][aria-selected=true] { background: #fff; }
+  .close { margin: 0 8px 0 -8px; border: 0; background: #fff; border-radius: 0 8px 0 0; cursor: pointer; }
+  [role=tabpanel] { padding: 24px; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { padding: 8px; border-bottom: 1px solid #e5e7eb; text-align: left; }
+</style>
+</head>
+<body>
+<header>
+  <strong>Brightdesk</strong>
+  <span>Signed in as Ana Silva</span>
+</header>
+<div role="tablist" aria-label="Open tabs"></div>
+<div role="tabpanel"></div>
+<p role="status" data-testid="status"></p>
+<script>
+  const tabs = [
+    {
+      title: "Inbox",
+      body: `<h2>Inbox</h2>
+        <table>
+          <tr><th>Ticket</th><th>Subject</th><th>Customer</th><th>Waiting</th></tr>
+          <tr><td>#4821</td><td>Refund not received</td><td>Globex Corporation</td><td>2 hours</td></tr>
+          <tr><td>#4822</td><td>Cannot reset password</td><td>Initech</td><td>40 minutes</td></tr>
+          <tr><td>#4825</td><td>Invoice shows the wrong address</td><td>Umbrella Health</td><td>5 minutes</td></tr>
+        </table>`,
+    },
+    {
+      title: "Reports",
+      body: `<h2>Reports</h2><p>Median first reply this week: 38 minutes. Tickets solved: 214.</p>`,
+    },
+    {
+      title: "Ticket #4821",
+      body: `<h2>Refund not received</h2><p>Globex Corporation asked about a refund for order 55012 on Monday.</p>`,
+    },
+    {
+      title: "Globex Corporation",
+      body: `<h2>Globex Corporation</h2><p>Enterprise customer since 2021. 12 open tickets.</p>`,
+    },
+  ];
+  let selected = 0;
+  const tablist = document.querySelector("[role=tablist]");
+  const panel = document.querySelector("[role=tabpanel]");
+  const status = document.querySelector("[role=status]");
+
+  function close(index) {
+    const [closed] = tabs.splice(index, 1);
+    if (index < selected || selected === tabs.length) selected -= 1;
+    status.textContent = `Closed ${closed.title}`;
+    render();
+  }
+
+  function render() {
+    tablist.replaceChildren();
+    tabs.forEach((tab, index) => {
+      const button = document.createElement("button");
+      button.setAttribute("role", "tab");
+      button.setAttribute("aria-selected", String(index === selected));
+      button.textContent = tab.title;
+      button.addEventListener("click", () => { selected = index; render(); });
+      // A middle click closes a tab, as in a browser.
+      button.addEventListener("mousedown", (event) => { if (event.button === 1) event.preventDefault(); });
+      button.addEventListener("auxclick", (event) => { if (event.button === 1) close(index); });
+      tablist.append(button);
+      // Only the active tab shows its close button.
+      if (index === selected) {
+        const closer = document.createElement("button");
+        closer.className = "close";
+        closer.setAttribute("aria-label", `Close ${tab.title}`);
+        closer.textContent = "×";
+        closer.addEventListener("click", () => close(index));
+        tablist.append(closer);
+      }
+    });
+    panel.innerHTML = tabs[selected] ? tabs[selected].body : "<p>No open tabs.</p>";
+  }
+  render();
+</script>
+</body>
+</html>
