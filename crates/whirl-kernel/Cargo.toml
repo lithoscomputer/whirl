@@ -1,0 +1,18 @@
+[package]
+name = "whirl-kernel"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Kernel hosted Chromium browsers as a Whirl browser provider"
+
+[dependencies]
+# The SDK has no crates.io release yet, so pin its commit on GitHub.
+kernel-sdk = { git = "https://github.com/brynary/kernel-rust-sdk", rev = "9342f36028000a6703cb1936a9c279cc4e9bf456" }
+tracing.workspace = true
+whirl-lang = { path = "../whirl-lang" }
+whirl-shim = { path = "../whirl-shim" }
+
+[lints]
+workspace = true

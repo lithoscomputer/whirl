@@ -191,9 +191,14 @@ export function decodeStartFlowParams(params: Params): StartFlowParams {
 	const video = fieldObjectOrNull(params, "video");
 	const allowHosts = fieldArrayOrNull(params, "allowHosts");
 	const blockHosts = fieldArrayOrNull(params, "blockHosts");
+	const connect = fieldObjectOrNull(params, "connect");
 	return {
 		browser: fieldEnum(params, "browser", browserEngines),
 		headed: fieldBoolean(params, "headed"),
+		connect:
+			connect === null
+				? null
+				: { cdpEndpoint: fieldString(connect, "cdpEndpoint") },
 		viewport: {
 			width: fieldNumber(viewport, "width"),
 			height: fieldNumber(viewport, "height"),

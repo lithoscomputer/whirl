@@ -44,6 +44,7 @@ import {
 import type {
 	AssertSpec,
 	BrowserEngine,
+	ConnectConfig,
 	EndFlowParams,
 	EndFlowResult,
 	ErrorKind,
@@ -96,6 +97,8 @@ const playwrightCoreVersion = (
 
 /** Bound for force-closing a wedged context or browser (protocol 6). */
 const closeWatchdogMs = 3000;
+/** How long `connectOverCDP` waits for a hosted browser to answer. */
+const connectTimeoutMs = 30_000;
 
 function resolveUserAgent(value: string | null) {
 	let deviceName: string;
@@ -653,8 +656,15 @@ export class PlaywrightDriver implements ShimDriver {
 	async #ensureBrowser(
 		engine: BrowserEngine,
 		headed: boolean,
+		connect: ConnectConfig | null,
 	): Promise<Browser> {
-		const key = `${engine}:${headed ? "headed" : "headless"}`;
+		// A connected browser is keyed by its endpoint, so a new lease
+		// (after a replacement) attaches again instead of reusing a stale
+		// connection.
+		const key =
+			connect === null
+				? `${engine}:${headed ? "headed" : "headless"}`
+				: `connect:${connect.cdpEndpoint}`;
 		if (
 			this.#browser !== null &&
 			this.#browserKey === key &&
@@ -667,7 +677,18 @@ export class PlaywrightDriver implements ShimDriver {
 			this.#browser = null;
 			this.#browserKey = null;
 		}
-		const browser = await browserType(engine).launch({ headless: !headed });
+		if (connect !== null && engine !== "chromium") {
+			throw new ShimError(
+				"internal",
+				`a CDP endpoint needs chromium; ${engine} cannot attach over CDP`,
+			);
+		}
+		const browser =
+			connect === null
+				? await browserType(engine).launch({ headless: !headed })
+				: await chromium.connectOverCDP(connect.cdpEndpoint, {
+						timeout: connectTimeoutMs,
+					});
 		this.#browser = browser;
 		this.#browserKey = key;
 		return browser;
@@ -706,7 +727,11 @@ export class PlaywrightDriver implements ShimDriver {
 			params.storageStatePath === null
 				? undefined
 				: await readState(params.storageStatePath);
-		const browser = await this.#ensureBrowser(params.browser, params.headed);
+		const browser = await this.#ensureBrowser(
+			params.browser,
+			params.headed,
+			params.connect,
+		);
 		const userAgent = resolveUserAgent(params.userAgent);
 		const contextOptions: BrowserContextOptions = {
 			viewport: {

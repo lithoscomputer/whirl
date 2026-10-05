@@ -5,9 +5,9 @@
 //! Only Whirl targets are enabled: the `whirl` target prefix matches this
 //! crate and every `whirl_*` crate (`whirl_run`, `whirl_shim`), because a
 //! [`Targets`] prefix is a plain string prefix, not a module path. Fields
-//! contain counts, durations, static command names, and execution states.
-//! Never record paths, URLs, variable values, step text, or raw external
-//! errors (SPEC 11).
+//! contain counts, durations, static command names, execution states, and
+//! a hosted browser's live view URL. Never record paths, variable values,
+//! step text, or raw external errors (SPEC 11).
 
 use std::{env, io};
 

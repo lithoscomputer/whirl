@@ -24,6 +24,7 @@ tokio.workspace = true
 tracing-subscriber = { version = "=0.3.20", default-features = false, features = ["fmt", "registry"] }
 whirl-ai = { path = "../whirl-ai" }
 whirl-check = { path = "../whirl-check" }
+whirl-kernel = { path = "../whirl-kernel" }
 whirl-lang = { path = "../whirl-lang" }
 whirl-report = { path = "../whirl-report" }
 whirl-run = { path = "../whirl-run" }

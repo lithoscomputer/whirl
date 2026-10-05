@@ -11,8 +11,8 @@ use serde_json::json;
 use tokio::time::sleep;
 
 use super::{
-    EndFlowParams, Locator, ReadResult, ReadSubject, ShimClient, ShimLaunch, StartFlowParams,
-    StepCommand, StepOutcome, StepRequest, ViewportParams,
+    EndFlowParams, LaunchOrigin, Locator, ReadResult, ReadSubject, ShimClient, ShimLaunch,
+    StartFlowParams, StepCommand, StepOutcome, StepRequest, ViewportParams,
 };
 
 /// Launch parameters for the fake shim: `node` from `PATH` and the
@@ -23,6 +23,7 @@ fn fake_shim_launch() -> ShimLaunch {
     ShimLaunch {
         node: PathBuf::from("node"),
         shim_js,
+        origin: LaunchOrigin::Environment,
     }
 }
 
@@ -50,12 +51,13 @@ fn eval_step(script: &str, timeout_ms: u64) -> StepRequest {
 async fn hello_start_flow_and_end_flow_round_trip() {
     let mut client = spawn_fake_shim();
     let hello = client.hello().await.expect("hello should succeed");
-    assert_eq!(hello.protocol, 9);
+    assert_eq!(hello.protocol, 10);
     assert_eq!(hello.playwright_version, "0.0.0-fake");
 
     let start = StartFlowParams {
         browser:            "chromium".to_owned(),
         headed:             false,
+        connect:            None,
         viewport:           ViewportParams {
             width:  1280,
             height: 720,

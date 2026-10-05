@@ -20,6 +20,7 @@ use whirl_report::model::{
     GoalReport, JudgeReport, MockReport, ReportViewport, RuntimeMetadata, SETUP_ENTRY,
     SnapshotReport, Status, StepError, StepKind, StepReport, StepWarning, Timing,
 };
+use whirl_shim::provider::BrowserSource;
 use whirl_shim::{
     AssertSpec, BrowserOptions, EndFlowParams, ErrorObject, Features, Locator, MockHits,
     MockPattern, MockResponse, PageExpect, Recording, ShimClient, ShimError, StartFlowParams,
@@ -271,6 +272,7 @@ impl ResolvedOptions {
                 headed: flags.web.headed,
                 user_agent,
                 nav_timeout_ms,
+                source: BrowserSource::Launch,
             },
             step_timeout_ms,
             entry_timeout_ms,
@@ -400,6 +402,8 @@ pub(crate) struct FlowRun<'a> {
     /// The run's language model client; present when any input asks a
     /// model (SPEC 6.3, 7.4).
     pub(crate) model:      Option<&'a ModelClient>,
+    /// Where this worker's browser comes from: its slot's lease.
+    pub(crate) source:     &'a BrowserSource,
 }
 
 /// One step line of an entry, in execution order (SPEC 12).
@@ -1775,6 +1779,7 @@ pub(crate) async fn run_flow(run: &FlowRun<'_>, client: &mut ShimClient) -> Flow
                 if let Some(setup) = run.setup {
                     options.use_setup(setup);
                 }
+                options.browser.source = run.source.clone();
                 report.settings = settings::report(run.file, &options, &vars);
                 options
             }

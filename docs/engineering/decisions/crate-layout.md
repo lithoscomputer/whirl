@@ -4,7 +4,7 @@ status: draft
 
 # Split Whirl into crates with one responsibility each
 
-Whirl's Rust code is a workspace of nine crates. Each crate owns one
+Whirl's Rust code is a workspace of ten crates. Each crate owns one
 responsibility and exposes a small public surface. Every dependency edge
 points down, from the `whirl` binary to the leaf crates. One `whirl` binary
 still ships (SPEC section 15).
@@ -32,8 +32,10 @@ The workspace MUST contain these crates, each under `crates/<name>/`:
   filters, predicates, reads, and literal validation.
 - `whirl-report` — the run report model and the console, JSON, JUnit, and
   HTML renderers (SPEC section 14).
+- `whirl-kernel` — Kernel hosted browsers as a browser provider.
 - `whirl-shim` — the browser shim boundary: the client, the wire format,
-  launch resolution, and the bundle layout.
+  launch resolution, the bundle layout, and the browser provider trait with
+  its local provider.
 - `whirl-lang` — the `.whirl` language: the AST, parser, formatter, lints,
   and command-line option resolver.
 - `whirl-types` — the value vocabulary that `whirl-lang` and `whirl-check`
@@ -48,10 +50,11 @@ Whirl crates below it. The edges today, where `A -> B` means `A` depends on
 `B`; a crate not listed depends on no Whirl crate:
 
 ```text
-whirl        -> whirl-run, whirl-ai, whirl-check, whirl-report, whirl-shim, whirl-lang
+whirl        -> whirl-run, whirl-ai, whirl-check, whirl-report, whirl-kernel, whirl-shim, whirl-lang
 whirl-run    -> whirl-ai, whirl-check, whirl-report, whirl-shim, whirl-lang, whirl-types
 whirl-ai     -> whirl-shim, whirl-lang
 whirl-check  -> whirl-lang, whirl-types, whirl-xpath
+whirl-kernel -> whirl-shim, whirl-lang
 whirl-shim   -> whirl-lang
 whirl-lang   -> whirl-types
 ```
@@ -86,6 +89,12 @@ MUST call this validation after `parse_file`.
 to wire JSON, so one crate defines what crosses the process boundary.
 
 `whirl-ai` MUST be the only crate that depends on `lithos-llm`.
+
+`whirl-shim` MUST own the browser provider trait and the local provider. A
+hosted provider MUST be a crate named after its service, such as
+`whirl-kernel`, and it MUST be the only crate that depends on that service's
+SDK. Only the `whirl` binary MAY depend on a provider crate; `whirl-run`
+MUST use providers through the trait.
 
 The `whirl` binary MUST own every acceptance test, because each one starts
 `whirl` as a process (ADR `cli-acceptance-tests` §1.1). A unit test lives in

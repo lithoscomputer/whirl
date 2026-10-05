@@ -7,9 +7,11 @@
 //! command's negative result (1), which outranks success (0).
 
 use std::collections::HashSet;
+use std::error::Error;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::Arc;
 use std::{fs, io};
 
 use anyhow::Context as _;
@@ -20,6 +22,7 @@ use sha2::{Digest as _, Sha256};
 use tokio::runtime::Runtime;
 use whirl_ai::ModelCatalog;
 use whirl_check::validate_literals;
+use whirl_kernel::KernelBrowsers;
 use whirl_lang::{
     CliOptions, Lint, ModelFacts, OptionFlag, ParseError, Severity, ast, format_file, lint_act,
     lint_file_with, lint_setup_refs, parse_file, setup_capture_uses,
@@ -27,7 +30,8 @@ use whirl_lang::{
 use whirl_report::model::Status;
 use whirl_report::{ReportMetadata, aggregate, console, html, json, junit};
 use whirl_run::cache::{self, CacheMode};
-use whirl_run::{FlowFlags, RunSettings, RunnerError, WebFlags};
+use whirl_run::{FlowFlags, LeaseError, RunSettings, RunnerError, WebFlags};
+use whirl_shim::provider::{BrowserProvider, LocalBrowsers, ProviderError};
 
 use crate::{doctor, install, telemetry};
 
@@ -160,6 +164,11 @@ struct RunArgs {
     #[arg(long)]
     headed: bool,
 
+    /// Where browsers come from: launched beside Whirl, or hosted by
+    /// Kernel (needs KERNEL_API_KEY; Chromium only).
+    #[arg(long, value_name = "NAME", value_enum, default_value_t = BrowserProviderArg::Local)]
+    browser_provider: BrowserProviderArg,
+
     /// Worker slots for parallel files.
     #[arg(long, value_name = "N")]
     jobs: Option<usize>,
@@ -278,6 +287,24 @@ enum CacheModeArg {
     Update,
     /// Fail a miss instead of asking the model.
     Only,
+}
+
+/// The `--browser-provider` values. The binary is the only crate that
+/// names a provider implementation; the runner sees the trait.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, clap::ValueEnum)]
+enum BrowserProviderArg {
+    #[default]
+    Local,
+    Kernel,
+}
+
+impl BrowserProviderArg {
+    fn provider(self) -> Result<Arc<dyn BrowserProvider>, ProviderError> {
+        Ok(match self {
+            Self::Local => Arc::new(LocalBrowsers),
+            Self::Kernel => Arc::new(KernelBrowsers::from_env()?),
+        })
+    }
 }
 
 impl From<CacheModeArg> for CacheMode {
@@ -1180,6 +1207,13 @@ fn run_command(args: &RunArgs) -> Exit {
     if let Some(metadata) = &mut metadata {
         metadata.select(paths());
     }
+    let browsers = match args.browser_provider.provider() {
+        Ok(browsers) => browsers,
+        Err(error) => {
+            print_err(&format!("whirl: error: {error}"));
+            return Exit::Runtime;
+        }
+    };
     let settings = RunSettings {
         source_hashes: checked
             .inputs
@@ -1210,6 +1244,7 @@ fn run_command(args: &RunArgs) -> Exit {
         },
         base_vars,
         jev: args.jev,
+        browsers,
     };
     let files: Vec<ast::File> = checked.inputs.into_iter().map(|input| input.file).collect();
     let setups: Vec<ast::File> = checked.setups.into_iter().map(|input| input.file).collect();
@@ -1239,15 +1274,35 @@ fn run_command(args: &RunArgs) -> Exit {
             let report_exit = write_reports(args, &document);
             run_exit.max(report_exit)
         }
-        Err(error @ RunnerError::SaveStateManyFiles { .. }) => {
+        Err(
+            error @ (RunnerError::SaveStateManyFiles { .. }
+            | RunnerError::Leases(LeaseError::Engine { .. })),
+        ) => {
             print_err(&format!("whirl: error: {error}"));
             Exit::Usage
+        }
+        Err(RunnerError::Leases(LeaseError::Provider(error))) => {
+            print_err(&format!("whirl: error: {}", error_chain(&error)));
+            Exit::Runtime
         }
         Err(error) => {
             print_err(&format!("whirl: error: {error}"));
             Exit::Runtime
         }
     }
+}
+
+/// An error and its sources, joined with `: `, so a provider failure
+/// names its cause, such as an HTTP status, as well as the action.
+fn error_chain(error: &dyn Error) -> String {
+    let mut message = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        message.push_str(": ");
+        message.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    message
 }
 
 /// Writes the requested JSON, JUnit, and HTML files

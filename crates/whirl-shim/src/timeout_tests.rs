@@ -18,6 +18,7 @@ async fn stalled_client(mode: &str) -> ShimClient {
         node:    PathBuf::from("node"),
         shim_js: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../whirl/tests/fixtures/fake_shim.js"),
+        origin:  LaunchOrigin::Environment,
     };
     let mut client = ShimClient::spawn(&launch).expect("the fake shim starts");
     client.hello().await.expect("the fake shim is ready");
@@ -58,6 +59,7 @@ async fn unanswered_start_flow_kills_the_process() {
     let params = StartFlowParams {
         browser:            "chromium".to_owned(),
         headed:             false,
+        connect:            None,
         viewport:           ViewportParams {
             width:  1280,
             height: 720,

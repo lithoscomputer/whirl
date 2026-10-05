@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Run browsers on Kernel with `whirl run --browser-provider kernel`. Whirl leases one Kernel hosted Chromium per worker slot before any flow starts, and deletes them when the run ends. Set `KERNEL_API_KEY`. A file whose `browser` option is `firefox` or `webkit` is a usage error before any browser is created. With `--headed` and `WHIRL_LOG=info`, Whirl logs each browser's live view URL. The browser runs in Kernel's cloud, so the app under test must be reachable from the internet. `UPLOAD` and `DROP` work up to a file of just under 50 MiB, Playwright's limit for a remote browser. The default, `--browser-provider local`, launches browsers on your machine as before.
+- Let `whirl doctor` accept any Node from v24 up when `WHIRL_NODE` selects a development runtime. It required exactly v24.19.0, so it failed where `node` is a newer release. The installed bundle still runs its own pinned Node.
 - Rename the `base` option to `app-url`, the URL of the app under test. `base` is now an unknown option key; change `base:` lines and `-O base=` to `app-url`. The JSON report lists the setting as `app-url`.
 - When Chromium refuses a screenshot for a moment ("Unable to capture screenshot"), as it can on a busy machine, take it again within the step's time. `SNAPSHOT`, `SCREENSHOT`, and `JUDGE` failed with a runtime error instead.
 - Define the complete syntax of a `.whirl` file in SPEC section 17, as a parsing expression grammar that Whirl's tests run against the parser. It replaces the EBNF grammar, which left out tokens, white space, and where each kind of locator ends. Section 17.1 lists the value rules that the grammar leaves out, such as valid regexes and JSONPath queries.
@@ -27,7 +29,7 @@
 - Add `[Options] block-hosts`, which blocks requests to the hosts its globs match, with the glob rules of `allow-hosts`, as in `block-hosts: analytics.example.com *.analytics.example.com`. A block wins over an allowance, including the `app-url` host's. It applies to page requests, WebSockets, redirects, and `HTTP` entries. The console output and reports now name the rule behind each blocked host, as in `blocked host: localhost (not in allow-hosts)`, and the JSON report adds `blockedHostRules`.
 - Accept `[Options] browsersim-origin: build | recorded`, a BrowserSim setting. Ordinary runs validate it and do not apply it, and the console output and reports list it as inactive when a file or `-O` sets it. Other `browsersim-` keys stay unknown.
 - List the settings each file ran with in the JSON and HTML reports: every option's value, masked like other output, and whether it came from the default, the file, or the command line.
-- Move the browser shim to protocol 9; `whirl install` provisions the matching bundle.
+- Move the browser shim to protocol 10; `whirl install` provisions the matching bundle.
 
 ## 0.20.0 (2026-09-28)
 
