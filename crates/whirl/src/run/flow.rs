@@ -362,8 +362,8 @@ pub(crate) struct FlowOutcome {
 #[derive(Debug)]
 pub(crate) struct FlowRun<'a> {
     pub(crate) file:       &'a File,
-    /// The canonical flow path: snapshot baselines and `storage` and
-    /// `UPLOAD` paths resolve relative to it.
+    /// The canonical flow path: snapshot baselines and `storage`,
+    /// `UPLOAD`, and `DROP` paths resolve relative to it.
     pub(crate) canonical:  &'a Path,
     /// The per-flow artifact directory as reported (possibly relative).
     pub(crate) report_dir: &'a Path,
@@ -565,6 +565,15 @@ impl FlowExec<'_> {
         self.vars.resolve(value)
     }
 
+    /// Resolves an `UPLOAD` or `DROP` path to an absolute path beside the
+    /// flow file (SPEC 7).
+    fn file_path(&mut self, path: &Value) -> Result<String, VarError> {
+        let resolved = self.resolve(path)?;
+        Ok(resolve_beside_file(self.run.canonical, &resolved)
+            .to_string_lossy()
+            .into_owned())
+    }
+
     /// Resolves a locator to wire JSON.
     fn locator(
         &mut self,
@@ -731,12 +740,33 @@ impl FlowExec<'_> {
             K::Hover { target } => StepCommand::Hover {
                 locator: self.locator(target, engine)?,
             },
+            K::Drag { source, target } => StepCommand::Drag {
+                locator: self.locator(source, engine)?,
+                target:  self.locator(target, engine)?,
+            },
+            K::ScrollIntoView { target } => StepCommand::Scroll {
+                locator: Some(self.locator(target, engine)?),
+                motion:  wire::scroll_motion_wire(None),
+            },
+            K::Scroll { target, motion } => StepCommand::Scroll {
+                locator: target
+                    .as_ref()
+                    .map(|target| self.locator(target, engine))
+                    .transpose()?,
+                motion:  wire::scroll_motion_wire(Some(motion)),
+            },
             K::Upload { target, path } => {
-                let resolved = self.resolve(path)?;
-                let path = resolve_beside_file(self.run.canonical, &resolved);
+                let path = self.file_path(path)?;
                 StepCommand::Upload {
                     locator: self.locator(target, engine)?,
-                    path:    path.to_string_lossy().into_owned(),
+                    path,
+                }
+            }
+            K::Drop { target, path } => {
+                let path = self.file_path(path)?;
+                StepCommand::Drop {
+                    locator: self.locator(target, engine)?,
+                    path,
                 }
             }
             K::Screenshot { name } => StepCommand::Screenshot {
@@ -1546,6 +1576,28 @@ pub(crate) async fn run_flow(run: &FlowRun<'_>, client: &mut ShimClient) -> Flow
                                 .to_string_lossy()
                                 .into_owned(),
                         );
+                    }
+                    // A recording is evidence, not a result: a skipped one
+                    // never changes the file's status (SPEC 13).
+                    // The report then has no frame rate, as for any flow
+                    // without a recording.
+                    if let Some(reason) = result.video_skipped {
+                        exec.warnings.push(format!(
+                            "video recording skipped: {}",
+                            exec.vars.mask(&reason)
+                        ));
+                        if let Some(runtime) = report.runtime.as_mut() {
+                            runtime.video_fps = None;
+                        }
+                    }
+                    // A blank recording stays listed, with its frame rate.
+                    // The warning explains its white frame, and the file's
+                    // status does not change.
+                    if let Some(reason) = result.video_blank {
+                        exec.warnings.push(format!(
+                            "video recording is blank: {}",
+                            exec.vars.mask(&reason)
+                        ));
                     }
                     if run.flags.har {
                         report.artifacts.push(

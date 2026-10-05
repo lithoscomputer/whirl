@@ -18,9 +18,9 @@ use crate::lang::ast::{
     Action, ActionKind, Assert, AssertBody, BrowserKind, Capture, CheckLine, Comment, DialogPolicy,
     DurationLit, Entry, Extractor, File, FileOption, FilterArg, FilterSpec, HttpBody, HttpBodyKind,
     HttpHeader, Ident, JsonLiteral, Locator, LocatorSegment, MouseButton, Operand, OptionLine,
-    OptionValue, Page, PageCheck, PredicateSpec, ReducedMotion, Regex, RegexFlags, ResponseField,
-    SegmentKind, Span, StateCheck, StoreScope, Subject, TextPrefix, Value, ValueSegment, Viewport,
-    chain_type,
+    OptionValue, Page, PageCheck, Percent, PredicateSpec, ReducedMotion, Regex, RegexFlags,
+    ResponseField, ScrollDirection, ScrollMotion, SegmentKind, Span, StateCheck, StoreScope,
+    Subject, TextPrefix, Value, ValueSegment, Viewport, chain_type,
 };
 
 /// A parse diagnostic (SPEC 16): file, line, column, the source line, a
@@ -880,7 +880,7 @@ fn split_timeout(tokens: &mut Vec<RawToken>) -> Option<DurationLit> {
     Some(duration)
 }
 
-const ACTION_KEYWORDS: [&str; 23] = [
+const ACTION_KEYWORDS: [&str; 26] = [
     "HTTP",
     "RESPONSE",
     "POPUP",
@@ -898,7 +898,10 @@ const ACTION_KEYWORDS: [&str; 23] = [
     "UNCHECK",
     "SELECT",
     "HOVER",
+    "DRAG",
+    "SCROLL",
     "UPLOAD",
+    "DROP",
     "SCREENSHOT",
     "SNAPSHOT",
     "EVAL",
@@ -1231,7 +1234,16 @@ fn parse_action_body(
             ActionKind::Select { target, option }
         }
         "PRESS" => parse_press(tokens, keyword_span)?,
-        "UPLOAD" => parse_upload(tokens, keyword_span)?,
+        "DRAG" => parse_drag(tokens, keyword_span)?,
+        "SCROLL" => parse_scroll(tokens, keyword_span)?,
+        "UPLOAD" => {
+            let (target, path) = locator_and_file(tokens, keyword_span)?;
+            ActionKind::Upload { target, path }
+        }
+        "DROP" => {
+            let (target, path) = locator_and_file(tokens, keyword_span)?;
+            ActionKind::Drop { target, path }
+        }
         "SCREENSHOT" => ActionKind::Screenshot {
             name: parse_name(tokens, keyword_span)?,
         },
@@ -1290,9 +1302,111 @@ fn parse_press(tokens: Vec<RawToken>, keyword_span: Span) -> Result<ActionKind, 
     }
 }
 
-/// `UPLOAD locator file:path` — the final value carries the `file:`
-/// prefix (SPEC 7). A quoted `"file:..."` is a value, not the prefix.
-fn parse_upload(mut tokens: Vec<RawToken>, keyword_span: Span) -> Result<ActionKind, LineError> {
+/// `DRAG source to target` (SPEC 7). A bare `to` separates the two
+/// locators; a quoted `"to"` is text (SPEC 3.1).
+fn parse_drag(mut tokens: Vec<RawToken>, keyword_span: Span) -> Result<ActionKind, LineError> {
+    let separators: Vec<usize> = tokens
+        .iter()
+        .enumerate()
+        .filter(|(_, token)| token.bare_single() == Some("to"))
+        .map(|(index, _)| index)
+        .collect();
+    let at = match separators.as_slice() {
+        [at] => *at,
+        [] => {
+            return Err(LineError::new(
+                tokens.last().map_or(keyword_span, |token| token.span),
+                "expected `to` between the element to drag and its target",
+            )
+            .expecting(["to"]));
+        }
+        [_, second, ..] => {
+            return Err(LineError::new(
+                tokens[*second].span,
+                "expected one `to`; quote \"to\" to match the text",
+            )
+            .expecting(["a locator"]));
+        }
+    };
+    let target = tokens.split_off(at + 1);
+    let to = tokens.pop().expect("the separator is present");
+    if tokens.is_empty() {
+        return Err(
+            LineError::new(to.span, "expected the element to drag before `to`")
+                .expecting(["a locator"]),
+        );
+    }
+    if target.is_empty() {
+        return Err(
+            LineError::new(after_span(to.span), "expected the drop target after `to`")
+                .expecting(["a locator"]),
+        );
+    }
+    Ok(ActionKind::Drag {
+        source: build_locator(tokens, true, keyword_span)?,
+        target: build_locator(target, true, to.span)?,
+    })
+}
+
+/// `SCROLL locator`, `SCROLL [locator] down|up|left|right`, or `SCROLL
+/// [locator] to N%` (SPEC 7). The motion is read from the end of the line;
+/// a bare `to` anywhere else is an error, since only a quoted `"to"` is
+/// text (SPEC 3.1).
+fn parse_scroll(mut tokens: Vec<RawToken>, keyword_span: Span) -> Result<ActionKind, LineError> {
+    let expected = ["a locator", "down", "up", "left", "right", "to"];
+    let Some(last) = tokens.last() else {
+        return Err(LineError::new(keyword_span, "expected what to scroll").expecting(expected));
+    };
+    let motion = if let Some(direction) = last.bare_single().and_then(ScrollDirection::from_keyword)
+    {
+        tokens.pop();
+        Some(ScrollMotion::Chunk(direction))
+    } else if tokens.len() >= 2 && tokens[tokens.len() - 2].bare_single() == Some("to") {
+        let percent = tokens.pop().expect("two tokens are present");
+        let Some(percent) = percent.bare_single().and_then(Percent::parse) else {
+            return Err(LineError::new(
+                percent.span,
+                "expected a percent from 0% to 100% after `to`",
+            )
+            .expecting(["a percent such as 50%"]));
+        };
+        tokens.pop();
+        Some(ScrollMotion::To(percent))
+    } else {
+        None
+    };
+    if let Some(to) = tokens
+        .iter()
+        .find(|token| token.bare_single() == Some("to"))
+    {
+        return Err(LineError::new(
+            to.span,
+            "expected a percent after `to`; quote \"to\" to match the text",
+        )
+        .expecting(["a percent such as 50%"]));
+    }
+    match motion {
+        Some(motion) if tokens.is_empty() => Ok(ActionKind::Scroll {
+            target: None,
+            motion,
+        }),
+        Some(motion) => Ok(ActionKind::Scroll {
+            target: Some(build_locator(tokens, true, keyword_span)?),
+            motion,
+        }),
+        None => Ok(ActionKind::ScrollIntoView {
+            target: build_locator(tokens, true, keyword_span)?,
+        }),
+    }
+}
+
+/// `UPLOAD locator file:path` and `DROP locator file:path` — the final
+/// value carries the `file:` prefix (SPEC 7). A quoted `"file:..."` is a
+/// value, not the prefix.
+fn locator_and_file(
+    mut tokens: Vec<RawToken>,
+    keyword_span: Span,
+) -> Result<(Locator, Value), LineError> {
     let Some(file_token) = tokens.pop() else {
         return Err(
             LineError::new(keyword_span, "expected a locator and a `file:` path")
@@ -1318,7 +1432,7 @@ fn parse_upload(mut tokens: Vec<RawToken>, keyword_span: Span) -> Result<ActionK
         );
     }
     let target = build_locator(tokens, true, keyword_span)?;
-    Ok(ActionKind::Upload { target, path })
+    Ok((target, path))
 }
 
 /// The position just after a span, for "expected more here" diagnostics.
@@ -4264,6 +4378,164 @@ status == 202
             "message: {}",
             error.message
         );
+    }
+
+    #[test]
+    fn drop_takes_a_text_locator_and_strips_the_file_prefix() {
+        let kind = action_kind("DROP \"Drop files here\" file:reports/q3.csv");
+        let ActionKind::Drop { target, path } = &kind else {
+            panic!("expected DROP");
+        };
+        assert_eq!(default_segment_text(target), "Drop files here");
+        assert_eq!(lit(path), "reports/q3.csv");
+        assert_eq!(kind.default_engine(), Some(DefaultEngine::Text));
+
+        // A quoted path takes spaces; a prefixed locator keeps its engine.
+        let ActionKind::Drop { target, path } =
+            action_kind("DROP testid:dropzone file:\"my report.csv\"")
+        else {
+            panic!("expected DROP");
+        };
+        assert!(matches!(target.segments[0].kind, SegmentKind::TestId(_)));
+        assert_eq!(lit(&path), "my report.csv");
+    }
+
+    #[test]
+    fn drop_reads_a_quoted_file_prefix_as_a_value() {
+        // A quoted "file:..." before the path is the zone's text.
+        let ActionKind::Drop { target, path } = action_kind("DROP \"file:zone\" file:a.csv") else {
+            panic!("expected DROP");
+        };
+        assert_eq!(default_segment_text(&target), "file:zone");
+        assert_eq!(lit(&path), "a.csv");
+
+        // A quoted "file:..." at the end is not the path.
+        for (line, message) in [
+            (
+                "DROP \"Drop files here\" \"file:a.csv\"",
+                "expected a `file:` path",
+            ),
+            ("DROP \"Drop files here\" a.csv", "expected a `file:` path"),
+            ("DROP file:a.csv", "expected a locator before"),
+            (
+                "DROP \"Drop files here\" file:",
+                "expected a path after `file:`",
+            ),
+            ("DROP", "expected a locator and a `file:` path"),
+        ] {
+            let error = parse_err(&format!("VISIT /\n{line}\n"));
+            assert!(error.message.contains(message), "{line}: {}", error.message);
+        }
+    }
+
+    #[test]
+    fn drag_splits_its_locators_at_a_bare_to() {
+        let kind = action_kind("DRAG \"Write spec\" to testid:done");
+        let ActionKind::Drag { source, target } = &kind else {
+            panic!("expected DRAG");
+        };
+        assert_eq!(default_segment_text(source), "Write spec");
+        assert!(matches!(target.segments[0].kind, SegmentKind::TestId(_)));
+        assert_eq!(kind.default_engine(), Some(DefaultEngine::Text));
+
+        // A role takes its name before `to`; a quoted "to" is text.
+        let ActionKind::Drag { source, target } =
+            action_kind("DRAG role:listitem \"to\" to role:region Done")
+        else {
+            panic!("expected DRAG");
+        };
+        let SegmentKind::Role {
+            name: Some(name), ..
+        } = &source.segments[0].kind
+        else {
+            panic!("expected a named role");
+        };
+        assert_eq!(lit(name), "to");
+        assert!(matches!(target.segments[0].kind, SegmentKind::Role {
+            name: Some(_),
+            ..
+        }));
+        let ActionKind::Drag { source, .. } = action_kind("DRAG \"to\" to Done") else {
+            panic!("expected DRAG");
+        };
+        assert_eq!(default_segment_text(&source), "to");
+    }
+
+    #[test]
+    fn drag_needs_one_bare_to_between_two_locators() {
+        for (line, message) in [
+            ("DRAG \"Write spec\" testid:done", "expected `to`"),
+            ("DRAG to testid:done", "before `to`"),
+            ("DRAG \"Write spec\" to", "after `to`"),
+            ("DRAG a to b to c", "quote \"to\""),
+        ] {
+            let error = parse_err(&format!("VISIT /\n{line}\n"));
+            assert!(error.message.contains(message), "{line}: {}", error.message);
+        }
+    }
+
+    #[test]
+    fn scroll_reads_its_motion_from_the_end_of_the_line() {
+        let ActionKind::ScrollIntoView { target } = action_kind("SCROLL testid:load-more") else {
+            panic!("expected SCROLL into view");
+        };
+        assert!(matches!(target.segments[0].kind, SegmentKind::TestId(_)));
+        assert_eq!(action_kind("SCROLL down"), ActionKind::Scroll {
+            target: None,
+            motion: ScrollMotion::Chunk(ScrollDirection::Down),
+        });
+        let ActionKind::Scroll {
+            target: Some(target),
+            motion,
+        } = action_kind("SCROLL role:dialog Filters left")
+        else {
+            panic!("expected SCROLL with a locator");
+        };
+        assert!(matches!(target.segments[0].kind, SegmentKind::Role {
+            name: Some(_),
+            ..
+        }));
+        assert_eq!(motion, ScrollMotion::Chunk(ScrollDirection::Left));
+        let ActionKind::Scroll { target, motion } = action_kind("SCROLL to 33.5%") else {
+            panic!("expected SCROLL to a position");
+        };
+        assert!(target.is_none());
+        let ScrollMotion::To(percent) = motion else {
+            panic!("expected a position");
+        };
+        assert_eq!(percent.to_string(), "33.5%");
+        let ActionKind::ScrollIntoView { target } = action_kind("SCROLL \"down\"") else {
+            panic!("expected a quoted direction to be text");
+        };
+        assert_eq!(default_segment_text(&target), "down");
+        assert_eq!(
+            action_kind("SCROLL \"to\" up").default_engine(),
+            Some(DefaultEngine::Text)
+        );
+    }
+
+    #[test]
+    fn scroll_rejects_a_bad_percent_or_a_stray_to() {
+        for (line, message) in [
+            ("SCROLL", "expected what to scroll"),
+            ("SCROLL to 150%", "from 0% to 100%"),
+            ("SCROLL to fifty", "from 0% to 100%"),
+            ("SCROLL to", "quote \"to\""),
+            ("SCROLL a to b down", "quote \"to\""),
+        ] {
+            let error = parse_err(&format!("VISIT /\n{line}\n"));
+            assert!(error.message.contains(message), "{line}: {}", error.message);
+        }
+    }
+
+    #[test]
+    fn a_percent_is_digits_from_0_to_100() {
+        for text in ["0%", "50%", "100%", "33.5%", "100.0%"] {
+            assert!(Percent::parse(text).is_some(), "{text}");
+        }
+        for text in ["100.5%", "-1%", "50", ".5%", "5.%", "1e2%", "%"] {
+            assert!(Percent::parse(text).is_none(), "{text}");
+        }
     }
 
     #[test]

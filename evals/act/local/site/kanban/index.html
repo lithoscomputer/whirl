@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Sprint board</title>
+<style>
+  main { display: flex; gap: 16px; }
+  section { width: 180px; min-height: 140px; padding: 8px; border: 1px solid #999; }
+  article { margin: 6px 0; padding: 6px; background: #eef; }
+</style>
+</head>
+<body>
+<h1>Sprint board</h1>
+<main>
+  <section aria-label="To do">
+    <h2>To do</h2>
+    <article draggable="true">Write release notes</article>
+    <article draggable="true">Fix login timeout</article>
+  </section>
+  <section aria-label="In progress">
+    <h2>In progress</h2>
+    <article draggable="true">Update pricing page</article>
+  </section>
+  <section aria-label="Done">
+    <h2>Done</h2>
+  </section>
+</main>
+<p>Last move: <span data-testid="last-move">none</span></p>
+<script>
+  let dragged = null;
+  for (const card of document.querySelectorAll("article")) {
+    card.addEventListener("dragstart", (event) => {
+      dragged = card;
+      event.dataTransfer.setData("text/plain", card.textContent);
+    });
+  }
+  for (const column of document.querySelectorAll("section")) {
+    column.addEventListener("dragover", (event) => event.preventDefault());
+    column.addEventListener("drop", (event) => {
+      event.preventDefault();
+      if (!dragged) return;
+      column.append(dragged);
+      document.querySelector("[data-testid=last-move]").textContent =
+        `${dragged.textContent} to ${column.getAttribute("aria-label")}`;
+    });
+  }
+</script>
+</body>
+</html>

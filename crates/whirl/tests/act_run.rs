@@ -418,6 +418,122 @@ fn an_unknown_mouse_button_fails_the_entry() {
     assert!(stdout.contains("sideways"), "stdout:\n{stdout}");
 }
 
+/// A native drag source and drop zone, as `ref=e3` and `ref=e4`.
+const BOARD: &str = "<h1>Board</h1>\
+    <button id=\"card\" draggable=\"true\">Card</button>\
+    <button id=\"done\">Done</button>\
+    <script>\
+    card.ondragstart = (e) => e.dataTransfer.setData('text/plain', 'Card');\
+    done.ondragover = (e) => e.preventDefault();\
+    done.ondrop = (e) => { e.preventDefault(); document.querySelector('h1').textContent = 'Dropped'; };\
+    </script>";
+
+fn drag(source: &str, target: &str) -> Json {
+    json!({
+        "action": {"elementId": source, "description": "the card", "method": "dragAndDrop", "arguments": [target]},
+        "twoStep": false
+    })
+}
+
+#[test]
+fn act_drags_an_element_onto_the_target_the_model_names() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.answer(&[drag("e3", "e4")]);
+    let flow = dir.file(
+        "drag.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{}ACT \"drag the card to Done\"\n\
+             [Asserts]\nrole:heading \"Dropped\" visible\n",
+            visit_html(BOARD)
+        ),
+    );
+    let output = twin.run(&dir, &flow, &[]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+    assert_eq!(
+        act_step(&dir)["act"]["actions"][0]["line"],
+        "DRAG role:button \"Card\" to role:button \"Done\""
+    );
+    let log = twin.request_log();
+    assert!(log.contains("choose the dragAndDrop method"), "log:\n{log}");
+}
+
+#[test]
+fn a_drop_target_the_snapshot_never_showed_fails_the_entry() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.answer(&[drag("e3", "e99")]);
+    let flow = dir.file(
+        "drag-unknown.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{}ACT \"drag the card to Done\"\n",
+            visit_html(BOARD)
+        ),
+    );
+    let output = twin.run(&dir, &flow, &[]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 1, "stdout:\n{stdout}");
+    assert_eq!(act_step(&dir)["error"]["code"], "act-invalid-decision");
+    assert!(stdout.contains("e99"), "stdout:\n{stdout}");
+}
+
+/// A page taller than the viewport; `ref=e1` is its `<body>`.
+const TALL: &str = "<h1>Feed</h1><div style=\"height: 3000px\">Posts</div>";
+
+fn scroll_answer(method: &str, arguments: &[&str]) -> Json {
+    json!({
+        "action": {"elementId": "e1", "description": "the page", "method": method, "arguments": arguments},
+        "twoStep": false
+    })
+}
+
+#[test]
+fn act_scrolls_the_page_when_the_model_names_its_body() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.answer(&[scroll_answer("scrollTo", &["100%"])]);
+    let flow = dir.file(
+        "scroll.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{}ACT \"scroll to the bottom\"\n\
+             [Asserts]\neval \"window.scrollY > 2000\" == true\n",
+            visit_html(TALL)
+        ),
+    );
+    let output = twin.run(&dir, &flow, &[]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+    assert_eq!(
+        act_step(&dir)["act"]["actions"][0]["line"],
+        "SCROLL to 100%"
+    );
+    let log = twin.request_log();
+    assert!(
+        log.contains("choose the root element of the tree"),
+        "log:\n{log}"
+    );
+}
+
+#[test]
+fn a_scroll_position_that_is_not_a_percent_fails_the_entry() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.answer(&[scroll_answer("scrollTo", &["halfway"])]);
+    let flow = dir.file(
+        "scroll-bad.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{}ACT \"scroll halfway down\"\n",
+            visit_html(TALL)
+        ),
+    );
+    let output = twin.run(&dir, &flow, &[]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 1, "stdout:\n{stdout}");
+    assert_eq!(act_step(&dir)["error"]["code"], "act-invalid-decision");
+    assert!(stdout.contains("halfway"), "stdout:\n{stdout}");
+}
+
 #[test]
 fn a_rejected_credential_is_a_runtime_error() {
     let dir = TestDir::new();
@@ -448,6 +564,10 @@ fn act_works_in_every_engine_when_requested() {
     if env::var_os("WHIRL_TEST_ALL_BROWSERS").is_none() {
         return;
     }
+    // A frame from another origin, which only its title names.
+    let page = "<h1>Shop</h1>\
+        <button onclick=\"document.querySelector('h1').textContent='Added'\">Add to cart</button>\
+        <iframe title=Reviews src=\"data:text/html,<p>Five stars</p>\"></iframe>";
     for engine in ["firefox", "webkit"] {
         let dir = TestDir::new();
         let twin = ModelTwin::start();
@@ -455,8 +575,9 @@ fn act_works_in_every_engine_when_requested() {
         let flow = dir.file(
             "click.whirl",
             &format!(
-                "[Options]\nmodel: gpt-test\n{SHOP}ACT \"add the item to the cart\"\n\
-                 [Asserts]\nrole:heading \"Added\" visible\n"
+                "[Options]\nmodel: gpt-test\n{}ACT \"add the item to the cart\"\n\
+                 [Asserts]\nrole:heading \"Added\" visible\n",
+                visit_html(page)
             ),
         );
         let output = twin.run_with_args(&dir, &flow, &[], &["--browser", engine]);
@@ -466,6 +587,10 @@ fn act_works_in_every_engine_when_requested() {
         assert!(
             log.contains("button \\\"Add to cart\\\" [ref=e3]"),
             "{engine} snapshot refs; log:\n{log}"
+        );
+        assert!(
+            log.contains("iframe \\\"Reviews\\\" [ref=e4]"),
+            "{engine} names the frame; log:\n{log}"
         );
     }
 }
@@ -615,6 +740,50 @@ fn a_scoped_act_shows_the_model_only_that_element() {
         !log.contains("Menu"),
         "the header is outside the scope; log:\n{log}"
     );
+}
+
+/// Frames named by a title, by an `aria-label` over a title, from inside
+/// another frame, from another origin, and not at all.
+const FRAMED_HELP: &str = "<h1>Help</h1><main>\
+    <iframe title=\"Incident history\" \
+    srcdoc=\"<p>Resolved</p><iframe title='Uptime chart' srcdoc='<p>Up</p>'></iframe>\"></iframe>\
+    <iframe aria-label=\"Live chat\" title=\"Chat widget\" srcdoc=\"<p>Hello</p>\"></iframe>\
+    <iframe title=Weather src=\"data:text/html,<p>Sunny</p>\"></iframe>\
+    <iframe srcdoc=\"<p>Advert</p>\"></iframe></main>";
+
+#[test]
+fn a_scoped_act_shows_the_model_each_iframe_by_its_name() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.answer(&[json!({
+        "action": {"elementId": "e3", "description": "the chat", "method": "scrollIntoView", "arguments": []},
+        "twoStep": false
+    })]);
+    let flow = dir.file(
+        "scoped-frames.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{}ACT css:main \"show the live chat\" @30s\n",
+            visit_html(FRAMED_HELP)
+        ),
+    );
+    let output = twin.run(&dir, &flow, &[]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+    assert_eq!(
+        act_step(&dir)["act"]["actions"][0]["line"],
+        "SCROLL role:iframe \"Live chat\""
+    );
+    let log = twin.request_log();
+    for line in [
+        r#"iframe \"Incident history\" [ref=e2]"#,
+        r#"iframe \"Uptime chart\" [ref=f1e3]"#,
+        r#"iframe \"Live chat\" [ref=e3]"#,
+        r#"iframe \"Weather\" [ref=e4]"#,
+        "iframe [ref=e5]",
+    ] {
+        assert!(log.contains(line), "the model sees {line}; log:\n{log}");
+    }
+    assert!(!log.contains("Chat widget"), "log:\n{log}");
 }
 
 #[test]
@@ -768,13 +937,27 @@ fn jev_choice(options: &[&str], chosen: &str, p: f64) -> Json {
 }
 
 /// Jev's answers to the intent request: the family, and no key, special
-/// mouse button, end state, or suggestion.
+/// mouse button, end state, suggestion, or scroll.
 fn jev_intent(family: &str, confidence: f64) -> Json {
-    jev_intent_with_button(family, confidence, "left")
+    jev_intent_answers(family, confidence, "left", ("not_scroll", "not_scroll"))
 }
 
 /// The same, with the mouse button Jev names.
 fn jev_intent_with_button(family: &str, confidence: f64, button: &str) -> Json {
+    jev_intent_answers(family, confidence, button, ("not_scroll", "not_scroll"))
+}
+
+/// A sure scroll, with its way and area.
+fn jev_scroll_intent(way: &str, area: &str) -> Json {
+    jev_intent_answers("scroll", 0.95, "left", (way, area))
+}
+
+fn jev_intent_answers(
+    family: &str,
+    confidence: f64,
+    button: &str,
+    (way, area): (&str, &str),
+) -> Json {
     const FAMILIES: [&str; 10] = [
         "click",
         "double_click",
@@ -810,6 +993,26 @@ fn jev_intent_with_button(family: &str, confidence: f64, button: &str) -> Json {
         "toggle_state": jev_choice(&["on", "off", "unspecified"], "unspecified", 0.96),
         "after_typing": jev_choice(&["nothing", "pick_suggestion"], "nothing", 0.97),
         "key": jev_choice(&KEYS, "other", 0.93),
+        "scroll_way": jev_choice(
+            &["down", "up", "left", "right", "position", "into_view", "not_scroll"],
+            way,
+            0.95
+        ),
+        "scroll_area": jev_choice(&["page", "part", "not_scroll"], area, 0.95),
+    }))
+}
+
+/// Jev's pick among several candidates: `strict` and `best` agree on
+/// `element_id` with probability `p`.
+fn jev_pick(element_id: &str, others: &[&str], p: f64) -> Json {
+    let mut strict: Vec<&str> = others.to_vec();
+    strict.push(element_id);
+    strict.push("none_match");
+    let mut best: Vec<&str> = others.to_vec();
+    best.push(element_id);
+    jev_answer(&json!({
+        "strict": jev_choice(&strict, element_id, p),
+        "best": jev_choice(&best, element_id, p),
     }))
 }
 
@@ -886,6 +1089,151 @@ fn jev_right_clicks_without_a_model_call() {
         "RIGHTCLICK role:button \"report.pdf\""
     );
     assert_eq!(step["act"]["usage"]["modelCalls"], 0);
+}
+
+#[test]
+fn jev_scrolls_the_page_to_the_position_the_instruction_names() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.jev(&[jev_scroll_intent("position", "page")]);
+    let flow = dir.file(
+        "jev-scroll-bottom.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{}ACT \"scroll to the bottom\"\n\
+             [Asserts]\neval \"window.scrollY > 2000\" == true\n",
+            visit_html(TALL)
+        ),
+    );
+    let output = twin.run_jev(&dir, &flow, &[]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+    let step = act_step(&dir);
+    assert_eq!(step["act"]["actions"][0]["line"], "SCROLL to 100%");
+    assert_eq!(step["act"]["actions"][0]["plannedBy"], "jev");
+    assert_eq!(step["act"]["usage"]["modelCalls"], 0);
+    assert_eq!(step["act"]["usage"]["jev"]["requests"], 1);
+}
+
+/// A status page with two frames that only their titles name.
+const FRAMED_STATUS: &str = "<h1>Status page</h1>\
+    <iframe id=incidents title=\"Incident history\" width=400 height=120 \
+    srcdoc=\"<p>First</p><div style='height:1200px'>Posts</div><p>Last</p>\"></iframe>\
+    <iframe title=Advertisement width=400 height=120 srcdoc=\"<p>Buy now</p>\"></iframe>";
+
+#[test]
+fn jev_scrolls_inside_the_iframe_that_its_title_names() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.jev(&[
+        jev_scroll_intent("position", "part"),
+        jev_pick("e3", &["e4"], 0.95),
+    ]);
+    let flow = dir.file(
+        "jev-scroll-frame.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{}ACT \"scroll down 50% inside the incident history\"\n\
+             [Asserts]\neval \"document.querySelector('#incidents').contentWindow.scrollY > 0\" == true\n",
+            visit_html(FRAMED_STATUS)
+        ),
+    );
+    let output = twin.run_jev(&dir, &flow, &[]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+    let step = act_step(&dir);
+    assert_eq!(
+        step["act"]["actions"][0]["line"],
+        "SCROLL role:iframe \"Incident history\" to 50%"
+    );
+    assert_eq!(step["act"]["actions"][0]["plannedBy"], "jev");
+    assert_eq!(step["act"]["usage"]["modelCalls"], 0);
+    let log = twin.request_log();
+    assert!(
+        log.contains(r#"\"e3\":{\"role\":\"iframe\",\"name\":\"Incident history\""#),
+        "Jev reads each frame by its title; log:\n{log}"
+    );
+    assert!(
+        log.contains(r#"\"e4\":{\"role\":\"iframe\",\"name\":\"Advertisement\""#),
+        "log:\n{log}"
+    );
+}
+
+#[test]
+fn jev_leaves_a_scroll_to_the_model_when_unsure_how() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.jev(&[jev_intent("scroll", 0.95)]);
+    twin.answer(&[scroll_answer("nextChunk", &[])]);
+    let flow = dir.file(
+        "jev-scroll.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{}ACT \"scroll down a page\"\n\
+             [Asserts]\neval \"window.scrollY > 0\" == true\n",
+            visit_html(TALL)
+        ),
+    );
+    let output = twin.run_jev(&dir, &flow, &[]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+    let step = act_step(&dir);
+    assert_eq!(step["act"]["actions"][0]["line"], "SCROLL down");
+    assert_eq!(step["act"]["actions"][0]["plannedBy"], "llm");
+}
+
+#[test]
+fn jev_drags_without_a_model_call_when_it_is_sure() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.jev(&[
+        jev_intent("drag", 0.95),
+        jev_pick("e3", &["e2", "e4"], 0.95),
+        jev_pick("e4", &["e2"], 0.95),
+    ]);
+    let flow = dir.file(
+        "jev-drag-sure.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{}ACT \"drag the card to Done\"\n\
+             [Asserts]\nrole:heading \"Dropped\" visible\n",
+            visit_html(BOARD)
+        ),
+    );
+    let output = twin.run_jev(&dir, &flow, &[]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+    let step = act_step(&dir);
+    assert_eq!(
+        step["act"]["actions"][0]["line"],
+        "DRAG role:button \"Card\" to role:button \"Done\""
+    );
+    assert_eq!(step["act"]["actions"][0]["plannedBy"], "jev");
+    assert_eq!(step["act"]["usage"]["modelCalls"], 0);
+    assert_eq!(step["act"]["usage"]["jev"]["requests"], 3);
+    let log = twin.request_log();
+    assert!(
+        log.contains("Onto which element or area does the instruction ask to drop"),
+        "log:\n{log}"
+    );
+}
+
+#[test]
+fn jev_leaves_an_unsure_drag_to_the_model() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.jev(&[jev_intent("drag", 0.95), jev_pick("e3", &["e2", "e4"], 0.4)]);
+    twin.answer(&[drag("e3", "e4")]);
+    let flow = dir.file(
+        "jev-drag.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{}ACT \"drag the card to Done\"\n\
+             [Asserts]\nrole:heading \"Dropped\" visible\n",
+            visit_html(BOARD)
+        ),
+    );
+    let output = twin.run_jev(&dir, &flow, &[]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+    let step = act_step(&dir);
+    assert_eq!(step["act"]["actions"][0]["plannedBy"], "llm");
+    assert_eq!(step["act"]["usage"]["jev"]["requests"], 2);
 }
 
 #[test]

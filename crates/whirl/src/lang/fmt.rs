@@ -20,8 +20,8 @@ use crate::check::{Number, is_bytes_literal_shape};
 use crate::lang::ast::{
     Action, ActionKind, Assert, AssertBody, Capture, CheckLine, Comment, DurationLit, DurationUnit,
     Entry, Extractor, File, FileOption, FilterArg, FilterSpec, HttpBodyKind, Locator, Operand,
-    OptionValue, Page, PageCheck, PredicateSpec, Regex, ResponseField, SegmentKind, StateCheck,
-    Subject, TextPrefix, Value, ValueSegment, Viewport,
+    OptionValue, Page, PageCheck, PredicateSpec, Regex, ResponseField, ScrollDirection,
+    ScrollMotion, SegmentKind, StateCheck, Subject, TextPrefix, Value, ValueSegment, Viewport,
 };
 
 /// Where a rendered value sits in its line. The context decides which
@@ -38,6 +38,16 @@ enum ValueCtx {
     ActionDefault,
     /// A role's accessible name in an action locator.
     ActionRoleName,
+    /// An unprefixed default-engine segment in a `DRAG` locator, where a
+    /// bare `to` also separates the two locators.
+    DragDefault,
+    /// A role's accessible name in a `DRAG` locator.
+    DragRoleName,
+    /// An unprefixed default-engine segment in a `SCROLL` locator, where a
+    /// bare `to` or direction word would read as the motion.
+    ScrollDefault,
+    /// A role's accessible name in a `SCROLL` locator.
+    ScrollRoleName,
     /// A role's accessible name in an `[Asserts]` locator; a bare check
     /// keyword would end the locator instead (SPEC 3.1).
     AssertRoleName,
@@ -89,6 +99,12 @@ fn is_assert_stop(text: &str) -> bool {
 
 fn is_extractor_stop(text: &str) -> bool {
     matches!(text, "text" | "value" | "count") || text.starts_with("attr:")
+}
+
+/// The words `SCROLL` reads as its motion. Quoting them in every segment
+/// is simpler than tracking which one ends the locator.
+fn is_scroll_keyword(text: &str) -> bool {
+    text == "to" || ScrollDirection::from_keyword(text).is_some()
 }
 
 fn is_prefix_shaped(text: &str) -> bool {
@@ -149,6 +165,12 @@ fn bare_changes_parse(text: &str, ctx: ValueCtx, is_final: bool) -> bool {
         ValueCtx::Page => text == "matches",
         ValueCtx::ActionDefault => is_prefix_shaped(text) || text == ">>",
         ValueCtx::ActionRoleName => text == ">>",
+        ValueCtx::DragDefault => is_prefix_shaped(text) || text == ">>" || text == "to",
+        ValueCtx::DragRoleName => text == ">>" || text == "to",
+        ValueCtx::ScrollDefault => {
+            is_prefix_shaped(text) || text == ">>" || is_scroll_keyword(text)
+        }
+        ValueCtx::ScrollRoleName => text == ">>" || is_scroll_keyword(text),
         ValueCtx::AssertRoleName => text == ">>" || is_assert_stop(text),
         ValueCtx::CaptureRoleName => text == ">>" || is_extractor_stop(text),
     }
@@ -227,6 +249,10 @@ fn render_regex(regex: &Regex) -> String {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum LocatorCtx {
     Action,
+    /// A `DRAG` locator, where a bare `to` is the separator.
+    Drag,
+    /// A `SCROLL` locator, where a bare `to` or direction word is the motion.
+    Scroll,
     Assert,
     Capture,
 }
@@ -235,8 +261,18 @@ impl LocatorCtx {
     fn role_name_ctx(self) -> ValueCtx {
         match self {
             Self::Action => ValueCtx::ActionRoleName,
+            Self::Drag => ValueCtx::DragRoleName,
+            Self::Scroll => ValueCtx::ScrollRoleName,
             Self::Assert => ValueCtx::AssertRoleName,
             Self::Capture => ValueCtx::CaptureRoleName,
+        }
+    }
+
+    fn default_ctx(self) -> ValueCtx {
+        match self {
+            Self::Drag => ValueCtx::DragDefault,
+            Self::Scroll => ValueCtx::ScrollDefault,
+            Self::Action | Self::Assert | Self::Capture => ValueCtx::ActionDefault,
         }
     }
 }
@@ -286,7 +322,7 @@ fn render_segment(kind: &SegmentKind, ctx: LocatorCtx, is_final: bool) -> String
             format!("frame:{}", render_value(value, ValueCtx::Prefixed, false))
         }
         SegmentKind::Nth(index) => format!("nth:{index}"),
-        SegmentKind::Default(value) => render_value(value, ValueCtx::ActionDefault, is_final),
+        SegmentKind::Default(value) => render_value(value, ctx.default_ctx(), is_final),
     }
 }
 
@@ -383,8 +419,35 @@ fn render_action(action: &Action) -> String {
                 render_locator(target, LocatorCtx::Action, is_final)
             )
         }
+        ActionKind::Drag { source, target } => format!(
+            "DRAG {} to {}",
+            render_locator(source, LocatorCtx::Drag, false),
+            render_locator(target, LocatorCtx::Drag, is_final)
+        ),
+        ActionKind::ScrollIntoView { target } => format!(
+            "SCROLL {}",
+            render_locator(target, LocatorCtx::Scroll, is_final)
+        ),
+        ActionKind::Scroll { target, motion } => {
+            let motion = match motion {
+                ScrollMotion::Chunk(direction) => direction.keyword().to_owned(),
+                ScrollMotion::To(percent) => format!("to {percent}"),
+            };
+            match target {
+                Some(target) => format!(
+                    "SCROLL {} {motion}",
+                    render_locator(target, LocatorCtx::Scroll, false)
+                ),
+                None => format!("SCROLL {motion}"),
+            }
+        }
         ActionKind::Upload { target, path } => format!(
             "UPLOAD {} file:{}",
+            render_locator(target, LocatorCtx::Action, false),
+            render_value(path, ValueCtx::Prefixed, false)
+        ),
+        ActionKind::Drop { target, path } => format!(
+            "DROP {} file:{}",
             render_locator(target, LocatorCtx::Action, false),
             render_value(path, ValueCtx::Prefixed, false)
         ),
@@ -1007,7 +1070,8 @@ mod tests {
             | ActionKind::Dblclick { target }
             | ActionKind::Check { target }
             | ActionKind::Uncheck { target }
-            | ActionKind::Hover { target } => scrub_locator(target),
+            | ActionKind::Hover { target }
+            | ActionKind::ScrollIntoView { target } => scrub_locator(target),
             ActionKind::Fill { target, value }
             | ActionKind::Type {
                 target,
@@ -1020,9 +1084,22 @@ mod tests {
             | ActionKind::Upload {
                 target,
                 path: value,
+            }
+            | ActionKind::Drop {
+                target,
+                path: value,
             } => {
                 scrub_locator(target);
                 scrub_value(value);
+            }
+            ActionKind::Drag { source, target } => {
+                scrub_locator(source);
+                scrub_locator(target);
+            }
+            ActionKind::Scroll { target, .. } => {
+                if let Some(target) = target {
+                    scrub_locator(target);
+                }
             }
             ActionKind::Press { target, key } => {
                 if let Some(target) = target {
@@ -1164,7 +1241,7 @@ mod tests {
         "[Options]\nbase: https://example.com\nbrowser: webkit\nviewport: 800x600\nstep-timeout: 5s\nentry-timeout: 90s\nnav-timeout: 45s\nallow-hosts: example.com *.example.com\ndialogs: accept\nreduced-motion: reduce\nstorage: auth/state.json\nuser-agent: \"Mozilla/5.0 (Whirl)\"\nsetup: sign-in.whirl\nVISIT /\n",
         "[Options]\nbrowser: {{engine}}\nviewport: {{size}}\nstep-timeout: {{t}}\nVISIT /\n",
         // Every action form.
-        "VISIT /a\nCLICK \"Add to cart\"\nRIGHTCLICK \"report.pdf\"\nMIDDLECLICK role:link Docs\nDBLCLICK text~:\"added\"\nFILL \"Email\" alice@example.com\nTYPE \"Code\" 424242\nPRESS Enter\nPRESS label:Search \"Control+A\"\nCHECK \"Remember me\"\nUNCHECK role:checkbox \"Spam\"\nSELECT \"Country\" \"United States\"\nHOVER testid:menu\nUPLOAD \"Avatar\" file:images/cat.png\nSCREENSHOT overview\nSNAPSHOT header\nEVAL \"window.scrollTo(0, 0)\"\nSTORE local onboarding:done yes\nSTORE local \"welcome seen\" {{env.SEEN}}\nSTORE session draft hi\nSTORE cookie chat_version v1\nVISIT /u/{{setup.user_id}}\n",
+        "VISIT /a\nCLICK \"Add to cart\"\nRIGHTCLICK \"report.pdf\"\nMIDDLECLICK role:link Docs\nDBLCLICK text~:\"added\"\nFILL \"Email\" alice@example.com\nTYPE \"Code\" 424242\nPRESS Enter\nPRESS label:Search \"Control+A\"\nCHECK \"Remember me\"\nUNCHECK role:checkbox \"Spam\"\nSELECT \"Country\" \"United States\"\nHOVER testid:menu\nDRAG \"Write spec\" to testid:done\nDRAG \"to\" to role:listitem \"to\"\nSCROLL testid:feed\nSCROLL down\nSCROLL role:dialog Filters up\nSCROLL to 50%\nSCROLL testid:board to 33.5%\nSCROLL \"down\"\nSCROLL \"to\" left\nUPLOAD \"Avatar\" file:images/cat.png\nDROP \"Drop files here\" file:reports/q3.csv\nDROP testid:dropzone file:{{report}}\nSCREENSHOT overview\nSNAPSHOT header\nEVAL \"window.scrollTo(0, 0)\"\nSTORE local onboarding:done yes\nSTORE local \"welcome seen\" {{env.SEEN}}\nSTORE session draft hi\nSTORE cookie chat_version v1\nVISIT /u/{{setup.user_id}}\n",
         // Timeout suffixes on every step kind.
         "VISIT / @45s\nCLICK go @60s\nPAGE /done @2s\n[Asserts]\ntestid:x visible @2500ms\nurl == / @1s\n[Captures]\nn: testid:x text @3s\nm: testid:x text regex /x(y)?/ @3s\n",
         // Every assert form and operator.
@@ -1192,9 +1269,9 @@ mod tests {
         // PRESS one-argument vs two-argument forms.
         "VISIT /\nPRESS Enter\nPRESS \"Control+A\"\nPRESS label:Search Enter\nPRESS role:textbox \"Query\" Enter\n",
         // Default-engine values that stay bare.
-        "VISIT /\nCLICK Save\nFILL Email alice\nUPLOAD Avatar file:cat.png\nSELECT Country France\n",
+        "VISIT /\nCLICK Save\nFILL Email alice\nUPLOAD Avatar file:cat.png\nDROP Dropzone file:cat.png\nDROP file:zone file:cat.png\nSELECT Country France\n",
         // Attached prefix values that need quotes.
-        "VISIT /\nCLICK css:\".a .b\" >> text:\"Add to cart\"\nCLICK label:\"First name\"\nUPLOAD \"Avatar\" file:\"my cat.png\"\n",
+        "VISIT /\nCLICK css:\".a .b\" >> text:\"Add to cart\"\nCLICK label:\"First name\"\nUPLOAD \"Avatar\" file:\"my cat.png\"\nDROP \"Drop files here\" file:\"my cat.png\"\nDROP \"css:.zone\" file:\"@5s\"\n",
         // Capture names and eval edge spellings.
         "VISIT /\n[Captures]\na_1: eval \"1 + 1\"\nb: eval regex\nc: eval \"@5s\"\nd: eval x regex /y/\n",
     ];
@@ -1267,6 +1344,36 @@ HTTP GET "@10s"
         assert_eq!(
             fmt("VISIT /\nCLICK \"Add   to cart\"\nFILL Email \"a\\\"b\"\n"),
             "VISIT /\nCLICK \"Add   to cart\"\nFILL Email \"a\\\"b\"\n"
+        );
+    }
+
+    #[test]
+    fn scroll_keeps_quotes_on_words_it_reads_as_its_motion() {
+        assert_eq!(
+            fmt(
+                "VISIT /\nSCROLL \"feed\" down\nSCROLL \"right\"\nSCROLL role:region \"up\" to 100%\n"
+            ),
+            "VISIT /\nSCROLL feed down\nSCROLL \"right\"\nSCROLL role:region \"up\" to 100%\n"
+        );
+    }
+
+    #[test]
+    fn drag_keeps_quotes_on_a_to_that_is_text() {
+        assert_eq!(
+            fmt(
+                "VISIT /\nDRAG \"Card\" to \"Done\"\nDRAG \"to\" to role:region \"to\"\nCLICK \"to\"\n"
+            ),
+            "VISIT /\nDRAG Card to Done\nDRAG \"to\" to role:region \"to\"\nCLICK to\n"
+        );
+    }
+
+    #[test]
+    fn drop_renders_like_upload() {
+        assert_eq!(
+            fmt(
+                "VISIT /\nDROP   \"Drop files here\"   file:\"q3.csv\"   @5s\nDROP \"css:.zone\" file:\"my q3.csv\"\n"
+            ),
+            "VISIT /\nDROP \"Drop files here\" file:q3.csv @5s\nDROP \"css:.zone\" file:\"my q3.csv\"\n"
         );
     }
 

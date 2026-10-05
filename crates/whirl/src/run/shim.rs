@@ -246,6 +246,12 @@ pub(crate) struct EndFlowParams {
 pub(crate) struct EndFlowResult {
     pub(crate) blocked_hosts: Vec<String>,
     pub(crate) video_path:    Option<String>,
+    /// Why the shim skipped a requested recording. Older shims omit it.
+    #[serde(default)]
+    pub(crate) video_skipped: Option<String>,
+    /// Why a saved recording holds only a white frame. Older shims omit it.
+    #[serde(default)]
+    pub(crate) video_blank:   Option<String>,
 }
 
 /// A step command's own params (protocol section 4). Locator, PAGE
@@ -310,7 +316,22 @@ pub(crate) enum StepCommand {
     Hover {
         locator: Json,
     },
+    /// `DRAG`: `locator` is the element to drag.
+    Drag {
+        locator: Json,
+        target:  Json,
+    },
+    /// `SCROLL`: `locator` is null for the page.
+    Scroll {
+        locator: Option<Json>,
+        motion:  Json,
+    },
     Upload {
+        locator: Json,
+        path:    String,
+    },
+    /// `DROP`: `path` is absolute, as for `UPLOAD`.
+    Drop {
         locator: Json,
         path:    String,
     },
@@ -1064,12 +1085,36 @@ mod tests {
                 serde_json::json!({"locator": locator}),
             ),
             (
+                StepCommand::Drag {
+                    locator: locator.clone(),
+                    target:  serde_json::json!([{"type": "testid", "id": "done"}]),
+                },
+                "drag",
+                serde_json::json!({"locator": locator, "target": [{"type": "testid", "id": "done"}]}),
+            ),
+            (
+                StepCommand::Scroll {
+                    locator: None,
+                    motion:  serde_json::json!({"type": "chunk", "direction": "down"}),
+                },
+                "scroll",
+                serde_json::json!({"locator": null, "motion": {"type": "chunk", "direction": "down"}}),
+            ),
+            (
                 StepCommand::Upload {
                     locator: locator.clone(),
                     path:    "/abs/file.txt".to_owned(),
                 },
                 "upload",
                 serde_json::json!({"locator": locator, "path": "/abs/file.txt"}),
+            ),
+            (
+                StepCommand::Drop {
+                    locator: locator.clone(),
+                    path:    "/abs/report.csv".to_owned(),
+                },
+                "drop",
+                serde_json::json!({"locator": locator, "path": "/abs/report.csv"}),
             ),
             (
                 StepCommand::Screenshot {

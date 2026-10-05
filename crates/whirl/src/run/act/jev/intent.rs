@@ -36,9 +36,8 @@ use serde_json::{Map, Value as Json, json};
 use super::client::{JevAnswer, JevQuestion, choice};
 use crate::lang::ast::MouseButton;
 
-/// Each kind of action and how Jev reads it. Whirl has no scroll, drag, or
-/// page-level actions, but naming them keeps such instructions out of the
-/// families Whirl can act on.
+/// Each kind of action and how Jev reads it. Naming the kinds Whirl cannot
+/// do keeps such instructions out of the families it can.
 pub(super) const FAMILIES: &[(&str, &str)] = &[
     (
         "click",
@@ -135,6 +134,31 @@ pub(super) struct Intent {
     /// True when typing must be followed by choosing a suggestion.
     pub(super) pick_suggestion: bool,
     pub(super) fill_value:      FillValue,
+    /// How a scroll moves, when Jev is sure.
+    pub(super) scroll_way:      Option<ScrollWay>,
+    /// What a scroll moves, when Jev is sure.
+    pub(super) scroll_area:     Option<ScrollArea>,
+}
+
+/// How a scroll moves.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ScrollWay {
+    Down,
+    Up,
+    Left,
+    Right,
+    /// To a position the instruction names, such as halfway.
+    Position,
+    /// Until an element shows.
+    IntoView,
+}
+
+/// What a scroll moves.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ScrollArea {
+    Page,
+    /// A panel, list, dialog, frame, or other part of the page.
+    Part,
 }
 
 /// The questions of the first request. `fill_values` are the quoted
@@ -228,6 +252,47 @@ pub(super) fn questions(
                 keys,
             ),
         ),
+        (
+            "scroll_way",
+            choice(
+                json!("If the instruction asks to scroll, how?"),
+                options(&[
+                    (
+                        "down",
+                        "Down by about one screen, or down without an amount",
+                    ),
+                    ("up", "Up by about one screen, or up without an amount"),
+                    ("left", "Left, sideways"),
+                    ("right", "Right, sideways"),
+                    (
+                        "position",
+                        "To a position given as a fraction or a percentage, or to the top or the bottom",
+                    ),
+                    (
+                        "into_view",
+                        "Until a particular element or section is visible",
+                    ),
+                    ("not_scroll", "The instruction does not ask to scroll"),
+                ]),
+            ),
+        ),
+        (
+            "scroll_area",
+            choice(
+                json!("If the instruction asks to scroll, what should scroll?"),
+                options(&[
+                    (
+                        "page",
+                        "The whole page; the instruction names no particular panel, list, dialog, or frame",
+                    ),
+                    (
+                        "part",
+                        "A particular panel, list, dialog, frame, or other area of the page",
+                    ),
+                    ("not_scroll", "The instruction does not ask to scroll"),
+                ]),
+            ),
+        ),
     ];
     if !fill_values.is_empty() {
         let mut values: Map<String, Json> = fill_values
@@ -290,6 +355,20 @@ pub(super) fn read(answers: &HashMap<String, JevAnswer>, accept: f64) -> Option<
         },
         pick_suggestion: named("after_typing").as_deref() == Some("pick_suggestion"),
         fill_value: fill_value(answers.get("fill_value"), accept),
+        scroll_way: match named("scroll_way").as_deref() {
+            Some("down") => Some(ScrollWay::Down),
+            Some("up") => Some(ScrollWay::Up),
+            Some("left") => Some(ScrollWay::Left),
+            Some("right") => Some(ScrollWay::Right),
+            Some("position") => Some(ScrollWay::Position),
+            Some("into_view") => Some(ScrollWay::IntoView),
+            _ => None,
+        },
+        scroll_area: match named("scroll_area").as_deref() {
+            Some("page") => Some(ScrollArea::Page),
+            Some("part") => Some(ScrollArea::Part),
+            _ => None,
+        },
     })
 }
 
@@ -390,6 +469,8 @@ mod tests {
             toggle:          Some(true),
             pick_suggestion: false,
             fill_value:      FillValue::NotAsked,
+            scroll_way:      None,
+            scroll_area:     None,
         });
     }
 
@@ -406,6 +487,22 @@ mod tests {
         assert_eq!(button("right", 0.9), Some(MouseButton::Right));
         assert_eq!(button("middle", 0.9), Some(MouseButton::Middle));
         assert_eq!(button("right", 0.5), Some(MouseButton::Left));
+    }
+
+    #[test]
+    fn a_sure_scroll_names_its_way_and_area() {
+        let mut answers = answers(answer("scroll", 0.9, &[("scroll", 0.9)]));
+        answers.insert(
+            "scroll_way".to_owned(),
+            answer("position", 0.9, &[("position", 0.9)]),
+        );
+        answers.insert(
+            "scroll_area".to_owned(),
+            answer("part", 0.6, &[("part", 0.6), ("page", 0.4)]),
+        );
+        let intent = read(&answers, 0.7).expect("sure");
+        assert_eq!(intent.scroll_way, Some(ScrollWay::Position));
+        assert_eq!(intent.scroll_area, None, "an unsure area is not read");
     }
 
     #[test]
@@ -446,7 +543,9 @@ mod tests {
             "mouse_button",
             "toggle_state",
             "after_typing",
-            "key"
+            "key",
+            "scroll_way",
+            "scroll_area"
         ]);
         let with_values = questions("x", &[("Ada".to_owned(), false)]);
         assert_eq!(with_values.last().map(|(id, _)| *id), Some("fill_value"));

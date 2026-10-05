@@ -2,7 +2,7 @@
 // named pages per flow, and the step implementations (protocol sections 3-6).
 
 import { randomUUID } from "node:crypto";
-import { mkdir } from "node:fs/promises";
+import { mkdir, stat } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname } from "node:path";
 import type {
@@ -20,10 +20,12 @@ import { buildEvalExpression } from "./eval-support.js";
 import { FlowNetwork } from "./flow-network.js";
 import { FlowTabs } from "./flow-tabs.js";
 import { createHostAllowlist } from "./host-glob.js";
+import { nameIframes } from "./iframe-names.js";
 import { buildLocator, describeLocator } from "./locators.js";
 import type { Params } from "./params.js";
 import {
 	decodeHttpParams,
+	decodeScrollMotion,
 	fieldArray,
 	fieldArrayOrNull,
 	fieldBoolean,
@@ -43,6 +45,7 @@ import type {
 	MouseButton,
 	PageExpectation,
 	ReadSubject,
+	ScrollMotion,
 	StartFlowParams,
 	StepCommand,
 } from "./protocol.js";
@@ -51,13 +54,18 @@ import { runRead } from "./reads.js";
 import { runSnapshot } from "./snapshots.js";
 import {
 	actionErrorMessage,
+	Deadline,
+	isDropRejected,
 	isStrictModeViolation,
 	isTargetClosedError,
 	isTimeoutError,
 	shortErrorMessage,
+	sleep,
 	strictnessError,
 } from "./step-util.js";
+import type { RecordingOutcome } from "./video-recorder.js";
 import {
+	PageScreencast,
 	PLAYWRIGHT_VIDEO_FPS,
 	resolveFfmpegPath,
 	ScreencastRecorder,
@@ -155,6 +163,16 @@ const redirectStatuses = new Set([301, 302, 303, 307, 308]);
 const maxRedirectHops = 20;
 
 const mouseButtons: readonly MouseButton[] = ["left", "right", "middle"];
+
+/**
+ * How long DRAG holds the button before it moves (SPEC section 7). Some
+ * drag libraries start a drag only after a press delay, commonly 100 to
+ * 300 ms, and cancel it when the pointer moves sooner.
+ */
+const dragHoldMs = 500;
+
+/** DRAG's pointer moves; libraries that start after a distance need several. */
+const dragSteps = 10;
 
 /**
  * The trusted event that shows a click reached its target. Only the left
@@ -316,6 +334,207 @@ function openShadowRoots(): void {
 	): ShadowRoot {
 		return attachShadow.call(this, { ...init, mode: "open" });
 	};
+}
+
+/** A step's locator as the shim reads it from the command's params. */
+interface ReadLocator {
+	readonly locator: Locator;
+	readonly description: string;
+	readonly fromSnapshot: boolean;
+}
+
+/**
+ * The page point DRAG releases at: the target's center, or for an `ACT`
+ * snapshot ref the point `textTargetPosition` picks. Scrolling the target
+ * into view waits until it is visible and stable. A trial hover would also
+ * check that nothing covers it, but in Chromium it stops a native HTML5
+ * drag that is under way.
+ */
+async function dropPoint(
+	target: ReadLocator,
+	remaining: () => number,
+): Promise<Point> {
+	const { locator, description, fromSnapshot } = target;
+	try {
+		await locator.scrollIntoViewIfNeeded({ timeout: remaining() });
+		const position = fromSnapshot
+			? await textTargetPosition(locator, remaining())
+			: undefined;
+		const box = await locator.boundingBox({ timeout: remaining() });
+		if (box === null) {
+			throw new ShimError(
+				"action",
+				`the drop target ${description} is not visible`,
+			);
+		}
+		return {
+			x: box.x + (position?.x ?? box.width / 2),
+			y: box.y + (position?.y ?? box.height / 2),
+		};
+	} catch (error) {
+		if (isStrictModeViolation(error)) {
+			throw await strictnessError(locator, description, await locator.count());
+		}
+		throw error;
+	}
+}
+
+/**
+ * SCROLL's chunk and position motions (SPEC section 7), run in the page.
+ * The scroll box is the element when it can scroll on the motion's axis,
+ * else the largest such box inside it, else its nearest such ancestor,
+ * else its document; `html` and `body` are the document. Looking inside
+ * serves a locator that names a container, such as a dialog whose list
+ * scrolls. It scrolls at once, whatever the page's `scroll-behavior`, and
+ * resolves when the position holds for two frames. A hidden page runs no
+ * frames, so a timer also drives the check there.
+ */
+function scrollBox(
+	element: Element,
+	motion: Exclude<ScrollMotion, { readonly type: "intoView" }>,
+): Promise<void> {
+	const doc = element.ownerDocument;
+	const view = doc.defaultView ?? window;
+	const vertical =
+		motion.type === "position" ||
+		motion.direction === "down" ||
+		motion.direction === "up";
+	const isDocument = (node: Element): boolean =>
+		node === doc.documentElement || node === doc.body;
+	const canScroll = (node: Element): boolean => {
+		const style = view.getComputedStyle(node);
+		const overflow = vertical ? style.overflowY : style.overflowX;
+		const room = vertical
+			? node.scrollHeight > node.clientHeight
+			: node.scrollWidth > node.clientWidth;
+		return room && ["auto", "scroll", "overlay"].includes(overflow);
+	};
+	const area = (node: Element): number => node.clientWidth * node.clientHeight;
+	const inside =
+		isDocument(element) || canScroll(element)
+			? []
+			: Array.from(element.querySelectorAll("*")).filter(canScroll);
+	let box: Element | null =
+		inside.reduce<Element | null>(
+			(largest, node) =>
+				largest === null || area(node) > area(largest) ? node : largest,
+			null,
+		) ?? element;
+	while (box !== null && !isDocument(box) && !canScroll(box)) {
+		const root = box.getRootNode();
+		box = box.parentElement ?? (root instanceof ShadowRoot ? root.host : null);
+	}
+	const scroller =
+		box === null || isDocument(box)
+			? (doc.scrollingElement ?? doc.documentElement)
+			: box;
+	let top = scroller.scrollTop;
+	let left = scroller.scrollLeft;
+	if (motion.type === "position") {
+		top =
+			((scroller.scrollHeight - scroller.clientHeight) * motion.percent) / 100;
+	} else {
+		const sign =
+			motion.direction === "down" || motion.direction === "right" ? 1 : -1;
+		if (vertical) {
+			top += sign * scroller.clientHeight;
+		} else {
+			left += sign * scroller.clientWidth;
+		}
+	}
+	scroller.scrollTo({ top, left, behavior: "instant" });
+	return new Promise((resolve) => {
+		const position = (): string =>
+			`${scroller.scrollTop},${scroller.scrollLeft}`;
+		let last = position();
+		let steady = 0;
+		const check = (): void => {
+			const now = position();
+			steady = now === last ? steady + 1 : 0;
+			last = now;
+			if (steady >= 2) {
+				resolve();
+			} else {
+				next();
+			}
+		};
+		const next = (): void => {
+			let ran = false;
+			const once = (): void => {
+				if (!ran) {
+					ran = true;
+					check();
+				}
+			};
+			requestAnimationFrame(once);
+			setTimeout(once, 50);
+		};
+		next();
+	});
+}
+
+/**
+ * Waits two animation frames, so a page that handles pointer moves once per
+ * frame sees the last one before the release. A hidden page runs no frames,
+ * so a short timer ends the wait there.
+ */
+async function nextFrames(page: Page): Promise<void> {
+	await page
+		.evaluate(
+			() =>
+				new Promise<void>((resolve) => {
+					requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+					setTimeout(resolve, 100);
+				}),
+		)
+		.catch(() => {
+			// A drop that navigates destroys the context; nothing to wait for.
+		});
+}
+
+/**
+ * Fails DROP at once when its file is missing. Without this check the
+ * step fails with Node's `ENOENT ... stat` text from inside Playwright.
+ */
+async function requireFile(path: string): Promise<void> {
+	try {
+		await stat(path);
+	} catch (error) {
+		if (
+			error instanceof Error &&
+			"code" in error &&
+			(error as NodeJS.ErrnoException).code === "ENOENT"
+		) {
+			throw new ShimError("action", `the file ${path} does not exist`);
+		}
+		throw error;
+	}
+}
+
+/**
+ * DROP (SPEC section 7): drops one file on the element, with Playwright's
+ * actionability checks. Playwright reads the file and gives it its name
+ * and a type from its extension. A page accepts a drop only when its
+ * `dragover` handler calls `preventDefault()`. Otherwise Playwright fires
+ * `dragleave` and throws at once, and the step fails with that reason.
+ */
+async function dropFile(
+	locator: Locator,
+	description: string,
+	path: string,
+	timeoutMs: number,
+): Promise<void> {
+	try {
+		await locator.drop({ files: path }, { timeout: timeoutMs });
+	} catch (error) {
+		if (isDropRejected(error)) {
+			throw new ShimError(
+				"action",
+				`the drop target ${description} did not accept the drop (its dragover did not call preventDefault)`,
+			);
+		}
+		throw error;
+	}
 }
 
 /**
@@ -512,14 +731,18 @@ export class PlaywrightDriver implements ShimDriver {
 			screencastFps !== null &&
 			ffmpegPath !== null
 		) {
+			const { width, height } = params.viewport;
 			try {
-				recorder = await ScreencastRecorder.start(page, {
-					fps: screencastFps,
-					width: params.viewport.width,
-					height: params.viewport.height,
-					tempDir: params.video.tempDir,
-					ffmpegPath,
-				});
+				recorder = await ScreencastRecorder.start(
+					await PageScreencast.open(page, width, height),
+					{
+						fps: screencastFps,
+						width,
+						height,
+						tempDir: params.video.tempDir,
+						ffmpegPath,
+					},
+				);
 			} catch (error) {
 				await settlesWithin(context.close(), closeWatchdogMs);
 				throw error;
@@ -567,10 +790,11 @@ export class PlaywrightDriver implements ShimDriver {
 		}
 		// The screencast recorder finalizes while the page is still alive; a
 		// failure surfaces after the context is closed so nothing leaks.
+		let recording: RecordingOutcome | null = null;
 		let recorderFailure: unknown = null;
 		if (flow.recorder !== null && flow.video !== null) {
 			try {
-				await flow.recorder.stop(flow.video.finalPath);
+				recording = await flow.recorder.stop(flow.video.finalPath);
 			} catch (error) {
 				recorderFailure = error;
 			}
@@ -583,8 +807,25 @@ export class PlaywrightDriver implements ShimDriver {
 			throw recorderFailure;
 		}
 		let videoPath: string | null = null;
-		if (flow.recorder !== null && flow.video !== null) {
-			videoPath = flow.video.finalPath;
+		let videoSkipped: string | null = null;
+		let videoBlank: string | null = null;
+		if (flow.video !== null && recording !== null) {
+			// A recording is evidence, not a result, so Rust reports a
+			// skipped or blank one as a warning (SPEC section 13).
+			switch (recording.type) {
+				case "saved":
+					videoPath = flow.video.finalPath;
+					break;
+				case "blank":
+					videoPath = flow.video.finalPath;
+					videoBlank = recording.reason;
+					break;
+				case "skipped":
+					videoSkipped = recording.reason;
+					break;
+				default:
+					return assertNever(recording);
+			}
 		} else if (flow.video !== null && video !== null) {
 			await mkdir(dirname(flow.video.finalPath), { recursive: true });
 			await video.saveAs(flow.video.finalPath);
@@ -596,6 +837,8 @@ export class PlaywrightDriver implements ShimDriver {
 		return {
 			blockedHosts: [...flow.blockedHosts].sort(),
 			videoPath,
+			videoSkipped,
+			videoBlank,
 		};
 	}
 
@@ -820,10 +1063,70 @@ export class PlaywrightDriver implements ShimDriver {
 					},
 				);
 				return {};
+			case "drag": {
+				const target = this.#readLocator(page, params, "target");
+				await this.#locatorAction(
+					page,
+					params,
+					async (source, fromSnapshot) => {
+						if (target.fromSnapshot && (await target.locator.count()) === 0) {
+							throw new ShimError(
+								"stale-ref",
+								`the snapshot element ${target.description} is no longer on the page`,
+							);
+						}
+						await this.#drag(page, source, fromSnapshot, target, timeoutMs);
+					},
+				);
+				return {};
+			}
+			case "scroll": {
+				const motion = decodeScrollMotion(params);
+				if (motion.type === "intoView") {
+					await this.#locatorAction(page, params, (locator) =>
+						locator.scrollIntoViewIfNeeded({ timeout: timeoutMs }),
+					);
+					return {};
+				}
+				// Without a locator the page scrolls, which `scrollBox` reads
+				// from the document element.
+				if (fieldArrayOrNull(params, "locator") === null) {
+					await page
+						.locator(":root")
+						.evaluate(scrollBox, motion, { timeout: timeoutMs });
+					return {};
+				}
+				await this.#locatorAction(page, params, async (locator) => {
+					// An iframe scrolls the page inside it. Entering the frame
+					// works across origins, where the parent's script cannot.
+					const isFrame = await locator.evaluate(
+						(element) =>
+							element.tagName === "IFRAME" || element.tagName === "FRAME",
+						undefined,
+						{ timeout: timeoutMs },
+					);
+					const box = isFrame
+						? locator.contentFrame().locator(":root")
+						: locator;
+					await box.evaluate(scrollBox, motion, { timeout: timeoutMs });
+				});
+				return {};
+			}
 			case "upload": {
 				const path = fieldString(params, "path");
 				await this.#locatorAction(page, params, (locator) =>
 					locator.setInputFiles(path, { timeout: timeoutMs }),
+				);
+				return {};
+			}
+			case "drop": {
+				const path = fieldString(params, "path");
+				await requireFile(path);
+				await this.#locatorAction(
+					page,
+					params,
+					(locator, _fromSnapshot, description) =>
+						dropFile(locator, description, path, timeoutMs),
 				);
 				return {};
 			}
@@ -888,23 +1191,24 @@ export class PlaywrightDriver implements ShimDriver {
 			case "ariaSnapshot": {
 				// ACT's view of the page (SPEC 7.4): element refs such as
 				// [ref=e12] that a later `ref` locator segment resolves.
-				if (fieldArrayOrNull(params, "locator") === null) {
-					const snapshot = await page.ariaSnapshot({
-						mode: "ai",
-						timeout: timeoutMs,
-					});
-					return { snapshot };
-				}
-				// ACT limited to one element (SPEC 7.4): the scope waits like
-				// any locator and must match exactly one element.
+				const deadline = new Deadline(timeoutMs);
 				let snapshot = "";
-				await this.#locatorAction(page, params, async (locator) => {
-					snapshot = await locator.ariaSnapshot({
+				if (fieldArrayOrNull(params, "locator") === null) {
+					snapshot = await page.ariaSnapshot({
 						mode: "ai",
 						timeout: timeoutMs,
 					});
-				});
-				return { snapshot };
+				} else {
+					// ACT limited to one element (SPEC 7.4): the scope waits
+					// like any locator and must match exactly one element.
+					await this.#locatorAction(page, params, async (locator) => {
+						snapshot = await locator.ariaSnapshot({
+							mode: "ai",
+							timeout: timeoutMs,
+						});
+					});
+				}
+				return { snapshot: await nameIframes(page, snapshot, deadline) };
 			}
 			case "page": {
 				const expectation = fieldObject(
@@ -965,15 +1269,8 @@ export class PlaywrightDriver implements ShimDriver {
 		}
 	}
 
-	#readLocator(
-		page: Page,
-		params: Params,
-	): {
-		readonly locator: Locator;
-		readonly description: string;
-		readonly fromSnapshot: boolean;
-	} {
-		const segments = fieldArray(params, "locator") as readonly LocatorSegment[];
+	#readLocator(page: Page, params: Params, key = "locator"): ReadLocator {
+		const segments = fieldArray(params, key) as readonly LocatorSegment[];
 		return {
 			locator: buildLocator(page, segments),
 			description: describeLocator(segments),
@@ -1117,10 +1414,54 @@ export class PlaywrightDriver implements ShimDriver {
 		}
 	}
 
+	/**
+	 * DRAG (SPEC section 7): press on the source, hold, wait for the target,
+	 * move to it in steps, let the page see the last move, and release.
+	 * Playwright's `dragTo` cannot hold. The button is released even when a
+	 * step fails, so no later screenshot runs with it pressed.
+	 */
+	async #drag(
+		page: Page,
+		source: Locator,
+		fromSnapshot: boolean,
+		target: ReadLocator,
+		timeoutMs: number,
+	): Promise<void> {
+		const deadline = performance.now() + timeoutMs;
+		const remaining = (): number => Math.max(1, deadline - performance.now());
+		const sourcePosition = fromSnapshot
+			? await textTargetPosition(source, remaining())
+			: undefined;
+		await source.hover({
+			timeout: remaining(),
+			...(sourcePosition === undefined ? {} : { position: sourcePosition }),
+		});
+		await page.mouse.down();
+		let released = false;
+		try {
+			await sleep(Math.min(dragHoldMs, remaining()));
+			const point = await dropPoint(target, remaining);
+			await page.mouse.move(point.x, point.y, { steps: dragSteps });
+			await nextFrames(page);
+			released = true;
+			await page.mouse.up();
+		} finally {
+			if (!released) {
+				await page.mouse.up().catch(() => {
+					// The page can be gone after a failed step.
+				});
+			}
+		}
+	}
+
 	async #locatorAction(
 		page: Page,
 		params: Params,
-		action: (locator: Locator, fromSnapshot: boolean) => Promise<unknown>,
+		action: (
+			locator: Locator,
+			fromSnapshot: boolean,
+			description: string,
+		) => Promise<unknown>,
 	): Promise<void> {
 		const { locator, description, fromSnapshot } = this.#readLocator(
 			page,
@@ -1136,7 +1477,7 @@ export class PlaywrightDriver implements ShimDriver {
 			);
 		}
 		try {
-			await action(locator, fromSnapshot);
+			await action(locator, fromSnapshot, description);
 		} catch (error) {
 			if (isStrictModeViolation(error)) {
 				let count = 0;
@@ -1201,7 +1542,10 @@ function defaultErrorKind(cmd: StepCommand): ErrorKind {
 		case "checkbox":
 		case "selectOption":
 		case "hover":
+		case "drag":
+		case "scroll":
 		case "upload":
+		case "drop":
 		case "screenshot":
 			return "action";
 		case "evalAction":

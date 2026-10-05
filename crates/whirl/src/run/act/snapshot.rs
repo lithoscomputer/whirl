@@ -79,6 +79,8 @@ pub(crate) struct PageSnapshot {
     raw:   String,
     text:  String,
     nodes: HashMap<ElementRef, SnapshotNode>,
+    /// In a snapshot of the whole page, the first ref, which names `<body>`.
+    page:  Option<ElementRef>,
 }
 
 impl PageSnapshot {
@@ -90,7 +92,19 @@ impl PageSnapshot {
             raw: snapshot.to_owned(),
             text: condense(snapshot),
             nodes,
+            page: None,
         }
+    }
+
+    /// Marks the snapshot as the whole page's, so its first ref, `<body>`,
+    /// stands for the page (SPEC 7.4).
+    pub(crate) fn of_page(mut self) -> Self {
+        self.page = self
+            .raw
+            .lines()
+            .find_map(parse_line)
+            .map(|(element, _)| element);
+        self
     }
 
     /// The snapshot as the shim took it, cursor hints included.
@@ -107,7 +121,12 @@ impl PageSnapshot {
     pub(crate) fn target(&self, raw_ref: &str) -> Option<Target> {
         let element = ElementRef::try_new(raw_ref)?;
         let node = self.nodes.get(&element)?.clone();
-        Some(Target { element, node })
+        let page = self.page.as_ref() == Some(&element);
+        Some(Target {
+            element,
+            node,
+            page,
+        })
     }
 }
 
@@ -162,6 +181,8 @@ fn quoted_name(text: &str) -> Option<String> {
 pub(crate) struct Target {
     element: ElementRef,
     node:    SnapshotNode,
+    /// True when the element is the page's `<body>`.
+    page:    bool,
 }
 
 impl Target {
@@ -172,6 +193,16 @@ impl Target {
 
     pub(crate) fn locator_text(&self) -> String {
         self.node.locator_text()
+    }
+
+    /// The snapshot ref, such as `e12`.
+    pub(crate) fn element_ref(&self) -> &str {
+        self.element.as_str()
+    }
+
+    /// True when the element stands for the whole page.
+    pub(crate) fn is_page(&self) -> bool {
+        self.page
     }
 }
 
@@ -201,6 +232,15 @@ mod tests {
         assert_eq!(target.locator_text(), "role:generic");
         let target = snapshot.target("f1e2").expect("framed refs are indexed");
         assert_eq!(target.locator_text(), r#"role:button "Pay""#);
+    }
+
+    #[test]
+    fn an_iframe_the_shim_named_keeps_its_role_and_name() {
+        let snapshot = PageSnapshot::parse(
+            "- iframe \"Incident history\" [ref=e4]:\n  - paragraph [ref=f1e2]: Resolved\n",
+        );
+        let target = snapshot.target("e4").expect("e4 is in the snapshot");
+        assert_eq!(target.locator_text(), r#"role:iframe "Incident history""#);
     }
 
     #[test]

@@ -104,6 +104,16 @@ export function isStrictModeViolation(error: unknown): boolean {
 	);
 }
 
+/**
+ * Playwright's `locator.drop` throws this when the target's `dragover`
+ * handler did not call `preventDefault()`, so the page rejected the drop.
+ */
+export function isDropRejected(error: unknown): boolean {
+	return (
+		error instanceof Error && error.message.includes("did not accept the drop")
+	);
+}
+
 export function isTargetClosedError(error: unknown): boolean {
 	return (
 		error instanceof Error &&

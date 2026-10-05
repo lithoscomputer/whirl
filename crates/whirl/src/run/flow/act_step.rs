@@ -169,6 +169,9 @@ impl FlowExec<'_> {
                 .await
             {
                 Ok(result) => match serde_json::from_value::<AriaSnapshotResult>(result) {
+                    Ok(result) if scope.is_none() => {
+                        PageSnapshot::parse(&result.snapshot).of_page()
+                    }
                     Ok(result) => PageSnapshot::parse(&result.snapshot),
                     Err(_) => {
                         break StepEnd::Error(act_failure(

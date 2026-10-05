@@ -287,6 +287,10 @@ export interface EndFlowParams {
 export interface EndFlowResult {
 	readonly blockedHosts: readonly string[];
 	readonly videoPath: string | null;
+	/** Why the shim skipped a requested recording, or null. */
+	readonly videoSkipped: string | null;
+	/** Why a saved recording holds only a white frame, or null. */
+	readonly videoBlank: string | null;
 }
 
 // --- Step commands (protocol 4) ---
@@ -298,6 +302,14 @@ export interface HttpParams {
 	readonly headers: readonly (readonly [string, string])[];
 	readonly body: string | null;
 }
+
+export type ScrollDirection = "down" | "up" | "left" | "right";
+
+/** How a `scroll` command moves (SPEC section 7). */
+export type ScrollMotion =
+	| { readonly type: "intoView" }
+	| { readonly type: "chunk"; readonly direction: ScrollDirection }
+	| { readonly type: "position"; readonly percent: number };
 
 export type StepCommand =
 	| "http"
@@ -314,7 +326,10 @@ export type StepCommand =
 	| "checkbox"
 	| "selectOption"
 	| "hover"
+	| "drag"
+	| "scroll"
 	| "upload"
+	| "drop"
 	| "screenshot"
 	| "snapshot"
 	| "evalAction"
@@ -342,7 +357,10 @@ const stepCommandList: readonly StepCommand[] = [
 	"checkbox",
 	"selectOption",
 	"hover",
+	"drag",
+	"scroll",
 	"upload",
+	"drop",
 	"screenshot",
 	"snapshot",
 	"evalAction",

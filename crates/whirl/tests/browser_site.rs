@@ -699,6 +699,316 @@ css:"#counter" attr:data-button == 2
 }
 
 #[test]
+fn drag_moves_cards_on_native_and_pointer_event_boards() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    // The pointer boards start a drag after an 8px move and after a 300ms
+    // press. They run first: in WebKit, a page that took a native drag
+    // gets no pointerdown until it loads again.
+    dir.file(
+        "boards.whirl",
+        r##"VISIT /drag.html
+DRAG "Pointer card" to testid:distance-done
+[Asserts]
+testid:distance-done >> text:"Pointer card" visible
+
+DRAG "Held card" to testid:delay-done
+[Asserts]
+css:"#pointer-log" text == dropped
+testid:delay-done >> text:"Held card" visible
+
+DRAG "Write spec" to testid:native-done
+[Asserts]
+testid:native-done >> text:"Write spec" visible
+
+DRAG "to" to testid:native-done
+[Asserts]
+testid:native-done >> text:to visible
+"##,
+    );
+    for engine in engines() {
+        let output = run_whirl(&dir, &[
+            "--base",
+            &server.base(),
+            "--browser",
+            engine,
+            "boards.whirl",
+        ]);
+        let stdout = stdout_text(&output);
+        assert_eq!(exit_code(&output), 0, "{engine} stdout:\n{stdout}");
+    }
+}
+
+#[test]
+fn drag_reaches_into_a_frame_and_across_frames() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file(
+        "frames.whirl",
+        r##"VISIT /drag-frame.html
+DRAG frame:"#board" >> text:"Frame card" to frame:"#board" >> testid:frame-done
+[Asserts]
+frame:"#board" >> testid:frame-done >> text:"Frame card" visible
+
+VISIT /drag-frame.html
+DRAG "Outside card" to frame:"#board" >> testid:frame-done
+[Asserts]
+frame:"#board" >> testid:frame-done >> text:"Outside card" visible
+"##,
+    );
+    for engine in engines() {
+        let output = run_whirl(&dir, &[
+            "--base",
+            &server.base(),
+            "--browser",
+            engine,
+            "frames.whirl",
+        ]);
+        let stdout = stdout_text(&output);
+        assert_eq!(exit_code(&output), 0, "{engine} stdout:\n{stdout}");
+    }
+}
+
+#[test]
+fn an_ambiguous_drop_target_fails_with_its_candidates() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file(
+        "ambiguous.whirl",
+        "VISIT /drag.html\nDRAG \"Write spec\" to css:.column\n",
+    );
+    let output = run_whirl(&dir, &["--base", &server.base(), "ambiguous.whirl"]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 1, "stdout:\n{stdout}");
+    assert!(stdout.contains("strictness"), "stdout:\n{stdout}");
+    assert!(stdout.contains("css:.column"), "stdout:\n{stdout}");
+}
+
+#[test]
+fn scroll_moves_the_page_its_boxes_and_frames() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    // A chunk is one visible height or width. The page's smooth
+    // scroll-behavior does not slow SCROLL down.
+    dir.file(
+        "scroll.whirl",
+        r##"VISIT /scroll.html
+SCROLL down
+[Captures]
+y: eval "window.scrollY"
+
+VISIT /scroll.html
+[Asserts]
+eval "{{y}} === document.documentElement.clientHeight" == true
+
+SCROLL to 100%
+[Asserts]
+role:button "Back to top" visible
+css:"#feed li" count == 25
+
+SCROLL down
+SCROLL to 0%
+[Asserts]
+eval "window.scrollY" == 0
+role:button "Back to top" hidden
+
+VISIT /scroll.html
+SCROLL testid:load-more
+[Asserts]
+css:"#feed li" count == 25
+
+SCROLL text:"Filter 3" down
+[Asserts]
+eval "document.querySelector('#filters-body').scrollTop === document.querySelector('#filters-body').clientHeight" == true
+
+# A dialog cannot scroll, so the list inside it does.
+SCROLL role:dialog Filters to 0%
+[Asserts]
+eval "document.querySelector('#filters-body').scrollTop" == 0
+
+SCROLL role:region Terms to 100%
+[Asserts]
+role:button "I agree" enabled
+
+# Already at the end: the step passes and nothing moves.
+SCROLL role:region Terms down
+
+SCROLL testid:board right
+[Asserts]
+eval "document.querySelector('[data-testid=board]').scrollLeft" == 400
+SCROLL testid:board left
+[Asserts]
+eval "document.querySelector('[data-testid=board]').scrollLeft" == 0
+
+SCROLL "down"
+[Asserts]
+eval "(() => { const r = document.getElementById('word-down').getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight; })()" == true
+
+VISIT /scroll-frame.html
+SCROLL frame:"#feed" >> css:body down
+[Asserts]
+eval "(() => { const doc = document.querySelector('#feed').contentDocument; return doc.defaultView.scrollY === doc.documentElement.clientHeight; })()" == true
+eval "window.scrollY" == 0
+
+# An iframe element scrolls the page inside it, across origins too.
+SCROLL css:"#feed" to 0%
+SCROLL css:"#remote" to 100%
+[Asserts]
+eval "document.querySelector('#feed').contentWindow.scrollY" == 0
+eval "Number(document.body.dataset.remoteScroll) > 0" == true
+eval "window.scrollY" == 0
+"##,
+    );
+    for engine in engines() {
+        let output = run_whirl(&dir, &[
+            "--base",
+            &server.base(),
+            "--browser",
+            engine,
+            "scroll.whirl",
+        ]);
+        let stdout = stdout_text(&output);
+        assert_eq!(exit_code(&output), 0, "{engine} stdout:\n{stdout}");
+    }
+}
+
+#[test]
+fn drop_hands_files_to_zones_on_the_page_and_in_frames() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    // DROP paths resolve relative to the .whirl file, which sits next to
+    // these files in the temp directory. The page lists each file's name,
+    // size, and type.
+    dir.file("report.csv", "name,plan\nAda,pro\n");
+    dir.file("notes.txt", "hello\n");
+    dir.file("scan.whirlblob", "x");
+    dir.file(
+        "drop.whirl",
+        r##"VISIT /drop.html
+DROP "Drop files here" file:report.csv
+[Asserts]
+css:"#dropped li" text == "report.csv, 18 bytes, text/csv"
+
+# Each line drops one file. An extension with no known type falls back.
+DROP "Drop files here" file:scan.whirlblob
+[Asserts]
+css:"#dropped li" count == 2
+css:"#dropped li" >> nth:1 text == "scan.whirlblob, 1 bytes, application/octet-stream"
+
+DROP frame:"#inner" >> text:"Drop files here" file:notes.txt
+[Asserts]
+frame:"#inner" >> css:"#dropped li" text == "notes.txt, 6 bytes, text/plain"
+
+DROP frame:"#remote" >> text:"Drop files here" file:report.csv
+[Asserts]
+frame:"#remote" >> css:"#dropped li" text == "report.csv, 18 bytes, text/csv"
+"##,
+    );
+    for engine in engines() {
+        let output = run_whirl(&dir, &[
+            "--base",
+            &server.base(),
+            "--browser",
+            engine,
+            "drop.whirl",
+        ]);
+        let stdout = stdout_text(&output);
+        assert_eq!(exit_code(&output), 0, "{engine} stdout:\n{stdout}");
+    }
+}
+
+#[test]
+fn a_drop_zone_that_rejects_the_drop_fails_the_step() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    // The zone's dragover does not call preventDefault, so the page does
+    // not take the file. The step fails at once, not at its timeout.
+    dir.file("report.csv", "name,plan\nAda,pro\n");
+    dir.file(
+        "closed.whirl",
+        "VISIT /drop.html\nDROP \"Uploads are closed\" file:report.csv @60s\n",
+    );
+    for engine in engines() {
+        let output = run_whirl(&dir, &[
+            "--base",
+            &server.base(),
+            "--browser",
+            engine,
+            "closed.whirl",
+        ]);
+        let stdout = stdout_text(&output);
+        assert_eq!(exit_code(&output), 1, "{engine} stdout:\n{stdout}");
+        assert!(
+            stdout.contains(
+                "error: action: the drop target getByText(\"Uploads are closed\", { exact: true \
+                 }) did not accept the drop (its dragover did not call preventDefault)"
+            ),
+            "{engine} stdout:\n{stdout}"
+        );
+    }
+}
+
+#[test]
+fn a_drop_of_a_missing_file_fails_with_its_path() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    let flow = dir.file(
+        "missing.whirl",
+        "VISIT /drop.html\nDROP \"Drop files here\" file:missing.csv\n",
+    );
+    // The path resolves beside the flow's canonical path, which can differ
+    // from the temp path, as on macOS.
+    let missing = fs::canonicalize(&flow)
+        .expect("the flow file exists")
+        .with_file_name("missing.csv");
+    for engine in engines() {
+        let output = run_whirl(&dir, &[
+            "--base",
+            &server.base(),
+            "--browser",
+            engine,
+            "missing.whirl",
+        ]);
+        let stdout = stdout_text(&output);
+        assert_eq!(exit_code(&output), 1, "{engine} stdout:\n{stdout}");
+        assert!(
+            stdout.contains(&format!(
+                "error: action: the file {} does not exist",
+                missing.display()
+            )),
+            "{engine} stdout:\n{stdout}"
+        );
+    }
+}
+
+#[test]
+fn an_ambiguous_drop_zone_fails_with_its_candidates() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file("report.csv", "name,plan\nAda,pro\n");
+    dir.file(
+        "ambiguous.whirl",
+        "VISIT /drop.html\nDROP css:.zone file:report.csv\n",
+    );
+    for engine in engines() {
+        let output = run_whirl(&dir, &[
+            "--base",
+            &server.base(),
+            "--browser",
+            engine,
+            "ambiguous.whirl",
+        ]);
+        let stdout = stdout_text(&output);
+        assert_eq!(exit_code(&output), 1, "{engine} stdout:\n{stdout}");
+        assert!(stdout.contains("strictness"), "{engine} stdout:\n{stdout}");
+        assert!(
+            stdout.contains("candidate: <div#files-zone.zone>"),
+            "{engine} stdout:\n{stdout}"
+        );
+    }
+}
+
+#[test]
 fn a_middle_click_on_a_link_follows_each_engines_own_rule() {
     let server = SiteServer::start();
     let dir = TestDir::new();
@@ -2736,6 +3046,172 @@ fn a_cancelled_flow_with_video_leaves_no_recorder_behind() {
         String::from_utf8_lossy(&survivors.stdout).trim().is_empty(),
         "ffmpeg should not survive a cancelled flow"
     );
+}
+
+#[test]
+fn short_video_flows_on_still_pages_pass_with_a_recording() {
+    // Chromium sends a screencast frame only when the page paints, and the
+    // frame arrives some time later. On a warm browser these flows often
+    // end first: an HTTP entry never paints the blank page, and a lone
+    // VISIT ends when the document has parsed.
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    let flows = [
+        (
+            "http-1",
+            "HTTP GET /stable.html\n[Asserts]\nstatus == 200\n",
+        ),
+        (
+            "http-2",
+            "HTTP GET /stable.html\n[Asserts]\nstatus == 200\n",
+        ),
+        ("visit-1", "VISIT /stable.html\n"),
+        ("visit-2", "VISIT /stable.html\n"),
+    ];
+    for (name, source) in flows {
+        dir.file(&format!("{name}.whirl"), source);
+    }
+    // One job runs every flow in one warm browser.
+    let output = run_whirl(&dir, &[
+        "--base",
+        &server.base(),
+        "--video",
+        "--jobs",
+        "1",
+        "--report-json",
+        "report.json",
+        ".",
+    ]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+    assert!(!stdout.contains("warning"), "stdout:\n{stdout}");
+    for (name, _) in flows {
+        let video = dir.artifacts().join(format!("{name}/video.webm"));
+        assert!(video.is_file(), "{name} should write video.webm");
+        let (frames, _, duration) = inspect_recording(&dir, &video, name);
+        assert!(
+            frames >= 1 && duration > 0.0,
+            "{name}: {frames} frames over {duration:.2}s"
+        );
+    }
+    let report: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(dir.path.join("report.json")).expect("JSON report"),
+    )
+    .expect("valid JSON");
+    for file in report["files"].as_array().expect("files") {
+        assert_eq!(file["status"], "passed", "{file}");
+        assert!(
+            file["artifacts"]
+                .as_array()
+                .expect("artifacts")
+                .iter()
+                .any(|artifact| artifact
+                    .as_str()
+                    .is_some_and(|path| path.ends_with("video.webm"))),
+            "{file}"
+        );
+    }
+}
+
+#[test]
+fn a_skipped_recording_is_a_warning_and_the_file_still_passes() {
+    // An ffmpeg that fails while it finishes the recording cannot be made
+    // on demand, so the fake shim reports the skip.
+    let dir = TestDir::new();
+    dir.file("flow.whirl", "VISIT https://example.test/\n");
+    let shim = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake_shim.js");
+    let reason = "ffmpeg exited with status 1: pipe:0: Invalid data found when processing input";
+    let output = run_whirl_env(
+        &dir,
+        &[
+            "--video",
+            "--report-json",
+            "report.json",
+            "--report-html",
+            "report.html",
+            "flow.whirl",
+        ],
+        &[
+            ("WHIRL_SHIM_JS", shim.to_str().expect("shim path")),
+            ("FAKE_SHIM_VIDEO_SKIPPED", reason),
+        ],
+    );
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+    let warning = format!("video recording skipped: {reason}");
+    assert!(
+        stdout.contains(&format!("warning: {warning}")),
+        "stdout:\n{stdout}"
+    );
+    let report: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(dir.path.join("report.json")).expect("JSON report"),
+    )
+    .expect("valid JSON");
+    assert_eq!(report["files"][0]["status"], "passed");
+    assert_eq!(report["files"][0]["warnings"][0], warning.as_str());
+    // No recording, so no frame rate, though the shim started one at 60.
+    assert!(
+        report["files"][0]["runtime"].is_object(),
+        "report:\n{report}"
+    );
+    assert!(
+        report["files"][0]["runtime"].get("videoFps").is_none(),
+        "report:\n{report}"
+    );
+    let html = fs::read_to_string(dir.path.join("report.html")).expect("HTML report");
+    assert!(html.contains("data-status=\"passed\""));
+    assert!(html.contains("Recording unavailable."));
+}
+
+#[test]
+fn a_blank_recording_is_a_warning_and_stays_listed() {
+    // A page that Chrome cannot capture, as a crashed one, cannot be made
+    // on demand, so the fake shim reports the white recording.
+    let dir = TestDir::new();
+    dir.file(
+        "flow.whirl",
+        "VISIT https://example.test/?token={{env.WHIRL_TEST_SECRET}}\n",
+    );
+    let shim = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake_shim.js");
+    // The reason holds the secret, which the warning masks.
+    let reason =
+        "capturing the page failed: Internal error at https://example.test/?token=blank-secret";
+    let output = run_whirl_env(
+        &dir,
+        &["--video", "--report-json", "report.json", "flow.whirl"],
+        &[
+            ("WHIRL_SHIM_JS", shim.to_str().expect("shim path")),
+            ("WHIRL_TEST_SECRET", "blank-secret"),
+            ("FAKE_SHIM_VIDEO_BLANK", reason),
+        ],
+    );
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+    let warning = "video recording is blank: capturing the page failed: Internal error at \
+                   https://example.test/?token=***";
+    assert!(
+        stdout.contains(&format!("warning: {warning}")),
+        "stdout:\n{stdout}"
+    );
+    assert!(!stdout.contains("blank-secret"), "stdout:\n{stdout}");
+    let text = fs::read_to_string(dir.path.join("report.json")).expect("JSON report");
+    assert!(!text.contains("blank-secret"), "report:\n{text}");
+    let report: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+    let file = &report["files"][0];
+    assert_eq!(file["status"], "passed");
+    assert_eq!(file["warnings"], serde_json::json!([warning]));
+    // Unlike a skipped recording, a blank one stays listed, with its rate.
+    assert!(
+        file["artifacts"]
+            .as_array()
+            .expect("artifacts")
+            .iter()
+            .any(|artifact| artifact
+                .as_str()
+                .is_some_and(|path| path.ends_with("video.webm"))),
+        "report:\n{report}"
+    );
+    assert_eq!(file["runtime"]["videoFps"], 60, "report:\n{report}");
 }
 
 #[test]

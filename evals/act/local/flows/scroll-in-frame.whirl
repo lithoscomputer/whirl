@@ -1,0 +1,9 @@
+[Options]
+base: {{env.EVAL_BASE}}
+model: {{model}}
+
+# Scroll inside an iframe, not the page around it.
+VISIT /framed-feed/
+ACT "scroll down 50% inside the incident history" @60s
+[Asserts]
+eval "(() => { const frame = document.querySelector('#incidents').contentWindow; return Math.abs(frame.scrollY + frame.innerHeight / 2 - frame.document.documentElement.scrollHeight / 2) <= 50; })()" == true

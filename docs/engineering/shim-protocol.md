@@ -107,8 +107,18 @@ Result: `{"browserVersion": "...", "nodeVersion": "...", "playwrightVersion": ".
   page's CDP screencast through Playwright's bundled ffmpeg at that rate,
   holding the last frame while the page is still. A number for another
   engine, or a missing ffmpeg, fails `startFlow` with kind `"internal"`.
-  An ffmpeg failure at `endFlow` fails `endFlow` the same way. `cancelFlow`
-  discards an in-progress screencast recording.
+  When no screencast frame has arrived by `endFlow`, the shim captures the
+  page with `Page.captureScreenshot` and holds that frame from the start
+  of the recording. For a page that has not painted yet, as right after a
+  navigation, Chrome answers "Unable to capture screenshot", so the shim
+  waits 50 ms and tries again, for up to 1 second. A screencast frame that
+  arrives meanwhile serves as well. When the shim still has no frame, when
+  the capture fails for another reason, or after 5 seconds in all, the
+  recording holds a white frame of the viewport's size, and the shim
+  reports why in `videoBlank`. When ffmpeg fails, or does not finish
+  within 10 seconds, at `endFlow`, the shim discards the recording and
+  reports why in `videoSkipped`. `cancelFlow` discards an in-progress
+  screencast recording.
 
 ### `endFlow`
 
@@ -121,9 +131,14 @@ Ends the flow and closes the context. Params:
 - `saveStoragePath` writes the context storage state before close.
 - `tracePath` exports the trace there; `null` discards a running trace.
 
-Result: `{"blockedHosts": ["host", ...], "videoPath": "abs path" | null}`.
+Result: `{"blockedHosts": ["host", ...], "videoPath": "abs path" | null, "videoSkipped": "reason" | null, "videoBlank": "reason" | null}`.
 `blockedHosts` is the sorted, de-duplicated set of hostnames blocked by
-`allowHosts` during the flow.
+`allowHosts` during the flow. `videoSkipped` says why the shim skipped a
+requested recording, such as an ffmpeg failure. `videoBlank` says why a
+saved recording holds only a white frame, such as a failed capture of a
+crashed page; `videoPath` still names the recording. Rust reports each
+as a warning and does not change the flow's status. Older shims omit
+them.
 
 ### `cancelFlow`
 
@@ -169,7 +184,10 @@ Commands and their extra params (result `{}` unless noted):
 | `checkbox` | `locator`, `checked` (bool; CHECK/UNCHECK) |
 | `selectOption` | `locator`, `label` |
 | `hover` | `locator` |
+| `drag` | `locator` (the element to drag), `target` (the element to drop it on); press, hold 500 ms, move in 10 steps, release (SPEC 7) |
+| `scroll` | `locator` (or `null` for the page), `motion`: `{"type": "intoView"}`, `{"type": "chunk", "direction": "down"}` (or `up`, `left`, `right`), or `{"type": "position", "percent": 50}`; SPEC 7 says which box scrolls |
 | `upload` | `locator`, `path` (absolute; Rust resolved it) |
+| `drop` | `locator`, `path` (absolute; Rust resolved it) — `locator.drop({ files: path })`; an `action` error when the file does not exist or the element's `dragover` does not call `preventDefault()` (SPEC 7) |
 | `screenshot` | `path` (absolute .png; full page) |
 | `snapshot` | `baselinePath`, `actualPath`, `diffPath`, `update` (bool) |
 | `evalAction` | `script` |
@@ -197,6 +215,16 @@ Semantics the shim owns (per SPEC sections 7, 9, 15):
   `"snapshot-missing-baseline"` (Rust reports it as a runtime error). With
   `update: true`, write the settled frame to `baselinePath` and reply
   `{"updated": true}`.
+- `ariaSnapshot` names each iframe, which Playwright writes without a name.
+  Right after the snapshot, the shim resolves each iframe line's ref with
+  `aria-ref=`, in any frame and across origins, and puts the iframe's
+  `aria-label`, or else its `title`, after the role in double quotes with
+  JSON escapes: `- iframe "Incident history" [ref=e4]:`. The shim does not
+  wrap such a line in YAML single quotes, as Playwright does for a name that
+  holds `: `, because Rust's line parsers read the role from the start of
+  the line. An iframe without a name, a ref that no longer resolves, a failed
+  read, or a spent `timeoutMs` leaves the line as it was; the names never
+  fail the step.
 - `evalAction` and an `eval` read: run the script as the body of an
   async function in the page main world via `page.evaluate`. If the script
   parses as a single expression, run `return (script);`; otherwise run it as
@@ -238,9 +266,9 @@ The mapping to Playwright calls is SPEC section 6.1.
 inside an iframe. The shim resolves it with `page.locator("aria-ref=e12")`.
 Only Rust creates `ref` segments, as the only segment of an `ACT` action's
 locator, and only for refs in the latest snapshot. `.whirl` files have no
-syntax for them. For `click`, `dblclick`, and `hover` on a `ref` locator, the
-shim points at the deepest descendant that shows the element's text, when one
-exists, instead of the element's center (SPEC 7.4).
+syntax for them. For `click`, `dblclick`, `hover`, and both locators of `drag`
+on a `ref` locator, the shim points at the deepest descendant that shows the
+element's text, when one exists, instead of the element's center (SPEC 7.4).
 
 Popup names are local to a flow; `main` names the original page. The shim records
 popup events before actions and attaches dialog handling to every page. It keeps
