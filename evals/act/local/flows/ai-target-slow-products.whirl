@@ -1,0 +1,8 @@
+[Options]
+app-url: {{env.EVAL_BASE}}
+model: {{model}}
+
+# ai: on a list that arrives from a slow request after the page loads.
+VISIT /slow-products/
+CLICK ai:"the add to cart button for the blue mug" @60s
+ASSERT testid:cart text == "Blue mug"

@@ -1,0 +1,9 @@
+[Options]
+app-url: {{env.EVAL_BASE}}
+model: {{model}}
+
+# JUDGE: the element does not show the evidence; the task passes when the
+# model answers unsure.
+VISIT /judge-dashboard/
+ASSERT testid:order visible
+JUDGE testid:order "the order ships to an address in Canada" @60s

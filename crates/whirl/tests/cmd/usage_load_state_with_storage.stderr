@@ -1,0 +1,1 @@
+whirl: error: --load-state cannot be combined with the `storage` option of 'stored.whirl'

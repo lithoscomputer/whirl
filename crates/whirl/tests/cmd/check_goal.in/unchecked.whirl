@@ -1,0 +1,10 @@
+[Options]
+model: anthropic/claude-sonnet-5
+VISIT /
+GOAL "add two mugs to the cart"
+CLICK Checkout
+ASSERT url exists
+
+VISIT /other
+GOAL "sign in"
+CAPTURE u: url

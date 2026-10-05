@@ -1,0 +1,8 @@
+[Options]
+app-url: {{env.EVAL_BASE}}
+model: {{model}}
+
+# ai: a hidden check passes when nothing on the page matches.
+VISIT /similar-buttons/
+ASSERT ai:"an error message or warning banner" hidden @60s
+ASSERT ai:"a checkout button" text not exists @60s

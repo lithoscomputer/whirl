@@ -1,6 +1,10 @@
 ./failed.whirl:2:1: error: a failed MOCK takes no header lines and no body
   Content-Type: text/plain
   ^
+./no_visit.whirl:1:1: error: MOCK lines must be followed by VISIT
+  MOCK GET /api/flags 200
+  ^^^^^^^^^^^^^^^^^^^^^^^
+  expected one of: MOCK, VISIT
 ./timeout.whirl:1:25: error: MOCK has no step timeout
   MOCK GET /api/flags 200 @5s
                           ^^^

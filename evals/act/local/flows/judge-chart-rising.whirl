@@ -1,0 +1,8 @@
+[Options]
+app-url: {{env.EVAL_BASE}}
+model: {{model}}
+
+# JUDGE: a canvas chart that the outline shows as an empty element.
+VISIT /judge-dashboard/
+ASSERT testid:chart visible
+JUDGE testid:chart "each bar in the chart is taller than the bar to its left" @60s

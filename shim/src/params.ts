@@ -190,9 +190,15 @@ export function decodeStartFlowParams(params: Params): StartFlowParams {
 	const viewport = fieldObject(params, "viewport");
 	const video = fieldObjectOrNull(params, "video");
 	const allowHosts = fieldArrayOrNull(params, "allowHosts");
+	const blockHosts = fieldArrayOrNull(params, "blockHosts");
+	const connect = fieldObjectOrNull(params, "connect");
 	return {
 		browser: fieldEnum(params, "browser", browserEngines),
 		headed: fieldBoolean(params, "headed"),
+		connect:
+			connect === null
+				? null
+				: { cdpEndpoint: fieldString(connect, "cdpEndpoint") },
 		viewport: {
 			width: fieldNumber(viewport, "width"),
 			height: fieldNumber(viewport, "height"),
@@ -201,6 +207,8 @@ export function decodeStartFlowParams(params: Params): StartFlowParams {
 		dialogs: fieldEnum(params, "dialogs", ["dismiss", "accept"]),
 		allowHosts:
 			allowHosts === null ? null : allowHosts.map((host) => String(host)),
+		blockHosts:
+			blockHosts === null ? null : blockHosts.map((host) => String(host)),
 		navTimeoutMs: fieldNumber(params, "navTimeoutMs"),
 		userAgent: fieldStringOrNull(params, "userAgent"),
 		reducedMotion:

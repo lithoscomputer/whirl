@@ -1,0 +1,1 @@
+whirl: error: -O block-hosts=analytics.example.com *.analytics.example.com: a host glob cannot contain white space; give each host its own -O

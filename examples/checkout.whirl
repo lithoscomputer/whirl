@@ -2,16 +2,16 @@
 # suite. It parses and lints (whirl check examples/checkout.whirl) but
 # needs a live site to run.
 [Options]
-base: https://shop.example.com
+app-url: https://shop.example.com
 viewport: 1280x800
 
 # Log in.
 VISIT /login
 FILL Email alice@example.com
 FILL Password {{env.TEST_PASSWORD}}
-CLICK role:button "Sign in"
+CLICK button:"Sign in"
 PAGE /dashboard
-ASSERT role:heading "Welcome back" visible
+ASSERT heading:"Welcome back" visible
 ASSERT testid:user-menu text == Alice
 
 # Find a product.
@@ -19,10 +19,10 @@ FILL placeholder:"Search products" widget
 PRESS Enter
 ASSERT url contains q=widget
 ASSERT testid:result-card count >= 1
-CAPTURE first_product: testid:result-card >> nth:0 >> role:link attr:href
+CAPTURE first_product: testid:result-card >> nth:0 >> link:* attr:href
 
 # Add it to the cart.
 VISIT {{first_product}}
 CLICK "Add to cart"
 ASSERT testid:cart-badge text == 1
-ASSERT role:alert text contains "Added to cart"
+ASSERT alert:* text contains "Added to cart"

@@ -87,7 +87,7 @@ rl.on("line", (line) => {
   switch (cmd) {
     case "hello":
       if (ignoreLifecycle) break;
-      reply(id, { protocol: 5, playwrightVersion: "0.0.0-fake" });
+      reply(id, { protocol: 10, playwrightVersion: "0.0.0-fake" });
       break;
     case "startFlow":
       if (ignoreLifecycle) break;
@@ -97,7 +97,10 @@ rl.on("line", (line) => {
     case "endFlow":
       if (ignoreLifecycle) break;
       reply(id, {
-        blockedHosts: ["a.example", "b.example"],
+        blockedHosts: [
+          { host: "a.example", option: "allow-hosts", glob: null },
+          { host: "b.example", option: "block-hosts", glob: "*.example" },
+        ],
         videoPath,
         videoSkipped,
         videoBlank,

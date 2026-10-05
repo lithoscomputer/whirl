@@ -9,9 +9,9 @@ use tokio::process::Command;
 use tokio::runtime::Runtime;
 use tokio::task::spawn_blocking;
 use tokio::time::timeout;
+use whirl_shim::{LaunchOrigin, ShimClient, StartFlowParams, ViewportParams, resolve_launch};
 
 use crate::install::{self, Progress};
-use crate::run::shim::{self, ShimClient, StartFlowParams, ViewportParams};
 
 #[derive(Deserialize)]
 struct NodeInfo {
@@ -34,8 +34,34 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
+/// The installed bundle must run its own pinned Node. A development
+/// runtime (`WHIRL_NODE`) may run any Node from the pinned major version
+/// up, since Playwright supports every current Node release.
+fn check_node_version(version: &str, origin: LaunchOrigin) -> anyhow::Result<()> {
+    let pinned = format!("v{}", install::NODE_VERSION);
+    match origin {
+        LaunchOrigin::Bundle => ensure!(
+            version == pinned,
+            "Node version is '{version}', expected {pinned}; run `whirl install`"
+        ),
+        LaunchOrigin::Environment => {
+            let minimum = major(&pinned).expect("the pinned Node version has a major number");
+            ensure!(
+                major(version).is_some_and(|found| found >= minimum),
+                "Node version is '{version}', expected v{minimum} or later; run `mise install`"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// The major number of a Node version string such as `v24.19.0`.
+fn major(version: &str) -> Option<u32> {
+    version.strip_prefix('v')?.split('.').next()?.parse().ok()
+}
+
 async fn inspect(browser: &str, progress: Progress<'_>) -> anyhow::Result<()> {
-    let launch = spawn_blocking(shim::resolve_launch)
+    let launch = spawn_blocking(resolve_launch)
         .await
         .context("checking the shim installation")??;
     ensure!(
@@ -61,12 +87,7 @@ async fn inspect(browser: &str, progress: Progress<'_>) -> anyhow::Result<()> {
     let info: NodeInfo = serde_json::from_slice(&node.stdout).context(
         "Node returned invalid runtime details; run `whirl install` (development: `mise install`)",
     )?;
-    ensure!(
-        info.version == format!("v{}", install::NODE_VERSION),
-        "Node version is '{}', expected v{}; run `whirl install` (development: `mise install`)",
-        info.version,
-        install::NODE_VERSION
-    );
+    check_node_version(&info.version, launch.origin)?;
     progress(&format!("Node {}: OK ({})", info.version, info.executable));
     let cli_launch = launch.clone();
     let cli = spawn_blocking(move || install::playwright_cli_for(&cli_launch))
@@ -79,9 +100,9 @@ async fn inspect(browser: &str, progress: Progress<'_>) -> anyhow::Result<()> {
             "Playwright version is {}, expected {}; run `whirl install` (development: `mise run setup:shim`)", hello.playwright_version, install::PLAYWRIGHT_VERSION);
         progress(&format!("Shim protocol {}, Playwright {}: OK", hello.protocol, hello.playwright_version));
         let params = StartFlowParams {
-            browser: browser.to_owned(), headed: false,
+            browser: browser.to_owned(), headed: false, connect: None,
             viewport: ViewportParams { width: 1280, height: 720 },
-            storage_state_path: None, dialogs: "dismiss".to_owned(), allow_hosts: None,
+            storage_state_path: None, dialogs: "dismiss".to_owned(), allow_hosts: None, block_hosts: None,
             nav_timeout_ms: 10_000, user_agent: None, reduced_motion: None,
             video: None, har_path: None, trace: false, open_shadow_roots: false, mocks: false,
         };
@@ -106,4 +127,29 @@ async fn inspect(browser: &str, progress: Progress<'_>) -> anyhow::Result<()> {
     shutdown.context("the diagnostic browser could not shut down cleanly")?;
     progress("Whirl is ready.");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_development_runtime_accepts_the_pinned_major_and_later() {
+        let pinned = format!("v{}", install::NODE_VERSION);
+        assert!(check_node_version(&pinned, LaunchOrigin::Environment).is_ok());
+        assert!(check_node_version("v26.0.0", LaunchOrigin::Environment).is_ok());
+        let error = check_node_version("v22.12.0", LaunchOrigin::Environment)
+            .expect_err("an older major is rejected");
+        assert!(error.to_string().contains("or later"), "{error}");
+        assert!(check_node_version("node", LaunchOrigin::Environment).is_err());
+    }
+
+    #[test]
+    fn the_bundle_requires_its_exact_pinned_node() {
+        let pinned = format!("v{}", install::NODE_VERSION);
+        assert!(check_node_version(&pinned, LaunchOrigin::Bundle).is_ok());
+        let error = check_node_version("v26.0.0", LaunchOrigin::Bundle)
+            .expect_err("the bundle runs only its pinned Node");
+        assert!(error.to_string().contains("whirl install"), "{error}");
+    }
 }

@@ -1,9 +1,9 @@
 Run web UI tests written in plain-text .whirl files
 
-Usage: whirl [OPTIONS] [PATH]...
-       whirl <COMMAND>
+Usage: whirl <COMMAND>
 
 Commands:
+  run         Run files in browsers
   report      Generate HTML from saved results without running browsers
   check       Parse and lint files; nothing runs
   fmt         Rewrite files to the canonical form
@@ -12,33 +12,6 @@ Commands:
   show-trace  Open a Playwright trace with Whirl's private runtime
   help        Print this message or the help of the given subcommand(s)
 
-Arguments:
-  [PATH]...  Files to run; directories recurse to *.whirl
-
 Options:
-      --rerun-failed <REPORT>     Rerun whole failed or errored files from a JSON report
-      --base <URL>                Override the `base` option
-      --browser <NAME>            Override the `browser` option
-      --step-timeout <DURATION>   Override the `step-timeout` option
-      --headed                    Run with a visible browser window
-      --jobs <N>                  Worker slots for parallel files
-      --var <k=v>                 Define a variable (repeatable)
-      --variables-file <PATH>     Load variables from a file
-      --artifacts <DIR>           Artifact output directory [default: whirl-artifacts]
-      --trace                     Record a Playwright trace per file; saved only when the file fails
-      --report-junit <PATH>       Write a JUnit XML report
-      --report-json <PATH>        Write a JSON report
-      --report-html <PATH>        Write a standalone HTML report with embedded recordings and screenshots
-      --report-metadata <PATH>    Read author-written report and flow descriptions from a JSON file
-      --fail-fast                 Stop scheduling new files after the first failure
-      --update-snapshots          Write or refresh SNAPSHOT baselines instead of comparing
-      --video                     Record a .webm video of each file's run
-      --video-fps <N>             Frames per second for --video on Chromium (1 to 60; default 60)
-      --har                       Record a .har network log per file
-      --jev                       Plan ACT with TypeSafe Jev first, falling back to the model option
-      --storage <PATH>            Override the `storage` option
-      --save-storage <PATH>       Write the final storage state after a successful run
-      --entry-timeout <DURATION>  Override the `entry-timeout` option
-      --user-agent <UA>           Override the user agent: chrome, firefox, safari, or a literal string
-  -h, --help                      Print help
-  -V, --version                   Print version
+  -h, --help     Print help
+  -V, --version  Print version

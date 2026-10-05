@@ -1,0 +1,10 @@
+[Options]
+app-url: {{env.EVAL_BASE}}
+model: {{model}}
+
+# EXTRACT: a value the page does not show is missing, not invented.
+VISIT /similar-buttons/
+ASSERT heading:"Kitchen shop" visible
+EXTRACT coupon "the discount code shown on the page" @60s
+{ "type": "string" }
+ASSERT extract:coupon not exists

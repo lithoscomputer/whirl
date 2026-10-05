@@ -1,0 +1,8 @@
+[Options]
+app-url: {{env.EVAL_BASE}}
+model: {{model}}
+
+# JUDGE: arithmetic over the text of one element.
+VISIT /judge-dashboard/
+ASSERT testid:order visible
+JUDGE testid:order "the total equals the sum of the line items" @60s

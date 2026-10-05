@@ -1,0 +1,16 @@
+{
+  "diagnostics": [
+    {
+      "code": "invalid-option",
+      "column": null,
+      "expected": [],
+      "length": null,
+      "line": null,
+      "message": "whirl: error: -O browser=netscape: invalid option value `netscape`; expected chromium, firefox, or webkit",
+      "path": null,
+      "severity": "error"
+    }
+  ],
+  "exitCode": 4,
+  "version": 1
+}

@@ -5,7 +5,7 @@ user-agent: chrome
 # precheck: the home page and its recommendations link are present.
 VISIT https://vantechjournal.com
 ASSERT title contains "Vancouver Tech Journal"
-ASSERT role~:link recommendations count >= 1
+ASSERT link:~recommendations count >= 1
 
 # Open a section from the site navigation.
 ACT "click on page 'recommendations'" @60s

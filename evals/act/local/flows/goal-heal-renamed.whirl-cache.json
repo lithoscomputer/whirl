@@ -1,0 +1,58 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "kind": "goal",
+      "line": "GOAL \"buy three green mugs with standard shipping for Alan Turing\"",
+      "occurrence": 1,
+      "model": "openrouter/gpt-5.6-terra",
+      "actions": [
+        {
+          "line": "FILL spinbutton:\"Quantity of Green mug\" \"3\"",
+          "fingerprints": [
+            {
+              "role": "spinbutton",
+              "name": "Quantity of Green mug"
+            }
+          ]
+        },
+        {
+          "line": "CLICK button:\"Add to cart\" >> nth:2",
+          "fingerprints": [
+            {
+              "role": "button",
+              "name": "Add to cart"
+            }
+          ]
+        },
+        {
+          "line": "CLICK button:\"Proceed to checkout\"",
+          "fingerprints": [
+            {
+              "role": "button",
+              "name": "Proceed to checkout"
+            }
+          ]
+        },
+        {
+          "line": "FILL textbox:\"Full name\" \"Alan Turing\"",
+          "fingerprints": [
+            {
+              "role": "textbox",
+              "name": "Full name"
+            }
+          ]
+        },
+        {
+          "line": "CLICK button:\"Place order\"",
+          "fingerprints": [
+            {
+              "role": "button",
+              "name": "Place order"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

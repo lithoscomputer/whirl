@@ -64,7 +64,7 @@ export class FlowTabs {
 	#named(name: string): Page {
 		const page = this.#names.get(name);
 		if (page === undefined)
-			throw new ShimError("action", `unknown tab ${name}`);
+			throw new ShimError("action", `unknown window ${name}`);
 		return page;
 	}
 
@@ -73,7 +73,7 @@ export class FlowTabs {
 		if (page.isClosed()) {
 			throw new ShimError(
 				"action",
-				`tab ${this.#activeName} is closed; select an open tab with TAB`,
+				`window ${this.#activeName} is closed; select an open window with WINDOW`,
 			);
 		}
 		return page;
@@ -81,13 +81,14 @@ export class FlowTabs {
 
 	select(name: string): void {
 		const page = this.#named(name);
-		if (page.isClosed()) throw new ShimError("action", `tab ${name} is closed`);
+		if (page.isClosed())
+			throw new ShimError("action", `window ${name} is closed`);
 		this.#activeName = name;
 	}
 
 	async capture(name: string, timeoutMs: number): Promise<void> {
 		if (this.#names.has(name))
-			throw new ShimError("action", `tab ${name} is already named`);
+			throw new ShimError("action", `window ${name} is already named`);
 		const opener = this.current();
 		await pollUntilPass(
 			timeoutMs,
@@ -114,7 +115,7 @@ export class FlowTabs {
 			},
 			{
 				kind: "timeout",
-				message: `no popup from the current tab within ${String(timeoutMs)}ms`,
+				message: `no popup from the current window within ${String(timeoutMs)}ms`,
 			},
 		);
 	}
@@ -133,7 +134,7 @@ export class FlowTabs {
 			}),
 			{
 				kind: "assert",
-				message: `tab ${name} did not close within ${String(timeoutMs)}ms`,
+				message: `window ${name} did not close within ${String(timeoutMs)}ms`,
 				expected: "closed",
 			},
 		);

@@ -1,6 +1,8 @@
 // Wire contract between the Rust binary and this shim.
 // Shapes follow docs/engineering/shim-protocol.md exactly.
 
+import type { BlockedHost } from "./host-glob.js";
+
 export type ErrorKind =
 	| "timeout"
 	| "strictness"
@@ -166,7 +168,7 @@ export interface LocatorSubject {
 	readonly locator: readonly LocatorSegment[];
 }
 
-/** A state check; `tab:NAME closed` is dispatched before this shape. */
+/** A state check; `window:NAME closed` is dispatched before this shape. */
 export interface AssertSpec {
 	readonly subject: LocatorSubject;
 	readonly check: StateCheck;
@@ -271,13 +273,25 @@ export interface VideoConfig {
 	readonly fps: number | null;
 }
 
+/**
+ * A browser the shim attaches to instead of launching: the CDP
+ * websocket endpoint of a running Chromium, such as a hosted browser.
+ */
+export interface ConnectConfig {
+	readonly cdpEndpoint: string;
+}
+
 export interface StartFlowParams {
 	readonly browser: BrowserEngine;
 	readonly headed: boolean;
+	/** Attach over CDP when set; launch a local browser when null. */
+	readonly connect: ConnectConfig | null;
 	readonly viewport: ViewportSize;
 	readonly storageStatePath: string | null;
 	readonly dialogs: "dismiss" | "accept";
 	readonly allowHosts: readonly string[] | null;
+	/** Hosts to block even when `allowHosts` allows them (SPEC 5). */
+	readonly blockHosts: readonly string[] | null;
 	readonly navTimeoutMs: number;
 	readonly userAgent: string | null;
 	readonly reducedMotion: "reduce" | "no-preference" | null;
@@ -296,7 +310,8 @@ export interface EndFlowParams {
 }
 
 export interface EndFlowResult {
-	readonly blockedHosts: readonly string[];
+	/** Every blocked host with the rule that blocked it, sorted by host. */
+	readonly blockedHosts: readonly BlockedHost[];
 	readonly videoPath: string | null;
 	/** Why the shim skipped a requested recording, or null. */
 	readonly videoSkipped: string | null;
@@ -386,6 +401,8 @@ export type StepCommand =
 	| "read"
 	| "readResponse"
 	| "readRequest"
+	| "generateLocator"
+	| "judgeScreenshot"
 	| "traceGroup"
 	| "traceGroupEnd";
 
@@ -419,6 +436,8 @@ const stepCommandList: readonly StepCommand[] = [
 	"read",
 	"readResponse",
 	"readRequest",
+	"generateLocator",
+	"judgeScreenshot",
 	"traceGroup",
 	"traceGroupEnd",
 ];

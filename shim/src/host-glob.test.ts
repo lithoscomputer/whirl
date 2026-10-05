@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createHostAllowlist, hostnameMatchesGlob } from "./host-glob.js";
+import {
+	BlockedHostLog,
+	createHostAllowlist,
+	createHostPolicy,
+	describeBlockedHost,
+	hostnameMatchesGlob,
+} from "./host-glob.js";
 
 test("plain glob matches the exact hostname only", () => {
 	assert.equal(hostnameMatchesGlob("example.com", "example.com"), true);
@@ -54,6 +60,51 @@ test("createHostAllowlist accepts a hostname matching any glob", () => {
 	assert.equal(isAllowed("example.com"), true);
 	assert.equal(isAllowed("shop.example.com"), true);
 	assert.equal(isAllowed("evil.io"), false);
+});
+
+test("a block-hosts glob wins over allow-hosts and names its rule", () => {
+	const policy = createHostPolicy(
+		["127.0.0.1", "example.com", "*.example.com"],
+		["ads.example.com", "127.0.0.1"],
+	);
+	assert.equal(policy("shop.example.com"), null);
+	assert.deepEqual(policy("ADS.example.com"), {
+		host: "ads.example.com",
+		option: "block-hosts",
+		glob: "ads.example.com",
+	});
+	// The app-url host that Rust appends to allow-hosts is blocked too.
+	assert.equal(policy("127.0.0.1")?.option, "block-hosts");
+	assert.deepEqual(policy("evil.io"), {
+		host: "evil.io",
+		option: "allow-hosts",
+		glob: null,
+	});
+});
+
+test("block-hosts alone blocks only its matches", () => {
+	const policy = createHostPolicy(null, ["*.analytics.example.com"]);
+	assert.equal(policy("analytics.example.com"), null);
+	assert.equal(policy("shop.example.com"), null);
+	const blocked = policy("eu.analytics.example.com");
+	assert.notEqual(blocked, null);
+	if (blocked !== null) {
+		assert.equal(
+			describeBlockedHost(blocked),
+			"block-hosts *.analytics.example.com",
+		);
+	}
+});
+
+test("the blocked host log keeps each host's first rule, sorted", () => {
+	const log = new BlockedHostLog();
+	log.record({ host: "b.example", option: "allow-hosts", glob: null });
+	log.record({ host: "a.example", option: "block-hosts", glob: "a.example" });
+	log.record({ host: "b.example", option: "block-hosts", glob: "*.example" });
+	assert.deepEqual(log.list(), [
+		{ host: "a.example", option: "block-hosts", glob: "a.example" },
+		{ host: "b.example", option: "allow-hosts", glob: null },
+	]);
 });
 
 test("regex metacharacters in globs stay literal", () => {

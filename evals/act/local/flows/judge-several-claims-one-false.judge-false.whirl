@@ -1,0 +1,11 @@
+[Options]
+app-url: {{env.EVAL_BASE}}
+model: {{model}}
+
+# JUDGE: several claims about the same view; the second is false, so the
+# task passes when JUDGE fails with judge-false.
+VISIT /judge-dashboard/
+ASSERT testid:status visible
+JUDGE "the page is titled Dashboard"
+JUDGE "the page shows no error message"
+JUDGE "order 1042 lists a mug and a plate"

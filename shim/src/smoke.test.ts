@@ -15,10 +15,12 @@ test("the driver runs a flow against a data: URL in chromium", {
 		await driver.startFlow({
 			browser: "chromium",
 			headed: false,
+			connect: null,
 			viewport: { width: 800, height: 600 },
 			storageStatePath: null,
 			dialogs: "dismiss",
 			allowHosts: null,
+			blockHosts: null,
 			navTimeoutMs: 30000,
 			userAgent: null,
 			reducedMotion: null,
@@ -35,7 +37,7 @@ test("the driver runs a flow against a data: URL in chromium", {
 		});
 		await driver.runStep("assert", {
 			timeoutMs: 5000,
-			title: 'role:heading "Hello" visible',
+			title: 'heading:"Hello" visible',
 			spec: {
 				subject: {
 					type: "locator",

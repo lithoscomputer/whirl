@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Dashboard</title>
+<style>
+  body { font-family: sans-serif; margin: 24px; }
+  section { border: 1px solid #ccc; border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; width: 360px; }
+  .dot { display: inline-block; width: 14px; height: 14px; border-radius: 50%; background: #1a9e3a; vertical-align: middle; }
+  .banner { background: #c62828; color: white; padding: 10px 16px; border-radius: 6px; width: 360px; margin-bottom: 16px; }
+</style>
+</head>
+<body>
+<h1>Dashboard</h1>
+<div class="banner" data-testid="banner">Payment failed: the card was declined.</div>
+<section data-testid="status">
+  <h2>Service status</h2>
+  <p><span class="dot" aria-hidden="true"></span> API</p>
+</section>
+<section data-testid="order">
+  <h2>Order 1042</h2>
+  <p>Mug $12.50</p>
+  <p>Plate $8.00</p>
+  <p><strong>Total $20.50</strong></p>
+</section>
+<section data-testid="refund">
+  <h2>Order 1043</h2>
+  <p>Bowl $9.00</p>
+  <p>Cup $6.00</p>
+  <p><strong>Total $25.00</strong></p>
+</section>
+<section data-testid="chart">
+  <h2>Weekly sign-ups</h2>
+  <canvas width="320" height="140"></canvas>
+</section>
+<script>
+  const canvas = document.querySelector("canvas");
+  const context = canvas.getContext("2d");
+  const values = [20, 35, 50, 70, 90, 115, 130];
+  context.fillStyle = "#3558c9";
+  values.forEach((value, index) => {
+    context.fillRect(10 + index * 44, 140 - value, 32, value);
+  });
+</script>
+</body>
+</html>

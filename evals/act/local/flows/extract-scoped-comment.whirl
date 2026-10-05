@@ -1,0 +1,9 @@
+[Options]
+app-url: {{env.EVAL_BASE}}
+model: {{model}}
+
+# EXTRACT: a scope limits the page to one comment.
+VISIT /reply-to-author/
+ASSERT heading:Discussion visible
+EXTRACT comment css:article >> nth:2 "the comment text" @60s
+ASSERT extract:comment == "We shipped this last year."
