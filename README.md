@@ -16,25 +16,21 @@ FILL "Email" alice@example.com
 FILL "Password" {{env.TEST_PASSWORD}}
 CLICK role:button "Sign in"
 PAGE /dashboard
-[Asserts]
-role:heading "Welcome back" visible
-testid:user-menu text == Alice
+ASSERT role:heading "Welcome back" visible
+ASSERT testid:user-menu text == Alice
 
 # Find a product.
 FILL placeholder:"Search products" widget
 PRESS Enter
-[Asserts]
-url contains "q=widget"
-testid:result-card count >= 1
-[Captures]
-first_product: testid:result-card >> nth:0 >> role:link attr:href
+ASSERT url contains "q=widget"
+ASSERT testid:result-card count >= 1
+CAPTURE first_product: testid:result-card >> nth:0 >> role:link attr:href
 
 # Add it to the cart.
 VISIT {{first_product}}
 CLICK "Add to cart"
-[Asserts]
-testid:cart-badge text == 1
-role:alert text contains "Added to cart"
+ASSERT testid:cart-badge text == 1
+ASSERT role:alert text contains "Added to cart"
 ```
 
 ```console
@@ -97,9 +93,8 @@ Write a flow:
 ```whirl
 # example.whirl
 VISIT https://example.com
-[Asserts]
-role:heading "Example Domain" visible
-title contains "Example"
+ASSERT role:heading "Example Domain" visible
+ASSERT title contains "Example"
 ```
 
 Run it:
@@ -120,14 +115,11 @@ Authorization: "Bearer {{env.E2E_SETUP_TOKEN}}"
 {
     "name": "Ada"
 }
-[Asserts]
-status == 201
-[Captures]
-user_id: json:$.id
+ASSERT status == 201
+CAPTURE user_id: json:$.id
 
 VISIT /users/{{user_id}}
-[Asserts]
-role:heading Ada visible
+ASSERT role:heading Ada visible
 ```
 
 The status check is explicit. Whirl does not treat 2xx as implicit success.
@@ -137,17 +129,34 @@ filters, and tests it with one predicate. JSON values keep their type,
 JSONPath selects them, and XPath reads HTML and XML:
 
 ```whirl
-[Asserts]
-url urlQueryParam page == 2
-testid:price text replaceRegex /[^0-9.]/ "" toFloat < 200
-response:order json:$.items[*].sku contains ABC-1
-response:order json:$.id isInteger
-response:feed xpath:"count(//_:entry)" >= 1
-eval "window.dataLayer" json:$[?@.event=='purchase'] count == 1
+ASSERT url urlQueryParam page == 2
+ASSERT testid:price text replaceRegex /[^0-9.]/ "" toFloat < 200
+ASSERT response:order json:$.items[*].sku contains ABC-1
+ASSERT response:order json:$.id isInteger
+ASSERT response:feed xpath:"count(//_:entry)" >= 1
+ASSERT eval "window.dataLayer" json:$[?@.event=='purchase'] count == 1
 ```
 
 Page checks retry until they pass or time out. See
 [SPEC section 9](SPEC.md#9-asserts) for every subject, filter, and predicate.
+
+Use `MOCK` to give the page a fixed answer, and `request:NAME` to check what
+the page sent:
+
+```whirl
+MOCK GET /api/flags 200
+{ "checkout_v2": true }
+MOCK GET https://fonts.example.com/* failed
+
+VISIT /checkout
+MOCK POST /api/cart 201
+CLICK "Add to cart"
+RESPONSE cart POST /api/cart
+ASSERT request:cart json:$.qty == 1
+```
+
+A mock serves every matching browser request until the file ends. `*`
+matches any run of characters. See [MOCK](SPEC.md#75-mock).
 
 Use `ACT` when a step is easier to describe than to locate. A language model
 reads a snapshot of the page and chooses one action, which Whirl runs like
@@ -159,8 +168,7 @@ model: anthropic/claude-sonnet-5
 
 VISIT https://shop.example.com/products
 ACT "add the first product to the cart"
-[Asserts]
-testid:cart-badge text == 1
+ASSERT testid:cart-badge text == 1
 ```
 
 Set the provider's key, such as `ANTHROPIC_API_KEY`. The model's choice can

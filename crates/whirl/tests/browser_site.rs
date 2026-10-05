@@ -330,10 +330,9 @@ fn user_agent_aliases_set_headers_and_navigator_without_changing_browser_or_view
             &format!(
                 "[Options]\nbase: {}\nviewport: 960x540\nuser-agent: {value}\n\
                  VISIT /user-agent\n\
-                 [Captures]\n\
-                 header: css:body text\n\
-                 navigator: eval \"navigator.userAgent\"\n\
-                 viewport: eval \"innerWidth + 'x' + innerHeight\"\n",
+                 CAPTURE header: css:body text\n\
+                 CAPTURE navigator: eval \"navigator.userAgent\"\n\
+                 CAPTURE viewport: eval \"innerWidth + 'x' + innerHeight\"\n",
                 server.base(),
             ),
         );
@@ -421,44 +420,40 @@ FILL placeholder:"Search things" widget
 CLICK testid:save-button
 PRESS placeholder:"Search things" "Enter"
 SCREENSHOT overview
-[Asserts]
-role:heading "Form page" visible
-label:Email value == alice@example.com
-label:Code value == 4242
-css:"#typed-keys" text == 4242
-label:Notifications checked
-placeholder:"Search things" value == widget
-placeholder:"Search things" focused
-css:"#press-result" text == enter-pressed
-css:"#saved" text == saved
-css:"li.item" count >= 3
-css:"li.item" >> nth:1 text == Two
-text~:"rder #ABC" visible
-testid:order text matches /Order #\w+/
-css:"#spaced" text matches /^spaced text$/
-testid:state attr:data-state == open
-css:"#ghost" hidden
-role:button "Disabled btn" disabled
-role:button Save enabled
-label:Terms checked
-label:Subscribe unchecked
-url contains form.html
-title == "Form Page"
-[Captures]
-order_id: testid:order text regex /Order #(\w+)/
-next_path: css:"#next-link" attr:href
+ASSERT role:heading "Form page" visible
+ASSERT label:Email value == alice@example.com
+ASSERT label:Code value == 4242
+ASSERT css:"#typed-keys" text == 4242
+ASSERT label:Notifications checked
+ASSERT placeholder:"Search things" value == widget
+ASSERT placeholder:"Search things" focused
+ASSERT css:"#press-result" text == enter-pressed
+ASSERT css:"#saved" text == saved
+ASSERT css:"li.item" count >= 3
+ASSERT css:"li.item" >> nth:1 text == Two
+ASSERT text~:"rder #ABC" visible
+ASSERT testid:order text matches /Order #\w+/
+ASSERT css:"#spaced" text matches /^spaced text$/
+ASSERT testid:state attr:data-state == open
+ASSERT css:"#ghost" hidden
+ASSERT role:button "Disabled btn" disabled
+ASSERT role:button Save enabled
+ASSERT label:Terms checked
+ASSERT label:Subscribe unchecked
+ASSERT url contains form.html
+ASSERT title == "Form Page"
+CAPTURE order_id: testid:order text regex /Order #(\w+)/
+CAPTURE next_path: css:"#next-link" attr:href
 
 # Follow the captured link.
 VISIT {{next_path}}
 PAGE /second.html
-[Asserts]
-role:heading "Second page" visible
+ASSERT role:heading "Second page" visible
 
 # Revisit with the captured query value.
 VISIT /second.html?q={{order_id}}
 PAGE /second.html?q=ABC123
-[Asserts]
-url contains q=ABC123
+ASSERT url contains q=ABC123
 "##;
 
 #[test]
@@ -493,17 +488,13 @@ fn check_and_uncheck_handle_hidden_inputs_and_role_switches() {
         "VISIT /form.html\n\
          CHECK \"Notifications\"\n\
          CHECK \"Notifications\"\n\
-         [Asserts]\n\
-         label:Notifications checked\n\
+         ASSERT label:Notifications checked\n\
          UNCHECK \"Notifications\"\n\
-         [Asserts]\n\
-         label:Notifications unchecked\n\
+         ASSERT label:Notifications unchecked\n\
          CHECK role:switch \"Dark mode\"\n\
-         [Asserts]\n\
-         role:switch \"Dark mode\" checked\n\
+         ASSERT role:switch \"Dark mode\" checked\n\
          UNCHECK role:switch \"Dark mode\"\n\
-         [Asserts]\n\
-         role:switch \"Dark mode\" unchecked\n",
+         ASSERT role:switch \"Dark mode\" unchecked\n",
     );
     let output = run_whirl(&dir, &["--base", &server.base(), "switch.whirl"]);
     let stdout = stdout_text(&output);
@@ -530,15 +521,13 @@ fn store_session_and_cookie_reach_the_page_after_the_next_visit() {
     dir.file(
         "store.whirl",
         "VISIT /form.html\n\
-         [Asserts]\n\
-         css:\"#session-flag\" text == unset\n\
-         css:\"#cookie-flag\" text == unset\n\
+         ASSERT css:\"#session-flag\" text == unset\n\
+         ASSERT css:\"#cookie-flag\" text == unset\n\
          STORE session flag \"from session\"\n\
          STORE cookie flag v1\n\
          VISIT /form.html\n\
-         [Asserts]\n\
-         css:\"#session-flag\" text == \"from session\"\n\
-         css:\"#cookie-flag\" text == v1\n",
+         ASSERT css:\"#session-flag\" text == \"from session\"\n\
+         ASSERT css:\"#cookie-flag\" text == v1\n",
     );
     let output = run_whirl(&dir, &["--base", &server.base(), "store.whirl"]);
     let stdout = stdout_text(&output);
@@ -555,7 +544,7 @@ fn visit_completes_at_domcontentloaded_while_a_subresource_stalls_load() {
         "slow.whirl",
         &format!(
             "[Options]\nbase: {base}\nnav-timeout: 3s\n\n\
-             VISIT /slow-load.html\n[Asserts]\nrole:heading \"Parsed\" visible\n",
+             VISIT /slow-load.html\nASSERT role:heading \"Parsed\" visible\n",
             base = server.base()
         ),
     );
@@ -572,7 +561,7 @@ fn asserts_retry_until_delayed_text_appears() {
     // this assert passes only because it retries.
     dir.file(
         "waits.whirl",
-        "VISIT /form.html\n[Asserts]\ncss:\"#late\" text == ready\n",
+        "VISIT /form.html\nASSERT css:\"#late\" text == ready\n",
     );
     let output = run_whirl(&dir, &["--base", &server.base(), "waits.whirl"]);
     let stdout = stdout_text(&output);
@@ -588,12 +577,10 @@ fn store_local_is_visible_to_the_page_after_the_next_visit() {
     dir.file(
         "store.whirl",
         "VISIT /form.html\n\
-         [Asserts]\n\
-         css:\"#stored-flag\" text == unset\n\
+         ASSERT css:\"#stored-flag\" text == unset\n\
          STORE local flag \"seen it\"\n\
          VISIT /form.html\n\
-         [Asserts]\n\
-         css:\"#stored-flag\" text == \"seen it\"\n",
+         ASSERT css:\"#stored-flag\" text == \"seen it\"\n",
     );
     let output = run_whirl(&dir, &["--base", &server.base(), "store.whirl"]);
     let stdout = stdout_text(&output);
@@ -608,7 +595,7 @@ fn a_wrong_assert_times_out_with_expected_and_actual() {
     // expected versus actual.
     dir.file(
         "wrong.whirl",
-        "VISIT /form.html\n[Asserts]\ncss:\"#late\" text == never\n",
+        "VISIT /form.html\nASSERT css:\"#late\" text == never\n",
     );
     let output = run_whirl(&dir, &[
         "--base",
@@ -643,15 +630,14 @@ CHECK "Small"
 HOVER css:"#hover-me"
 DBLCLICK css:"#dbl"
 UPLOAD "Avatar" file:avatar.txt
-[Asserts]
-css:"#color-result" text == green
-label:Color value == green
-label:Subscribe checked
-label:Terms unchecked
-label:Small checked
-css:"#hover-me" text == hovered
-css:"#dbl" text == dblclicked
-css:"#upload-name" text == avatar.txt
+ASSERT css:"#color-result" text == green
+ASSERT label:Color value == green
+ASSERT label:Subscribe checked
+ASSERT label:Terms unchecked
+ASSERT label:Small checked
+ASSERT css:"#hover-me" text == hovered
+ASSERT css:"#dbl" text == dblclicked
+ASSERT css:"#upload-name" text == avatar.txt
 "##,
     );
     let output = run_whirl(&dir, &["--base", &server.base(), "controls.whirl"]);
@@ -669,20 +655,17 @@ fn rightclick_and_middleclick_press_their_buttons() {
         "buttons.whirl",
         r##"VISIT /buttons.html
 RIGHTCLICK "report.pdf"
-[Asserts]
-role:menu "File actions" visible
-role:menuitem Rename visible
+ASSERT role:menu "File actions" visible
+ASSERT role:menuitem Rename visible
 
 MIDDLECLICK css:"#counter"
-[Asserts]
-css:"#counter" text == "click 0, auxclick 1, contextmenu 0"
-css:"#counter" attr:data-button == 1
+ASSERT css:"#counter" text == "click 0, auxclick 1, contextmenu 0"
+ASSERT css:"#counter" attr:data-button == 1
 
 RIGHTCLICK css:"#counter"
-[Asserts]
-css:"#counter" text startsWith "click 0,"
-css:"#counter" text endsWith "contextmenu 1"
-css:"#counter" attr:data-button == 2
+ASSERT css:"#counter" text startsWith "click 0,"
+ASSERT css:"#counter" text endsWith "contextmenu 1"
+ASSERT css:"#counter" attr:data-button == 2
 "##,
     );
     for engine in engines() {
@@ -709,21 +692,17 @@ fn drag_moves_cards_on_native_and_pointer_event_boards() {
         "boards.whirl",
         r##"VISIT /drag.html
 DRAG "Pointer card" to testid:distance-done
-[Asserts]
-testid:distance-done >> text:"Pointer card" visible
+ASSERT testid:distance-done >> text:"Pointer card" visible
 
 DRAG "Held card" to testid:delay-done
-[Asserts]
-css:"#pointer-log" text == dropped
-testid:delay-done >> text:"Held card" visible
+ASSERT css:"#pointer-log" text == dropped
+ASSERT testid:delay-done >> text:"Held card" visible
 
 DRAG "Write spec" to testid:native-done
-[Asserts]
-testid:native-done >> text:"Write spec" visible
+ASSERT testid:native-done >> text:"Write spec" visible
 
 DRAG "to" to testid:native-done
-[Asserts]
-testid:native-done >> text:to visible
+ASSERT testid:native-done >> text:to visible
 "##,
     );
     for engine in engines() {
@@ -747,13 +726,11 @@ fn drag_reaches_into_a_frame_and_across_frames() {
         "frames.whirl",
         r##"VISIT /drag-frame.html
 DRAG frame:"#board" >> text:"Frame card" to frame:"#board" >> testid:frame-done
-[Asserts]
-frame:"#board" >> testid:frame-done >> text:"Frame card" visible
+ASSERT frame:"#board" >> testid:frame-done >> text:"Frame card" visible
 
 VISIT /drag-frame.html
 DRAG "Outside card" to frame:"#board" >> testid:frame-done
-[Asserts]
-frame:"#board" >> testid:frame-done >> text:"Outside card" visible
+ASSERT frame:"#board" >> testid:frame-done >> text:"Outside card" visible
 "##,
     );
     for engine in engines() {
@@ -794,69 +771,56 @@ fn scroll_moves_the_page_its_boxes_and_frames() {
         "scroll.whirl",
         r##"VISIT /scroll.html
 SCROLL down
-[Captures]
-y: eval "window.scrollY"
+CAPTURE y: eval "window.scrollY"
 
 VISIT /scroll.html
-[Asserts]
-eval "{{y}} === document.documentElement.clientHeight" == true
+ASSERT eval "{{y}} === document.documentElement.clientHeight" == true
 
 SCROLL to 100%
-[Asserts]
-role:button "Back to top" visible
-css:"#feed li" count == 25
+ASSERT role:button "Back to top" visible
+ASSERT css:"#feed li" count == 25
 
 SCROLL down
 SCROLL to 0%
-[Asserts]
-eval "window.scrollY" == 0
-role:button "Back to top" hidden
+ASSERT eval "window.scrollY" == 0
+ASSERT role:button "Back to top" hidden
 
 VISIT /scroll.html
 SCROLL testid:load-more
-[Asserts]
-css:"#feed li" count == 25
+ASSERT css:"#feed li" count == 25
 
 SCROLL text:"Filter 3" down
-[Asserts]
-eval "document.querySelector('#filters-body').scrollTop === document.querySelector('#filters-body').clientHeight" == true
+ASSERT eval "document.querySelector('#filters-body').scrollTop === document.querySelector('#filters-body').clientHeight" == true
 
 # A dialog cannot scroll, so the list inside it does.
 SCROLL role:dialog Filters to 0%
-[Asserts]
-eval "document.querySelector('#filters-body').scrollTop" == 0
+ASSERT eval "document.querySelector('#filters-body').scrollTop" == 0
 
 SCROLL role:region Terms to 100%
-[Asserts]
-role:button "I agree" enabled
+ASSERT role:button "I agree" enabled
 
 # Already at the end: the step passes and nothing moves.
 SCROLL role:region Terms down
 
 SCROLL testid:board right
-[Asserts]
-eval "document.querySelector('[data-testid=board]').scrollLeft" == 400
+ASSERT eval "document.querySelector('[data-testid=board]').scrollLeft" == 400
 SCROLL testid:board left
-[Asserts]
-eval "document.querySelector('[data-testid=board]').scrollLeft" == 0
+ASSERT eval "document.querySelector('[data-testid=board]').scrollLeft" == 0
 
 SCROLL "down"
-[Asserts]
-eval "(() => { const r = document.getElementById('word-down').getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight; })()" == true
+ASSERT eval "(() => { const r = document.getElementById('word-down').getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight; })()" == true
 
 VISIT /scroll-frame.html
 SCROLL frame:"#feed" >> css:body down
-[Asserts]
-eval "(() => { const doc = document.querySelector('#feed').contentDocument; return doc.defaultView.scrollY === doc.documentElement.clientHeight; })()" == true
-eval "window.scrollY" == 0
+ASSERT eval "(() => { const doc = document.querySelector('#feed').contentDocument; return doc.defaultView.scrollY === doc.documentElement.clientHeight; })()" == true
+ASSERT eval "window.scrollY" == 0
 
 # An iframe element scrolls the page inside it, across origins too.
 SCROLL css:"#feed" to 0%
 SCROLL css:"#remote" to 100%
-[Asserts]
-eval "document.querySelector('#feed').contentWindow.scrollY" == 0
-eval "Number(document.body.dataset.remoteScroll) > 0" == true
-eval "window.scrollY" == 0
+ASSERT eval "document.querySelector('#feed').contentWindow.scrollY" == 0
+ASSERT eval "Number(document.body.dataset.remoteScroll) > 0" == true
+ASSERT eval "window.scrollY" == 0
 "##,
     );
     for engine in engines() {
@@ -886,22 +850,18 @@ fn drop_hands_files_to_zones_on_the_page_and_in_frames() {
         "drop.whirl",
         r##"VISIT /drop.html
 DROP "Drop files here" file:report.csv
-[Asserts]
-css:"#dropped li" text == "report.csv, 18 bytes, text/csv"
+ASSERT css:"#dropped li" text == "report.csv, 18 bytes, text/csv"
 
 # Each line drops one file. An extension with no known type falls back.
 DROP "Drop files here" file:scan.whirlblob
-[Asserts]
-css:"#dropped li" count == 2
-css:"#dropped li" >> nth:1 text == "scan.whirlblob, 1 bytes, application/octet-stream"
+ASSERT css:"#dropped li" count == 2
+ASSERT css:"#dropped li" >> nth:1 text == "scan.whirlblob, 1 bytes, application/octet-stream"
 
 DROP frame:"#inner" >> text:"Drop files here" file:notes.txt
-[Asserts]
-frame:"#inner" >> css:"#dropped li" text == "notes.txt, 6 bytes, text/plain"
+ASSERT frame:"#inner" >> css:"#dropped li" text == "notes.txt, 6 bytes, text/plain"
 
 DROP frame:"#remote" >> text:"Drop files here" file:report.csv
-[Asserts]
-frame:"#remote" >> css:"#dropped li" text == "report.csv, 18 bytes, text/csv"
+ASSERT frame:"#remote" >> css:"#dropped li" text == "report.csv, 18 bytes, text/csv"
 "##,
     );
     for engine in engines() {
@@ -1015,7 +975,7 @@ fn a_middle_click_on_a_link_follows_each_engines_own_rule() {
     // SPEC 7: Firefox opens a popup, Chromium opens a tab without an
     // opener that POPUP cannot name, and WebKit follows the link.
     let flows = [
-        ("chromium", "[Asserts]\nurl endsWith /buttons.html\n"),
+        ("chromium", "ASSERT url endsWith /buttons.html\n"),
         ("firefox", "POPUP docs\nTAB docs\nPAGE /second.html\n"),
         ("webkit", "PAGE /second.html\n"),
     ];
@@ -1074,7 +1034,7 @@ fn allow_hosts_blocks_a_cross_host_fetch_and_reports_the_host() {
         "cross.whirl",
         &format!(
             "[Options]\nbase: {base}\nallow-hosts: 127.0.0.1\n\n\
-             VISIT /cross.html\n[Asserts]\ncss:\"#fetch-result\" text == blocked\n",
+             VISIT /cross.html\nASSERT css:\"#fetch-result\" text == blocked\n",
             base = server.base()
         ),
     );
@@ -1142,7 +1102,7 @@ fn cross_host_requests_pass_without_allow_hosts() {
     let dir = TestDir::new();
     dir.file(
         "open.whirl",
-        "VISIT /cross.html\n[Asserts]\ncss:\"#fetch-result\" text == fetched\n",
+        "VISIT /cross.html\nASSERT css:\"#fetch-result\" text == fetched\n",
     );
     let output = run_whirl(&dir, &["--base", &server.base(), "open.whirl"]);
     let stdout = stdout_text(&output);
@@ -1159,8 +1119,7 @@ fn dialogs_are_dismissed_by_default_and_accepted_on_request() {
         "dismiss.whirl",
         r##"VISIT /form.html
 CLICK "Confirm thing"
-[Asserts]
-css:"#dialog-result" text == dismissed
+ASSERT css:"#dialog-result" text == dismissed
 "##,
     );
     dir.file(
@@ -1168,7 +1127,7 @@ css:"#dialog-result" text == dismissed
         &format!(
             "[Options]\nbase: {base}\ndialogs: accept\n\n\
              VISIT /form.html\nCLICK \"Confirm thing\"\n\
-             [Asserts]\ncss:\"#dialog-result\" text == accepted\n",
+             ASSERT css:\"#dialog-result\" text == accepted\n",
             base = server.base()
         ),
     );
@@ -1197,8 +1156,7 @@ fn saved_storage_state_logs_the_second_flow_in() {
         "login.whirl",
         r##"VISIT /login.html
 CLICK "Log in"
-[Asserts]
-css:"#status" text == "logged in"
+ASSERT css:"#status" text == "logged in"
 "##,
     );
     let output = run_whirl(&dir, &[
@@ -1219,7 +1177,7 @@ css:"#status" text == "logged in"
         "reuse.whirl",
         &format!(
             "[Options]\nbase: {base}\nstorage: nested/state.json\n\n\
-             VISIT /login.html\n[Asserts]\ncss:\"#status\" text == \"already logged in\"\n",
+             VISIT /login.html\nASSERT css:\"#status\" text == \"already logged in\"\n",
             base = server.base()
         ),
     );
@@ -1243,8 +1201,8 @@ fn a_setup_flow_runs_once_and_hands_state_and_captures_to_its_dependents() {
         &format!(
             "[Options]\nbase: {base}\n\n\
              VISIT /login.html\nCLICK \"Log in\"\n\
-             [Asserts]\ncss:\"#status\" text == \"logged in\"\n\
-             [Captures]\ntoken: css:\"#token\" text\n",
+             ASSERT css:\"#status\" text == \"logged in\"\n\
+             CAPTURE token: css:\"#token\" text\n",
             base = server.base()
         ),
     );
@@ -1255,10 +1213,9 @@ fn a_setup_flow_runs_once_and_hands_state_and_captures_to_its_dependents() {
                 "[Options]\nbase: {base}\nsetup: login.whirl\n\n\
                  VISIT /login.html\n\
                  EVAL \"document.title = 'token={{{{setup.token}}}}'\"\n\
-                 [Asserts]\n\
-                 css:\"#status\" text == \"already logged in\"\n\
-                 css:\"#logins\" text == 1\n\
-                 title == token=t123\n",
+                 ASSERT css:\"#status\" text == \"already logged in\"\n\
+                 ASSERT css:\"#logins\" text == 1\n\
+                 ASSERT title == token=t123\n",
                 base = server.base()
             ),
         );
@@ -1329,7 +1286,7 @@ fn a_failing_setup_flow_fails_its_dependents_without_running_them() {
         "bad-login.whirl",
         &format!(
             "[Options]\nbase: {base}\nstep-timeout: 500ms\n\n\
-             VISIT /login.html\n[Asserts]\ncss:\"#status\" text == \"never\"\n",
+             VISIT /login.html\nASSERT css:\"#status\" text == \"never\"\n",
             base = server.base()
         ),
     );
@@ -1337,7 +1294,7 @@ fn a_failing_setup_flow_fails_its_dependents_without_running_them() {
         "dependent.whirl",
         &format!(
             "[Options]\nbase: {base}\nsetup: bad-login.whirl\n\n\
-             VISIT /login.html\n[Asserts]\ncss:\"#status\" text == \"already logged in\"\n",
+             VISIT /login.html\nASSERT css:\"#status\" text == \"already logged in\"\n",
             base = server.base()
         ),
     );
@@ -1471,7 +1428,7 @@ fn trace_video_and_har_artifacts_follow_their_flags() {
     // failure.
     dir.file(
         "fail.whirl",
-        "VISIT /second.html\n[Asserts]\ncss:\"#missing\" visible @500ms\n",
+        "VISIT /second.html\nASSERT css:\"#missing\" visible @500ms\n",
     );
     let output = run_whirl(&dir, &["--base", &server.base(), "--trace", "fail.whirl"]);
     let stdout = stdout_text(&output);
@@ -1485,7 +1442,7 @@ fn trace_video_and_har_artifacts_follow_their_flags() {
     // the video and network log exist.
     dir.file(
         "pass.whirl",
-        "VISIT /second.html\n[Asserts]\nrole:heading \"Second page\" visible\n",
+        "VISIT /second.html\nASSERT role:heading \"Second page\" visible\n",
     );
     let output = run_whirl(&dir, &[
         "--base",
@@ -1524,8 +1481,8 @@ fn the_viewport_option_sizes_the_page() {
             "[Options]\nbase: {base}\nviewport: 777x444\n\n\
              VISIT /second.html\n\
              EVAL \"document.title = window.innerWidth + 'x' + window.innerHeight\"\n\
-             [Asserts]\ntitle == 777x444\n\
-             [Captures]\nwidth: eval \"window.innerWidth\"\n",
+             ASSERT title == 777x444\n\
+             CAPTURE width: eval \"window.innerWidth\"\n",
             base = server.base()
         ),
     );
@@ -1547,15 +1504,15 @@ fn fail_fast_stops_scheduling_after_the_first_failure() {
     let dir = TestDir::new();
     dir.file(
         "a_fails.whirl",
-        "VISIT /second.html\n[Asserts]\ncss:\"#missing\" visible @500ms\n",
+        "VISIT /second.html\nASSERT css:\"#missing\" visible @500ms\n",
     );
     dir.file(
         "b_later.whirl",
-        "VISIT /second.html\n[Asserts]\nrole:heading \"Second page\" visible\n",
+        "VISIT /second.html\nASSERT role:heading \"Second page\" visible\n",
     );
     dir.file(
         "c_later.whirl",
-        "VISIT /second.html\n[Asserts]\nrole:heading \"Second page\" visible\n",
+        "VISIT /second.html\nASSERT role:heading \"Second page\" visible\n",
     );
     // One worker runs the files in order: the first fails, so the later
     // files are never scheduled and never appear in the report.
@@ -1617,16 +1574,13 @@ FILL css:"#payments" >> frame:iframe >> label:Email alice@example.com
 TYPE frame:"#payment" >> label:Code 4242
 CHECK frame:"#payment" >> label:Notifications
 FILL frame:"#nested" >> frame:iframe >> label:Email nested@example.com
-[Asserts]
-frame:"#payment" >> label:Email value == alice@example.com
-frame:"#payment" >> label:Notifications checked
-frame:"#payment" >> css:"#typed-keys" text == 4242
-frame:"#nested" >> frame:iframe >> label:Email value == nested@example.com
-[Captures]
-email: frame:"#payment" >> label:Email value
+ASSERT frame:"#payment" >> label:Email value == alice@example.com
+ASSERT frame:"#payment" >> label:Notifications checked
+ASSERT frame:"#payment" >> css:"#typed-keys" text == 4242
+ASSERT frame:"#nested" >> frame:iframe >> label:Email value == nested@example.com
+CAPTURE email: frame:"#payment" >> label:Email value
 FILL frame:iframe >> nth:0 >> label:Email {{{{email}}}}
-[Asserts]
-frame:iframe >> nth:0 >> label:Email value == alice@example.com
+ASSERT frame:iframe >> nth:0 >> label:Email value == alice@example.com
 "##,
             site.base()
         ),
@@ -1647,8 +1601,7 @@ base: {}
 VISIT /frames.html
 CLICK role:button "Load frame"
 FILL frame:"#delayed" >> label:Email late@example.com
-[Asserts]
-frame:"#delayed" >> label:Email value == late@example.com
+ASSERT frame:"#delayed" >> label:Email value == late@example.com
 "##,
             site.base()
         ),
@@ -1693,26 +1646,19 @@ base: {}
 VISIT /popups.html
 CLICK role:button "Pay with provider"
 POPUP payment
-[Asserts]
-role:heading Checkout visible
+ASSERT role:heading Checkout visible
 TAB payment
 FILL label:Name Alice
-[Asserts]
-role:heading "Confirm payment" visible
-[Captures]
-name: label:Name value
+ASSERT role:heading "Confirm payment" visible
+CAPTURE name: label:Name value
 CLICK role:button Alert
-[Asserts]
-role:button Dismissed visible
+ASSERT role:button Dismissed visible
 CLICK role:button Confirm
-[Asserts]
-tab:payment closed @5s
+ASSERT tab:payment closed @5s
 TAB main
-[Asserts]
-text:"Payment complete" visible
+ASSERT text:"Payment complete" visible
 FILL label:Customer {{{{name}}}}
-[Asserts]
-label:Customer value == Alice
+ASSERT label:Customer value == Alice
 "#,
             site.base()
         ),
@@ -1772,13 +1718,11 @@ POPUP receipt
 TAB receipt
 PAGE /second.html
 CLOSE receipt
-[Asserts]
-tab:receipt closed
+ASSERT tab:receipt closed
 TAB payment
 CLOSE payment
 TAB main
-[Asserts]
-role:heading Checkout visible
+ASSERT role:heading Checkout visible
 "#,
             site.base()
         ),
@@ -1798,8 +1742,7 @@ fn a_popup_from_an_earlier_entry_does_not_satisfy_popup() {
 base: {}
 VISIT /popups.html
 CLICK role:button "Pay with provider"
-[Asserts]
-text:"Provider ready" visible
+ASSERT text:"Provider ready" visible
 POPUP stale @300ms
 "#,
             site.base()
@@ -1875,33 +1818,30 @@ EVAL "await fetch('/api/orders')"
 CLICK role:button "Place order"
 EVAL "await window.orderRequest"
 RESPONSE order POST /api/orders
-[Asserts]
-response:order status == 201
-response:order status >= 200
-response:order status < 300
-response:order header:Content-Type contains application/json
-response:order json:$.status == paid
-response:order json:$.active == true
-response:order json:$.none == null
-response:order json:$['a/b']['~key'] == escaped
-response:order json:$.items[0].id matches /^item-/
-response:order json:$.items count == 1
-response:order json:$.items[*].id contains item-1
-response:order json:$.items == [{{"id": "item-1"}}]
-response:order json:$ isObject
-response:order json:$.none not isString
-response:order json:$.missing not exists
-response:order body contains order-42
-response:order bytes startsWith hex,7b;
-response:order json:$.id == "order-42"
-text:"Order confirmed" visible
-[Captures]
-order_id: response:order json:$.id
-item_number: response:order json:$.items[0].id regex /item-(\d+)/
+ASSERT response:order status == 201
+ASSERT response:order status >= 200
+ASSERT response:order status < 300
+ASSERT response:order header:Content-Type contains application/json
+ASSERT response:order json:$.status == paid
+ASSERT response:order json:$.active == true
+ASSERT response:order json:$.none == null
+ASSERT response:order json:$['a/b']['~key'] == escaped
+ASSERT response:order json:$.items[0].id matches /^item-/
+ASSERT response:order json:$.items count == 1
+ASSERT response:order json:$.items[*].id contains item-1
+ASSERT response:order json:$.items == [{{"id": "item-1"}}]
+ASSERT response:order json:$ isObject
+ASSERT response:order json:$.none not isString
+ASSERT response:order json:$.missing not exists
+ASSERT response:order body contains order-42
+ASSERT response:order bytes startsWith hex,7b;
+ASSERT response:order json:$.id == "order-42"
+ASSERT text:"Order confirmed" visible
+CAPTURE order_id: response:order json:$.id
+CAPTURE item_number: response:order json:$.items[0].id regex /item-(\d+)/
 VISIT /network.html?id={{{{order_id}}}}&item={{{{item_number}}}}
 PAGE /network.html?id=order-42&item=1
-[Asserts]
-response:order json:$.status == paid
+ASSERT response:order json:$.status == paid
 "#,
             site.base()
         ),
@@ -1925,8 +1865,7 @@ VISIT /network.html
 CLICK role:button "Retry order"
 EVAL "await window.orderRequest"
 RESPONSE order POST /api/orders
-[Asserts]
-response:order status == 201
+ASSERT response:order status == 201
 "#,
             site.base()
         ),
@@ -1951,8 +1890,7 @@ fn response_selection_excludes_requests_from_previous_entries() {
 base: {}
 VISIT /network.html
 CLICK role:button "Place order"
-[Asserts]
-text:"Order confirmed" visible
+ASSERT text:"Order confirmed" visible
 RESPONSE stale POST /api/orders @300ms
 "#,
             site.base()
@@ -1980,22 +1918,18 @@ base: {}
 VISIT /network.html
 CLICK frame:"#checkout" >> role:button "Place order"
 RESPONSE embedded POST {cross}/api/orders
-[Asserts]
-response:embedded status == 201
+ASSERT response:embedded status == 201
 CLICK role:button "Open checkout"
 POPUP checkout
 TAB checkout
 RESPONSE navigation GET /network.html?embedded=1
-[Asserts]
-response:navigation status == 200
+ASSERT response:navigation status == 200
 CLICK role:button "Place order"
 RESPONSE order POST /api/orders
-[Asserts]
-response:order json:$.id == order-42
+ASSERT response:order json:$.id == order-42
 CLOSE checkout
-[Asserts]
-tab:checkout closed
-response:order json:$.status == paid
+ASSERT tab:checkout closed
+ASSERT response:order json:$.status == paid
 TAB main
 "##,
             site.base()
@@ -2053,8 +1987,7 @@ base: {}
 VISIT /network.html
 CLICK role:button "Place order"
 RESPONSE order POST /api/orders
-[Asserts]
-response:order json:$.missing != paid
+ASSERT response:order json:$.missing != paid
 "#,
             site.base()
         ),
@@ -2084,8 +2017,7 @@ base: {}
 VISIT /network.html
 EVAL "await fetch('/api/malformed')"
 RESPONSE invalid GET /api/malformed
-[Asserts]
-response:invalid {check}
+ASSERT response:invalid {check}
 "#,
                 site.base()
             ),
@@ -2162,20 +2094,17 @@ STORE cookie session browser
 HTTP POST /api/http-check
 Authorization: "Bearer whirl-test-key"
 {"message":"hello"}
-[Asserts]
-status == 200
-json:$.authenticated == true
-json:$.cookie == ""
-json:$.body == "{\"message\":\"hello\"}"
-json:$.contentType == application/json
-[Captures]
-authenticated: json:$.authenticated
+ASSERT status == 200
+ASSERT json:$.authenticated == true
+ASSERT json:$.cookie == ""
+ASSERT json:$.body == "{\"message\":\"hello\"}"
+ASSERT json:$.contentType == application/json
+CAPTURE authenticated: json:$.authenticated
 HTTP GET /api/http-check
 Content-Type: text/custom
-[Asserts]
-status == 401
-json:$.cookie == ""
-json:$.contentType == text/custom
+ASSERT status == 401
+ASSERT json:$.cookie == ""
+ASSERT json:$.contentType == text/custom
 EVAL "if (document.cookie !== 'session=browser') throw new Error('HTTP changed browser cookies')"
 VISIT /network.html?authenticated={{authenticated}}
 PAGE /network.html?authenticated=true
@@ -2193,10 +2122,8 @@ fn http_can_create_and_capture_data_before_the_first_visit() {
         "setup.whirl",
         r#"HTTP POST /api/http-check
 Authorization: "Bearer whirl-test-key"
-[Asserts]
-status == 200
-[Captures]
-authenticated: json:$.authenticated
+ASSERT status == 200
+CAPTURE authenticated: json:$.authenticated
 
 VISIT /network.html?authenticated={{authenticated}}
 PAGE /network.html?authenticated=true
@@ -2221,9 +2148,8 @@ Content-Type: text/plain
 first # literal
 second\line
 ```
-[Asserts]
-status == 200
-json:$.body == "first # literal\nsecond\\line"
+ASSERT status == 200
+ASSERT json:$.body == "first # literal\nsecond\\line"
 "#,
     );
 
@@ -2238,7 +2164,7 @@ fn http_returns_redirects_without_following_them() {
     let dir = TestDir::new();
     dir.file(
         "redirect.whirl",
-        "HTTP GET /redirect-cross\n[Asserts]\nstatus == 302\nheader:location contains localhost\n",
+        "HTTP GET /redirect-cross\nASSERT status == 302\nASSERT header:location contains localhost\n",
     );
     let output = run_whirl(&dir, &["--base", &site.base(), "redirect.whirl"]);
     assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
@@ -2297,8 +2223,8 @@ fn http_head_allows_a_large_content_length_without_a_response_body() {
     let dir = TestDir::new();
     dir.file(
         "head.whirl",
-        "HTTP HEAD /api/large\n[Asserts]\n\
-         status == 200\nheader:content-length == 1048577\n",
+        "HTTP HEAD /api/large\n\
+         ASSERT status == 200\nASSERT header:content-length == 1048577\n",
     );
     let output = run_whirl(&dir, &["--base", &site.base(), "head.whirl"]);
     assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
@@ -2330,13 +2256,13 @@ fn http_interpolates_headers_and_bodies_without_leaking_secrets() {
          HTTP POST {{endpoint}}\n\
          Authorization: \"Bearer {{env.HTTP_TOKEN}}\"\n\
          ```\n{{env.HTTP_BODY}}\n```\n\
-         [Asserts]\nstatus == 200\n\
-         json:$.body == {{env.HTTP_BODY}}\n\
-         [Captures]\nbody: json:$.body\n\
+         ASSERT status == 200\n\
+         ASSERT json:$.body == {{env.HTTP_BODY}}\n\
+         CAPTURE body: json:$.body\n\
          HTTP POST https://blocked.invalid/\n\
          Authorization: \"Bearer {{env.HTTP_TOKEN}}\"\n\
          ```\n{{env.HTTP_BODY}}\n```\n\
-         [Asserts]\nstatus == 200\n",
+         ASSERT status == 200\n",
     );
     let output = run_whirl_env(
         &dir,
@@ -2405,8 +2331,8 @@ fn http_interpolates_headers_and_bodies_without_leaking_secrets() {
 fn html_report_is_portable_and_preserves_results_and_author_context() {
     let dir = TestDir::new();
     let server = SiteServer::start();
-    dir.file("pass.whirl", "# Inspect the page.\nVISIT /stable.html\nSCREENSHOT page\n[Asserts]\ntitle == \"Stable Page\"\n");
-    dir.file("fail.whirl", "# A failed check.\nVISIT /stable.html\n[Asserts]\ntitle == Wrong @100ms\n# Never executed.\nVISIT /form.html\n");
+    dir.file("pass.whirl", "# Inspect the page.\nVISIT /stable.html\nSCREENSHOT page\nASSERT title == \"Stable Page\"\n");
+    dir.file("fail.whirl", "# A failed check.\nVISIT /stable.html\nASSERT title == Wrong @100ms\n# Never executed.\nVISIT /form.html\n");
     fs::create_dir(dir.path.join("context")).expect("metadata directory");
     dir.file("context/report.json", r#"{
         "title": "Critical browser evidence",
@@ -2487,13 +2413,12 @@ fn html_report_is_portable_and_preserves_results_and_author_context() {
     fs::remove_dir_all(dir.artifacts()).expect("remove source media");
     let url = reqwest::Url::from_file_path(&moved).expect("file URL");
     dir.file("verify.whirl", &format!(r#"VISIT "{url}"
-[Asserts]
-role:heading "Critical browser evidence" visible
-role:heading "Page access" visible
-css:article count == 2
-css:article[data-status=passed] count == 1
-css:article[data-status=failed] count == 1
-css:.entry[data-status=skipped] count == 1
+ASSERT role:heading "Critical browser evidence" visible
+ASSERT role:heading "Page access" visible
+ASSERT css:article count == 2
+ASSERT css:article[data-status=passed] count == 1
+ASSERT css:article[data-status=failed] count == 1
+ASSERT css:.entry[data-status=skipped] count == 1
 EVAL "const v = document.querySelector('video'); await v.play(); await new Promise((resolve, reject) => {{ if (v.videoWidth > 0) resolve(); else {{ v.addEventListener('loadeddata', resolve, {{once:true}}); v.addEventListener('error', () => reject(new Error('Video failed')), {{once:true}}); }} }}); if (!v.videoWidth) throw new Error('No video pixels'); v.pause();"
 EVAL "for (const d of document.querySelectorAll('details')) d.open = true; for (const img of document.images) {{ img.loading = 'eager'; await img.decode(); if (!img.naturalWidth) throw new Error('No screenshot pixels'); }}"
 EVAL "if (document.documentElement.scrollWidth > innerWidth) throw new Error('Report overflows viewport')"
@@ -2515,7 +2440,7 @@ fn html_report_escapes_hostile_text_and_keeps_environment_values_masked() {
     let server = SiteServer::start();
     let hostile = "</title><script>document.body.dataset.injected='yes'</script><img src=x onerror=alert(1)> & \"quoted\"";
     dir.file("context.json", &serde_json::json!({"title": hostile, "description": hostile, "files": {"flow.whirl": {"title": hostile, "description": hostile}}}).to_string());
-    dir.file("flow.whirl", &format!("# {hostile}\nVISIT /form.html\nEVAL \"document.title = 'safe'\"\n[Asserts]\ntitle == {{{{env.WHIRL_TEST_SECRET}}}} @100ms\n"));
+    dir.file("flow.whirl", &format!("# {hostile}\nVISIT /form.html\nEVAL \"document.title = 'safe'\"\nASSERT title == {{{{env.WHIRL_TEST_SECRET}}}} @100ms\n"));
     let output = run_whirl_env(
         &dir,
         &[
@@ -2538,7 +2463,7 @@ fn html_report_escapes_hostile_text_and_keeps_environment_values_masked() {
     assert!(html.contains("&amp; &quot;quoted&quot;"));
     assert!(html.contains("Recording not requested."));
     let url = reqwest::Url::from_file_path(dir.path.join("report.html")).expect("file URL");
-    dir.file("verify.whirl", &format!("VISIT \"{url}\"\n[Asserts]\ncss:script count == 0\ncss:body attr:data-injected != yes\ncss:article[data-status=failed] count == 1\n"));
+    dir.file("verify.whirl", &format!("VISIT \"{url}\"\nASSERT css:script count == 0\nASSERT css:body attr:data-injected != yes\nASSERT css:article[data-status=failed] count == 1\n"));
     let verify = run_whirl(&dir, &["verify.whirl"]);
     assert_eq!(exit_code(&verify), 0, "{}", stdout_text(&verify));
 }
@@ -2832,12 +2757,11 @@ fn combined_report_keeps_embedded_media_and_missing_scenarios_offline() {
     let url = reqwest::Url::from_file_path(dir.path.join("combined.html")).expect("file URL");
     let source = format!(
         r#"VISIT "{url}"
-[Asserts]
-css:article count == 3
-css:article[data-status=not-run] count == 1
-css:article[data-status=passed] count == 2
-css:video count == 2
-css:img count == 2
+ASSERT css:article count == 3
+ASSERT css:article[data-status=not-run] count == 1
+ASSERT css:article[data-status=passed] count == 2
+ASSERT css:video count == 2
+ASSERT css:img count == 2
 EVAL "for (const video of document.querySelectorAll('video')) {{ await video.play(); if (!video.videoWidth) throw new Error('No video pixels'); video.pause(); }}"
 EVAL "for (const details of document.querySelectorAll('details')) details.open = true; for (const img of document.images) {{ img.loading = 'eager'; await img.decode(); }}"
 EVAL "for (const link of document.querySelectorAll('a')) if (!document.getElementById(link.hash.slice(1))) throw new Error('Broken report link'); if (document.documentElement.scrollWidth > innerWidth) throw new Error('Report overflows viewport')"
@@ -2941,7 +2865,7 @@ fn inspect_recording(dir: &TestDir, video: &Path, label: &str) -> (usize, usize,
 /// A flow that shows the animated page for about two seconds.
 const ANIMATED_FLOW: &str = "VISIT /animate.html\n\
     EVAL \"await new Promise((resolve) => setTimeout(resolve, 2000))\"\n\
-    [Asserts]\ntitle == \"Animated Page\"\n";
+    ASSERT title == \"Animated Page\"\n";
 
 #[test]
 fn chromium_video_records_at_60_fps_by_default_and_at_the_requested_rate() {
@@ -3057,14 +2981,8 @@ fn short_video_flows_on_still_pages_pass_with_a_recording() {
     let server = SiteServer::start();
     let dir = TestDir::new();
     let flows = [
-        (
-            "http-1",
-            "HTTP GET /stable.html\n[Asserts]\nstatus == 200\n",
-        ),
-        (
-            "http-2",
-            "HTTP GET /stable.html\n[Asserts]\nstatus == 200\n",
-        ),
+        ("http-1", "HTTP GET /stable.html\nASSERT status == 200\n"),
+        ("http-2", "HTTP GET /stable.html\nASSERT status == 200\n"),
         ("visit-1", "VISIT /stable.html\n"),
         ("visit-2", "VISIT /stable.html\n"),
     ];
@@ -3260,25 +3178,23 @@ fn page_checks_filter_retry_and_read_typed_values() {
     dir.file(
         "checks.whirl",
         r#"VISIT /checks.html?page=2
-[Asserts]
-url urlQueryParam page == 2
-title == Checks
-css:.row count == 3
-css:.row >> nth:0 text == One
-css:.row >> nth:-1 text == Three
-testid:price text replaceRegex /[^0-9.]/ "" toFloat > 1000
-testid:late text regex /Order #(\w+)/ == A42
-eval "window.dataLayer" json:$[?@.event=='purchase'] count == 1
-eval "window.dataLayer.length" >= 1
-testid:home attr:aria-current != page
-testid:current attr:aria-current == page
-testid:current attr:href urlQueryParam q == café
-testid:missing text not exists
-testid:styled text == "Total 5"
-testid:shadow text == "Inside shadow"
-[Captures]
-order: testid:late text regex /Order #(\w+)/
-rows: css:.row count
+ASSERT url urlQueryParam page == 2
+ASSERT title == Checks
+ASSERT css:.row count == 3
+ASSERT css:.row >> nth:0 text == One
+ASSERT css:.row >> nth:-1 text == Three
+ASSERT testid:price text replaceRegex /[^0-9.]/ "" toFloat > 1000
+ASSERT testid:late text regex /Order #(\w+)/ == A42
+ASSERT eval "window.dataLayer" json:$[?@.event=='purchase'] count == 1
+ASSERT eval "window.dataLayer.length" >= 1
+ASSERT testid:home attr:aria-current != page
+ASSERT testid:current attr:aria-current == page
+ASSERT testid:current attr:href urlQueryParam q == café
+ASSERT testid:missing text not exists
+ASSERT testid:styled text == "Total 5"
+ASSERT testid:shadow text == "Inside shadow"
+CAPTURE order: testid:late text regex /Order #(\w+)/
+CAPTURE rows: css:.row count
 VISIT /checks.html?order={{order}}&rows={{rows}}
 PAGE /checks.html?order=A42&rows=3
 "#,
@@ -3302,7 +3218,7 @@ fn check_failures_report_their_codes() {
         let dir = TestDir::new();
         dir.file(
             "fail.whirl",
-            &format!("VISIT /checks.html\n[Asserts]\n{check}\n"),
+            &format!("VISIT /checks.html\nASSERT {check}\n"),
         );
         let output = run_whirl(&dir, &[
             "--base",
@@ -3336,26 +3252,23 @@ fn http_checks_read_exact_numbers_locations_and_bodies() {
     dir.file(
         "http.whirl",
         r#"HTTP GET /api/big
-[Asserts]
-status == 200
-json:$.id == 1234567890123456789
-json:$.id != 1234567890123456788
-json:$.id isInteger
-json:$.price isFloat
-json:$.price == 1
-json:$.tags == ["a", "b"]
-json:$.tags contains b
-json:$.when toDate "%+" dateFormat %Y == 2026
-body contains 1234567890123456789
-header:content-type startsWith application/json
-[Captures]
-id: json:$.id
+ASSERT status == 200
+ASSERT json:$.id == 1234567890123456789
+ASSERT json:$.id != 1234567890123456788
+ASSERT json:$.id isInteger
+ASSERT json:$.price isFloat
+ASSERT json:$.price == 1
+ASSERT json:$.tags == ["a", "b"]
+ASSERT json:$.tags contains b
+ASSERT json:$.when toDate "%+" dateFormat %Y == 2026
+ASSERT body contains 1234567890123456789
+ASSERT header:content-type startsWith application/json
+CAPTURE id: json:$.id
 HTTP GET /api/redirect
-[Asserts]
-status == 302
-location endsWith /checks.html?from=redirect
-location startsWith http
-location urlQueryParam from == redirect
+ASSERT status == 302
+ASSERT location endsWith /checks.html?from=redirect
+ASSERT location startsWith http
+ASSERT location urlQueryParam from == redirect
 VISIT /checks.html?id={{id}}
 PAGE /checks.html?id=1234567890123456789
 "#,
@@ -3379,32 +3292,28 @@ fn xpath_checks_read_xml_and_html() {
     dir.file(
         "xpath.whirl",
         r#"HTTP GET /api/feed
-[Asserts]
-status == 200
-xpath:"string(//_:feed/_:title)" == "Café news"
-xpath://_:entry count == 2
-xpath:"count(//_:entry)" == 2
-xpath:"count(//_:entry)" isInteger
-xpath://_:entry exists
-xpath://_:missing not exists
-xpath:"boolean(//media:thumbnail)" == true
-bytes xpath:"string(//_:entry[2]/_:title)" == Two
-body xpath:"//media:thumbnail/@url" count == 1
-[Captures]
-first: xpath:"string(//_:entry[1]/_:title)"
-entries: xpath:"count(//_:entry)"
+ASSERT status == 200
+ASSERT xpath:"string(//_:feed/_:title)" == "Café news"
+ASSERT xpath://_:entry count == 2
+ASSERT xpath:"count(//_:entry)" == 2
+ASSERT xpath:"count(//_:entry)" isInteger
+ASSERT xpath://_:entry exists
+ASSERT xpath://_:missing not exists
+ASSERT xpath:"boolean(//media:thumbnail)" == true
+ASSERT bytes xpath:"string(//_:entry[2]/_:title)" == Two
+ASSERT body xpath:"//media:thumbnail/@url" count == 1
+CAPTURE first: xpath:"string(//_:entry[1]/_:title)"
+CAPTURE entries: xpath:"count(//_:entry)"
 HTTP GET /checks.html
-[Asserts]
-status == 200
-xpath:"string(//h1)" == Checks
-xpath://li count == 3
-xpath:"normalize-space(//p[@data-testid='price'])" == "Total: $1,299.00"
-xpath:"string(//li[last()])" == {{last}}
+ASSERT status == 200
+ASSERT xpath:"string(//h1)" == Checks
+ASSERT xpath://li count == 3
+ASSERT xpath:"normalize-space(//p[@data-testid='price'])" == "Total: $1,299.00"
+ASSERT xpath:"string(//li[last()])" == {{last}}
 VISIT /checks.html
 PAGE /checks.html
-[Asserts]
-eval "document.querySelector('ul').outerHTML" xpath:"count(//li[@class='row'])" == 3
-testid:current attr:href xpath:"count(//a)" == 0
+ASSERT eval "document.querySelector('ul').outerHTML" xpath:"count(//li[@class='row'])" == 3
+ASSERT testid:current attr:href xpath:"count(//a)" == 0
 "#,
     );
     let output = run_whirl(&dir, &[
@@ -3437,16 +3346,14 @@ fn response_bodies_keep_their_bytes_after_the_browser_decodes_them() {
     dir.file(
         "latin.whirl",
         r#"HTTP GET /api/latin
-[Asserts]
-status == 200
-bytes toHex == 636166e9
-body == café
+ASSERT status == 200
+ASSERT bytes toHex == 636166e9
+ASSERT body == café
 VISIT /checks.html
 EVAL "await fetch('/api/latin').then(r => r.arrayBuffer())"
 RESPONSE latin GET /api/latin
-[Asserts]
-response:latin bytes toHex == 636166e9
-response:latin body == café
+ASSERT response:latin bytes toHex == 636166e9
+ASSERT response:latin body == café
 "#,
     );
     let output = run_whirl(&dir, &["--base", &site.base(), "latin.whirl"]);
@@ -3469,7 +3376,7 @@ fn xpath_failures_report_their_codes() {
         let dir = TestDir::new();
         dir.file(
             "fail.whirl",
-            &format!("HTTP GET {request}\n[Asserts]\nstatus == 200\n{check}\n"),
+            &format!("HTTP GET {request}\nASSERT status == 200\nASSERT {check}\n"),
         );
         let output = run_whirl(&dir, &[
             "--base",
@@ -3501,26 +3408,22 @@ fn captures_and_input_variables_keep_their_types() {
     dir.file(
         "typed.whirl",
         r#"HTTP GET /api/big
-[Asserts]
-status == 200
-[Captures]
-id: json:$.id
-tags: json:$.tags
-price: json:$.price
+ASSERT status == 200
+CAPTURE id: json:$.id
+CAPTURE tags: json:$.tags
+CAPTURE price: json:$.price
 HTTP GET /api/big
-[Asserts]
-status == 200
-json:$.id == {{id}}
-json:$.tags == {{tags}}
-json:$.price == {{price}}
-json:$.id != "{{id}}"
-json:$.tags contains {{letter}}
+ASSERT status == 200
+ASSERT json:$.id == {{id}}
+ASSERT json:$.tags == {{tags}}
+ASSERT json:$.price == {{price}}
+ASSERT json:$.id != "{{id}}"
+ASSERT json:$.tags contains {{letter}}
 HTTP POST /api/http-check
 Authorization: "Bearer whirl-test-key"
 {"count": {{count}}, "zip": {{zip}}, "id": {{id}}, "label": "n={{count}}"}
-[Asserts]
-status == 200
-json:$.body == "{\"count\": 2, \"zip\": \"007\", \"id\": 1234567890123456789, \"label\": \"n=2\"}"
+ASSERT status == 200
+ASSERT json:$.body == "{\"count\": 2, \"zip\": \"007\", \"id\": 1234567890123456789, \"label\": \"n=2\"}"
 "#,
     );
     let output = run_whirl(&dir, &[
@@ -3699,7 +3602,7 @@ fn snapshot_masks_replace_clear_and_cover_every_capture() {
 fn snapshot_options_resolve_at_their_scope_and_do_not_leak() {
     let server = SiteServer::start();
     let dir = TestDir::new();
-    let source = "[Options]\nviewport: 100x100\nsnapshot-mask: css:.{{mask}}\nsnapshot-max-diff: {{limit}}\nsnapshot-pixel-threshold: {{threshold}}\nVISIT /snapshot.html\n[Captures]\nlimit: eval \"'0.125%'\"\nmask: eval \"'b'\"\nSNAPSHOT local\nsnapshot-mask: css:.{{mask}}\nsnapshot-max-diff: {{limit}}\nSNAPSHOT inherited\n";
+    let source = "[Options]\nviewport: 100x100\nsnapshot-mask: css:.{{mask}}\nsnapshot-max-diff: {{limit}}\nsnapshot-pixel-threshold: {{threshold}}\nVISIT /snapshot.html\nCAPTURE limit: eval \"'0.125%'\"\nCAPTURE mask: eval \"'b'\"\nSNAPSHOT local\nsnapshot-mask: css:.{{mask}}\nsnapshot-max-diff: {{limit}}\nSNAPSHOT inherited\n";
     dir.file("scope.whirl", source);
     let output = run_whirl(&dir, &[
         "--base",
@@ -3771,7 +3674,7 @@ fn snapshot_masks_use_the_selected_tab_and_strict_frame_owners() {
     let dir = TestDir::new();
     let source = |script: &str, mask: &str| {
         format!(
-            "[Options]\nviewport: 200x200\nVISIT /popups.html\nCLICK role:button \"Pay with provider\"\nPOPUP extra\nTAB extra\nVISIT /snapshot-frames.html\n[Asserts]\nframe:iframe >> nth:0 >> testid:patch >> nth:0 visible\nframe:iframe >> nth:1 >> testid:patch >> nth:0 visible\nEVAL \"{script}\"\nSNAPSHOT frames @2s\nsnapshot-mask: {mask}\n"
+            "[Options]\nviewport: 200x200\nVISIT /popups.html\nCLICK role:button \"Pay with provider\"\nPOPUP extra\nTAB extra\nVISIT /snapshot-frames.html\nASSERT frame:iframe >> nth:0 >> testid:patch >> nth:0 visible\nASSERT frame:iframe >> nth:1 >> testid:patch >> nth:0 visible\nEVAL \"{script}\"\nSNAPSHOT frames @2s\nsnapshot-mask: {mask}\n"
         )
     };
     let mask = "frame:iframe >> nth:0 >> testid:patch";
@@ -4324,4 +4227,216 @@ fn element_snapshots_crop_and_compare_in_each_engine() {
             );
         }
     }
+}
+
+#[test]
+fn mocks_serve_browser_requests_and_request_checks_read_what_the_page_sent() {
+    let site = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file(
+        "mock.whirl",
+        &format!(
+            r##"[Options]
+base: {}
+allow-hosts: 127.0.0.1
+
+MOCK GET /api/flags 200
+{{ "checkout_v2": true }}
+MOCK GET /api/items* 200
+X-Source: mock
+MOCK GET http://blocked.test/* 200
+Content-Type: text/plain
+```
+fonts ok
+```
+VISIT /mock.html
+ASSERT css:"#flags" text == v2
+ASSERT css:"#items" text == "200 mock"
+ASSERT css:"#font" text == "fonts ok"
+
+MOCK POST /api/cart* 201
+CLICK "Add to cart"
+RESPONSE cart POST /api/cart?source=page
+ASSERT css:"#cart" text == "cart 201"
+ASSERT response:cart status == 201
+ASSERT request:cart method == POST
+ASSERT request:cart url endsWith "/api/cart?source=page"
+ASSERT request:cart header:x-cart == c1
+ASSERT request:cart header:x-missing not exists
+ASSERT request:cart json:$.qty == 1
+ASSERT request:cart body contains A-1
+ASSERT request:cart bytes startsWith hex,7b;
+"##,
+            site.base()
+        ),
+    );
+    let output = run_whirl(&dir, &["--report-json", "report.json", "mock.whirl"]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    let report: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(dir.path.join("report.json")).expect("report exists"),
+    )
+    .expect("the report is JSON");
+    let file = &report["files"][0];
+    // A mocked request never reaches the network, so allow-hosts does
+    // not block it (SPEC 7.5).
+    assert_eq!(file["blockedHosts"], serde_json::json!([]));
+    let hits: Vec<(u64, u64)> = file["mocks"]
+        .as_array()
+        .expect("the report lists mocks")
+        .iter()
+        .map(|mock| {
+            (
+                mock["line"].as_u64().expect("a line"),
+                mock["hits"].as_u64().expect("a count"),
+            )
+        })
+        .collect();
+    assert_eq!(hits, [(5, 1), (7, 1), (9, 1), (19, 1)]);
+    assert_eq!(file["mocks"][0]["method"], "GET");
+    assert_eq!(
+        file["mocks"][0]["url"],
+        format!("{}/api/flags", site.base())
+    );
+}
+
+#[test]
+fn a_failed_mock_drops_the_request_and_a_later_mock_replaces_it() {
+    let site = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file(
+        "replace.whirl",
+        &format!(
+            r##"[Options]
+base: {}
+
+MOCK GET /api/flags failed
+VISIT /mock.html
+ASSERT css:"#flags" text == "flags failed"
+
+MOCK GET /api/flags 200
+{{ "checkout_v2": false }}
+VISIT /mock.html
+ASSERT css:"#flags" text == v1
+
+MOCK GET /never 204
+"##,
+            site.base()
+        ),
+    );
+    let output = run_whirl(&dir, &["--report-json", "report.json", "replace.whirl"]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "{stdout}");
+    assert!(
+        stdout.contains("line 13: unused-mock: MOCK GET"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("line 4: unused-mock"), "{stdout}");
+    assert!(!stdout.contains("line 8: unused-mock"), "{stdout}");
+    let report = fs::read_to_string(dir.path.join("report.json")).expect("report exists");
+    assert!(report.contains(r#""code": "unused-mock""#), "{report}");
+}
+
+#[test]
+fn a_mock_serves_the_page_document_that_visit_loads() {
+    let site = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file(
+        "document.whirl",
+        &format!(
+            r#"[Options]
+base: {}
+MOCK GET /virtual.html 200
+Content-Type: text/html
+```
+<h1>Virtual page</h1>
+```
+VISIT /virtual.html
+ASSERT role:heading "Virtual page" visible
+"#,
+            site.base()
+        ),
+    );
+    let output = run_whirl(&dir, &["document.whirl"]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+}
+
+#[test]
+fn response_fails_on_a_request_that_a_failed_mock_served() {
+    let site = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file(
+        "failed.whirl",
+        &format!(
+            r#"[Options]
+base: {}
+VISIT /mock.html
+MOCK POST /api/cart* failed
+CLICK "Add to cart"
+RESPONSE cart POST /api/cart?source=page
+"#,
+            site.base()
+        ),
+    );
+    let output = run_whirl(&dir, &["failed.whirl"]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 1, "{stdout}");
+    assert!(
+        stdout.contains("request for response cart failed"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn har_records_mocked_responses_and_failed_mocks() {
+    let dir = TestDir::new();
+    dir.file(
+        "har.whirl",
+        r##"MOCK GET http://mock.test/ 200
+Content-Type: text/html
+```
+<p id="a">a</p><p id="b">b</p>
+<script>
+fetch('/api/ok').then((r) => r.text()).then((t) => { document.getElementById('a').textContent = t; });
+fetch('/api/down').catch(() => { document.getElementById('b').textContent = 'down'; });
+</script>
+```
+MOCK GET http://mock.test/api/ok 200
+Content-Type: text/plain
+```
+fine
+```
+MOCK GET http://mock.test/api/down failed
+VISIT http://mock.test/
+ASSERT css:"#a" text == fine
+ASSERT css:"#b" text == down
+"##,
+    );
+    let output = run_whirl(&dir, &["--har", "har.whirl"]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    let har: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(dir.artifacts().join("har/network.har")).expect("the HAR exists"),
+    )
+    .expect("the HAR is JSON");
+    let entries: Vec<(String, i64)> = har["log"]["entries"]
+        .as_array()
+        .expect("HAR entries")
+        .iter()
+        .map(|entry| {
+            (
+                entry["request"]["url"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+                entry["response"]["status"].as_i64().unwrap_or_default(),
+            )
+        })
+        .collect();
+    assert!(
+        entries.contains(&("http://mock.test/api/ok".to_owned(), 200)),
+        "{entries:?}"
+    );
+    assert!(
+        entries.contains(&("http://mock.test/api/down".to_owned(), -1)),
+        "{entries:?}"
+    );
 }

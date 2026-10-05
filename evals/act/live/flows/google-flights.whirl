@@ -4,10 +4,8 @@ user-agent: chrome
 
 # precheck: the flights page and its destination field are present.
 VISIT https://www.google.com/travel/flights
-[Asserts]
-role:combobox "Where to?" visible
+ASSERT role:combobox "Where to?" visible
 
 # Type a destination.
 ACT "type Tokyo into the Where to field" @60s
-[Asserts]
-role:combobox "Where to?" value contains Tokyo
+ASSERT role:combobox "Where to?" value contains Tokyo

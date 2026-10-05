@@ -5,5 +5,4 @@ model: {{model}}
 # A native select on a saved license-lookup page.
 VISIT /saved/nested-dropdown/
 ACT "choose 'Smog Check Technician' from the 'License Type' dropdown" @60s
-[Asserts]
-eval "document.querySelector('#licenseType option:checked')?.textContent" == "Smog Check Technician"
+ASSERT eval "document.querySelector('#licenseType option:checked')?.textContent" == "Smog Check Technician"

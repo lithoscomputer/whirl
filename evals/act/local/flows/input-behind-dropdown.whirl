@@ -6,5 +6,4 @@ model: {{model}}
 VISIT /input-behind-dropdown/
 CLICK "Sort options"
 ACT "type 'test fill' into the search field" @60s
-[Asserts]
-label:Search value == "test fill"
+ASSERT label:Search value == "test fill"

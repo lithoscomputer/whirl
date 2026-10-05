@@ -137,6 +137,29 @@ pub(crate) struct StepReport {
     pub(crate) act:         Option<ActReport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) snapshot:    Option<SnapshotReport>,
+    /// Notices that do not fail the step, each with a stable code.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) warnings:    Vec<StepWarning>,
+}
+
+/// A notice about a step that does not change its status.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct StepWarning {
+    /// A stable code, such as `unused-mock`.
+    pub(crate) code:    String,
+    /// Human-readable detail, secret-masked.
+    pub(crate) message: String,
+}
+
+/// A mock a flow registered and how many requests it served (SPEC 7.5).
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MockReport {
+    pub(crate) line:   u32,
+    pub(crate) method: String,
+    /// The resolved URL pattern, secret-masked.
+    pub(crate) url:    String,
+    pub(crate) hits:   u64,
 }
 
 /// Effective snapshot options. Numeric text retains units and permits secret
@@ -378,7 +401,24 @@ pub(crate) struct FileReport {
     pub(crate) warnings:      Vec<String>,
     /// File-level artifact paths (`video.webm`, `network.har`).
     pub(crate) artifacts:     Vec<String>,
+    /// Every `MOCK` that ran, in order (SPEC 7.5).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) mocks:         Vec<MockReport>,
     pub(crate) entries:       Vec<EntryReport>,
+}
+
+impl FileReport {
+    /// Every warning to show a reader: the file's own, then each step's
+    /// with its line and code.
+    pub(crate) fn warning_lines(&self) -> Vec<String> {
+        let steps = self.entries.iter().flat_map(|entry| &entry.steps);
+        let step_warnings = steps.flat_map(|step| {
+            step.warnings.iter().map(move |warning| {
+                format!("line {}: {}: {}", step.line, warning.code, warning.message)
+            })
+        });
+        self.warnings.iter().cloned().chain(step_warnings).collect()
+    }
 }
 
 /// The whole run.

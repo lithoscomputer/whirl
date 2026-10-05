@@ -271,6 +271,14 @@ impl File {
             .any(|action| matches!(action.kind, ActionKind::Act { .. }))
     }
 
+    /// True when any entry has a `MOCK` line (SPEC 7.5).
+    pub(crate) fn uses_mock(&self) -> bool {
+        self.entries
+            .iter()
+            .flat_map(|entry| &entry.actions)
+            .any(|action| matches!(action.kind, ActionKind::Mock { .. }))
+    }
+
     /// The `model:` option line, when the file has one.
     pub(crate) fn model_option(&self) -> Option<&OptionLine> {
         self.options
@@ -342,6 +350,15 @@ pub(crate) enum ActionKind {
         name:   Ident,
         method: String,
         url:    Value,
+    },
+    /// `MOCK METHOD url STATUS` or `MOCK METHOD url failed` serves browser
+    /// requests until the file ends (SPEC 7.5).
+    Mock {
+        method:   String,
+        url:      Value,
+        response: MockResponse,
+        /// The complete mock text for reports and trace titles.
+        source:   String,
     },
     Popup {
         name: Ident,
@@ -441,6 +458,19 @@ pub(crate) enum ActionKind {
         key:   Value,
         value: Value,
     },
+}
+
+/// What a `MOCK` serves (SPEC 7.5).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum MockResponse {
+    /// A response with a status, header lines, and an optional body.
+    Fulfill {
+        status:  u16,
+        headers: Vec<HttpHeader>,
+        body:    Option<HttpBody>,
+    },
+    /// A failed request, as for a dropped connection.
+    Failed,
 }
 
 /// Browser storage a `STORE` action writes to (SPEC 7).
@@ -593,6 +623,7 @@ impl ActionKind {
             | Self::Drop { .. } => Some(DefaultEngine::Text),
             Self::Http { .. }
             | Self::Response { .. }
+            | Self::Mock { .. }
             | Self::Popup { .. }
             | Self::Tab { .. }
             | Self::Close { .. }
@@ -622,7 +653,7 @@ pub(crate) enum PageCheck {
     Matches(Regex),
 }
 
-/// One check line in an `[Asserts]` section (SPEC 9).
+/// One `ASSERT` line (SPEC 9).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Assert {
     pub(crate) body:    AssertBody,
@@ -632,7 +663,7 @@ pub(crate) struct Assert {
     pub(crate) text:    String,
 }
 
-/// The forms of an `[Asserts]` line (SPEC 9.1, 17).
+/// The forms of an `ASSERT` line (SPEC 9.1, 17).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum AssertBody {
     TabClosed {
@@ -682,6 +713,11 @@ pub(crate) enum Subject {
         name:  Option<Ident>,
         field: ResponseField,
     },
+    /// A field of the request that a `RESPONSE` name selected (SPEC 9.2).
+    Request {
+        name:  Ident,
+        field: RequestField,
+    },
 }
 
 impl Subject {
@@ -702,14 +738,30 @@ impl Subject {
             | Self::Response {
                 field: ResponseField::Header(_) | ResponseField::Location | ResponseField::Body,
                 ..
+            }
+            | Self::Request {
+                field:
+                    RequestField::Method
+                    | RequestField::Url
+                    | RequestField::Header(_)
+                    | RequestField::Body,
+                ..
             } => StaticType::STRING,
             Self::Response {
                 field: ResponseField::Bytes,
+                ..
+            }
+            | Self::Request {
+                field: RequestField::Bytes,
                 ..
             } => StaticType::BYTES,
             Self::Eval(_)
             | Self::Response {
                 field: ResponseField::Json(_) | ResponseField::Xpath(_),
+                ..
+            }
+            | Self::Request {
+                field: RequestField::Json(_) | RequestField::Xpath(_),
                 ..
             } => StaticType::Any,
         }
@@ -722,6 +774,20 @@ pub(crate) enum ResponseField {
     Status,
     Header(Value),
     Location,
+    Body,
+    Bytes,
+    /// `json:PATH`, short for `body json:PATH`.
+    Json(Value),
+    /// `xpath:EXPR`, short for `body xpath:EXPR`.
+    Xpath(Value),
+}
+
+/// A field of one observed request (SPEC 9.2).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum RequestField {
+    Method,
+    Url,
+    Header(Value),
     Body,
     Bytes,
     /// `json:PATH`, short for `body json:PATH`.
@@ -803,7 +869,7 @@ pub(crate) fn chain_type<'a>(
     Ok(current)
 }
 
-/// One line in a `[Captures]` section (SPEC 10).
+/// One `CAPTURE` line (SPEC 10).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Capture {
     pub(crate) name:    Ident,
@@ -815,23 +881,52 @@ pub(crate) struct Capture {
     pub(crate) text:    String,
 }
 
-/// One entry: actions, then optional `PAGE`, `[Asserts]`, and
-/// `[Captures]`, in that order (SPEC 4).
+/// One check line of an entry (SPEC 9, 10): an `ASSERT` or a `CAPTURE`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum CheckStep {
+    Assert(Assert),
+    Capture(Capture),
+}
+
+impl CheckStep {
+    pub(crate) fn line(&self) -> u32 {
+        match self {
+            Self::Assert(assert) => assert.line,
+            Self::Capture(capture) => capture.line,
+        }
+    }
+}
+
+/// One entry: actions, then an optional `PAGE` line, then check lines in
+/// the order written (SPEC 4).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Entry {
-    pub(crate) actions:         Vec<Action>,
-    pub(crate) page:            Option<Page>,
-    pub(crate) asserts:         Vec<Assert>,
-    pub(crate) captures:        Vec<Capture>,
-    /// The line of the entry's `[Asserts]` header, when the source has
-    /// one (it may be present even with zero checks). The formatter uses
-    /// it to keep comments on their side of the header.
-    pub(crate) asserts_header:  Option<u32>,
-    /// The line of the entry's `[Captures]` header, when present.
-    pub(crate) captures_header: Option<u32>,
+    pub(crate) actions:  Vec<Action>,
+    pub(crate) page:     Option<Page>,
+    pub(crate) checks:   Vec<CheckStep>,
+    /// The spans of the entry's deprecated `[Asserts]` and `[Captures]`
+    /// section headers, in source order (SPEC 4). `whirl fmt` drops them
+    /// and writes each check as an `ASSERT` or `CAPTURE` line.
+    pub(crate) sections: Vec<Span>,
 }
 
 impl Entry {
+    /// The entry's `ASSERT` lines, in source order.
+    pub(crate) fn asserts(&self) -> impl Iterator<Item = &Assert> {
+        self.checks.iter().filter_map(|check| match check {
+            CheckStep::Assert(assert) => Some(assert),
+            CheckStep::Capture(_) => None,
+        })
+    }
+
+    /// The entry's `CAPTURE` lines, in source order.
+    pub(crate) fn captures(&self) -> impl Iterator<Item = &Capture> {
+        self.checks.iter().filter_map(|check| match check {
+            CheckStep::Capture(capture) => Some(capture),
+            CheckStep::Assert(_) => None,
+        })
+    }
+
     /// The entry's first action. An entry always has at least one action
     /// (SPEC 4), so parsed entries never hit the `expect`.
     fn first_action(&self) -> &Action {
@@ -890,9 +985,8 @@ impl File {
         let entry_lines = self.entries.iter().flat_map(|entry| {
             let actions = entry.actions.iter().map(|action| action.line);
             let page = entry.page.iter().map(|page| page.line);
-            let asserts = entry.asserts.iter().map(|assert| assert.line);
-            let captures = entry.captures.iter().map(|capture| capture.line);
-            actions.chain(page).chain(asserts).chain(captures)
+            let checks = entry.checks.iter().map(CheckStep::line);
+            actions.chain(page).chain(checks)
         });
         option_lines.chain(entry_lines)
     }

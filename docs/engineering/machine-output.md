@@ -12,6 +12,8 @@ Schemas: [check](check.schema.json), [run report](report.schema.json).
 | Code | Meaning |
 | --- | --- |
 | `parse-error` | Invalid flow syntax; `expected` lists alternatives when available |
+| `mixed-check-syntax` | A file uses both `[Asserts]` or `[Captures]` sections and `ASSERT` or `CAPTURE` lines |
+| `sections-removed` | A file has an `[Asserts]` or `[Captures]` section; `whirl fmt` rewrites it |
 | `input-selection` | Missing input path or no selected flow files |
 | `input-io` | An input could not be read |
 | `setup-io` | A setup flow could not be found or read |
@@ -22,7 +24,7 @@ Schemas: [check](check.schema.json), [run report](report.schema.json).
 | `conflicting-storage` | Both setup and storage are specified |
 | `duplicate-artifact` | An artifact name is repeated |
 | `duplicate-response` | A response name is used twice in one file |
-| `unknown-response` | A check reads a response name that no earlier line defines |
+| `unknown-response` | A check reads a response or request name that no earlier line defines |
 | `duplicate-tab` | A tab name is used twice in one file |
 | `unknown-tab` | A line names a tab that no earlier line opens |
 | `unused-capture` | A capture is never read; warning |
@@ -54,7 +56,13 @@ that chose it; and `usage`, with `modelCalls`, `inputTokens`, `outputTokens`,
 of `requests`, `inputTokens`, `outputTokens`, and `costUsdMicros` when every
 answered request was priced. The step's `costUsdMicros` is the model's cost
 plus Jev's; a step with no model call costs only what Jev did. Arguments keep their `%name%` placeholders.
-`internal` covers an invalid shim result. Codes are stable; message text may
+`internal` covers an invalid shim result.
+
+A step can have `warnings`, each with a stable `code` and a `message`. The
+step's status does not change. `unused-mock` marks a `MOCK` line whose mock
+served no request in a file that passed (SPEC 7.5). A file that ran `MOCK`
+lines has `mocks`: each with its `line`, `method`, resolved `url`, and
+`hits`, the number of requests it served. Codes are stable; message text may
 change and must not be parsed. Secret masking covers diagnostic action logs in
 run reports. `check` reports source text without resolving environment variables.
 

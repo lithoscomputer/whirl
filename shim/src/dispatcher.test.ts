@@ -50,6 +50,7 @@ class FakeDriver implements ShimDriver {
 			videoPath: null,
 			videoSkipped: null,
 			videoBlank: null,
+			mocks: [],
 		};
 	}
 
@@ -152,6 +153,7 @@ const startFlowParams = JSON.stringify({
 	harPath: null,
 	trace: false,
 	openShadowRoots: false,
+	mocks: false,
 });
 
 test("hello answers protocol 1, the Playwright version, and the ffmpeg path", async (t) => {
@@ -163,7 +165,7 @@ test("hello answers protocol 1, the Playwright version, and the ffmpeg path", as
 		id: 1,
 		ok: true,
 		result: {
-			protocol: 4,
+			protocol: 5,
 			playwrightVersion: "0.0.0-test",
 			ffmpegPath: "/fake/ffmpeg",
 		},
@@ -187,6 +189,7 @@ test("startFlow and endFlow round-trip through the driver", async (t) => {
 			videoPath: null,
 			videoSkipped: null,
 			videoBlank: null,
+			mocks: [],
 		},
 	});
 });

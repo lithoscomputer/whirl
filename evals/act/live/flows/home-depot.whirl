@@ -4,10 +4,8 @@ user-agent: chrome
 
 # precheck: the home page and its search field are present.
 VISIT https://www.homedepot.com/
-[Asserts]
-role:combobox "What can we help you find today?" visible
+ASSERT role:combobox "What can we help you find today?" visible
 
 # Type into the site search field.
 ACT "type cordless drill into the search field" @60s
-[Asserts]
-role:combobox "What can we help you find today?" value == "cordless drill"
+ASSERT role:combobox "What can we help you find today?" value == "cordless drill"

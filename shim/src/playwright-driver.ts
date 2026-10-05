@@ -17,6 +17,7 @@ import { chromium, devices, expect, firefox, webkit } from "@playwright/test";
 import { runAssert, runPage } from "./assertions.js";
 import type { ShimDriver } from "./driver.js";
 import { buildEvalExpression } from "./eval-support.js";
+import { FlowMocks } from "./flow-mocks.js";
 import { FlowNetwork } from "./flow-network.js";
 import { FlowTabs } from "./flow-tabs.js";
 import { createHostAllowlist } from "./host-glob.js";
@@ -25,6 +26,7 @@ import { buildLocator, describeLocator, frameOwners } from "./locators.js";
 import type { Params } from "./params.js";
 import {
 	decodeHttpParams,
+	decodeMockParams,
 	decodeScrollMotion,
 	decodeSnapshotComparison,
 	fieldArray,
@@ -108,6 +110,7 @@ interface FlowState {
 	readonly page: Page;
 	readonly tabs: FlowTabs;
 	readonly network: FlowNetwork;
+	readonly mocks: FlowMocks;
 	readonly blockedHosts: Set<string>;
 	readonly traceActive: boolean;
 	readonly video: {
@@ -697,8 +700,9 @@ export class PlaywrightDriver implements ShimDriver {
 			...(params.harPath === null
 				? {}
 				: { recordHar: { path: params.harPath } }),
-			// Service workers can bypass request routing (SPEC section 5).
-			...(params.allowHosts === null
+			// Service workers can bypass request routing (SPEC sections 5
+			// and 7.5).
+			...(params.allowHosts === null && !params.mocks
 				? {}
 				: { serviceWorkers: "block" as const }),
 		};
@@ -719,6 +723,12 @@ export class PlaywrightDriver implements ShimDriver {
 		const blockedHosts = new Set<string>();
 		if (params.allowHosts !== null) {
 			await installHostFiltering(context, params.allowHosts, blockedHosts);
+		}
+		// After host filtering: the route registered last runs first, so a
+		// mock serves a request that allow-hosts would block (SPEC 7.5).
+		const mocks = new FlowMocks();
+		if (params.mocks) {
+			await mocks.install(context);
 		}
 		if (params.trace) {
 			await context.tracing.start({ screenshots: true, snapshots: true });
@@ -754,6 +764,7 @@ export class PlaywrightDriver implements ShimDriver {
 			page,
 			tabs,
 			network,
+			mocks,
 			blockedHosts,
 			traceActive: params.trace,
 			video: params.video,
@@ -840,6 +851,7 @@ export class PlaywrightDriver implements ShimDriver {
 			videoPath,
 			videoSkipped,
 			videoBlank,
+			mocks: flow.mocks.hits(),
 		};
 	}
 
@@ -920,6 +932,18 @@ export class PlaywrightDriver implements ShimDriver {
 		if (cmd === "popup") {
 			await flow.tabs.capture(fieldString(params, "name"), timeoutMs);
 			return {};
+		}
+		if (cmd === "mock") {
+			flow.mocks.register(decodeMockParams(params));
+			return {};
+		}
+		if (cmd === "readRequest") {
+			return {
+				...(await flow.network.readRequest(
+					fieldString(params, "name"),
+					timeoutMs,
+				)),
+			};
 		}
 		if (cmd === "readResponse") {
 			return {
@@ -1562,6 +1586,7 @@ function defaultErrorKind(cmd: StepCommand): ErrorKind {
 	switch (cmd) {
 		case "http":
 		case "response":
+		case "readRequest":
 		case "popup":
 		case "tab":
 		case "close":
@@ -1585,6 +1610,7 @@ function defaultErrorKind(cmd: StepCommand): ErrorKind {
 		case "store":
 			return "action";
 		case "ariaSnapshot":
+		case "mock":
 			return "internal";
 		case "snapshot":
 		case "page":

@@ -16,12 +16,13 @@ use crate::check::{
 };
 use crate::lang::ast::snapshot::{MaxDiff, PixelThreshold, SnapshotOption, SnapshotOptionLine};
 use crate::lang::ast::{
-    Action, ActionKind, Assert, AssertBody, BrowserKind, Capture, CheckLine, Comment, DialogPolicy,
-    DurationLit, Entry, Extractor, File, FileOption, FilterArg, FilterSpec, HttpBody, HttpBodyKind,
-    HttpHeader, Ident, JsonLiteral, Locator, LocatorSegment, MouseButton, Operand, OptionLine,
-    OptionValue, Page, PageCheck, Percent, PredicateSpec, ReducedMotion, Regex, RegexFlags,
-    ResponseField, ScrollDirection, ScrollMotion, SegmentKind, Span, StateCheck, StoreScope,
-    Subject, TextPrefix, Value, ValueSegment, Viewport, chain_type,
+    Action, ActionKind, Assert, AssertBody, BrowserKind, Capture, CheckLine, CheckStep, Comment,
+    DialogPolicy, DurationLit, Entry, Extractor, File, FileOption, FilterArg, FilterSpec, HttpBody,
+    HttpBodyKind, HttpHeader, Ident, JsonLiteral, Locator, LocatorSegment, MockResponse,
+    MouseButton, Operand, OptionLine, OptionValue, Page, PageCheck, Percent, PredicateSpec,
+    ReducedMotion, Regex, RegexFlags, RequestField, ResponseField, ScrollDirection, ScrollMotion,
+    SegmentKind, Span, StateCheck, StoreScope, Subject, TextPrefix, Value, ValueSegment, Viewport,
+    chain_type,
 };
 
 /// A parse diagnostic (SPEC 16): file, line, column, the source line, a
@@ -29,6 +30,8 @@ use crate::lang::ast::{
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 #[error("{}", self.render())]
 pub(crate) struct ParseError {
+    /// The stable diagnostic code (SPEC 16).
+    pub(crate) code:        ParseErrorCode,
     pub(crate) path:        PathBuf,
     /// 1-based line of the offending token.
     pub(crate) line:        u32,
@@ -67,8 +70,32 @@ impl ParseError {
     }
 }
 
+/// The stable code of a parse diagnostic (SPEC 16).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ParseErrorCode {
+    /// An ordinary syntax error.
+    Syntax,
+    /// A file that mixes check lines with the removed `[Asserts]` and
+    /// `[Captures]` sections (SPEC 4.1).
+    MixedCheckSyntax,
+    /// A file with a removed `[Asserts]` or `[Captures]` section, outside
+    /// `whirl fmt` (SPEC 4.1).
+    SectionsRemoved,
+}
+
+impl ParseErrorCode {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Syntax => "parse-error",
+            Self::MixedCheckSyntax => "mixed-check-syntax",
+            Self::SectionsRemoved => "sections-removed",
+        }
+    }
+}
+
 /// A diagnostic local to one line; the parser adds file and line context.
 struct LineError {
+    code:     ParseErrorCode,
     line:     Option<u32>,
     column:   u32,
     len:      u32,
@@ -80,6 +107,7 @@ struct LineError {
 impl LineError {
     fn new(span: Span, message: impl Into<String>) -> Self {
         Self {
+            code:     ParseErrorCode::Syntax,
             line:     None,
             column:   span.column,
             len:      span.len,
@@ -91,6 +119,11 @@ impl LineError {
 
     fn expecting<S: fmt::Display>(mut self, expected: impl IntoIterator<Item = S>) -> Self {
         self.expected = expected.into_iter().map(|item| item.to_string()).collect();
+        self
+    }
+
+    fn with_code(mut self, code: ParseErrorCode) -> Self {
+        self.code = code;
         self
     }
 
@@ -881,9 +914,10 @@ fn split_timeout(tokens: &mut Vec<RawToken>) -> Option<DurationLit> {
     Some(duration)
 }
 
-const ACTION_KEYWORDS: [&str; 26] = [
+const ACTION_KEYWORDS: [&str; 27] = [
     "HTTP",
     "RESPONSE",
+    "MOCK",
     "POPUP",
     "TAB",
     "CLOSE",
@@ -1089,6 +1123,55 @@ fn is_response_field(text: &str) -> bool {
         || text.starts_with("xpath:")
 }
 
+const REQUEST_FIELDS: [&str; 7] = [
+    "method",
+    "url",
+    "header:NAME",
+    "body",
+    "bytes",
+    "json:PATH",
+    "xpath:EXPR",
+];
+
+/// Parses the field after `request:NAME` (SPEC 9.2).
+fn parse_request_field(cursor: &mut Cursor, span: Span) -> Result<RequestField, LineError> {
+    let token = cursor.next_token()?.ok_or_else(|| {
+        LineError::new(after_span(span), "expected a request field").expecting(REQUEST_FIELDS)
+    })?;
+    match token.bare_single() {
+        Some("method") => return Ok(RequestField::Method),
+        Some("url") => return Ok(RequestField::Url),
+        Some("body") => return Ok(RequestField::Body),
+        Some("bytes") => return Ok(RequestField::Bytes),
+        _ => {}
+    }
+    let head = match token.parts.first() {
+        Some(RawPart::Bare { text, .. }) => text.as_str(),
+        _ => "",
+    };
+    if head.starts_with("json:") {
+        return Ok(RequestField::Json(json_path_value(token)?));
+    }
+    if head.starts_with("xpath:") {
+        return Ok(RequestField::Xpath(xpath_value(token)?));
+    }
+    if !head.starts_with("header:") {
+        return Err(
+            LineError::new(token.span, "expected a request field").expecting(REQUEST_FIELDS)
+        );
+    }
+    let field_span = token.span;
+    let value = strip_prefix_token(token, "header:".len())
+        .ok_or_else(|| LineError::new(field_span, "expected a header name after `header:`"))?
+        .into_value()?;
+    if let Some(literal) = value.as_literal()
+        && !is_attr_name(&literal)
+    {
+        return Err(LineError::new(field_span, "invalid request header name"));
+    }
+    Ok(RequestField::Header(value))
+}
+
 fn parse_response_field(cursor: &mut Cursor, span: Span) -> Result<ResponseField, LineError> {
     let token = cursor.next_token()?.ok_or_else(|| {
         LineError::new(after_span(span), "expected a response field").expecting(RESPONSE_FIELDS)
@@ -1173,6 +1256,53 @@ fn xpath_value(token: RawToken) -> Result<Value, LineError> {
 }
 
 /// Parses an action line after its keyword (SPEC 7, 17).
+/// Parses `MOCK METHOD url STATUS` or `MOCK METHOD url failed` (SPEC
+/// 7.5). Header and body lines follow in [`Parser::parse_http_tail`].
+fn parse_mock(tokens: Vec<RawToken>, span: Span) -> Result<ActionKind, LineError> {
+    let Ok([method, url, answer]) = <[RawToken; 3]>::try_from(tokens) else {
+        return Err(LineError::new(span, "expected MOCK METHOD url STATUS")
+            .expecting(["MOCK METHOD url STATUS", "MOCK METHOD url failed"]));
+    };
+    let method = method
+        .bare_single()
+        .filter(|text| !text.is_empty() && text.chars().all(|ch| ch.is_ascii_uppercase()))
+        .ok_or_else(|| {
+            LineError::new(
+                method.span,
+                "expected an uppercase HTTP method like GET or POST",
+            )
+        })?
+        .to_owned();
+    let url = url.into_value()?;
+    let response = match answer.bare_single() {
+        Some("failed") => MockResponse::Failed,
+        Some(text)
+            if text.len() == 3
+                && text.bytes().all(|byte| byte.is_ascii_digit())
+                && (200..=599).contains(&text.parse::<u16>().unwrap_or(0)) =>
+        {
+            MockResponse::Fulfill {
+                status:  text.parse().expect("three digits parse as a u16"),
+                headers: Vec::new(),
+                body:    None,
+            }
+        }
+        _ => {
+            return Err(LineError::new(
+                answer.span,
+                "expected a status code from 200 to 599, or `failed`",
+            )
+            .expecting(["a status code", "failed"]));
+        }
+    };
+    Ok(ActionKind::Mock {
+        method,
+        url,
+        response,
+        source: String::new(),
+    })
+}
+
 fn parse_action_body(
     keyword: &str,
     keyword_span: Span,
@@ -1182,10 +1312,20 @@ fn parse_action_body(
     while let Some(token) = cursor.next_token()? {
         tokens.push(token);
     }
+    if keyword == "MOCK" {
+        // A mock registers at once (SPEC 7.5).
+        if let Some(last) = tokens.last()
+            && split_timeout(&mut vec![last.clone()]).is_some()
+        {
+            return Err(LineError::new(last.span, "MOCK has no step timeout"));
+        }
+        return Ok((parse_mock(tokens, keyword_span)?, None));
+    }
     let timeout = split_timeout(&mut tokens);
     let locator_only = |tokens| build_locator(tokens, true, keyword_span);
     let kind = match keyword {
         "HTTP" | "RESPONSE" => parse_network_action(keyword, tokens, keyword_span)?,
+        "MOCK" => unreachable!("MOCK returns before the timeout split"),
         "POPUP" => ActionKind::Popup {
             name: parse_name(tokens, keyword_span)?,
         },
@@ -1265,7 +1405,7 @@ fn parse_action_body(
 }
 
 /// `ACT "instruction"` or `ACT locator "instruction"` (SPEC 7.4). The scope
-/// takes prefixed segments only, as in `[Asserts]`: a region has no
+/// takes prefixed segments only, as in `ASSERT`: a region has no
 /// natural default engine.
 fn parse_act(tokens: Vec<RawToken>, keyword_span: Span) -> Result<ActionKind, LineError> {
     if tokens.len() < 2 {
@@ -1465,7 +1605,7 @@ fn after_span(span: Span) -> Span {
 }
 
 /// Scans a locator token by token until a stop keyword ends it (the check
-/// in `[Asserts]`, the extractor in `[Captures]`). Returns the locator
+/// in `ASSERT`, the extractor in `CAPTURE`). Returns the locator
 /// and the consumed stop token, or `None` when the line ended first.
 /// A bare stop keyword after a nameless `role:` segment is the stop, not
 /// the accessible name; a quoted name is never a keyword (SPEC 3.1).
@@ -1763,7 +1903,7 @@ fn parse_line_timeout(cursor: &mut Cursor) -> Result<Option<DurationLit>, LineEr
     Ok(timeout)
 }
 
-/// What an `[Asserts]` or `[Captures]` line starts with.
+/// What an `ASSERT` or `CAPTURE` line starts with.
 enum Head {
     Subject(Subject),
     State {
@@ -1774,7 +1914,7 @@ enum Head {
 
 /// Parses a subject (SPEC 9.2). In an HTTP entry only the entry's own
 /// response fields are allowed. State checks end the line only in
-/// `[Asserts]`.
+/// `ASSERT` lines.
 fn parse_subject(
     first: RawToken,
     cursor: &mut Cursor,
@@ -1798,6 +1938,14 @@ fn parse_subject(
         }
         let field = parse_response_field_token(first)?;
         return Ok(Head::Subject(Subject::Response { name: None, field }));
+    }
+    if head_text.starts_with("request:") {
+        let span = first.span;
+        let name = strip_prefix_token(first, "request:".len())
+            .ok_or_else(|| LineError::new(span, "expected a response name"))?;
+        let name = parse_name(vec![name], span)?;
+        let field = parse_request_field(cursor, first_span)?;
+        return Ok(Head::Subject(Subject::Request { name, field }));
     }
     if head_text.starts_with("response:") {
         let name = response_name(first)?;
@@ -1856,7 +2004,7 @@ fn parse_subject(
     Ok(Head::Subject(Subject::Element { locator, extractor }))
 }
 
-/// Parses one `[Asserts]` line (SPEC 9, 17).
+/// Parses one `ASSERT` line after its keyword (SPEC 9, 17).
 fn parse_assert_body(
     first: RawToken,
     cursor: &mut Cursor,
@@ -1983,7 +2131,7 @@ fn split_name_colon(token: RawToken) -> Option<(Ident, Option<RawToken>)> {
     Some((ident, rest))
 }
 
-/// Parses one `[Captures]` line after its `name:` head (SPEC 10, 17).
+/// Parses one `CAPTURE` line after its `name:` head (SPEC 10, 17).
 fn parse_capture_body(
     name: Ident,
     rest: Option<RawToken>,
@@ -2256,11 +2404,16 @@ enum State {
     Actions,
     /// After an entry's `PAGE` line.
     AfterPage,
-    /// Inside an entry's `[Asserts]` section.
+    /// After an entry's first `ASSERT` or `CAPTURE` line.
+    Checks,
+    /// Inside an entry's deprecated `[Asserts]` section.
     Asserts,
-    /// Inside an entry's `[Captures]` section.
+    /// Inside an entry's deprecated `[Captures]` section.
     Captures,
 }
+
+/// The keywords that start a check line (SPEC 9, 10).
+const CHECK_KEYWORDS: [&str; 2] = ["ASSERT", "CAPTURE"];
 
 struct Parser {
     options:        Vec<OptionLine>,
@@ -2270,6 +2423,10 @@ struct Parser {
     state:          State,
     options_header: Option<u32>,
     seen_visit:     bool,
+    /// The line of the file's first `ASSERT` or `CAPTURE` line.
+    first_keyword:  Option<u32>,
+    /// The line of the file's first `[Asserts]` or `[Captures]` header.
+    first_section:  Option<u32>,
 }
 
 fn structural_line(line: &str) -> bool {
@@ -2278,7 +2435,10 @@ fn structural_line(line: &str) -> bool {
         .split(|ch: char| ch.is_whitespace() || ch == '#')
         .next()
         .unwrap_or_default();
-    first.starts_with('[') || first == "PAGE" || ACTION_KEYWORDS.contains(&first)
+    first.starts_with('[')
+        || first == "PAGE"
+        || ACTION_KEYWORDS.contains(&first)
+        || CHECK_KEYWORDS.contains(&first)
 }
 
 fn multiline_value(lines: &[&str], start: usize, text: &str) -> Result<Value, LineError> {
@@ -2441,6 +2601,30 @@ fn json_body_end(lines: &[&str], start: usize) -> Result<usize, LineError> {
     ))
 }
 
+/// Rejects a parsed file that still has an `[Asserts]` or `[Captures]`
+/// section (SPEC 4.1). Only `whirl fmt` accepts them, to rewrite them.
+pub(crate) fn reject_sections(file: &File, source: &str) -> Result<(), ParseError> {
+    let Some(span) = file.entries.iter().flat_map(|entry| &entry.sections).next() else {
+        return Ok(());
+    };
+    let source_line = source
+        .lines()
+        .nth(usize::try_from(span.line.saturating_sub(1)).unwrap_or(0))
+        .unwrap_or_default()
+        .trim_end_matches('\r')
+        .to_owned();
+    Err(ParseError {
+        code: ParseErrorCode::SectionsRemoved,
+        path: file.path.clone(),
+        line: span.line,
+        column: span.column,
+        len: span.len,
+        source_line,
+        message: "`[Asserts]` and `[Captures]` sections were removed; run `whirl fmt` to rewrite them as ASSERT and CAPTURE lines".to_owned(),
+        expected: Vec::new(),
+    })
+}
+
 /// Parses one `.whirl` source, stopping at the file's first error.
 pub(crate) fn parse_file(path: &Path, source: &str) -> Result<File, ParseError> {
     let mut parser = Parser {
@@ -2451,6 +2635,8 @@ pub(crate) fn parse_file(path: &Path, source: &str) -> Result<File, ParseError> 
         state:          State::Preamble,
         options_header: None,
         seen_visit:     false,
+        first_keyword:  None,
+        first_section:  None,
     };
     let lines: Vec<&str> = source.lines().collect();
     let mut index = 0;
@@ -2460,7 +2646,7 @@ pub(crate) fn parse_file(path: &Path, source: &str) -> Result<File, ParseError> 
         parser
             .parse_line(line, line_no)
             .map_err(|error| into_parse_error(path, error, line_no, line))?;
-        if line.split_whitespace().next() == Some("HTTP") {
+        if matches!(line.split_whitespace().next(), Some("HTTP" | "MOCK")) {
             index = parser.parse_http_tail(path, &lines, index)?;
         } else {
             index += 1;
@@ -2472,6 +2658,7 @@ pub(crate) fn parse_file(path: &Path, source: &str) -> Result<File, ParseError> 
     if parser.entries.is_empty() {
         let line_no = u32::try_from(lines.len().max(1)).unwrap_or(u32::MAX);
         return Err(ParseError {
+            code:        ParseErrorCode::Syntax,
             path:        path.to_path_buf(),
             line:        line_no,
             column:      1,
@@ -2490,8 +2677,24 @@ pub(crate) fn parse_file(path: &Path, source: &str) -> Result<File, ParseError> 
     })
 }
 
+/// A check line whose form differs from the file's first check form
+/// (SPEC 4).
+fn mixed_check_syntax(span: Span, this_form: &str, first_line: u32) -> LineError {
+    let message = if this_form == "section" {
+        format!(
+            "this file has an ASSERT or CAPTURE line on line {first_line}, so it cannot also have sections; run `whirl fmt` to rewrite the sections as lines"
+        )
+    } else {
+        format!(
+            "this file has a section on line {first_line}, so it cannot also have ASSERT or CAPTURE lines; run `whirl fmt` to rewrite the sections as lines"
+        )
+    };
+    LineError::new(span, message).with_code(ParseErrorCode::MixedCheckSyntax)
+}
+
 fn into_parse_error(path: &Path, error: LineError, line_no: u32, line: &str) -> ParseError {
     ParseError {
+        code:        error.code,
         path:        path.to_path_buf(),
         line:        error.line.unwrap_or(line_no),
         column:      error.column,
@@ -2695,19 +2898,56 @@ impl Parser {
             .current
             .as_mut()
             .and_then(|entry| entry.actions.last_mut())
-            .expect("an HTTP headline creates a current action");
-        let ActionKind::Http {
-            headers: action_headers,
-            body: action_body,
-            source: action_source,
-            ..
-        } = &mut action.kind
-        else {
-            unreachable!("parse_http_tail follows an HTTP action");
-        };
-        *action_headers = headers;
-        *action_body = body;
-        *action_source = source;
+            .expect("an HTTP or MOCK headline creates a current action");
+        match &mut action.kind {
+            ActionKind::Http {
+                headers: action_headers,
+                body: action_body,
+                source: action_source,
+                ..
+            }
+            | ActionKind::Mock {
+                response:
+                    MockResponse::Fulfill {
+                        headers: action_headers,
+                        body: action_body,
+                        ..
+                    },
+                source: action_source,
+                ..
+            } => {
+                *action_headers = headers;
+                *action_body = body;
+                *action_source = source;
+            }
+            ActionKind::Mock {
+                response: MockResponse::Failed,
+                source: action_source,
+                ..
+            } => {
+                if last_component != headline {
+                    let line = lines[headline + 1..=last_component]
+                        .iter()
+                        .position(|line| {
+                            let trimmed = line.trim_start();
+                            !trimmed.is_empty() && !trimmed.starts_with('#')
+                        })
+                        .map_or(headline + 1, |offset| headline + 1 + offset);
+                    let error = LineError::new(
+                        Span {
+                            line:   0,
+                            column: 1,
+                            len:    1,
+                        },
+                        "a failed MOCK takes no header lines and no body",
+                    )
+                    .at_source(u32::try_from(line + 1).unwrap_or(u32::MAX), lines[line]);
+                    return Err(into_parse_error(path, error, 0, lines[line]));
+                }
+                *action_source = source;
+            }
+            _ => unreachable!("parse_http_tail follows an HTTP or MOCK action"),
+        }
         Ok(index)
     }
 
@@ -2767,50 +3007,7 @@ impl Parser {
                     )
                 }
             }
-            "[Asserts]" => match self.state {
-                State::Actions | State::AfterPage => {
-                    let entry = self
-                        .current
-                        .as_mut()
-                        .expect("the Actions and AfterPage states always have a current entry");
-                    entry.asserts_header = Some(span.line);
-                    self.state = State::Asserts;
-                    Ok(())
-                }
-                State::Preamble | State::Options => Err(LineError::new(
-                    span,
-                    "`[Asserts]` must follow an entry's actions",
-                )
-                .expecting(["an action"])),
-                State::Asserts => Err(LineError::new(span, "an entry has one `[Asserts]` section")
-                    .expecting(["a check", "an action", "[Captures]"])),
-                State::Captures => Err(LineError::new(
-                    span,
-                    "`[Asserts]` must come before `[Captures]` in an entry",
-                )
-                .expecting(["a capture", "an action"])),
-            },
-            "[Captures]" => match self.state {
-                State::Actions | State::AfterPage | State::Asserts => {
-                    let entry = self
-                        .current
-                        .as_mut()
-                        .expect("the entry-section states always have a current entry");
-                    entry.captures_header = Some(span.line);
-                    self.state = State::Captures;
-                    Ok(())
-                }
-                State::Preamble | State::Options => Err(LineError::new(
-                    span,
-                    "`[Captures]` must follow an entry's actions",
-                )
-                .expecting(["an action"])),
-                State::Captures => Err(LineError::new(
-                    span,
-                    "an entry has one `[Captures]` section",
-                )
-                .expecting(["a capture", "an action"])),
-            },
+            "[Asserts]" | "[Captures]" => self.handle_section(text, span),
             other => Err(
                 LineError::new(span, format!("unknown section `{other}`")).expecting([
                     "[Options]",
@@ -2821,6 +3018,138 @@ impl Parser {
         }
     }
 
+    /// Opens a deprecated `[Asserts]` or `[Captures]` section (SPEC 4).
+    fn handle_section(&mut self, text: &str, span: Span) -> Result<(), LineError> {
+        let is_asserts = text == "[Asserts]";
+        if let Some(line) = self.first_keyword {
+            return Err(mixed_check_syntax(span, "section", line));
+        }
+        match self.state {
+            State::Preamble | State::Options => {
+                return Err(LineError::new(
+                    span,
+                    format!("`{text}` must follow an entry's actions"),
+                )
+                .expecting(["an action"]));
+            }
+            State::Asserts if is_asserts => {
+                return Err(LineError::new(span, "an entry has one `[Asserts]` section")
+                    .expecting(["a check", "an action", "[Captures]"]));
+            }
+            State::Captures if is_asserts => {
+                return Err(LineError::new(
+                    span,
+                    "`[Asserts]` must come before `[Captures]` in an entry",
+                )
+                .expecting(["a capture", "an action"]));
+            }
+            State::Captures => {
+                return Err(
+                    LineError::new(span, "an entry has one `[Captures]` section")
+                        .expecting(["a capture", "an action"]),
+                );
+            }
+            State::Actions | State::AfterPage | State::Asserts | State::Checks => {}
+        }
+        self.first_section.get_or_insert(span.line);
+        let entry = self
+            .current
+            .as_mut()
+            .expect("the entry states always have a current entry");
+        entry.sections.push(span);
+        self.state = if is_asserts {
+            State::Asserts
+        } else {
+            State::Captures
+        };
+        Ok(())
+    }
+
+    /// True when the current entry is an independent HTTP request, whose
+    /// checks read its response without a name (SPEC 7.3).
+    fn in_http_entry(&self) -> bool {
+        self.current.as_ref().is_some_and(|entry| {
+            matches!(
+                entry.actions.first().map(|action| &action.kind),
+                Some(ActionKind::Http { .. })
+            )
+        })
+    }
+
+    /// Parses an `ASSERT` or `CAPTURE` line after its keyword (SPEC 9,
+    /// 10).
+    fn handle_check_line(
+        &mut self,
+        keyword: &str,
+        keyword_span: Span,
+        cursor: &mut Cursor,
+        content_start: usize,
+    ) -> Result<(), LineError> {
+        match self.state {
+            State::Preamble | State::Options => {
+                return Err(LineError::new(
+                    keyword_span,
+                    format!("`{keyword}` must follow an entry's actions"),
+                )
+                .expecting(["an action"]));
+            }
+            State::Actions
+            | State::AfterPage
+            | State::Checks
+            | State::Asserts
+            | State::Captures => {}
+        }
+        if let Some(line) = self.first_section {
+            return Err(mixed_check_syntax(keyword_span, "keyword", line));
+        }
+        self.first_keyword.get_or_insert(keyword_span.line);
+        let implicit_http = self.in_http_entry();
+        let line_no = cursor.line_no;
+        let check = if keyword == "ASSERT" {
+            let Some(first) = cursor.next_token()? else {
+                return Err(LineError::new(after_span(keyword_span), "expected a check")
+                    .expecting([
+                        "a locator",
+                        "url",
+                        "title",
+                        "eval",
+                        "response:NAME",
+                        "tab:NAME",
+                    ]));
+            };
+            let (body, timeout) = parse_assert_body(first, cursor, implicit_http)?;
+            let (text, span) = cursor.content(content_start);
+            CheckStep::Assert(Assert {
+                body,
+                timeout,
+                line: line_no,
+                span,
+                text,
+            })
+        } else {
+            let name_token = cursor.next_token()?;
+            let Some((name, rest)) = name_token.and_then(split_name_colon) else {
+                return Err(
+                    LineError::new(after_span(keyword_span), "expected a capture name")
+                        .expecting(["name: source"]),
+                );
+            };
+            let mut capture = parse_capture_body(name, rest, cursor, implicit_http)?;
+            let (text, span) = cursor.content(content_start);
+            capture.line = line_no;
+            capture.span = span;
+            capture.text = text;
+            CheckStep::Capture(capture)
+        };
+        let entry = self
+            .current
+            .as_mut()
+            .expect("the entry states always have a current entry");
+        entry.checks.push(check);
+        self.state = State::Checks;
+        Ok(())
+    }
+
     fn handle_step(
         &mut self,
         first: RawToken,
@@ -2829,6 +3158,9 @@ impl Parser {
     ) -> Result<(), LineError> {
         let line_no = cursor.line_no;
         let bare = first.bare_single().map(str::to_owned);
+        if let Some(keyword) = bare.as_deref().filter(|text| CHECK_KEYWORDS.contains(text)) {
+            return self.handle_check_line(keyword, first.span, cursor, content_start);
+        }
         if let Some(keyword) = bare
             .as_deref()
             .filter(|text| ACTION_KEYWORDS.contains(text))
@@ -2838,7 +3170,8 @@ impl Parser {
             let (kind, timeout) = parse_action_body(&keyword, first_span, cursor)?;
             let is_http = matches!(kind, ActionKind::Http { .. });
             let is_visit = matches!(kind, ActionKind::Visit { .. });
-            if !self.seen_visit && !is_http && !is_visit {
+            let is_mock = matches!(kind, ActionKind::Mock { .. });
+            if !self.seen_visit && !is_http && !is_visit && !is_mock {
                 return Err(
                     LineError::new(first_span, "a browser action needs an earlier VISIT")
                         .expecting(["HTTP", "VISIT"]),
@@ -2872,12 +3205,10 @@ impl Parser {
                     self.entries.push(entry);
                 }
                 self.current = Some(Entry {
-                    actions:         vec![action],
-                    page:            None,
-                    asserts:         Vec::new(),
-                    captures:        Vec::new(),
-                    asserts_header:  None,
-                    captures_header: None,
+                    actions:  vec![action],
+                    page:     None,
+                    checks:   Vec::new(),
+                    sections: Vec::new(),
                 });
                 self.state = State::Actions;
             }
@@ -2915,14 +3246,9 @@ impl Parser {
                 Ok(())
             }
             State::Actions if is_page => {
-                if self.current.as_ref().is_some_and(|entry| {
-                    matches!(
-                        entry.actions.first().map(|action| &action.kind),
-                        Some(ActionKind::Http { .. })
-                    )
-                }) {
+                if self.in_http_entry() {
                     return Err(LineError::new(first.span, "an HTTP entry cannot have PAGE")
-                        .expecting(["[Asserts]", "[Captures]", "an action"]));
+                        .expecting(["ASSERT", "CAPTURE", "an action"]));
                 }
                 let (check, timeout) = parse_page_body(first.span, cursor)?;
                 let (text, span) = cursor.content(content_start);
@@ -2977,47 +3303,50 @@ impl Parser {
                 LineError::new(first.span, "expected a step line").expecting([
                     "an action",
                     "PAGE",
-                    "[Asserts]",
-                    "[Captures]",
+                    "ASSERT",
+                    "CAPTURE",
                 ]),
             ),
             State::AfterPage if is_page => Err(LineError::new(
                 first.span,
                 "an entry has one PAGE line",
             )
-            .expecting(["an action", "[Asserts]", "[Captures]"])),
-            State::AfterPage => Err(LineError::new(first.span, "expected a step line")
-                .expecting(["an action", "[Asserts]", "[Captures]"])),
+            .expecting(["an action", "ASSERT", "CAPTURE"])),
+            State::Checks if is_page => Err(LineError::new(
+                first.span,
+                "`PAGE` must come before an entry's check lines",
+            )
+            .expecting(["an action", "ASSERT", "CAPTURE"])),
+            State::AfterPage | State::Checks => Err(LineError::new(
+                first.span,
+                "expected a step line",
+            )
+            .expecting(["an action", "ASSERT", "CAPTURE"])),
             State::Asserts if is_page => Err(LineError::new(
                 first.span,
-                "`PAGE` must come before an entry's `[Asserts]` section",
+                "`PAGE` must come before an entry's check lines",
             )
             .expecting(["a check", "an action"])),
             State::Asserts => {
-                let implicit_http = self.current.as_ref().is_some_and(|entry| {
-                    matches!(
-                        entry.actions.first().map(|action| &action.kind),
-                        Some(ActionKind::Http { .. })
-                    )
-                });
+                let implicit_http = self.in_http_entry();
                 let (body, timeout) = parse_assert_body(first, cursor, implicit_http)?;
                 let (text, span) = cursor.content(content_start);
                 let entry = self
                     .current
                     .as_mut()
                     .expect("the Asserts state always has a current entry");
-                entry.asserts.push(Assert {
+                entry.checks.push(CheckStep::Assert(Assert {
                     body,
                     timeout,
                     line: line_no,
                     span,
                     text,
-                });
+                }));
                 Ok(())
             }
             State::Captures if is_page => Err(LineError::new(
                 first.span,
-                "`PAGE` must come before an entry's `[Asserts]` and `[Captures]` sections",
+                "`PAGE` must come before an entry's check lines",
             )
             .expecting(["a capture", "an action"])),
             State::Captures => {
@@ -3026,12 +3355,7 @@ impl Parser {
                     return Err(LineError::new(first_span, "expected a capture line")
                         .expecting(["name: source"]));
                 };
-                let implicit_http = self.current.as_ref().is_some_and(|entry| {
-                    matches!(
-                        entry.actions.first().map(|action| &action.kind),
-                        Some(ActionKind::Http { .. })
-                    )
-                });
+                let implicit_http = self.in_http_entry();
                 let mut capture = parse_capture_body(name, rest, cursor, implicit_http)?;
                 let (text, span) = cursor.content(content_start);
                 capture.line = line_no;
@@ -3041,7 +3365,7 @@ impl Parser {
                     .current
                     .as_mut()
                     .expect("the Captures state always has a current entry");
-                entry.captures.push(capture);
+                entry.checks.push(CheckStep::Capture(capture));
                 Ok(())
             }
         }
@@ -3111,9 +3435,11 @@ mod tests {
     }
 
     fn only_assert(source_tail: &str) -> AssertBody {
-        let source = format!("VISIT /\n[Asserts]\n{source_tail}\n");
+        let source = format!("VISIT /\nASSERT {source_tail}\n");
         let file = parse(&source);
-        only_entry(&file).asserts[0].body.clone()
+        only_entry(&file).asserts().collect::<Vec<_>>()[0]
+            .body
+            .clone()
     }
 
     #[test]
@@ -3278,9 +3604,9 @@ mod tests {
                 .iter()
                 .any(|segment| matches!(segment, ValueSegment::Var(name) if name == "n"))
         );
-        let error = parse_err("VISIT /\n[Asserts]\nresponse:r json:$.a == [1, 2\n");
+        let error = parse_err("VISIT /\nASSERT response:r json:$.a == [1, 2\n");
         assert_eq!(error.message, "unterminated JSON literal");
-        let error = parse_err("VISIT /\n[Asserts]\nresponse:r json:$.a == {\"a\" 1}\n");
+        let error = parse_err("VISIT /\nASSERT response:r json:$.a == {\"a\" 1}\n");
         assert!(
             error.message.starts_with("invalid JSON literal"),
             "{}",
@@ -3305,13 +3631,13 @@ mod tests {
 
     #[test]
     fn json_paths_are_checked_when_literal() {
-        let error = parse_err("VISIT /\n[Asserts]\nresponse:x json:$.[ == 1\n");
+        let error = parse_err("VISIT /\nASSERT response:x json:$.[ == 1\n");
         assert!(
             error.message.starts_with("invalid JSONPath"),
             "{}",
             error.message
         );
-        let error = parse_err("VISIT /\n[Asserts]\nresponse:r json:$[\"a\"] == 1\n");
+        let error = parse_err("VISIT /\nASSERT response:r json:$[\"a\"] == 1\n");
         assert!(
             error.message.contains("one bare token or one quoted value"),
             "{}",
@@ -3322,9 +3648,9 @@ mod tests {
 
     #[test]
     fn malformed_bytes_literals_fail_only_in_typed_checks() {
-        let error = parse_err("HTTP GET /x\n[Asserts]\nstatus == 200\nbytes == hex,zz;\n");
+        let error = parse_err("HTTP GET /x\nASSERT status == 200\nASSERT bytes == hex,zz;\n");
         assert_eq!(error.message, "invalid bytes literal \"hex,zz;\"");
-        let error = parse_err("HTTP GET /x\n[Asserts]\nstatus == 200\njson:$.t == base64,@@;\n");
+        let error = parse_err("HTTP GET /x\nASSERT status == 200\nASSERT json:$.t == base64,@@;\n");
         assert_eq!(error.message, "invalid bytes literal \"base64,@@;\"");
         // Text checks and quoted values take the text as written.
         only_check("response:r body == hex,zz;");
@@ -3352,7 +3678,7 @@ mod tests {
     fn xpath_expressions_are_checked_when_literal() {
         for invalid in ["//li[", "count(", "foo()"] {
             let error = parse_err(&format!(
-                "VISIT /\n[Asserts]\nresponse:x xpath:\"{invalid}\" exists\n"
+                "VISIT /\nASSERT response:x xpath:\"{invalid}\" exists\n"
             ));
             assert!(
                 error.message.starts_with("invalid XPath expression"),
@@ -3360,7 +3686,7 @@ mod tests {
                 error.message
             );
         }
-        let error = parse_err("VISIT /\n[Asserts]\nresponse:r xpath://a[@x=\"1\"] exists\n");
+        let error = parse_err("VISIT /\nASSERT response:r xpath://a[@x=\"1\"] exists\n");
         assert!(
             error.message.contains("one bare token or one quoted value"),
             "{}",
@@ -3370,7 +3696,7 @@ mod tests {
 
     #[test]
     fn regexes_must_be_valid_in_unicode_mode() {
-        let error = parse_err("VISIT /\n[Asserts]\nurl matches /a\\-b/\n");
+        let error = parse_err("VISIT /\nASSERT url matches /a\\-b/\n");
         assert!(
             error.message.starts_with("invalid regex in Unicode mode"),
             "{}",
@@ -3380,17 +3706,17 @@ mod tests {
 
     #[test]
     fn a_missing_predicate_is_an_error() {
-        let error = parse_err("VISIT /\n[Asserts]\nurl toString\n");
+        let error = parse_err("VISIT /\nASSERT url toString\n");
         assert_eq!(error.message, "expected a predicate");
-        let error = parse_err("VISIT /\n[Asserts]\nurl bogus\n");
+        let error = parse_err("VISIT /\nASSERT url bogus\n");
         assert_eq!(error.message, "expected a filter or a predicate");
     }
 
     #[test]
     fn assert_lines_take_timeout_suffixes() {
-        let source = "VISIT /\n[Asserts]\ntestid:x visible @2500ms\n";
+        let source = "VISIT /\nASSERT testid:x visible @2500ms\n";
         let file = parse(source);
-        let assert_line = &only_entry(&file).asserts[0];
+        let assert_line = &only_entry(&file).asserts().collect::<Vec<_>>()[0];
         assert_eq!(
             assert_line.timeout,
             Some(DurationLit {
@@ -3421,7 +3747,7 @@ mod tests {
         };
         assert!(regex.flags.ignore_case && regex.flags.dot_all && regex.flags.multiline);
 
-        let error = parse_err("VISIT /\n[Asserts]\nurl matches /a/g\n");
+        let error = parse_err("VISIT /\nASSERT url matches /a/g\n");
         assert_eq!(error.message, "invalid regex flag `g`");
         assert_eq!(error.expected, vec![
             "i".to_owned(),
@@ -3440,9 +3766,9 @@ mod tests {
 
     #[test]
     fn capture_sources_parse() {
-        let source = "VISIT /\n[Captures]\nheading: role:heading \"Hi\" text\ninput: label:Email value\nrows: testid:row count\nhref: role:link attr:href\nhere: url\nname: title\nresult: eval \"1 + 1\"\n";
+        let source = "VISIT /\nCAPTURE heading: role:heading \"Hi\" text\nCAPTURE input: label:Email value\nCAPTURE rows: testid:row count\nCAPTURE href: role:link attr:href\nCAPTURE here: url\nCAPTURE name: title\nCAPTURE result: eval \"1 + 1\"\n";
         let file = parse(source);
-        let captures = &only_entry(&file).captures;
+        let captures = &only_entry(&file).captures().collect::<Vec<_>>();
         assert_eq!(captures.len(), 7);
         assert!(matches!(&captures[0].subject, Subject::Element {
             extractor: Extractor::Text,
@@ -3475,9 +3801,10 @@ mod tests {
 
     #[test]
     fn capture_filters_and_timeout_parse() {
-        let source = "VISIT /\n[Captures]\norder_id: testid:confirmation text regex /Order #(\\w+)/ toInt @5s\n";
+        let source =
+            "VISIT /\nCAPTURE order_id: testid:confirmation text regex /Order #(\\w+)/ toInt @5s\n";
         let file = parse(source);
-        let capture = &only_entry(&file).captures[0];
+        let capture = &only_entry(&file).captures().collect::<Vec<_>>()[0];
         let FilterArg::Regex(regex) = &capture.filters[0].args[0] else {
             panic!("expected a regex argument");
         };
@@ -3515,7 +3842,7 @@ mod tests {
 
     #[test]
     fn capture_names_must_be_identifiers() {
-        let error = parse_err("VISIT /\n[Captures]\n9lives: url\n");
+        let error = parse_err("VISIT /\nCAPTURE 9lives: url\n");
         assert!(
             error.message.contains("capture"),
             "message: {}",
@@ -3535,25 +3862,21 @@ FILL "Email" alice@example.com
 FILL "Password" {{env.TEST_PASSWORD}}
 CLICK role:button "Sign in"
 PAGE /dashboard
-[Asserts]
-role:heading "Welcome back" visible
-testid:user-menu text == Alice
+ASSERT role:heading "Welcome back" visible
+ASSERT testid:user-menu text == Alice
 
 # Find a product.
 FILL placeholder:"Search products" widget
 PRESS Enter
-[Asserts]
-url contains "q=widget"
-testid:result-card count >= 1
-[Captures]
-first_product: testid:result-card >> nth:1 >> role:link attr:href
+ASSERT url contains "q=widget"
+ASSERT testid:result-card count >= 1
+CAPTURE first_product: testid:result-card >> nth:1 >> role:link attr:href
 
 # Add it to the cart.
 VISIT {{first_product}}
 CLICK "Add to cart"
-[Asserts]
-testid:cart-badge text == 1
-role:alert text contains "Added to cart"
+ASSERT testid:cart-badge text == 1
+ASSERT role:alert text contains "Added to cart"
 "#;
 
     #[test]
@@ -3587,21 +3910,24 @@ role:alert text contains "Added to cart"
             panic!("expected a PAGE value");
         };
         assert_eq!(lit(value), "/dashboard");
-        assert_eq!(login.asserts.len(), 2);
-        assert!(matches!(login.asserts[0].body, AssertBody::ElementState {
-            state: StateCheck::Visible,
-            ..
-        }));
-        assert!(login.captures.is_empty());
+        assert_eq!(login.asserts().collect::<Vec<_>>().len(), 2);
+        assert!(matches!(
+            login.asserts().collect::<Vec<_>>()[0].body,
+            AssertBody::ElementState {
+                state: StateCheck::Visible,
+                ..
+            }
+        ));
+        assert!(login.captures().collect::<Vec<_>>().is_empty());
 
         assert_eq!(search.actions.len(), 2);
         assert!(matches!(search.actions[1].kind, ActionKind::Press {
             target: None,
             ..
         }));
-        assert_eq!(search.asserts.len(), 2);
+        assert_eq!(search.asserts().collect::<Vec<_>>().len(), 2);
         assert!(matches!(
-            &search.asserts[0].body,
+            &search.asserts().collect::<Vec<_>>()[0].body,
             AssertBody::Check(CheckLine {
                 subject: Subject::Url,
                 predicate: PredicateSpec::Compare {
@@ -3612,7 +3938,7 @@ role:alert text contains "Added to cart"
             })
         ));
         assert!(matches!(
-            &search.asserts[1].body,
+            &search.asserts().collect::<Vec<_>>()[1].body,
             AssertBody::Check(CheckLine {
                 subject: Subject::Element {
                     extractor: Extractor::Count,
@@ -3625,8 +3951,8 @@ role:alert text contains "Added to cart"
                 ..
             })
         ));
-        assert_eq!(search.captures.len(), 1);
-        let capture = &search.captures[0];
+        assert_eq!(search.captures().collect::<Vec<_>>().len(), 1);
+        let capture = &search.captures().collect::<Vec<_>>()[0];
         assert_eq!(capture.name.text, "first_product");
         let Subject::Element {
             locator,
@@ -3645,7 +3971,7 @@ role:alert text contains "Added to cart"
         assert_eq!(url.segments, vec![ValueSegment::Var(
             "first_product".to_owned()
         )]);
-        assert_eq!(cart.asserts.len(), 2);
+        assert_eq!(cart.asserts().collect::<Vec<_>>().len(), 2);
     }
 
     #[test]
@@ -3665,7 +3991,7 @@ role:alert text contains "Added to cart"
 
     #[test]
     fn entry_names_fall_back_to_the_first_action_and_line() {
-        let source = "VISIT /a\n[Asserts]\nurl == \"/a\"\nCLICK \"Next\"\n";
+        let source = "VISIT /a\nASSERT url == \"/a\"\nCLICK \"Next\"\n";
         let file = parse(source);
         assert_eq!(
             file.entry_display_name(&file.entries[0]),
@@ -3673,18 +3999,18 @@ role:alert text contains "Added to cart"
         );
         assert_eq!(
             file.entry_display_name(&file.entries[1]),
-            "CLICK \"Next\" (line 4)"
+            "CLICK \"Next\" (line 3)"
         );
     }
 
     #[test]
     fn a_comment_above_an_earlier_step_does_not_name_a_later_entry() {
-        let source = "# Log in.\nVISIT /a\n[Asserts]\nurl == \"/a\"\nCLICK \"Next\"\n";
+        let source = "# Log in.\nVISIT /a\nASSERT url == \"/a\"\nCLICK \"Next\"\n";
         let file = parse(source);
         assert_eq!(file.entry_display_name(&file.entries[0]), "Log in.");
         assert_eq!(
             file.entry_display_name(&file.entries[1]),
-            "CLICK \"Next\" (line 5)"
+            "CLICK \"Next\" (line 4)"
         );
     }
 
@@ -3786,7 +4112,7 @@ role:alert text contains "Added to cart"
     #[test]
     fn http_entries_can_run_before_visit_or_without_a_page() {
         let file = parse(
-            "HTTP POST /fixtures\n{\n  \"name\": \"Ada\"\n}\n[Asserts]\nstatus == 201\n[Captures]\nid: json:$.id\nVISIT /users/{{id}}\n",
+            "HTTP POST /fixtures\n{\n  \"name\": \"Ada\"\n}\nASSERT status == 201\nCAPTURE id: json:$.id\nVISIT /users/{{id}}\n",
         );
         assert_eq!(file.entries.len(), 2);
         assert!(matches!(
@@ -3794,7 +4120,7 @@ role:alert text contains "Added to cart"
             ActionKind::Http { .. }
         ));
 
-        let http_only = parse("HTTP GET /health\n[Asserts]\nstatus == 200\n");
+        let http_only = parse("HTTP GET /health\nASSERT status == 200\n");
         assert_eq!(http_only.entries.len(), 1);
     }
 
@@ -3807,19 +4133,16 @@ Authorization: "Bearer {{env.TOKEN}}"
   "name": "{{name}}",
   "enabled": true
 }
-[Asserts]
-status == 201
-json:$.name == {{name}}
-[Captures]
-id: json:$.id
+ASSERT status == 201
+ASSERT json:$.name == {{name}}
+CAPTURE id: json:$.id
 HTTP POST /imports
 Content-Type: text/plain
 ```
 first # literal
 second\line
 ```
-[Asserts]
-status == 202
+ASSERT status == 202
 "#,
         );
         assert_eq!(file.entries.len(), 2);
@@ -3832,7 +4155,7 @@ status == 202
         assert_eq!(body.kind, HttpBodyKind::Json);
         assert!(body.text.contains("\"enabled\": true"));
         assert!(matches!(
-            &file.entries[0].asserts[0].body,
+            &file.entries[0].asserts().collect::<Vec<_>>()[0].body,
             AssertBody::Check(CheckLine {
                 subject: Subject::Response {
                     name:  None,
@@ -3842,7 +4165,7 @@ status == 202
             })
         ));
         assert!(matches!(
-            &file.entries[0].captures[0].subject,
+            &file.entries[0].captures().collect::<Vec<_>>()[0].subject,
             Subject::Response {
                 name:  None,
                 field: ResponseField::Json(_),
@@ -3874,20 +4197,21 @@ status == 202
 
     #[test]
     fn later_entries_may_start_with_any_action() {
-        let source = "VISIT /\n[Asserts]\nurl == \"/\"\nCLICK \"Next\"\n";
+        let source = "VISIT /\nASSERT url == \"/\"\nCLICK \"Next\"\n";
         let file = parse(source);
         assert_eq!(file.entries.len(), 2);
     }
 
     #[test]
     fn an_action_after_asserts_starts_a_new_entry() {
-        let source = "VISIT /a\nCLICK \"One\"\n[Asserts]\ntestid:x visible\nVISIT /b\n[Asserts]\ntestid:y visible\n";
+        let source =
+            "VISIT /a\nCLICK \"One\"\nASSERT testid:x visible\nVISIT /b\nASSERT testid:y visible\n";
         let file = parse(source);
         assert_eq!(file.entries.len(), 2);
         assert_eq!(file.entries[0].actions.len(), 2);
-        assert_eq!(file.entries[0].asserts.len(), 1);
+        assert_eq!(file.entries[0].asserts().collect::<Vec<_>>().len(), 1);
         assert_eq!(file.entries[1].actions.len(), 1);
-        assert_eq!(file.entries[1].asserts.len(), 1);
+        assert_eq!(file.entries[1].asserts().collect::<Vec<_>>().len(), 1);
     }
 
     #[test]
@@ -3901,7 +4225,7 @@ status == 202
 
     #[test]
     fn an_action_after_captures_starts_a_new_entry() {
-        let source = "VISIT /a\n[Captures]\nhere: url\nCLICK \"Next\"\n";
+        let source = "VISIT /a\nCAPTURE here: url\nCLICK \"Next\"\n";
         let file = parse(source);
         assert_eq!(file.entries.len(), 2);
     }
@@ -3914,6 +4238,217 @@ status == 202
         assert_eq!(entry.actions.len(), 2);
         assert_eq!(file.comments.len(), 1);
         assert!(file.comments[0].own_line);
+    }
+
+    #[test]
+    fn check_lines_keep_their_written_order() {
+        let file = parse(
+            "VISIT /\nPAGE /\nCAPTURE id: testid:x text\nASSERT testid:y text == {{id}} @5s\nASSERT tab:main closed\n",
+        );
+        let entry = only_entry(&file);
+        let lines: Vec<(u32, bool)> = entry
+            .checks
+            .iter()
+            .map(|check| (check.line(), matches!(check, CheckStep::Assert(_))))
+            .collect();
+        assert_eq!(lines, [(3, false), (4, true), (5, true)]);
+        let asserts = entry.asserts().collect::<Vec<_>>();
+        assert_eq!(asserts[0].text, "ASSERT testid:y text == {{id}} @5s");
+        assert_eq!(asserts[0].timeout.map(DurationLit::millis), Some(5000));
+        assert!(entry.sections.is_empty());
+    }
+
+    #[test]
+    fn http_entries_take_check_lines() {
+        let file =
+            parse("HTTP GET /api\nAccept: text/plain\nASSERT status == 200\nCAPTURE n: json:$.n\n");
+        let entry = only_entry(&file);
+        let ActionKind::Http { headers, .. } = &entry.actions[0].kind else {
+            panic!("expected an HTTP action");
+        };
+        assert_eq!(headers.len(), 1);
+        assert_eq!(entry.checks.len(), 2);
+    }
+
+    #[test]
+    fn an_action_after_a_check_line_starts_a_new_entry() {
+        let file = parse("VISIT /\nASSERT url == /\nCLICK Next\nASSERT url == /next\n");
+        assert_eq!(file.entries.len(), 2);
+        assert_eq!(file.entries[1].checks.len(), 1);
+    }
+
+    #[test]
+    fn check_lines_need_an_entry() {
+        let error = parse_err("[Options]\nbase: http://x\nASSERT url == /\n");
+        assert_eq!(error.line, 3);
+        assert!(error.message.contains("must follow an entry's actions"));
+    }
+
+    #[test]
+    fn page_cannot_follow_a_check_line() {
+        let error = parse_err("VISIT /\nASSERT url == /\nPAGE /\n");
+        assert_eq!(error.line, 3);
+        assert_eq!(
+            error.message,
+            "`PAGE` must come before an entry's check lines"
+        );
+    }
+
+    #[test]
+    fn check_keywords_need_a_body() {
+        assert_eq!(parse_err("VISIT /\nASSERT\n").message, "expected a check");
+        assert_eq!(
+            parse_err("VISIT /\nCAPTURE url\n").message,
+            "expected a capture name"
+        );
+    }
+
+    #[test]
+    fn sections_still_parse_and_are_recorded() {
+        let file = parse("VISIT /\n[Asserts]\nurl == /\n[Captures]\nc: url\n");
+        let entry = only_entry(&file);
+        assert_eq!(entry.checks.len(), 2);
+        let lines: Vec<u32> = entry.sections.iter().map(|span| span.line).collect();
+        assert_eq!(lines, [2, 4]);
+    }
+
+    #[test]
+    fn a_file_cannot_mix_sections_and_check_lines() {
+        let error = parse_err("VISIT /\nASSERT url == /\nVISIT /b\n[Asserts]\nurl == /b\n");
+        assert_eq!(error.code, ParseErrorCode::MixedCheckSyntax);
+        assert_eq!(error.line, 4);
+        assert!(error.message.contains("line 2"), "{}", error.message);
+        let error = parse_err("VISIT /\n[Asserts]\nurl == /\nVISIT /b\nASSERT url == /b\n");
+        assert_eq!(error.code, ParseErrorCode::MixedCheckSyntax);
+        assert_eq!(error.line, 5);
+        let error = parse_err("VISIT /\n[Asserts]\nASSERT url == /\n");
+        assert_eq!(error.code, ParseErrorCode::MixedCheckSyntax);
+    }
+
+    #[test]
+    fn mock_parses_a_status_headers_and_a_body() {
+        let file = parse(
+            "MOCK GET /api/flags 200\nX-Test: yes\n{ \"on\": true }\nVISIT /\nASSERT url == /\n",
+        );
+        let entry = only_entry(&file);
+        assert_eq!(entry.actions.len(), 2);
+        let ActionKind::Mock {
+            method,
+            url,
+            response:
+                MockResponse::Fulfill {
+                    status,
+                    headers,
+                    body,
+                },
+            source,
+        } = &entry.actions[0].kind
+        else {
+            panic!("expected a fulfilling mock");
+        };
+        assert_eq!(method, "GET");
+        assert_eq!(lit(url), "/api/flags");
+        assert_eq!(*status, 200);
+        assert_eq!(headers[0].name, "X-Test");
+        assert_eq!(
+            body.as_ref().map(|body| body.kind),
+            Some(HttpBodyKind::Json)
+        );
+        assert_eq!(
+            source,
+            "MOCK GET /api/flags 200\nX-Test: yes\n{ \"on\": true }"
+        );
+    }
+
+    #[test]
+    fn mock_parses_a_failed_request() {
+        let file = parse("VISIT /\nMOCK POST https://x.test/* failed\nCLICK Go\n");
+        let ActionKind::Mock { response, .. } = &file.entries[0].actions[1].kind else {
+            panic!("expected a mock");
+        };
+        assert_eq!(*response, MockResponse::Failed);
+    }
+
+    #[test]
+    fn malformed_mocks_are_parse_errors() {
+        for (source, message) in [
+            ("MOCK GET /a 200 @5s\n", "MOCK has no step timeout"),
+            ("MOCK GET /a\n", "expected MOCK METHOD url STATUS"),
+            (
+                "MOCK get /a 200\n",
+                "expected an uppercase HTTP method like GET or POST",
+            ),
+            (
+                "MOCK GET /a 99\n",
+                "expected a status code from 200 to 599, or `failed`",
+            ),
+            (
+                "MOCK GET /a 600\n",
+                "expected a status code from 200 to 599, or `failed`",
+            ),
+            (
+                "MOCK GET /a failed\nX-Test: yes\n",
+                "a failed MOCK takes no header lines and no body",
+            ),
+            (
+                "MOCK GET /a failed\n{}\n",
+                "a failed MOCK takes no header lines and no body",
+            ),
+        ] {
+            assert_eq!(parse_err(source).message, message, "source: {source}");
+        }
+        let error = parse_err("MOCK GET /a failed\n# note\nX-Test: yes\n");
+        assert_eq!(error.line, 3);
+    }
+
+    #[test]
+    fn mock_lines_come_before_the_first_visit_only() {
+        assert_eq!(parse("MOCK GET /a 204\nVISIT /\n").entries.len(), 1);
+        let error = parse_err("MOCK GET /a 204\nCLICK Go\n");
+        assert_eq!(error.message, "a browser action needs an earlier VISIT");
+    }
+
+    #[test]
+    fn request_subjects_parse_every_field() {
+        let file = parse(
+            "VISIT /\nRESPONSE r GET /a\nASSERT request:r method == GET\nASSERT request:r url contains a\nASSERT request:r header:x-id == 1\nASSERT request:r body isEmpty\nASSERT request:r bytes count == 0\nASSERT request:r json:$.qty == 1\nCAPTURE q: request:r xpath:\"string(//q)\"\n",
+        );
+        let fields: Vec<RequestField> = only_entry(&file)
+            .checks
+            .iter()
+            .map(|check| {
+                let subject = match check {
+                    CheckStep::Assert(Assert {
+                        body: AssertBody::Check(line),
+                        ..
+                    }) => &line.subject,
+                    CheckStep::Capture(capture) => &capture.subject,
+                    CheckStep::Assert(_) => panic!("expected a subject"),
+                };
+                let Subject::Request { name, field } = subject else {
+                    panic!("expected a request subject");
+                };
+                assert_eq!(name.text, "r");
+                field.clone()
+            })
+            .collect();
+        assert!(matches!(fields[..], [
+            RequestField::Method,
+            RequestField::Url,
+            RequestField::Header(_),
+            RequestField::Body,
+            RequestField::Bytes,
+            RequestField::Json(_),
+            RequestField::Xpath(_),
+        ]));
+        assert_eq!(
+            parse_err("VISIT /\nASSERT request:r status == 200\n").message,
+            "expected a request field"
+        );
+        assert_eq!(
+            parse_err("HTTP GET /a\nASSERT request:r method == GET\n").message,
+            "an HTTP entry can only check its response"
+        );
     }
 
     #[test]
@@ -4148,10 +4683,9 @@ status == 202
 
     #[test]
     fn locator_chains_join_segments_with_arrows() {
-        let source =
-            "VISIT /\n[Captures]\nlink: testid:result-card >> nth:-1 >> role:link attr:href\n";
+        let source = "VISIT /\nCAPTURE link: testid:result-card >> nth:-1 >> role:link attr:href\n";
         let file = parse(source);
-        let capture = &only_entry(&file).captures[0];
+        let capture = &only_entry(&file).captures().collect::<Vec<_>>()[0];
         let Subject::Element { locator, extractor } = &capture.subject else {
             panic!("expected an element source");
         };
@@ -4250,19 +4784,19 @@ status == 202
 
     #[test]
     fn unprefixed_segment_in_asserts_is_a_parse_error() {
-        let error = parse_err("VISIT /\n[Asserts]\n\"Welcome\" visible\n");
+        let error = parse_err("VISIT /\nASSERT \"Welcome\" visible\n");
         assert!(
             error.message.contains("unprefixed"),
             "message: {}",
             error.message
         );
-        assert_eq!(error.line, 3);
-        assert_eq!(error.column, 1);
+        assert_eq!(error.line, 2);
+        assert_eq!(error.column, 8);
     }
 
     #[test]
     fn unprefixed_segment_in_captures_is_a_parse_error() {
-        let error = parse_err("VISIT /\n[Captures]\nname: \"Welcome\" text\n");
+        let error = parse_err("VISIT /\nCAPTURE name: \"Welcome\" text\n");
         assert!(
             error.message.contains("unprefixed"),
             "message: {}",
@@ -4752,7 +5286,7 @@ status == 202
         }
         for prefix in [
             "VISIT /\nSCREENSHOT x",
-            "VISIT /\nSNAPSHOT x\n[Asserts]",
+            "VISIT /\nSNAPSHOT x\nASSERT url == x",
             "VISIT /\nSNAPSHOT x\nPAGE /",
         ] {
             parse_err(&format!("{prefix}\nsnapshot-max-diff: 1\n"));
@@ -4860,7 +5394,7 @@ mod frame_tests {
     #[test]
     fn rejects_a_frame_without_an_inner_element_in_actions_asserts_and_captures() {
         assert!(parse("VISIT /\nCLICK frame:iframe\n").is_err());
-        assert!(parse("VISIT /\n[Asserts]\nframe:iframe >> nth:1 visible\n").is_err());
-        assert!(parse("VISIT /\n[Captures]\nx: frame:iframe text\n").is_err());
+        assert!(parse("VISIT /\nASSERT frame:iframe >> nth:1 visible\n").is_err());
+        assert!(parse("VISIT /\nCAPTURE x: frame:iframe text\n").is_err());
     }
 }

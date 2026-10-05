@@ -1,6 +1,6 @@
 import type { BrowserContext, Page, Request, Response } from "@playwright/test";
 import { createHostAllowlist } from "./host-glob.js";
-import type { HttpParams, ResponseRead } from "./protocol.js";
+import type { HttpParams, RequestRead, ResponseRead } from "./protocol.js";
 import { ShimError } from "./protocol.js";
 import { Deadline, pollUntilPass, shortErrorMessage } from "./step-util.js";
 
@@ -48,6 +48,8 @@ function belongsToPage(request: Request, page: Page): boolean {
 export class FlowNetwork {
 	readonly #context: BrowserContext;
 	readonly #responses = new Map<string, NamedResponse>();
+	/** The request each `RESPONSE` name selected (protocol 4.7). */
+	readonly #selectedRequests = new Map<string, Request>();
 	/** Names whose response came from an `HTTP` entry, with exact bytes. */
 	readonly #httpNames = new Set<string>();
 	readonly #bodies = new Map<NamedResponse, Promise<Buffer>>();
@@ -73,6 +75,7 @@ export class FlowNetwork {
 			context.off("request", this.#onRequest);
 			this.#requests = [];
 			this.#responses.clear();
+			this.#selectedRequests.clear();
 			this.#httpNames.clear();
 			this.#bodies.clear();
 		});
@@ -266,6 +269,37 @@ export class FlowNetwork {
 			);
 		}
 		this.#responses.set(name, response);
+		this.#selectedRequests.set(name, selected);
+	}
+
+	/**
+	 * Reads the request that a `RESPONSE` name selected (protocol 4.7): its
+	 * method, URL without a fragment, the headers the browser sent, and its
+	 * body within the 1 MiB limit.
+	 */
+	async readRequest(name: string, timeoutMs: number): Promise<RequestRead> {
+		const request = this.#selectedRequests.get(name);
+		if (request === undefined)
+			throw new ShimError("internal", `unknown request ${name}`);
+		const headers = await withinTimeout(request.headersArray(), timeoutMs);
+		const url = new URL(request.url());
+		url.hash = "";
+		const base = {
+			method: request.method(),
+			url: url.href,
+			headers: headers.map(
+				({ name: header, value }) => [header, value] as const,
+			),
+		};
+		const body = request.postDataBuffer() ?? Buffer.alloc(0);
+		if (body.length > maxBodyBytes) {
+			return {
+				...base,
+				bodyBase64: null,
+				bodyError: "the request exceeds the 1 MiB body limit",
+			};
+		}
+		return { ...base, bodyBase64: body.toString("base64"), bodyError: null };
 	}
 
 	/** The body within the SPEC 1 MiB limit, read once per response. */
