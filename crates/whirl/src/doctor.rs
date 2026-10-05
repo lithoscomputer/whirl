@@ -75,16 +75,15 @@ async fn inspect(browser: &str, progress: Progress<'_>) -> anyhow::Result<()> {
     let mut client = ShimClient::spawn(&launch)?;
     let result = async {
         let hello = client.hello().await.context("cannot contact the shim; run `whirl install` (development: `mise run dev`)")?;
-        ensure!(hello.protocol == 1, "shim protocol {} is unsupported; run `whirl install`", hello.protocol);
         ensure!(hello.playwright_version == install::PLAYWRIGHT_VERSION,
             "Playwright version is {}, expected {}; run `whirl install` (development: `mise run setup:shim`)", hello.playwright_version, install::PLAYWRIGHT_VERSION);
-        progress(&format!("Shim protocol 1, Playwright {}: OK", hello.playwright_version));
+        progress(&format!("Shim protocol {}, Playwright {}: OK", hello.protocol, hello.playwright_version));
         let params = StartFlowParams {
             browser: browser.to_owned(), headed: false,
             viewport: ViewportParams { width: 1280, height: 720 },
             storage_state_path: None, dialogs: "dismiss".to_owned(), allow_hosts: None,
             nav_timeout_ms: 10_000, user_agent: None, reduced_motion: None,
-            video: None, har_path: None, trace: false,
+            video: None, har_path: None, trace: false, open_shadow_roots: false,
         };
         if let Err(error) = client.start_flow(&params).await {
             let libraries = if cfg!(target_os = "linux") {

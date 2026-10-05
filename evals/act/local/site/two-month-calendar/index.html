@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Check-in date</title>
+<style>
+  .months { display: flex; gap: 2rem; }
+</style>
+</head>
+<body>
+<h1>Choose your check-in date</h1>
+<div class="months">
+<table class="month"><caption>February 2027</caption><thead><tr><th>Su</th><th>Mo</th><th>Tu</th><th>We</th><th>Th</th><th>Fr</th><th>Sa</th></tr></thead><tbody><tr><td></td><td><button data-date="February 1">1</button></td><td><button data-date="February 2">2</button></td><td><button data-date="February 3">3</button></td><td><button data-date="February 4">4</button></td><td><button data-date="February 5">5</button></td><td><button data-date="February 6">6</button></td></tr><tr><td><button data-date="February 7">7</button></td><td><button data-date="February 8">8</button></td><td><button data-date="February 9">9</button></td><td><button data-date="February 10">10</button></td><td><button data-date="February 11">11</button></td><td><button data-date="February 12">12</button></td><td><button data-date="February 13">13</button></td></tr><tr><td><button data-date="February 14">14</button></td><td><button data-date="February 15">15</button></td><td><button data-date="February 16">16</button></td><td><button data-date="February 17">17</button></td><td><button data-date="February 18">18</button></td><td><button data-date="February 19">19</button></td><td><button data-date="February 20">20</button></td></tr><tr><td><button data-date="February 21">21</button></td><td><button data-date="February 22">22</button></td><td><button data-date="February 23">23</button></td><td><button data-date="February 24">24</button></td><td><button data-date="February 25">25</button></td><td><button data-date="February 26">26</button></td><td><button data-date="February 27">27</button></td></tr><tr><td><button data-date="February 28">28</button></td></tr></tbody></table>
+<table class="month"><caption>March 2027</caption><thead><tr><th>Su</th><th>Mo</th><th>Tu</th><th>We</th><th>Th</th><th>Fr</th><th>Sa</th></tr></thead><tbody><tr><td></td><td><button data-date="March 1">1</button></td><td><button data-date="March 2">2</button></td><td><button data-date="March 3">3</button></td><td><button data-date="March 4">4</button></td><td><button data-date="March 5">5</button></td><td><button data-date="March 6">6</button></td></tr><tr><td><button data-date="March 7">7</button></td><td><button data-date="March 8">8</button></td><td><button data-date="March 9">9</button></td><td><button data-date="March 10">10</button></td><td><button data-date="March 11">11</button></td><td><button data-date="March 12">12</button></td><td><button data-date="March 13">13</button></td></tr><tr><td><button data-date="March 14">14</button></td><td><button data-date="March 15">15</button></td><td><button data-date="March 16">16</button></td><td><button data-date="March 17">17</button></td><td><button data-date="March 18">18</button></td><td><button data-date="March 19">19</button></td><td><button data-date="March 20">20</button></td></tr><tr><td><button data-date="March 21">21</button></td><td><button data-date="March 22">22</button></td><td><button data-date="March 23">23</button></td><td><button data-date="March 24">24</button></td><td><button data-date="March 25">25</button></td><td><button data-date="March 26">26</button></td><td><button data-date="March 27">27</button></td></tr><tr><td><button data-date="March 28">28</button></td><td><button data-date="March 29">29</button></td><td><button data-date="March 30">30</button></td><td><button data-date="March 31">31</button></td></tr></tbody></table>
+</div>
+<p>Check-in: <span data-testid="check-in">none</span></p>
+<script>
+  for (const button of document.querySelectorAll("button[data-date]")) {
+    button.addEventListener("click", () => {
+      document.querySelector("[data-testid=check-in]").textContent = button.dataset.date;
+    });
+  }
+</script>
+</body>
+</html>

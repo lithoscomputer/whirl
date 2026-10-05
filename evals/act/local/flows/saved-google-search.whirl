@@ -1,0 +1,10 @@
+[Options]
+base: {{env.EVAL_BASE}}
+model: {{model}}
+
+# Type, then press Enter, on a saved Google page.
+VISIT /saved/google/
+ACT "type \"OpenAI\" into the search bar" @60s
+ACT "press enter" @60s
+[Asserts]
+url contains /saved/google/openai.html

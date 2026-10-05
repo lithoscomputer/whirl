@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Framed board</title>
+  </head>
+  <body>
+    <h1>Framed board</h1>
+    <div id="outside" draggable="true">Outside card</div>
+    <iframe id="board" src="/drag-inner.html" width="480" height="240"></iframe>
+    <script>
+      document.getElementById("outside").addEventListener("dragstart", (event) => {
+        event.dataTransfer.setData("text/plain", "Outside card");
+      });
+    </script>
+  </body>
+</html>

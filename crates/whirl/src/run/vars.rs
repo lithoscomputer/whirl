@@ -1,4 +1,4 @@
-//! Variables (SPEC section 11): the layered variable store, value
+//! Variables (SPEC section 11): the layered, typed variable store, value
 //! interpolation, the `--variables-file` parser, and secret masking.
 //!
 //! Layers, later overriding earlier: `--variables-file` entries, `--var`
@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 use std::env;
 
+use crate::check::{Value as TypedValue, quote_json};
 use crate::lang::ast::{Span, Value, ValueSegment};
 
 /// The replacement text for a masked secret (SPEC 11).
@@ -85,12 +86,19 @@ pub(crate) enum VarError {
 
 /// The layered variable store. Base layers (`--variables-file`, then
 /// `--var` flags) are loaded before the run; captures overwrite as the
-/// file runs. The store owns the masking registry so `{{env.NAME}}`
-/// resolution and output masking stay in step.
+/// file runs. Every variable keeps its type (SPEC 11). The store owns
+/// the masking registry so `{{env.NAME}}` resolution and output masking
+/// stay in step.
 #[derive(Debug, Default)]
 pub(crate) struct VarStore {
-    values: HashMap<String, String>,
+    values: HashMap<String, TypedValue>,
     masker: Masker,
+}
+
+/// A variable's text form (SPEC 9.3). The store never holds a node set,
+/// the one type without one.
+fn text_of(value: &TypedValue) -> String {
+    value.text_form().unwrap_or_default()
 }
 
 impl VarStore {
@@ -98,23 +106,29 @@ impl VarStore {
         Self::default()
     }
 
-    /// Sets a variable. Later calls overwrite earlier ones, which gives
-    /// the SPEC 11 layering when layers are applied in order:
-    /// variables-file entries, `--var` flags, then captures.
-    pub(crate) fn set(&mut self, name: impl Into<String>, value: impl Into<String>) {
-        self.values.insert(name.into(), value.into());
+    /// Sets a typed variable: a capture. Later calls overwrite earlier
+    /// ones, which gives the SPEC 11 layering when layers are applied in
+    /// order: variables-file entries, `--var` flags, then captures.
+    pub(crate) fn set(&mut self, name: impl Into<String>, value: TypedValue) {
+        self.values.insert(name.into(), value);
     }
 
-    /// The current value of a variable, if defined.
-    pub(crate) fn get(&self, name: &str) -> Option<&str> {
-        self.values.get(name).map(String::as_str)
+    /// Sets a variable from `--variables-file` or `--var` text, typed the
+    /// way Hurl types `--variable` (SPEC 11).
+    pub(crate) fn set_input(&mut self, name: impl Into<String>, text: &str) {
+        self.set(name, TypedValue::infer(text));
+    }
+
+    /// The current text form of a variable, if defined.
+    pub(crate) fn get_text(&self, name: &str) -> Option<String> {
+        self.values.get(name).map(text_of)
     }
 
     /// Defines a `{{setup.name}}` value: a capture handed over from the
     /// file's setup flow (SPEC 11). Stored under `setup.name`, which no
     /// `{{name}}` reference can spell, so the namespaces never collide.
-    pub(crate) fn set_setup(&mut self, name: &str, value: impl Into<String>) {
-        self.values.insert(format!("setup.{name}"), value.into());
+    pub(crate) fn set_setup(&mut self, name: &str, value: TypedValue) {
+        self.values.insert(format!("setup.{name}"), value);
     }
 
     /// Records a secret for masking without defining a variable: the
@@ -143,11 +157,83 @@ impl VarStore {
     }
 
     /// Resolves a value to its final string (SPEC 11): literal segments
-    /// pass through, `{{name}}` reads the store, and `{{env.NAME}}`
-    /// reads the process environment at call time and records the value
-    /// in the masking registry.
+    /// pass through, `{{name}}` inserts the variable's text form, and
+    /// `{{env.NAME}}` reads the process environment at call time and
+    /// records the value in the masking registry.
     pub(crate) fn resolve(&mut self, value: &Value) -> Result<String, VarError> {
         self.resolve_with(value, |name| env::var(name).ok())
+    }
+
+    /// The typed value of an expected value that is exactly one bare
+    /// `{{name}}` reference (SPEC 11), or `None` for any other value.
+    pub(crate) fn resolve_typed(&mut self, value: &Value) -> Result<Option<TypedValue>, VarError> {
+        if value.quoted {
+            return Ok(None);
+        }
+        let [segment] = value.segments.as_slice() else {
+            return Ok(None);
+        };
+        self.lookup(segment, value.span, &|name| env::var(name).ok())
+    }
+
+    /// Interpolates a JSON template: an HTTP JSON body or a JSON literal
+    /// (SPEC 11). A `{{name}}` outside a string inserts the variable as
+    /// JSON; inside a string it inserts the text form with JSON escapes.
+    /// `\{{` writes a literal `{{`.
+    pub(crate) fn resolve_json(&mut self, template: &str, span: Span) -> Result<String, VarError> {
+        let chars: Vec<char> = template.chars().collect();
+        let mut out = String::with_capacity(template.len());
+        let mut in_string = false;
+        let mut escaped = false;
+        let mut pos = 0;
+        while pos < chars.len() {
+            let ch = chars[pos];
+            // `\\{{` inside a string is an escaped backslash before a
+            // reference, not the `\{{` escape.
+            if ch == '\\'
+                && !escaped
+                && chars.get(pos + 1) == Some(&'{')
+                && chars.get(pos + 2) == Some(&'{')
+            {
+                out.push_str("{{");
+                pos += 3;
+                continue;
+            }
+            if ch == '{' && chars.get(pos + 1) == Some(&'{') {
+                let close = chars[pos + 2..]
+                    .windows(2)
+                    .position(|pair| pair == ['}', '}']);
+                if let Some(close) = close {
+                    let name: String = chars[pos + 2..pos + 2 + close].iter().collect();
+                    let segment = reference_segment(&name);
+                    let typed = self
+                        .lookup(&segment, span, &|name| env::var(name).ok())?
+                        .expect("a reference segment always looks up");
+                    if in_string {
+                        let quoted = quote_json(&text_of(&typed));
+                        out.push_str(&quoted[1..quoted.len() - 1]);
+                    } else {
+                        out.push_str(&typed.to_json().unwrap_or_else(|| "null".to_owned()));
+                    }
+                    pos += close + 4;
+                    continue;
+                }
+            }
+            out.push(ch);
+            if in_string {
+                if escaped {
+                    escaped = false;
+                } else if ch == '\\' {
+                    escaped = true;
+                } else if ch == '"' {
+                    in_string = false;
+                }
+            } else if ch == '"' {
+                in_string = true;
+            }
+            pos += 1;
+        }
+        Ok(out)
     }
 
     /// [`Self::resolve`] with an injected environment lookup, so tests
@@ -159,35 +245,65 @@ impl VarStore {
     ) -> Result<String, VarError> {
         let mut out = String::new();
         for segment in &value.segments {
-            match segment {
-                ValueSegment::Literal(text) => out.push_str(text),
-                ValueSegment::Var(name) => {
-                    let resolved = self.values.get(name).ok_or_else(|| VarError::Undefined {
-                        name: name.clone(),
-                        span: value.span,
-                    })?;
-                    out.push_str(resolved);
-                }
-                ValueSegment::EnvVar(name) => {
-                    let resolved = env_lookup(name).ok_or_else(|| VarError::UnsetEnv {
-                        name: name.clone(),
-                        span: value.span,
-                    })?;
-                    self.masker.record(&resolved);
-                    out.push_str(&resolved);
-                }
-                ValueSegment::SetupVar(name) => {
-                    let resolved = self.values.get(&format!("setup.{name}")).ok_or_else(|| {
-                        VarError::UndefinedSetup {
-                            name: name.clone(),
-                            span: value.span,
-                        }
-                    })?;
-                    out.push_str(resolved);
+            match self.lookup(segment, value.span, &env_lookup)? {
+                Some(typed) => out.push_str(&text_of(&typed)),
+                None => {
+                    if let ValueSegment::Literal(text) = segment {
+                        out.push_str(text);
+                    }
                 }
             }
         }
         Ok(out)
+    }
+
+    /// The typed value of one reference segment, or `None` for a literal.
+    /// An env value is typed like `--variable` and recorded for masking.
+    fn lookup(
+        &mut self,
+        segment: &ValueSegment,
+        span: Span,
+        env_lookup: &dyn Fn(&str) -> Option<String>,
+    ) -> Result<Option<TypedValue>, VarError> {
+        Ok(Some(match segment {
+            ValueSegment::Literal(_) => return Ok(None),
+            ValueSegment::Var(name) => {
+                self.values
+                    .get(name)
+                    .cloned()
+                    .ok_or_else(|| VarError::Undefined {
+                        name: name.clone(),
+                        span,
+                    })?
+            }
+            ValueSegment::EnvVar(name) => {
+                let resolved = env_lookup(name).ok_or_else(|| VarError::UnsetEnv {
+                    name: name.clone(),
+                    span,
+                })?;
+                self.masker.record(&resolved);
+                TypedValue::infer(&resolved)
+            }
+            ValueSegment::SetupVar(name) => self
+                .values
+                .get(&format!("setup.{name}"))
+                .cloned()
+                .ok_or_else(|| VarError::UndefinedSetup {
+                    name: name.clone(),
+                    span,
+                })?,
+        }))
+    }
+}
+
+/// The segment a `{{...}}` reference name spells.
+fn reference_segment(name: &str) -> ValueSegment {
+    if let Some(env_name) = name.strip_prefix("env.") {
+        ValueSegment::EnvVar(env_name.to_owned())
+    } else if let Some(setup_name) = name.strip_prefix("setup.") {
+        ValueSegment::SetupVar(setup_name.to_owned())
+    } else {
+        ValueSegment::Var(name.to_owned())
     }
 }
 
@@ -283,8 +399,8 @@ mod tests {
     #[test]
     fn setup_captures_resolve_under_their_own_namespace() {
         let mut vars = VarStore::new();
-        vars.set("user_id", "from-var");
-        vars.set_setup("user_id", "from-setup");
+        vars.set_input("user_id", "from-var");
+        vars.set_setup("user_id", TypedValue::String("from-setup".to_owned()));
         vars.record_secret("from-setup");
         let value = Value {
             segments: vec![
@@ -324,20 +440,20 @@ mod tests {
         let mut store = VarStore::new();
         for (name, value) in parse_variables_file("from_file=1\nshared=file").expect("file parses")
         {
-            store.set(name, value);
+            store.set_input(name, &value);
         }
-        store.set("shared", "flag");
-        store.set("captured", "cap");
-        store.set("captured", "cap2");
-        assert_eq!(store.get("from_file"), Some("1"));
-        assert_eq!(store.get("shared"), Some("flag"));
-        assert_eq!(store.get("captured"), Some("cap2"));
+        store.set_input("shared", "flag");
+        store.set_input("captured", "cap");
+        store.set_input("captured", "cap2");
+        assert_eq!(store.get_text("from_file").as_deref(), Some("1"));
+        assert_eq!(store.get_text("shared").as_deref(), Some("flag"));
+        assert_eq!(store.get_text("captured").as_deref(), Some("cap2"));
     }
 
     #[test]
     fn resolves_literals_variables_and_env() {
         let mut store = VarStore::new();
-        store.set("user", "alice");
+        store.set_input("user", "alice");
         let value = fill_value("\"{{user}}:{{env.SECRET}}!\"");
         let resolved = store
             .resolve_with(&value, fake_env("SECRET", "s3cret"))
@@ -398,6 +514,69 @@ mod tests {
         let value = fill_value("{{env.WHIRL_VARS_TEST_NEVER_SET}}");
         let error = store.resolve(&value).expect_err("unset env");
         assert!(matches!(error, VarError::UnsetEnv { .. }), "got {error:?}");
+    }
+
+    #[test]
+    fn input_variables_are_typed_like_hurl_variables() {
+        let mut store = VarStore::new();
+        store.set_input("count", "42");
+        store.set_input("zip", "007");
+        store.set_input("flag", "true");
+        assert!(matches!(store.values["count"], TypedValue::Number(_)));
+        assert!(matches!(store.values["zip"], TypedValue::String(_)));
+        assert!(matches!(store.values["flag"], TypedValue::Bool(true)));
+    }
+
+    #[test]
+    fn a_bare_whole_reference_keeps_its_type() {
+        let mut store = VarStore::new();
+        store.set_input("count", "42");
+        let bare = fill_value("{{count}}");
+        assert!(matches!(
+            store.resolve_typed(&bare).expect("resolves"),
+            Some(TypedValue::Number(_))
+        ));
+        let quoted = fill_value("\"{{count}}\"");
+        assert!(store.resolve_typed(&quoted).expect("resolves").is_none());
+        let joined = fill_value("{{count}}x");
+        assert!(store.resolve_typed(&joined).expect("resolves").is_none());
+    }
+
+    #[test]
+    fn json_templates_insert_json_outside_strings_and_text_inside() {
+        let mut store = VarStore::new();
+        store.set_input("count", "42");
+        store.set_input("name", "Ada \"Lovelace\"");
+        let span = Span {
+            line:   1,
+            column: 1,
+            len:    1,
+        };
+        let json = store
+            .resolve_json(
+                r#"{"n": {{count}}, "who": {{name}}, "hi": "Hi {{name}}", "raw": "\{{x}}"}"#,
+                span,
+            )
+            .expect("resolves");
+        assert_eq!(
+            json,
+            r#"{"n": 42, "who": "Ada \"Lovelace\"", "hi": "Hi Ada \"Lovelace\"", "raw": "{{x}}"}"#
+        );
+    }
+
+    #[test]
+    fn json_templates_keep_an_escaped_backslash_before_a_reference() {
+        let mut store = VarStore::new();
+        store.set_input("dir", "tmp");
+        let span = Span {
+            line:   1,
+            column: 1,
+            len:    1,
+        };
+        let json = store
+            .resolve_json(r#"{"path": "C:\\{{dir}}", "raw": "\\\{{dir}}"}"#, span)
+            .expect("resolves");
+        assert_eq!(json, r#"{"path": "C:\\tmp", "raw": "\\{{dir}}"}"#);
     }
 
     #[test]

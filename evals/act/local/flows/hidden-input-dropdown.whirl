@@ -1,0 +1,9 @@
+[Options]
+base: {{env.EVAL_BASE}}
+model: {{model}}
+
+# Choose from a dropdown that stores its value in a hidden input.
+VISIT /hidden-input-dropdown/
+ACT "choose Blue from the color dropdown" @60s
+[Asserts]
+css:"input[name=color]" value == blue

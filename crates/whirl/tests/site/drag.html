@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Boards</title>
+    <style>
+      section { display: flex; gap: 24px; margin: 16px 0; }
+      .column { width: 160px; min-height: 90px; padding: 8px; border: 1px solid #888; }
+      .card { padding: 6px; margin: 4px 0; background: #eef; touch-action: none; user-select: none; }
+    </style>
+  </head>
+  <body>
+    <h1>Boards</h1>
+
+    <!-- Native HTML5 drag and drop. -->
+    <section>
+      <div class="column" data-testid="native-todo">
+        <div class="card" draggable="true">Write spec</div>
+        <div class="card" draggable="true">to</div>
+      </div>
+      <div class="column native-drop" data-testid="native-done">Done</div>
+    </section>
+
+    <!-- Pointer events; a drag starts after the pointer moves 8px. -->
+    <section>
+      <div class="column" data-testid="distance-todo">
+        <div class="card pointer-card" data-activation="distance">Pointer card</div>
+      </div>
+      <div class="column pointer-drop" data-testid="distance-done">Done</div>
+    </section>
+
+    <!-- Pointer events; a drag starts after the button stays down 300ms,
+         and moving more than 5px sooner cancels it. -->
+    <section>
+      <div class="column" data-testid="delay-todo">
+        <div class="card pointer-card" data-activation="delay">Held card</div>
+      </div>
+      <div class="column pointer-drop" data-testid="delay-done">Done</div>
+    </section>
+    <p>Last pointer drag: <span id="pointer-log">none</span></p>
+
+    <script>
+      let dragged = null;
+      for (const card of document.querySelectorAll("[draggable=true]")) {
+        card.addEventListener("dragstart", (event) => {
+          dragged = card;
+          event.dataTransfer.setData("text/plain", card.textContent);
+        });
+      }
+      for (const column of document.querySelectorAll(".native-drop")) {
+        column.addEventListener("dragover", (event) => event.preventDefault());
+        column.addEventListener("drop", (event) => {
+          event.preventDefault();
+          if (dragged) column.append(dragged);
+        });
+      }
+
+      const log = document.getElementById("pointer-log");
+      for (const card of document.querySelectorAll(".pointer-card")) {
+        card.addEventListener("pointerdown", (event) => {
+          const start = { x: event.clientX, y: event.clientY };
+          let active = false;
+          let timer = null;
+          const activate = () => {
+            active = true;
+            card.style.pointerEvents = "none";
+          };
+          if (card.dataset.activation === "delay") {
+            timer = setTimeout(activate, 300);
+          }
+          const move = (moveEvent) => {
+            const distance = Math.hypot(moveEvent.clientX - start.x, moveEvent.clientY - start.y);
+            if (card.dataset.activation === "distance" && !active && distance > 8) activate();
+            if (card.dataset.activation === "delay" && !active && distance > 5) {
+              clearTimeout(timer);
+              log.textContent = "cancelled";
+              finish();
+              return;
+            }
+            if (active) {
+              card.style.transform = `translate(${moveEvent.clientX - start.x}px, ${moveEvent.clientY - start.y}px)`;
+            }
+          };
+          const up = (upEvent) => {
+            clearTimeout(timer);
+            if (active) {
+              const column = document.elementFromPoint(upEvent.clientX, upEvent.clientY)?.closest(".pointer-drop");
+              if (column) column.append(card);
+              log.textContent = column ? "dropped" : "missed";
+            }
+            finish();
+          };
+          const finish = () => {
+            card.style.pointerEvents = "";
+            card.style.transform = "";
+            document.removeEventListener("pointermove", move);
+            document.removeEventListener("pointerup", up);
+          };
+          document.addEventListener("pointermove", move);
+          document.addEventListener("pointerup", up);
+        });
+      }
+    </script>
+  </body>
+</html>

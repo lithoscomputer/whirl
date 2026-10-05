@@ -1,0 +1,13 @@
+[Options]
+model: {{model}}
+user-agent: chrome
+
+# precheck: the home page and its keyword links are present.
+VISIT https://www.bidnetdirect.com/
+[Asserts]
+role:link Construction count >= 1
+
+# Follow a keyword link.
+ACT "click on the \"Construction\" keyword" @60s
+[Asserts]
+url contains keywords=Construction

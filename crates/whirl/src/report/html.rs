@@ -406,9 +406,10 @@ fn render_entry(
         for (name, value) in &entry.captures {
             write!(
                 output,
-                "<dt>{}</dt><dd><code>{}</code></dd>",
+                "<dt>{} <small>{}</small></dt><dd><code>{}</code></dd>",
                 escape(name),
-                escape(value)
+                escape(&value.value_type),
+                escape(&value.display())
             )?;
         }
         write!(output, "</dl></details>")?;
@@ -440,10 +441,22 @@ fn render_act(output: &mut impl io::Write, step: &StepReport) -> io::Result<()> 
         act.usage.input_tokens,
         act.usage.output_tokens
     )?;
-    for action in &act.actions {
+    if let Some(jev) = act.usage.jev {
         write!(
             output,
-            "<dt>Ran</dt><dd><code>{}</code> {}</dd>",
+            "<dt>Jev</dt><dd>{} request(s) · {} input and {} output tokens</dd>",
+            jev.requests, jev.input_tokens, jev.output_tokens
+        )?;
+    }
+    for action in &act.actions {
+        let chosen_by = if action.planned_by == "jev" {
+            " · chosen by Jev"
+        } else {
+            ""
+        };
+        write!(
+            output,
+            "<dt>Ran</dt><dd><code>{}</code> {}{chosen_by}</dd>",
             escape(&action.line),
             escape(&action.description)
         )?;

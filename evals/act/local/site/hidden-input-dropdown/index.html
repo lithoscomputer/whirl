@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Dropdown with a hidden input</title>
+<style>
+  li { cursor: pointer; }
+</style>
+</head>
+<body>
+<h1>Customize your mug</h1>
+<form>
+  <span id="color-label">Color</span>
+  <input type="hidden" name="color" value="">
+  <button type="button" id="color" aria-labelledby="color-label color" aria-expanded="false">Choose a color</button>
+  <ul id="colors" hidden>
+    <li data-value="red">Red</li>
+    <li data-value="blue">Blue</li>
+    <li data-value="green">Green</li>
+  </ul>
+</form>
+<script>
+  const button = document.getElementById("color");
+  const list = document.getElementById("colors");
+  button.addEventListener("click", () => {
+    list.hidden = !list.hidden;
+    button.setAttribute("aria-expanded", String(!list.hidden));
+  });
+  for (const item of list.querySelectorAll("li")) {
+    item.addEventListener("click", () => {
+      document.querySelector("input[name=color]").value = item.dataset.value;
+      button.textContent = item.textContent;
+      list.hidden = true;
+      button.setAttribute("aria-expanded", "false");
+    });
+  }
+</script>
+</body>
+</html>

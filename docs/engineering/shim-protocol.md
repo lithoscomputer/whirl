@@ -50,10 +50,11 @@ Error object:
 ### `hello`
 
 Sent once after spawn. Params: `{}`. Result:
-`{"protocol": 1, "playwrightVersion": "1.62.1", "ffmpegPath": "abs path" | null}`.
+`{"protocol": 2, "playwrightVersion": "1.62.1", "ffmpegPath": "abs path" | null}`.
 `ffmpegPath` is Playwright's bundled ffmpeg, which every video recording
-needs; `null` means it is not installed. `whirl doctor` reports it. Older
-protocol 1 shims omit the field.
+needs; `null` means it is not installed. `whirl doctor` reports it.
+Protocol 2 replaces value checks and captures with the `read` and
+`readResponse` commands (sections 4.4 and 4.5).
 
 ### `startFlow`
 
@@ -72,7 +73,8 @@ Creates the browser context and page for one flow. Params:
   "reducedMotion": "reduce" | "no-preference" | null,
   "video": {"tempDir": "abs path", "finalPath": "abs path", "fps": 60 | null} | null,
   "harPath": "abs path" | null,
-  "trace": false
+  "trace": false,
+  "openShadowRoots": false
 }
 ```
 
@@ -94,6 +96,10 @@ Result: `{"browserVersion": "...", "nodeVersion": "...", "playwrightVersion": ".
 - `reducedMotion` emulates the `prefers-reduced-motion` media feature for
   the context; `null` keeps the engine default.
 - `trace: true` starts Playwright tracing (screenshots and snapshots on).
+- `openShadowRoots: true` adds an init script to the context that makes every
+  `attachShadow` call create an open root, so the AI snapshot and locators see
+  inside roots a page asks to close. Rust sets it when the file uses `ACT`
+  (SPEC 7.4).
 - `video` records video into `tempDir`; at `endFlow` the shim moves the
   recording to `finalPath`. With `fps: null` the shim uses Playwright's
   `recordVideo` at its fixed 25 frames per second. With a number (Chromium
@@ -101,8 +107,18 @@ Result: `{"browserVersion": "...", "nodeVersion": "...", "playwrightVersion": ".
   page's CDP screencast through Playwright's bundled ffmpeg at that rate,
   holding the last frame while the page is still. A number for another
   engine, or a missing ffmpeg, fails `startFlow` with kind `"internal"`.
-  An ffmpeg failure at `endFlow` fails `endFlow` the same way. `cancelFlow`
-  discards an in-progress screencast recording.
+  When no screencast frame has arrived by `endFlow`, the shim captures the
+  page with `Page.captureScreenshot` and holds that frame from the start
+  of the recording. For a page that has not painted yet, as right after a
+  navigation, Chrome answers "Unable to capture screenshot", so the shim
+  waits 50 ms and tries again, for up to 1 second. A screencast frame that
+  arrives meanwhile serves as well. When the shim still has no frame, when
+  the capture fails for another reason, or after 5 seconds in all, the
+  recording holds a white frame of the viewport's size, and the shim
+  reports why in `videoBlank`. When ffmpeg fails, or does not finish
+  within 10 seconds, at `endFlow`, the shim discards the recording and
+  reports why in `videoSkipped`. `cancelFlow` discards an in-progress
+  screencast recording.
 
 ### `endFlow`
 
@@ -115,9 +131,14 @@ Ends the flow and closes the context. Params:
 - `saveStoragePath` writes the context storage state before close.
 - `tracePath` exports the trace there; `null` discards a running trace.
 
-Result: `{"blockedHosts": ["host", ...], "videoPath": "abs path" | null}`.
+Result: `{"blockedHosts": ["host", ...], "videoPath": "abs path" | null, "videoSkipped": "reason" | null, "videoBlank": "reason" | null}`.
 `blockedHosts` is the sorted, de-duplicated set of hostnames blocked by
-`allowHosts` during the flow.
+`allowHosts` during the flow. `videoSkipped` says why the shim skipped a
+requested recording, such as an ffmpeg failure. `videoBlank` says why a
+saved recording holds only a white frame, such as a failed capture of a
+crashed page; `videoPath` still names the recording. Rust reports each
+as a warning and does not change the flow's status. Older shims omit
+them.
 
 ### `cancelFlow`
 
@@ -132,7 +153,7 @@ Params: `{}`. Result: `{}`, then the shim closes the browser and exits 0.
 
 ## 4. Step commands
 
-Each step command runs one SPEC line. Common params on every step command:
+Most step commands run one SPEC line. `read` and `readResponse` read one value for a check or capture that Rust evaluates, and `traceGroup` and `traceGroupEnd` group those reads in the trace. Common params on every step command:
 
 - `timeoutMs`: the budget for this step. The shim passes it to the underlying
   Playwright call or `expect` and must not retry past it. Rust computes it
@@ -140,8 +161,10 @@ Each step command runs one SPEC line. Common params on every step command:
   is smallest).
 - `entryStart`: optional boolean; true resets popup and request observation windows before the step runs. Rust sets it on the first action of each entry. False or absent preserves the window.
 - `title`: the rendered, secret-masked step text (for example
-  `FILL label:"Password" ***`). When tracing is on, the shim wraps the step
-  in `tracing.group(title)` so trace step titles never contain secrets.
+  `FILL label:"Password" ***`), or `null`. When tracing is on, the shim wraps
+  a step with a title in `tracing.group(title)` so trace step titles never
+  contain secrets. A step with `title: null` gets no group of its own. Rust
+  sends the reads of one check with `title: null`, inside one `traceGroup`.
 
 Commands and their extra params (result `{}` unless noted):
 
@@ -153,7 +176,7 @@ Commands and their extra params (result `{}` unless noted):
 | `popup` | `name` — name an unnamed popup from the selected tab in the current entry, without selecting it |
 | `tab` | `name` — select a named open tab |
 | `close` | `name` — close a named tab without changing selection |
-| `click` | `locator` |
+| `click` | `locator`, `button` (`left`, `right`, or `middle`); `CLICK`, `RIGHTCLICK`, and `MIDDLECLICK` |
 | `dblclick` | `locator` |
 | `fill` | `locator`, `value` |
 | `type` | `locator`, `text` (one key event per character via `pressSequentially`) |
@@ -161,15 +184,21 @@ Commands and their extra params (result `{}` unless noted):
 | `checkbox` | `locator`, `checked` (bool; CHECK/UNCHECK) |
 | `selectOption` | `locator`, `label` |
 | `hover` | `locator` |
+| `drag` | `locator` (the element to drag), `target` (the element to drop it on); press, hold 500 ms, move in 10 steps, release (SPEC 7) |
+| `scroll` | `locator` (or `null` for the page), `motion`: `{"type": "intoView"}`, `{"type": "chunk", "direction": "down"}` (or `up`, `left`, `right`), or `{"type": "position", "percent": 50}`; SPEC 7 says which box scrolls |
 | `upload` | `locator`, `path` (absolute; Rust resolved it) |
+| `drop` | `locator`, `path` (absolute; Rust resolved it) — `locator.drop({ files: path })`; an `action` error when the file does not exist or the element's `dragover` does not call `preventDefault()` (SPEC 7) |
 | `screenshot` | `path` (absolute .png; full page) |
 | `snapshot` | `baselinePath`, `actualPath`, `diffPath`, `update` (bool) |
 | `evalAction` | `script` |
 | `store` | `scope` (`"local"` \| `"session"` \| `"cookie"`), `key`, `value` — writes one `localStorage` or `sessionStorage` entry on the current origin, or one cookie for the current page's URL (host, path `/`, no attributes); `cookie` on a non-http(s) page is an `action` error |
-| `ariaSnapshot` | none; result `{"snapshot": "..."}`, the selected tab's `page.ariaSnapshot({ mode: "ai" })`, for `ACT` (SPEC 7.4) |
+| `ariaSnapshot` | `locator` (or `null`); result `{"snapshot": "..."}`, the selected tab's `page.ariaSnapshot({ mode: "ai" })`, or that one element's `locator.ariaSnapshot({ mode: "ai" })` with the usual waiting and strictness, for `ACT` (SPEC 7.4) |
 | `page` | `expect` (section 4.2) |
-| `assert` | `spec` (section 4.3) |
-| `capture` | `source`, `filter` (section 4.4); result `{"value": "..."}` |
+| `assert` | `spec` (section 4.3) — state checks and tab closure only |
+| `read` | `subject` (section 4.4); result `{"type": "value", "value": ...}` or `{"type": "missing", "reason": "no-element" \| "absent-attribute"}` |
+| `readResponse` | `name`, `body` (bool) (section 4.5); result `{"status": 201, "url": "...", "headers": [[name, value], ...], "bodyBase64": "..." \| null, "bodyError": "..." \| null, "bodyMayBeDecoded": false}` |
+| `traceGroup` | none; opens one trace group named by `title` for the reads of one check |
+| `traceGroupEnd` | none; closes the group that `traceGroup` opened |
 
 Semantics the shim owns (per SPEC sections 7, 9, 15):
 
@@ -186,7 +215,17 @@ Semantics the shim owns (per SPEC sections 7, 9, 15):
   `"snapshot-missing-baseline"` (Rust reports it as a runtime error). With
   `update: true`, write the settled frame to `baselinePath` and reply
   `{"updated": true}`.
-- `evalAction` / `eval` capture source: run the script as the body of an
+- `ariaSnapshot` names each iframe, which Playwright writes without a name.
+  Right after the snapshot, the shim resolves each iframe line's ref with
+  `aria-ref=`, in any frame and across origins, and puts the iframe's
+  `aria-label`, or else its `title`, after the role in double quotes with
+  JSON escapes: `- iframe "Incident history" [ref=e4]:`. The shim does not
+  wrap such a line in YAML single quotes, as Playwright does for a name that
+  holds `: `, because Rust's line parsers read the role from the start of
+  the line. An iframe without a name, a ref that no longer resolves, a failed
+  read, or a spent `timeoutMs` leaves the line as it was; the names never
+  fail the step.
+- `evalAction` and an `eval` read: run the script as the body of an
   async function in the page main world via `page.evaluate`. If the script
   parses as a single expression, run `return (script);`; otherwise run it as
   written. Await a returned promise. Syntax errors, thrown exceptions,
@@ -209,7 +248,7 @@ A locator is an array of segments, in chain order:
   {"type": "testid", "id": "cart-badge"},
   {"type": "css", "selector": ".foo > .bar"},
   {"type": "frame", "selector": "#payment-element iframe"},
-  {"type": "nth", "index": 1},
+  {"type": "nth", "index": 0},
   {"type": "ref", "ref": "e12"}
 ]
 ```
@@ -219,14 +258,17 @@ A locator is an array of segments, in chain order:
 that iframe before `contentFrame()` enters it. The next non-`nth` segment runs
 inside the frame. Rust requires an element segment after the final frame.
 
-`nth.index` is 1-based; the shim subtracts 1. Rust guarantees `nth` is never
-first and `index >= 1`. The mapping to Playwright calls is SPEC section 6.1.
+`nth.index` is 0-based, and a negative index counts from the end. The shim
+passes it to `.nth(index)` unchanged. Rust guarantees `nth` is never first.
+The mapping to Playwright calls is SPEC section 6.1.
 
 `ref` names an element from an `ariaSnapshot` result, such as `e12`, or `f1e3`
 inside an iframe. The shim resolves it with `page.locator("aria-ref=e12")`.
 Only Rust creates `ref` segments, as the only segment of an `ACT` action's
 locator, and only for refs in the latest snapshot. `.whirl` files have no
-syntax for them.
+syntax for them. For `click`, `dblclick`, `hover`, and both locators of `drag`
+on a `ref` locator, the shim points at the deepest descendant that shows the
+element's text, when one exists, instead of the element's center (SPEC 7.4).
 
 Popup names are local to a flow; `main` names the original page. The shim records
 popup events before actions and attaches dialog handling to every page. It keeps
@@ -237,13 +279,8 @@ A tab closure assertion uses the `assert` command with
 `{"subject":{"type":"tab","name":"payment"},"check":{"type":"closed"}}`.
 It can run after the selected tab closes; no page evaluation is required.
 
-Named responses use the `assert` command with
-`{"subject":{"type":"response","name":"order"},"check":{"type":"status","op":"==","value":201}}`
-or `{"subject":{"type":"response","name":"order"},"check":{"type":"value","field":{"type":"json","pointer":"/status"},"op":{"op":"==","value":"paid"}}}`.
-A response field is `{"type":"status"}`, `{"type":"header","name":"content-type"}`,
-or `{"type":"json","pointer":"/id"}`. The `capture` command accepts
-`{"type":"response","name":"order","field":{"type":"json","pointer":"/id"}}`
-as its source, with the existing regex filter and string result contract.
+Rust reads a named response with `readResponse` (section 4.5) and evaluates
+every response check and capture itself (ADR `evaluate-checks-in-rust`).
 
 `http` uses the runtime's Fetch API with redirects disabled. It checks the host
 allowlist before sending, reads the completed body within the step timeout, and
@@ -256,9 +293,9 @@ The shim listens to context request events before navigation so popup initial
 requests are included. Selection is scoped to the current entry and selected
 tab, including its frames, and uses the first method/URL match regardless of
 outcome. Named responses survive entry resets. Response checks never reselect
-a retry. JSON reads wait for body completion, cache the parsed body, and enforce
-the step deadline and SPEC body limit. Observation listeners and references are
-released when the context closes.
+a retry. `readResponse` waits for body completion and enforces the step
+deadline and SPEC body limit; Rust caches its result for the flow. Observation
+listeners and references are released when the context closes.
 
 ### 4.2 PAGE expectation
 
@@ -274,67 +311,80 @@ Retried like an assert up to `timeoutMs`. `path` compares the URL path only;
 fragment. `url` compares the full URL string. `regex` tests the full URL.
 Failures use error kind `"assert"` with `expected`/`actual` set.
 
+In a `regex` object, `source` carries the pattern with the `\/` delimiter
+escape unescaped to a plain `/`; all other escape sequences are verbatim.
+`flags` is zero or more of `i`, `s`, `m` in that order. The shim adds the `u`
+flag when it compiles the pattern (SPEC section 3.1).
+
 ### 4.3 Assert spec
 
 ```json
 {
-  "subject": {"type": "locator", "locator": [...]} | {"type": "url"} | {"type": "title"},
-  "check":
-    {"type": "state", "state": "visible" | "hidden" | "enabled" | "disabled" | "checked" | "unchecked" | "focused"}
-  | {"type": "text", "op": <strop>}
-  | {"type": "value", "op": <strop>}
-  | {"type": "attr", "name": "aria-expanded", "op": <strop>}
-  | {"type": "count", "op": "==" | "!=" | "<" | "<=" | ">" | ">=", "value": 3}
+  "subject": {"type": "locator", "locator": [...]},
+  "check": {"type": "state", "state": "visible" | "hidden" | "enabled" | "disabled" | "checked" | "unchecked" | "focused"}
 }
+{"subject": {"type": "tab", "name": "payment"}, "check": {"type": "closed"}}
 ```
 
-String operator `<strop>`:
+The shim compiles each state check to a Playwright web-first assertion
+(SPEC section 15). `hidden` passes on zero matches; more than one match fails
+immediately with candidates, including for `hidden`. Failures reply with
+error kind `"assert"` and `expected`/`actual` strings.
 
-```json
-{"op": "==" | "!=" | "contains", "value": "text"}
-{"op": "matches", "source": "Order #\\w+", "flags": "i"}
-```
-
-A `url` or `title` subject always carries a check of type `"text"` with a
-string operator; the shim picks `toHaveURL`/`toHaveTitle` from the subject.
-In every regex object (`matches` operators, PAGE `regex`, capture `filter`),
-`source` carries the pattern with the `\/` delimiter escape unescaped to a
-plain `/`; all other escape sequences are verbatim. `flags` is zero or more
-of `i`, `s`, `m` in that order.
-
-The shim compiles each check to a Playwright web-first assertion where one
-exists and to a shim-owned poll loop with the same timeout otherwise (SPEC
-section 15). SPEC section 9 semantics apply: `hidden` passes on zero matches;
-more than one match fails immediately with candidates (including for
-`hidden`); `attr` with `!=` also passes when the attribute is absent; `count`
-accepts any number of matches. Failures reply with error kind `"assert"` and
-`expected`/`actual` strings.
-
-### 4.4 Capture source
+### 4.4 Read subject
 
 ```json
 {"type": "element", "locator": [...], "extract":
-    {"type": "text"} | {"type": "value"} | {"type": "count"} | {"type": "attr", "name": "href"}}
+    {"type": "text"} | {"type": "value"} | {"type": "attr", "name": "href"}}
+{"type": "count", "locator": [...]}
 {"type": "url"}
 {"type": "title"}
-{"type": "eval", "script": "document.title.trim()"}
+{"type": "eval", "script": "window.dataLayer"}
 ```
 
-`filter` is `{"source": "Order #(\\w+)", "flags": ""} | null`. The shim
-applies it to the extracted string and returns capture group 1, or the whole
-match when the pattern has no group; no match is error kind `"capture"`.
+A `read` makes one attempt and never waits; Rust owns the retry loop (SPEC
+section 9.7). It replies with `{"type": "value", "value": ...}` or
+`{"type": "missing", "reason": "no-element" | "absent-attribute"}`:
 
-- `text`, `value`, and `attr` wait for exactly one element up to `timeoutMs`;
-  after the element resolves, an absent attribute is an immediate error kind
-  `"capture"`.
-- `count` never waits; it returns the current match count as a decimal
-  string.
+- `element` resolves the locator once. More than one match fails at once
+  with error kind `"strictness"` and candidates. No match, or an absent
+  attribute on the element, is `missing`. `text` returns the normalized text
+  content (SPEC section 9.2) as Playwright's text engine sees it: text nodes
+  and shadow roots, without `script`, `noscript`, `style`, or document head
+  content. `value` returns the input value, and `attr` the attribute value,
+  each as a string. `value` on an element that is not an
+  input is error kind `"read"`. An element that detaches during the read
+  reads as `missing`.
+- `count` returns the current number of matches as a JSON number. It is never
+  `missing`.
+- For `element` and `count`, a `frame` segment that matches more than one
+  iframe fails at once with error kind `"strictness"` and the iframes as
+  candidates.
+- `url` returns `page.url()`, and `title` the normalized document title.
 - `eval` runs under the `evalAction` rules, then applies the SPEC section 10
-  result contract inside the page: a string is returned as-is; `null`,
-  booleans, finite numbers, and arrays/plain objects containing only those
-  are returned as compact JSON; anything else is error kind `"eval-result"`.
-  Classification and serialization happen in the page so the result is
-  independent of Playwright's transport.
+  result contract inside the page: a string, `null`, a boolean, a finite
+  number, or an array or plain object that contains only those. The shim
+  returns that JSON value. Anything else is error kind `"eval-result"`.
+  Classification happens in the page, so the result is independent of
+  Playwright's transport.
+
+### 4.5 Read response
+
+`readResponse` takes `name`, a name from `response` or the implicit name of an
+`http` step, and `body`. It replies with `status` (a number), `url` (the
+request URL, for `location`), and `headers` (an array of `[name, value]`
+pairs in received order). With `body: true` it also waits for the complete
+body within `timeoutMs` and returns it as `bodyBase64`, after content
+decoding. A body that cannot be read, such as a redirect's or one over the
+SPEC body limit, comes back as `bodyError` text with `bodyBase64: null`, so
+status and header checks still work. Rust reads the body only for a check
+that needs it. An unknown name is error kind `"internal"`.
+
+`bodyMayBeDecoded` is true for a `response` in Chromium or WebKit. Those
+browsers can hand a text body back already decoded, and Playwright then
+encodes it as UTF-8. Rust undoes that decoding when the `Content-Type` names a
+charset other than UTF-8 that can encode the text (SPEC section 9.2). It is
+false for an `http` step and in Firefox, which give the exact bytes.
 
 ## 5. Timeouts
 
@@ -362,19 +412,21 @@ normally succeeds.
 | --- | --- |
 | `timeout` | The step's Playwright call or poll loop hit `timeoutMs` |
 | `strictness` | Locator matched more than one element (`candidates` set) |
-| `assert` | Check failed at timeout (`expected`/`actual` set) |
+| `assert` | State check, tab closure, or `PAGE` failed at timeout (`expected`/`actual` set) |
 | `snapshot-mismatch` | Stable visual difference (actual/diff written) |
 | `snapshot-missing-baseline` | No baseline image and `update` false |
 | `eval` | Script syntax error, exception, or rejection |
-| `eval-result` | Capture `eval` result outside the section 10 contract |
-| `capture` | Extraction failed (absent attribute, regex mismatch) |
+| `eval-result` | `eval` read result outside the SPEC section 10 contract |
+| `read` | A read failed: `value` on an element that is not an input, or page churn mid-read |
 | `action` | Actionability failure other than the above |
+| `stale-ref` | A `ref` locator (section 4.1) no longer matches an element, because the page replaced it after the snapshot. The shim reports it at once instead of waiting. |
 | `cancelled` | Step aborted by `cancelFlow` |
 | `internal` | Shim bug or unexpected Playwright error |
 
 Rust maps kinds to reporting: `timeout`, `strictness`, `assert`,
-`snapshot-mismatch`, `eval`, `eval-result`, `capture`, and `action` are test
-failures (exit 1); `snapshot-missing-baseline` and `internal` are runtime
+`snapshot-mismatch`, `eval`, `eval-result`, `read`, `action`, and `stale-ref`
+are test failures (exit 1); inside a page check, `read`, `eval`, and `eval-result`
+mean "not passing yet" and Rust reads again; `snapshot-missing-baseline` and `internal` are runtime
 errors (exit 3). A malformed request is answered with kind `"internal"`.
 
 ## 8. Development environment

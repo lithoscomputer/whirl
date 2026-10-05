@@ -1,0 +1,11 @@
+[Options]
+base: {{env.EVAL_BASE}}
+model: {{model}}
+
+# Two checkbox actions on a saved form.
+VISIT /saved/checkboxes/
+ACT "click the 'baseball' option" @60s
+ACT "click the 'netball' option" @60s
+[Asserts]
+css:"input[type=checkbox][name=sports][value=baseball]" checked
+css:"input[type=checkbox][name=sports][value=netball]" checked

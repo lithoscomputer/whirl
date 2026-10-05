@@ -5,7 +5,10 @@
 //! formatter. Values stay unresolved: interpolation segments are split at
 //! parse time and resolved by the runner.
 
+use std::fmt;
 use std::path::PathBuf;
+
+use crate::check::{FilterKind, PredicateKind, StaticType};
 
 mod options;
 
@@ -65,7 +68,8 @@ impl Value {
 }
 
 /// A `/pattern/flags` regex literal (SPEC 3.1). The pattern is stored as
-/// written (JavaScript syntax; the shim evaluates it).
+/// written, with its `\/` delimiter escapes; ECMAScript syntax in Unicode
+/// mode.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Regex {
     pub(crate) pattern: String,
@@ -146,8 +150,9 @@ pub(crate) enum SegmentKind {
     Css(Value),
     /// `frame:"selector"` enters an iframe before the next element segment.
     Frame(Value),
-    /// `nth:N`, 1-based. Never the first segment; N >= 1.
-    Nth(u64),
+    /// `nth:N`, 0-based; a negative N counts from the end. Never the
+    /// first segment.
+    Nth(i64),
     /// Unprefixed value; legal only in actions (SPEC 6.1). The default
     /// engine (`label:` or `text:`) depends on the action; see
     /// [`ActionKind::default_engine`].
@@ -348,8 +353,10 @@ pub(crate) enum ActionKind {
     Visit {
         url: Value,
     },
+    /// `CLICK`, `RIGHTCLICK`, or `MIDDLECLICK`, by the button it presses.
     Click {
         target: Locator,
+        button: MouseButton,
     },
     Dblclick {
         target: Locator,
@@ -381,8 +388,29 @@ pub(crate) enum ActionKind {
     Hover {
         target: Locator,
     },
+    /// `DRAG source to target` drags one element onto another.
+    Drag {
+        source: Locator,
+        target: Locator,
+    },
+    /// `SCROLL locator` brings the element into view.
+    ScrollIntoView {
+        target: Locator,
+    },
+    /// `SCROLL [locator] down` or `SCROLL [locator] to 50%` scrolls the
+    /// element's scroll box, or the page without a locator.
+    Scroll {
+        target: Option<Locator>,
+        motion: ScrollMotion,
+    },
     /// The value is the path after the `file:` prefix.
     Upload {
+        target: Locator,
+        path:   Value,
+    },
+    /// `DROP locator file:path` drops the file on the element. The value
+    /// is the path after the `file:` prefix.
+    Drop {
         target: Locator,
         path:   Value,
     },
@@ -395,9 +423,10 @@ pub(crate) enum ActionKind {
     Eval {
         script: Value,
     },
-    /// `ACT "instruction"` asks the file's model to choose one element
-    /// action (SPEC 7.4).
+    /// `ACT [locator] "instruction"` asks the file's model to choose one
+    /// element action, inside `scope` when it is given (SPEC 7.4).
     Act {
+        scope:       Option<Locator>,
         instruction: Value,
     },
     /// `STORE local "key" "value"` writes one browser storage entry.
@@ -426,6 +455,117 @@ impl StoreScope {
     }
 }
 
+/// How `SCROLL` moves its scroll box (SPEC 7).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ScrollMotion {
+    /// One visible height or width.
+    Chunk(ScrollDirection),
+    /// A vertical position within the scroll range.
+    To(Percent),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ScrollDirection {
+    Down,
+    Up,
+    Left,
+    Right,
+}
+
+impl ScrollDirection {
+    pub(crate) fn keyword(self) -> &'static str {
+        match self {
+            Self::Down => "down",
+            Self::Up => "up",
+            Self::Left => "left",
+            Self::Right => "right",
+        }
+    }
+
+    pub(crate) fn from_keyword(text: &str) -> Option<Self> {
+        match text {
+            "down" => Some(Self::Down),
+            "up" => Some(Self::Up),
+            "left" => Some(Self::Left),
+            "right" => Some(Self::Right),
+            _ => None,
+        }
+    }
+}
+
+/// A percent literal from `0%` to `100%`, such as `50%` or `33.5%` (SPEC
+/// 3.1). It keeps its digits, so `whirl fmt` writes it as authored.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Percent {
+    digits: String,
+}
+
+impl Percent {
+    /// Accepts digits with an optional fraction and a `%` suffix, from 0 to
+    /// 100.
+    pub(crate) fn parse(text: &str) -> Option<Self> {
+        let digits = text.strip_suffix('%')?;
+        let (whole, fraction) = digits.split_once('.').unwrap_or((digits, "0"));
+        let all_digits = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
+        if !all_digits(whole) || !all_digits(fraction) {
+            return None;
+        }
+        let value: f64 = digits.parse().ok()?;
+        (value <= 100.0).then(|| Self {
+            digits: digits.to_owned(),
+        })
+    }
+
+    pub(crate) fn value(&self) -> f64 {
+        self.digits
+            .parse()
+            .expect("the constructor checked the digits")
+    }
+}
+
+impl fmt::Display for Percent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}%", self.digits)
+    }
+}
+
+/// The mouse button a click verb presses (SPEC 7).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MouseButton {
+    Left,
+    Right,
+    Middle,
+}
+
+impl MouseButton {
+    /// The verb that clicks with this button.
+    pub(crate) fn keyword(self) -> &'static str {
+        match self {
+            Self::Left => "CLICK",
+            Self::Right => "RIGHTCLICK",
+            Self::Middle => "MIDDLECLICK",
+        }
+    }
+
+    /// The button's name in Playwright and in the `ACT` `click` argument.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Left => "left",
+            Self::Right => "right",
+            Self::Middle => "middle",
+        }
+    }
+
+    pub(crate) fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "left" => Some(Self::Left),
+            "right" => Some(Self::Right),
+            "middle" => Some(Self::Middle),
+            _ => None,
+        }
+    }
+}
+
 impl ActionKind {
     /// The engine an unprefixed locator value selects in this action
     /// (SPEC 6.1), if the action targets elements.
@@ -438,9 +578,13 @@ impl ActionKind {
             | Self::Uncheck { .. }
             | Self::Upload { .. }
             | Self::Press { .. } => Some(DefaultEngine::Label),
-            Self::Click { .. } | Self::Dblclick { .. } | Self::Hover { .. } => {
-                Some(DefaultEngine::Text)
-            }
+            Self::Click { .. }
+            | Self::Dblclick { .. }
+            | Self::Hover { .. }
+            | Self::Drag { .. }
+            | Self::ScrollIntoView { .. }
+            | Self::Scroll { .. }
+            | Self::Drop { .. } => Some(DefaultEngine::Text),
             Self::Http { .. }
             | Self::Response { .. }
             | Self::Popup { .. }
@@ -482,30 +626,9 @@ pub(crate) struct Assert {
     pub(crate) text:    String,
 }
 
-/// The subject and check of an assert. `url` and `title` take string
-/// checks only, so the shape is encoded per subject (SPEC 9.3, 17).
+/// The forms of an `[Asserts]` line (SPEC 9.1, 17).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum AssertBody {
-    /// A status check scoped to the containing independent HTTP entry.
-    HttpStatus {
-        op:     NumOp,
-        status: u64,
-    },
-    /// A header or JSON check scoped to the containing HTTP entry.
-    HttpValue {
-        field: ResponseField,
-        check: StrCheck,
-    },
-    ResponseStatus {
-        name:   Ident,
-        op:     NumOp,
-        status: u64,
-    },
-    ResponseValue {
-        name:  Ident,
-        field: ResponseField,
-        check: StrCheck,
-    },
     TabClosed {
         name: Ident,
     },
@@ -513,18 +636,16 @@ pub(crate) enum AssertBody {
         locator: Locator,
         state:   StateCheck,
     },
-    ElementValue {
-        locator: Locator,
-        source:  ValueSource,
-        check:   StrCheck,
-    },
-    ElementCount {
-        locator: Locator,
-        op:      NumOp,
-        count:   u64,
-    },
-    Url(StrCheck),
-    Title(StrCheck),
+    Check(CheckLine),
+}
+
+/// `subject { filter } [not] predicate` (SPEC 9).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CheckLine {
+    pub(crate) subject:   Subject,
+    pub(crate) filters:   Vec<FilterSpec>,
+    pub(crate) negated:   bool,
+    pub(crate) predicate: PredicateSpec,
 }
 
 /// Element state checks (SPEC 9.1).
@@ -539,57 +660,9 @@ pub(crate) enum StateCheck {
     Focused,
 }
 
-/// What an element value check reads (SPEC 9.2).
+/// Where a check or capture reads its value (SPEC 9.2).
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum ValueSource {
-    Text,
-    Value,
-    /// `attr:NAME`; the name follows the `attr-name` production.
-    Attr(String),
-}
-
-/// A string check: operator plus operand (SPEC 9.4).
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum StrCheck {
-    Eq(Value),
-    Ne(Value),
-    Contains(Value),
-    Matches(Regex),
-}
-
-/// Count comparison operators (SPEC 9.4).
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum NumOp {
-    Eq,
-    Ne,
-    Lt,
-    Le,
-    Gt,
-    Ge,
-}
-
-/// One line in a `[Captures]` section (SPEC 10).
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct Capture {
-    pub(crate) name:    Ident,
-    pub(crate) source:  CaptureSource,
-    /// The optional `regex /re/` filter.
-    pub(crate) filter:  Option<Regex>,
-    pub(crate) timeout: Option<DurationLit>,
-    pub(crate) line:    u32,
-    pub(crate) span:    Span,
-    pub(crate) text:    String,
-}
-
-/// Where a capture's value comes from (SPEC 10).
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum CaptureSource {
-    /// A field from the containing independent HTTP entry's response.
-    Http(ResponseField),
-    Response {
-        name:  Ident,
-        field: ResponseField,
-    },
+pub(crate) enum Subject {
     Element {
         locator:   Locator,
         extractor: Extractor,
@@ -597,23 +670,143 @@ pub(crate) enum CaptureSource {
     Url,
     Title,
     Eval(Value),
+    /// A field of a response: a `RESPONSE` name, or `None` for the
+    /// containing HTTP entry's own response.
+    Response {
+        name:  Option<Ident>,
+        field: ResponseField,
+    },
 }
 
-/// A field from one named HTTP response.
+impl Subject {
+    /// The subject's static type (SPEC 9.2), before any filter.
+    pub(crate) fn static_type(&self) -> StaticType {
+        match self {
+            Self::Element {
+                extractor: Extractor::Count,
+                ..
+            }
+            | Self::Response {
+                field: ResponseField::Status,
+                ..
+            } => StaticType::NUMBER,
+            Self::Element { .. }
+            | Self::Url
+            | Self::Title
+            | Self::Response {
+                field: ResponseField::Header(_) | ResponseField::Location | ResponseField::Body,
+                ..
+            } => StaticType::STRING,
+            Self::Response {
+                field: ResponseField::Bytes,
+                ..
+            } => StaticType::BYTES,
+            Self::Eval(_)
+            | Self::Response {
+                field: ResponseField::Json(_) | ResponseField::Xpath(_),
+                ..
+            } => StaticType::Any,
+        }
+    }
+}
+
+/// A field of one HTTP response (SPEC 9.2).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ResponseField {
     Status,
     Header(Value),
+    Location,
+    Body,
+    Bytes,
+    /// `json:PATH`, short for `body json:PATH`.
     Json(Value),
+    /// `xpath:EXPR`, short for `body xpath:EXPR`.
+    Xpath(Value),
 }
 
-/// Element extractors for captures (SPEC 10).
+/// Element extractors (SPEC 9.2).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Extractor {
     Text,
     Value,
     Count,
     Attr(String),
+}
+
+/// One filter with its source arguments (SPEC 9.5).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct FilterSpec {
+    pub(crate) kind: FilterKind,
+    pub(crate) args: Vec<FilterArg>,
+    pub(crate) span: Span,
+}
+
+/// A filter argument as written.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum FilterArg {
+    Value(Value),
+    Regex(Regex),
+    Index(i64),
+}
+
+/// A predicate with its source operand (SPEC 9.4).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum PredicateSpec {
+    Compare {
+        kind:     PredicateKind,
+        expected: Operand,
+    },
+    Matches(Regex),
+    Word(PredicateKind),
+}
+
+impl PredicateSpec {
+    pub(crate) fn kind(&self) -> PredicateKind {
+        match self {
+            Self::Compare { kind, .. } | Self::Word(kind) => *kind,
+            Self::Matches(_) => PredicateKind::Matches,
+        }
+    }
+}
+
+/// An expected value: a value, or a single-line JSON literal (SPEC 3.1).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum Operand {
+    Value(Value),
+    Json(JsonLiteral),
+}
+
+/// A JSON array or object written on the check line. `value` holds the
+/// authored text split into interpolation segments.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct JsonLiteral {
+    pub(crate) text:  String,
+    pub(crate) value: Value,
+}
+
+/// The static type after a subject and its filters, or the first filter
+/// that cannot take its input with that input's type.
+pub(crate) fn chain_type<'a>(
+    subject: &Subject,
+    filters: &'a [FilterSpec],
+) -> Result<StaticType, (&'a FilterSpec, StaticType)> {
+    let mut current = subject.static_type();
+    for filter in filters {
+        current = filter.kind.output(&current).ok_or((filter, current))?;
+    }
+    Ok(current)
+}
+
+/// One line in a `[Captures]` section (SPEC 10).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Capture {
+    pub(crate) name:    Ident,
+    pub(crate) subject: Subject,
+    pub(crate) filters: Vec<FilterSpec>,
+    pub(crate) timeout: Option<DurationLit>,
+    pub(crate) line:    u32,
+    pub(crate) span:    Span,
+    pub(crate) text:    String,
 }
 
 /// One entry: actions, then optional `PAGE`, `[Asserts]`, and

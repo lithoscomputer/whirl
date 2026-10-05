@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Account</title>
+</head>
+<body>
+<h1>Account</h1>
+<div role="tablist" aria-label="Account sections">
+  <button role="tab" aria-selected="true" aria-controls="p1" id="t1">Profile</button>
+  <button role="tab" aria-selected="false" aria-controls="p2" id="t2">Security</button>
+  <button role="tab" aria-selected="false" aria-controls="p3" id="t3">Billing</button>
+  <button role="tab" aria-selected="false" aria-controls="p4" id="t4">Notifications</button>
+</div>
+<div role="tabpanel" id="p1" aria-labelledby="t1"><p>Name and photo.</p></div>
+<div role="tabpanel" id="p2" aria-labelledby="t2" hidden><p>Password and two-factor sign-in.</p></div>
+<div role="tabpanel" id="p3" aria-labelledby="t3" hidden><h2>Invoices</h2><p>Invoice 1042 is paid.</p></div>
+<div role="tabpanel" id="p4" aria-labelledby="t4" hidden><p>Email and push settings.</p></div>
+<script>
+  for (const tab of document.querySelectorAll("[role=tab]")) {
+    tab.addEventListener("click", () => {
+      for (const other of document.querySelectorAll("[role=tab]")) {
+        other.setAttribute("aria-selected", String(other === tab));
+        document.getElementById(other.getAttribute("aria-controls")).hidden = other !== tab;
+      }
+    });
+  }
+</script>
+</body>
+</html>

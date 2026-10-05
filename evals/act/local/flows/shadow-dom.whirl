@@ -1,0 +1,9 @@
+[Options]
+base: {{env.EVAL_BASE}}
+model: {{model}}
+
+# Click a button inside an open shadow root.
+VISIT "/layers/?l=shadow-open"
+ACT "click the Deep button" @60s
+[Asserts]
+testid:status text == clicked

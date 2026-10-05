@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Mouse buttons</title>
+  </head>
+  <body>
+    <h1>Files</h1>
+    <ul>
+      <li id="file">report.pdf</li>
+    </ul>
+    <div role="menu" aria-label="File actions" hidden>
+      <div role="menuitem">Rename</div>
+      <div role="menuitem">Delete</div>
+    </div>
+    <div id="counter">no clicks</div>
+    <a id="docs" href="/second.html">Docs</a>
+    <script>
+      const menu = document.querySelector("[role=menu]");
+      document.getElementById("file").addEventListener("contextmenu", (event) => {
+        event.preventDefault();
+        menu.hidden = false;
+      });
+      const counts = { click: 0, auxclick: 0, contextmenu: 0 };
+      const counter = document.getElementById("counter");
+      for (const type of Object.keys(counts)) {
+        counter.addEventListener(type, (event) => {
+          if (type === "contextmenu") event.preventDefault();
+          counts[type] += 1;
+          counter.dataset.button = String(event.button);
+          counter.textContent = Object.entries(counts)
+            .map(([name, count]) => `${name} ${count}`)
+            .join(", ");
+        });
+      }
+    </script>
+  </body>
+</html>

@@ -117,7 +117,16 @@ export function classifyEvalResult(value: unknown): EvalClassification {
 				return false;
 			}
 			ancestors.push(candidate);
-			const fine = candidate.every((item) => acceptable(item));
+			// A hole in a sparse array is undefined; `every` would skip it.
+			let fine = true;
+			for (let index = 0; fine && index < candidate.length; index += 1) {
+				if (index in candidate) {
+					fine = acceptable(candidate[index]);
+				} else {
+					reason = describe(undefined);
+					fine = false;
+				}
+			}
 			ancestors.pop();
 			return fine;
 		}
@@ -146,17 +155,18 @@ export function classifyEvalResult(value: unknown): EvalClassification {
 }
 
 /**
- * The expression handed to page.evaluate for a capture `eval` source. The
- * section 10 result contract runs inside the page; the wrapper returns a
- * plain `{ok, value}` or `{ok, reason}` object that always survives the
- * transport.
+ * The expression handed to page.evaluate for an `eval` read (protocol 4.4).
+ * The section 10 result contract runs inside the page; the wrapper returns
+ * a plain `{ok, value, string}` or `{ok, reason, string}` object that
+ * always survives the transport. `string` tells a string result from the
+ * compact JSON of any other value.
  */
-export function buildCaptureEvalExpression(script: string): string {
+export function buildReadEvalExpression(script: string): string {
 	return [
 		"(async () => {",
 		`const classify = ${classifyEvalResult.toString()};`,
 		`const value = await (async () => {\n${functionBody(script)}\n})();`,
-		"return classify(value);",
+		'return { ...classify(value), string: typeof value === "string" };',
 		"})()",
 	].join("\n");
 }

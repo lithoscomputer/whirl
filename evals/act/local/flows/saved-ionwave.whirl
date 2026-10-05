@@ -1,0 +1,9 @@
+[Options]
+base: {{env.EVAL_BASE}}
+model: {{model}}
+
+# A link on a saved bid-portal page.
+VISIT /saved/ionwave/
+ACT "Click on \"Closed Bids\"" @60s
+[Asserts]
+url contains /saved/ionwave/closed-bids.html

@@ -1,0 +1,9 @@
+[Options]
+base: {{env.EVAL_BASE}}
+model: {{model}}
+
+# A radio option on a saved pizza-ordering page.
+VISIT /saved/paneer-pizza/
+ACT "click the 'medium' option" @60s
+[Asserts]
+css:"input[type=radio][name=Pizza][value=Medium]" checked

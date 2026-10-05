@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Discussion</title>
+</head>
+<body>
+<h1>Discussion</h1>
+  <article><h2>Ada Lovelace</h2><p>Great write-up.</p><button data-author="Ada Lovelace">Reply</button></article>
+  <article><h2>Alan Turing</h2><p>What about edge cases?</p><button data-author="Alan Turing">Reply</button></article>
+  <article><h2>Grace Hopper</h2><p>We shipped this last year.</p><button data-author="Grace Hopper">Reply</button></article>
+  <article><h2>Edsger Dijkstra</h2><p>Consider the proof.</p><button data-author="Edsger Dijkstra">Reply</button></article>
+  <article><h2>Barbara Liskov</h2><p>Substitution holds here.</p><button data-author="Barbara Liskov">Reply</button></article>
+<p>Result: <span data-testid="result">none</span></p>
+<script>
+  const setResult = (text) => { document.querySelector("[data-testid=result]").textContent = text; };
+  for (const button of document.querySelectorAll("button[data-author]")) {
+    button.addEventListener("click", () => setResult("replying to " + button.dataset.author));
+  }
+</script>
+</body>
+</html>

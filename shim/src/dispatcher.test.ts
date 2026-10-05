@@ -45,7 +45,12 @@ class FakeDriver implements ShimDriver {
 
 	async endFlow(_params: EndFlowParams): Promise<EndFlowResult> {
 		this.log.push("endFlow");
-		return { blockedHosts: ["a.example.com"], videoPath: null };
+		return {
+			blockedHosts: ["a.example.com"],
+			videoPath: null,
+			videoSkipped: null,
+			videoBlank: null,
+		};
 	}
 
 	async cancelFlow(): Promise<void> {
@@ -146,6 +151,7 @@ const startFlowParams = JSON.stringify({
 	video: null,
 	harPath: null,
 	trace: false,
+	openShadowRoots: false,
 });
 
 test("hello answers protocol 1, the Playwright version, and the ffmpeg path", async (t) => {
@@ -157,7 +163,7 @@ test("hello answers protocol 1, the Playwright version, and the ffmpeg path", as
 		id: 1,
 		ok: true,
 		result: {
-			protocol: 1,
+			protocol: 2,
 			playwrightVersion: "0.0.0-test",
 			ffmpegPath: "/fake/ffmpeg",
 		},
@@ -176,7 +182,12 @@ test("startFlow and endFlow round-trip through the driver", async (t) => {
 	assert.deepEqual(responses[1], {
 		id: 2,
 		ok: true,
-		result: { blockedHosts: ["a.example.com"], videoPath: null },
+		result: {
+			blockedHosts: ["a.example.com"],
+			videoPath: null,
+			videoSkipped: null,
+			videoBlank: null,
+		},
 	});
 });
 
@@ -187,7 +198,7 @@ test("cancelFlow interleaves with a slow in-flight step", async (t) => {
 	harness.send(`{"id": 1, "cmd": "startFlow", "params": ${startFlowParams}}`);
 	await harness.waitForResponses(1);
 	harness.send(
-		'{"id": 2, "cmd": "click", "params": {"timeoutMs": 5000, "title": "CLICK x", "locator": []}}',
+		'{"id": 2, "cmd": "click", "params": {"timeoutMs": 5000, "title": "CLICK x", "locator": [], "button": "left"}}',
 	);
 	// The read loop keeps consuming stdin while the step is in flight.
 	harness.send('{"id": 3, "cmd": "cancelFlow", "params": {}}');

@@ -1,13 +1,13 @@
-# Whirl V1 Specification
+# Whirl Specification
 
-Status: v1
-Date: 2026-08-18
+Status: v2, implemented and not yet released.
+Date: 2026-09-26
 
 Whirl is a command-line tool that runs web UI tests written in plain text files. It is to browser flows what [Hurl](https://hurl.dev/) is to HTTP: a tight, closed, file-based format that is readable, diffable, and easy to generate. The `whirl` binary is written in Rust and drives real browsers through Playwright.
 
 ## 1. Design principles
 
-1. **Closed vocabulary.** The language has a fixed set of actions, checks, and extractors. There are no conditionals, loops, functions, or user-defined keywords. A flow that needs branching is two files. `ACT` (section 7.4) is a fixed keyword too, but the action a language model chooses for it can change from run to run, so a flow asserts the result it expects.
+1. **Closed vocabulary.** The language has a fixed set of actions, subjects, filters, and predicates. There are no conditionals, loops, functions, or user-defined keywords. A flow that needs branching is two files. `ACT` (section 7.4) is a fixed keyword too, but the action a language model chooses for it can change from run to run, so a flow asserts the result it expects.
 2. **No waits in the language.** Actions auto-wait for their target. Assertions retry until they pass or time out. The format has no `SLEEP` and no `WAIT`.
 3. **Semantic locators first.** The locator grammar puts `role:` and `label:` in front and makes raw CSS the visually distinct escape hatch.
 4. **One flow per file, top to bottom.** A file is a linear sequence of entries. Execution order is textual order. A failure stops the file.
@@ -39,7 +39,7 @@ PRESS Enter
 url contains "q=widget"
 testid:result-card count >= 1
 [Captures]
-first_product: testid:result-card >> nth:1 >> role:link attr:href
+first_product: testid:result-card >> nth:0 >> role:link attr:href
 
 # Add it to the cart.
 VISIT {{first_product}}
@@ -73,16 +73,29 @@ $ whirl --report-junit report.xml flows/
 A **value** is written in one of two forms:
 
 - **Quoted**: `"..."` with backslash escapes `\"`, `\\`, `\n`, `\t`, and `\u{XXXX}`.
-- **Bare**: a single token with no whitespace, no `"`, and no `#`. Bare and quoted forms are interchangeable, with one reservation: a line's final bare token of the form `@duration` always parses as the step timeout (section 12), so that value must stay quoted (`"@60s"`). `whirl fmt` never removes quotes whose removal would change the parse.
+- **Bare**: a single token with no whitespace, no `"`, and no `#`. Bare and quoted forms are interchangeable, with four reservations:
+  - A line's final bare token of the form `@duration` always parses as the step timeout (section 12), so that value must stay quoted (`"@60s"`).
+  - In a typed comparison (section 9.6), a bare typed literal and its quoted form differ: `42` is a number and `"42"` is a string.
+  - In `[Asserts]` and `[Captures]`, a bare role name cannot be a subject, state, or predicate keyword such as `text` or `visible`, because that word ends the locator. Quote it: `role:button "visible" visible`.
+  - In `DRAG` and `SCROLL`, a bare `to` is a keyword, and in `SCROLL` so is a bare `down`, `up`, `left`, or `right` at the end of the line. Quote them to match the text: `DRAG "to" to testid:done`, `SCROLL "down"`.
 
-Values support variable interpolation with `{{name}}` (section 11). Write `\{{` for a literal `{{`.
+A token can join bare and quoted parts, as in `label:"First name"`; the parts form one value.
+
+`whirl fmt` never removes quotes whose removal would change the parse or the type.
+
+Values support variable interpolation with `{{name}}` (section 11). Write `\{{` for a literal `{{`; `\{` also writes a literal `{`.
 
 Other literal forms:
 
-- **Regex**: `/pattern/` with optional flags `i`, `s`, `m` (for example `/Order #\w+/i`). Escape a literal slash as `\/`. Patterns use JavaScript (ECMAScript) regex syntax, because checks execute inside Playwright's engine.
-- **Number**: a non-negative decimal integer.
+- **Regex**: `/pattern/` with optional flags `i`, `s`, `m` (for example `/Order #\w+/i`). Escape a literal slash as `\/`. Patterns use ECMAScript regex syntax in Unicode mode: the `u` flag is always on, for checks, filters, and `PAGE matches`. A pattern that is invalid in Unicode mode, such as one that escapes `-` outside a character class, is a parse error.
+- **Number**: the JSON number grammar (RFC 8259 section 6): an optional minus sign, an integer part without leading zeros, an optional fraction, and an optional exponent, such as `-12`, `3.14`, or `1e6`. `007`, `+1`, and `.5` are not numbers; as bare values they are strings.
+- **Index**: an integer, such as `0`, `2`, or `-1`, for `nth:` and the `nth` filter. Indexes start at 0, and a negative index counts from the end.
+- **Typed literal**: in a typed comparison (section 9.6), a bare number, `true`, `false`, or `null`.
+- **Bytes literal**: `hex,DIGITS;` or `base64,TEXT;`, such as `hex,89504e47;`. In a typed comparison, a bare bytes literal is bytes (section 9.6), and one that does not decode, such as `hex,zz;`, is a parse error. Quote it to compare the text.
+- **JSON literal**: in the expected-value position of a check, a value that starts with `[` or `{` is a JSON array or object. It must end on the same line, and it may contain spaces. `{{name}}` works inside it as in HTTP JSON bodies (sections 7.3 and 11).
 - **Duration**: an integer with unit `ms` or `s` (for example `500ms`, `10s`).
 - **Viewport**: `WIDTHxHEIGHT` in CSS pixels (for example `1280x800`).
+- **Percent**: a number from 0 to 100 with a `%` suffix, such as `50%` or `33.5%`, for `SCROLL`.
 
 ## 4. File structure
 
@@ -163,12 +176,12 @@ Unknown keys are a parse error. When section 13 defines a corresponding command-
 
 ## 6. Locators
 
-A locator selects one element (or, for `count`, a set of elements). It is a chain of one or more segments joined by `>>`. Each later segment searches inside the result of the chain so far. `nth:` may not be the first segment, and its index starts at 1 — `nth:0` is a parse error.
+A locator selects one element (or, for `count`, a set of elements). It is a chain of one or more segments joined by `>>`. Each later segment searches inside the result of the chain so far. `nth:` may not be the first segment. Its index starts at 0, and a negative index counts from the end: `nth:0` is the first match and `nth:-1` is the last.
 
 ```
 locator := segment (">>" segment)*
 segment := prefix ":" value [value]   # second value: role name only
-         | "nth:" number
+         | "nth:" index
          | value                      # default engine; actions only (6.1)
 ```
 
@@ -186,13 +199,13 @@ segment := prefix ":" value [value]   # second value: role name only
 | `testid:id` | `getByTestId('id')` |
 | `frame:"selector"` | Select an iframe by CSS and enter its document for subsequent segments. |
 | `css:"selector"` | `locator('selector')` — escape hatch |
-| `nth:N` | `.nth(N - 1)` — 1-based position |
+| `nth:N` | `.nth(N)` — 0-based position; a negative `N` counts from the end |
 
-Text matching is exact (after whitespace normalization). For partial or pattern matching, assert on the element instead (`text contains`, `text matches`).
+Text matching is exact (after whitespace normalization). For partial or pattern matching, assert on the element instead (`text contains`, `text matches`, `text startsWith`).
 
 Every text-matching prefix has a substring variant marked with `~` — `role~:`, `label~:`, `placeholder~:`, `text~:`, `alt~:`, `title~:` — which matches by case-insensitive substring, Playwright's default matching. So `text~:"Added"` matches "Added to cart". `testid:` and `css:` have no `~` form, and the unprefixed default engine stays exact.
 
-An unprefixed value in locator position selects a default engine: `label:` for form actions (`FILL`, `SELECT`, `CHECK`, `UNCHECK`, `UPLOAD`, and `PRESS` with a target), and `text:` for pointer actions (`CLICK`, `DBLCLICK`, `HOVER`) — buttons and links have no label; their accessible name is their text. So `FILL "Email" alice@example.com` fills the input labeled Email, and `CLICK "Add to cart"` clicks the element with that exact text. Prefixes stay available everywhere for precision. Default engines exist only in actions: in `[Asserts]` and `[Captures]` every segment must carry a prefix (or be `nth:`), and an unprefixed value there is a parse error.
+An unprefixed value in locator position selects a default engine: `label:` for form actions (`FILL`, `SELECT`, `CHECK`, `UNCHECK`, `UPLOAD`, and `PRESS` with a target), and `text:` for pointer actions (`CLICK`, `RIGHTCLICK`, `MIDDLECLICK`, `DBLCLICK`, `HOVER`, `DRAG`, `SCROLL`) and `DROP` — buttons and links have no label; their accessible name is their text, and a drop zone says what it takes, such as "Drop files here". So `FILL "Email" alice@example.com` fills the input labeled Email, and `CLICK "Add to cart"` clicks the element with that exact text. Prefixes stay available everywhere for precision. Default engines exist only in actions: in `[Asserts]` and `[Captures]` every segment must carry a prefix (or be `nth:`), and an unprefixed value there is a parse error. The scope of `ACT` (section 7.4) follows the same rule.
 
 `frame:` works in actions, asserts, and captures. It may follow an element scope or another frame. An immediately following `nth:N` selects the iframe before entering it. A frame must be followed by an element segment; use `css:` to check the iframe element itself. Nested and cross-origin frames use the same syntax. Frames are resolved lazily, so normal actionability and assertion timeouts also cover frames that load or are replaced later. Multiple matching frames fail strictly unless narrowed explicitly.
 
@@ -204,7 +217,7 @@ frame:"#payment-element iframe" >> label:"Card number" value contains "4242"
 
 ### 6.2 Strictness
 
-When an action or a single-element check runs, the locator must resolve to exactly one element. Zero matches fails after the timeout — except the `hidden` check, which passes when nothing matches (section 9.1). More than one match fails immediately with the candidate list, for `hidden` as well. Narrow the locator or add `nth:`. Only `count` accepts any number of matches.
+When an action or a single-element check runs, the locator must resolve to exactly one element. Zero matches fails after the timeout — except the `hidden` check, which passes when nothing matches (section 9.1). More than one match fails immediately with the candidate list, for `hidden` as well. Narrow the locator or add `nth:`. Only `count` accepts any number of matches. Both locators of `DRAG` follow this rule.
 
 ## 7. Actions
 
@@ -219,6 +232,8 @@ An action is a verb, an optional locator, and an optional value. Element-targeti
 | `TAB name` | Select an open named tab for subsequent commands. The original tab is `main`. |
 | `CLOSE name` | Close a named tab; selection stays unchanged. Already closed tabs succeed. |
 | `CLICK locator` | Click the element. |
+| `RIGHTCLICK locator` | Click the element with the right mouse button. |
+| `MIDDLECLICK locator` | Click the element with the middle mouse button. |
 | `DBLCLICK locator` | Double-click the element. |
 | `FILL locator "text"` | Replace the input's content with `text`. |
 | `TYPE locator "text"` | Focus the element, then send one key event per character of `text`. |
@@ -228,14 +243,28 @@ An action is a verb, an optional locator, and an optional value. Element-targeti
 | `UNCHECK locator` | Set a checkbox or switch to unchecked. |
 | `SELECT locator "Label"` | Choose the `<select>` option with visible text `Label`. |
 | `HOVER locator` | Move the pointer over the element. |
+| `DRAG locator to locator` | Drag the first element and drop it on the second. |
+| `SCROLL locator` | Bring the element into view. |
+| `SCROLL [locator] down` | Scroll down one visible height. `up`, `left`, and `right` scroll the same way. Without a locator, the page scrolls. |
+| `SCROLL [locator] to N%` | Scroll to a vertical position, from `0%` at the top to `100%` at the bottom. Without a locator, the page scrolls. |
 | `UPLOAD locator file:path` | Set the file input to `path`, resolved relative to the `.whirl` file. |
+| `DROP locator file:path` | Drop the file at `path` on the element, as a user drops a file from the desktop. `path` resolves relative to the `.whirl` file. |
 | `SCREENSHOT name` | Save a full-page screenshot as artifact `name.png`. The name is an identifier that may also contain hyphens. Never fails the entry (see below). |
 | `SNAPSHOT name` | Compare a full-page screenshot against the stored baseline; fails the entry on visual difference. |
 | `EVAL "script"` | Run a JavaScript script in the page. The escape hatch; rules below. |
 | `ACT "instruction"` | Ask a language model to choose one element action, then run it (section 7.4). |
+| `ACT locator "instruction"` | The same, looking only inside the element (section 7.4). |
 | `STORE local "key" "value"` | Write one `localStorage` entry on the current page's origin. |
 | `STORE session "key" "value"` | Write one `sessionStorage` entry on the current page's origin. |
 | `STORE cookie "name" "value"` | Set one cookie for the current page's host, with path `/`. |
+
+`RIGHTCLICK` and `MIDDLECLICK` test what the page does with those buttons. A right click fires the page's `contextmenu` event, and a middle click fires `auxclick`; neither fires `click`. A page that shows its own menu on a right click, such as a file list, can be tested this way. The browser's own context menu is not part of the page, and no step can check it. What a middle click on a link does depends on the engine: Firefox opens a popup that `POPUP` can name, Chromium opens a tab without an opener that `POPUP` cannot name, and WebKit follows the link in the same tab. To test a link that opens a new tab, click it with `CLICK`.
+
+`DRAG` moves the pointer to the first element, presses the left button, and holds it for 500 ms. It then waits until the second element is visible and stable, moves to its center in 10 steps, waits two animation frames, and releases. The hold serves drag code that starts only after a press delay, commonly 100 to 300 ms, and cancels a drag when the pointer moves sooner; drag code with a longer delay does not start. The steps serve drag code that starts after the pointer moves a few pixels. Native HTML5 drag and drop works in every engine, including from one frame into another. `DRAG` does not check the result: assert where the element landed. In WebKit, a page that took a native HTML5 drag gets no `pointerdown` for later presses until it loads again, so put a `VISIT` between such a drag and drag code that uses pointer events.
+
+Every action already scrolls its element into view, so a flow needs `SCROLL` only for what scrolling itself does: content that loads as it comes into view, controls that react to the scroll position, and boxes that scroll on their own, such as a panel in a dialog. `SCROLL locator` brings the element into view, and passes when it already is. `down`, `up`, `left`, `right`, and `to N%` scroll a scroll box: the element when it can scroll in that direction, else the largest box inside it that can, else its nearest ancestor that can, else its document. An `iframe` element scrolls the page inside it, across origins too. So `SCROLL text:"Filter 3" down` and `SCROLL role:dialog Filters down` both scroll the dialog's list, and `html` or `body` stands for the page. A frame's elements scroll within that frame. A chunk is the box's visible height or width. A position is a share of the vertical scroll range, so `to 50%` centers the middle of the content. `SCROLL` scrolls at once, even when the page asks for smooth scrolling, and the step ends when the position holds for two animation frames. A box already at the requested position stays where it is, and the step passes. `SCROLL` fires the page's `scroll` events and intersection observers, but no `wheel` events. `SCROLL` cannot reach an element that the page has not rendered yet, such as a row far down a virtualized list; write as many `SCROLL locator down` lines as the list needs before the line that uses the row.
+
+`UPLOAD` sets the files of an `<input type=file>`. Many upload widgets are drop zones with no file input, so `UPLOAD` cannot reach them; use `DROP`. `DROP` fires `dragenter`, `dragover`, and `drop` at the element's center with one file, as when a user drops the file from the desktop. The page sees the file's own name and size, and a type from its extension, such as `text/csv` for `report.csv`; an extension with no known type gives `application/octet-stream`. A page takes a drop only when a `dragover` handler calls `preventDefault()`. When none does, the element rejects the drop: Whirl fires `dragleave` instead of `drop` and fails the step at once. A missing file also fails the step. The element must be visible, so a zone that appears only while a drag is over the page cannot be the target. The events are synthetic, so a page that ignores events whose `isTrusted` is false rejects the drop. `DROP` does not check what the page did with the file: assert it.
 
 `PRESS` with a single argument treats it as the key: `PRESS Enter` presses Enter on the focused element, even though `Enter` could also parse as a locator. Only when two arguments are present is the first a locator.
 
@@ -315,11 +344,12 @@ same method and URL under another name in one entry selects the same first
 request. Names and observed requests are not transferred by `setup`.
 
 The command waits for response headers, not a completed body. Its timeout covers
-both finding the request and receiving those headers. JSON operations wait for
-the body within their own step timeout. Network observation does not change
+both finding the request and receiving those headers. Checks and captures that
+read the body (`body`, `bytes`, `json:`, and `xpath:`) wait for it within their
+own step timeout. Network observation does not change
 service-worker settings; worker-originated requests without a page frame are
 outside the selected-tab scope. Observation retains at most 10,000 requests per
-entry; exceeding this limit fails `RESPONSE` explicitly. JSON bodies are limited
+entry; exceeding this limit fails `RESPONSE` explicitly. Body reads are limited
 to 1 MiB, with declared content length checked before reading when available.
 
 ```whirl
@@ -328,10 +358,11 @@ RESPONSE order POST /api/orders
 [Asserts]
 response:order status == 201
 response:order header:content-type contains application/json
-response:order json:/status == paid
+response:order json:$.status == paid
+response:order json:$.items count >= 1
 text:"Order confirmed" visible
 [Captures]
-order_id: response:order json:/id
+order_id: response:order json:$.id
 ```
 
 ### 7.3 Independent HTTP requests
@@ -352,9 +383,9 @@ Content-Type: application/json
 }
 [Asserts]
 status == 201
-json:/status == RUNNING
+json:$.status == RUNNING
 [Captures]
-test_id: json:/id
+test_id: json:$.id
 ```
 
 A JSON body starts with `{` or `[` on the line after the headers and ends when
@@ -408,14 +439,14 @@ HTTP GET /api/account
 Authorization: "Bearer {{env.API_KEY}}"
 [Asserts]
 status == 200
-json:/name == Ada
+json:$.name == Ada
 ```
 
 ### 7.4 ACT
 
 `ACT "instruction"` asks the language model named by the `model` option
 (section 5) to choose one element action on the selected tab. Whirl then runs
-that action. The design follows Stagehand's `act()`.
+that action.
 
 ```whirl
 [Options]
@@ -430,33 +461,161 @@ testid:cart-badge text == 1
 Whirl takes a Playwright AI snapshot of the selected tab. The snapshot is an
 outline of the page's accessibility tree, and each element in it has a ref such
 as `e12`. Elements inside iframes are included, with refs such as `f1e3`. Whirl
-sends the instruction and the snapshot to the model in one structured-output
-call. The model answers with one element ref, one method, and the method's
+leaves out each link's URL and the cursor hints, which the model does not need
+and which make up about a third of a link-heavy page's snapshot. Playwright
+shows every iframe without a name, so Whirl adds the iframe's `aria-label`, or
+else its `title`, as its name, as in `iframe "Incident history"`. Whirl sends
+the instruction and the snapshot to the model in one structured-output call. The model answers with one element ref, one method, and the method's
 arguments, or with no element. Whirl checks the answer and runs it as the
 matching Whirl action, with that action's actionability and strictness rules:
 
 | Method | Runs as |
 | --- | --- |
 | `click` | `CLICK` |
+| `click` with `right` | `RIGHTCLICK` |
+| `click` with `middle` | `MIDDLECLICK` |
 | `doubleClick` | `DBLCLICK` |
 | `hover` | `HOVER` |
 | `fill` | `FILL` |
 | `type` | `TYPE` |
 | `press` | `PRESS` with a target |
 | `selectOptionFromDropdown` | `SELECT` |
+| `dragAndDrop` | `DRAG` |
+| `scrollIntoView` | `SCROLL locator` |
+| `scrollTo` | `SCROLL locator to N%` |
+| `nextChunk` | `SCROLL locator down` |
+| `prevChunk` | `SCROLL locator up` |
+| `scrollLeft` | `SCROLL locator left` |
+| `scrollRight` | `SCROLL locator right` |
+
+For `dragAndDrop`, the element is the one to drag, and the one argument is the
+ref of the element to drop it on, such as `e12`. That ref must be in the
+snapshot and name another element. For `scrollTo`, the one argument is a
+percent such as `50%`. In a snapshot of the whole page, the first element is
+the page's `<body>`; a scroll method on it scrolls the page, and the line has
+no locator, as in `SCROLL down`.
+
+No method uploads or drops a file, so `ACT` cannot do either. Write an
+`UPLOAD` or `DROP` line for that.
+
+A long page can make the snapshot costly or larger than the model's context. A
+locator before the instruction limits the snapshot to one element and what it
+contains: `ACT css:form "click Buy"` shows the model only the form. The scope
+waits for its element and must match exactly one (section 6.2), and every
+segment carries a prefix (section 6.1).
+
+To left-click a native checkbox or radio input, Whirl focuses it and presses Space,
+as `CHECK` does, because a styled control often covers the input. The effect is
+the same as a click: a checkbox toggles, and a radio is selected.
+
+The snapshot shows a wrapper that has one visible child, such as a custom
+dropdown's trigger inside a wider box, as one element. To click, double-click,
+hover, drag, or drop onto such an element, Whirl points at the deepest element
+inside it that shows the same text, instead of the element's center. The event still reaches
+the element the model chose.
+
+In a file that uses `ACT`, Whirl opens every shadow root that a page script
+attaches, so `ACT` sees and acts inside closed shadow roots.
+Other locators in that file can then reach inside them too. A page can notice
+the change: a host's `shadowRoot` is no longer `null`. Closed shadow roots that
+the HTML itself declares stay closed.
+
+A model can change the case, spacing, or punctuation of text it copies. When
+the text for `fill` or `type` matches a string that the instruction quotes,
+ignoring case, spaces, and punctuation, Whirl types the instruction's
+characters instead: for `ACT "type \"AbC 123\" into Search"`, an answer of
+`abc 123` types `AbC 123`. A string counts as quoted in double quotes, in
+curly quotes, or in single quotes at word boundaries, as in `'AbC 123'` but not
+in `user's`. Text that matches no quoted string, and the option for
+`selectOptionFromDropdown`, stay as the model wrote them.
+
+After a `fill`, Whirl reads the field's value back. The line fails when the
+field does not hold the value, as when a `maxlength` cuts it short or a script
+clears it. Case, spaces, and punctuation do not count, so a field that formats
+its value, such as a phone number, passes. Whirl skips the check when the
+element has no value to read, such as a `contenteditable` element, or when the
+page has removed it.
+
+With `--jev` (section 13), TypeSafe's Jev plans first. Jev is a classifier:
+it answers closed questions in a
+few hundred milliseconds but cannot write text. Whirl asks it which kind of
+action the instruction wants, then which element, from the snapshot elements
+that kind of action can target. The first request also asks for the key to
+press, the mouse button, the end state of a checkbox or switch, and whether
+typing ends with choosing a suggestion. When Jev splits its vote between a
+click and a select, a double-click, or a key press, and the two together reach
+0.85, Whirl takes the more likely one; a merged vote on a page without a
+native select is then a click. When Jev is sure the instruction chooses from a
+list but the page has no native select, Whirl clicks the option the
+instruction names: an element with an option role whose label the instruction
+says as whole words, or else such a list item or clickable element, and Jev
+confirms it. When no named option shows, Jev picks the control that opens the
+list as the first of two steps, and step two clicks the named option on the
+new snapshot. For a drag, Jev picks the element to drag, then where to drop
+it, first from the parts of the page that can take a drop, such as regions,
+lists, and dialogs, then from every named element. For a scroll, the first
+request also asks which way it goes and whether the whole page or a part of it
+scrolls. The page scrolls through its root element; Jev picks the part, from
+the same candidates as a drop, or the element to bring into view; and a
+position comes from the instruction's words: a percent, a fraction such as
+0.75, halfway, the top, or the bottom. A suggestion to choose after typing and
+a click that would undo a checkbox already in the asked state go to the model.
+Each element is described by its role, name, and value, the text of its
+table row or list item, the caption or name of its table and the header of its
+column, the named sections around it, the nearest heading, and its place among
+elements that look the same. When no element in that list fits, Jev looks at
+every element with a name or text, which catches custom controls built from
+plain elements. A list of more than 40 elements is first cut to the 30 whose
+descriptions share the most words with the instruction; when Jev rejects the
+cut list, it sees the whole list, split into parts of at most 254 elements
+that it reads in parallel. When exactly one element has the name the
+instruction quotes, one small request confirms it. For `press`, a focused
+control is the target without a question. Arguments come from the instruction
+itself. For `fill`, a lone placeholder is the text to type. Otherwise Jev says
+which quoted string or placeholder is the text, since another may name the
+field. When none is, a small model call reads the text from the instruction
+alone, without the page, and Whirl types it only when the instruction contains
+those words, in the instruction's own characters. That call is one more model
+call for the line. For `press` the key is the one Jev or the instruction
+names, and for `select` the one option of a native select that the instruction
+names. Whirl acts on Jev's pick when Jev is at least 0.7 confident and puts
+none-of-these at 0.9 or less, or when it is at least 0.5 confident, puts
+none-of-these at 0.1 or less, and has a clear leader: at least 0.6 and 2.5
+times the runner-up. A pick with none-of-these above 0.5 waits while the next
+list tries, and is used only if none-of-these stays at 0.7 or less. When Jev
+splits its vote between copies of one control in one table row or list item,
+either copy is the answer. Jev's choice is checked like a model answer. When
+Jev is not confident, when it cannot supply an argument, for step two of a
+two-step action when no named option shows, and when a Jev request fails, the
+model plans the step instead, and its prompt lists Jev's likely matches when
+Jev has some. Jev receives the instruction, with masked values as
+placeholders, and the element descriptions. Whirl asks Jev through
+`lithos-llm` as `typesafe/jev-latest` and prices its requests from the
+catalog. Jev's usage is reported apart from the model's, and the step's cost
+includes both.
 
 A custom dropdown that must open before an option can be chosen is a two-step
 action. The model marks its first answer as two-step. Whirl runs that action,
 takes a new snapshot, and asks for the second action. When the second answer
-names no element, the line passes with the first action. One `ACT` line makes
-at most two model calls.
+names no element, the line passes with the first action.
+
+A page can replace the chosen element while the model answers, as a framework
+does when it renders the page again after load. A snapshot ref never matches
+the replacement, so Whirl does not wait for it. It takes a new snapshot and
+asks the same question once more. One `ACT` line makes at most three model
+calls: two for a two-step action and one after a replaced element.
 
 An `ACT` line fails the entry when:
 
 - the model names no element (`act-no-match`); Whirl does not ask again,
 - the answer does not match the schema, names an element that is not in the
-  snapshot, gives the wrong number of arguments, or uses an unknown
-  placeholder (`act-invalid-decision`),
+  snapshot, gives the wrong number of arguments, drags an element onto
+  itself, gives a scroll position that is not a percent from 0% to 100%, or
+  uses an unknown placeholder (`act-invalid-decision`),
+- the chosen element is replaced again after Whirl asked once more
+  (`stale-ref`),
+- a filled field does not hold the value (`act-fill-mismatch`); the message
+  shows what the field holds unless the value is masked,
 - the chosen action fails, with that action's error, or
 - the step budget expires, like any step.
 
@@ -474,9 +633,10 @@ snapshot contains text that the page shows, including values typed by earlier
 steps; Whirl does not mask page content.
 
 The step's report text is the authored line. The JSON report adds an `act`
-object to the step: the model, each action that ran as a Whirl line with the
-model's description of the element, and the token usage and cost of the model
-calls. A rendered line such as `CLICK role:button "Sign in"` describes the
+object to the step: the model, the planner, each action that ran as a Whirl
+line with the description of the element and the planner that chose it, and
+the token usage and cost of the model calls, and with `--jev` Jev's requests,
+tokens, and cost. A rendered line such as `CLICK role:button "Sign in"` describes the
 element; it is not guaranteed to be unique on the page.
 
 ## 8. PAGE
@@ -496,87 +656,241 @@ PAGE matches /regex/
 
 ## 9. Asserts
 
-An `[Asserts]` section holds one check per line. Checks run in order. Page and element checks retry until they pass or the step timeout expires. Response checks wait for immutable data and fail on a mismatch. The first failing check fails the entry.
+An `[Asserts]` section holds one check per line. Checks run in order. The first failing check fails the entry.
 
 ```
-assert  := subject check
-subject := locator | "url" | "title"
+assert := subject { filter } [ "not" ] predicate
+        | locator state-check
+        | "tab:" name "closed"
 ```
 
-### 9.1 Element state checks
+A check reads a value from its subject, passes it through zero or more filters from left to right, and tests the result with one predicate. `not` negates the predicate. For example, `url urlQueryParam page == 2` reads the current URL, takes its `page` query parameter, and compares it with 2.
+
+```whirl
+[Asserts]
+testid:cart-badge text == 1
+css:.result count >= 1
+testid:total text replace , "" toInt > 1000
+url urlQueryParam page == 2
+eval "window.dataLayer" json:$[?@.event=='purchase'] count == 1
+response:order json:$.items[0].sku startsWith ABC-
+```
+
+Page checks retry until they pass or the step timeout expires. Response checks read data that never changes, so they fail at once. Section 9.7 gives the rules.
+
+### 9.1 State checks
 
 `visible`, `hidden`, `enabled`, `disabled`, `checked`, `unchecked`, `focused`.
 
-`hidden` passes when the element is not visible, including when it does not exist. All others require the element to exist.
+`hidden` passes when the element is not visible, including when it does not exist. All others require the element to exist. A state check takes no filters and no `not`; write the opposite state instead.
 
 `tab:name closed` retries until the named tab closes. An unknown name never counts as closed.
 
-### 9.2 Element value checks
+### 9.2 Subjects
 
-| Check | Subject value |
-| --- | --- |
-| `text op value-or-regex` | Normalized text content |
-| `value op value-or-regex` | Current value of an input, textarea, or select |
-| `attr:NAME op value-or-regex` | Value of attribute `NAME`; `!=` also passes when the attribute is absent |
-| `count numop number` | Number of matching elements |
+| Subject | Type | Value |
+| --- | --- | --- |
+| `LOCATOR text` | string | Normalized text content of the element |
+| `LOCATOR value` | string | Current value of an input, textarea, or select |
+| `LOCATOR attr:NAME` | string | Value of attribute `NAME` |
+| `LOCATOR count` | number | Number of matching elements |
+| `url` | string | Full current URL |
+| `title` | string | Normalized document title |
+| `eval "script"` | any | Result of the script |
+| `response:NAME status` | number | HTTP status |
+| `response:NAME header:HEADER` | string | Value of the header; the name is case-insensitive |
+| `response:NAME location` | string | The `Location` header, resolved against the request URL, so it is always absolute |
+| `response:NAME body` | string | The body, decoded with the charset of its `Content-Type`, UTF-8 by default |
+| `response:NAME bytes` | bytes | The body after content decoding, such as gzip |
+| `response:NAME json:PATH` | any | Short for `response:NAME body json:PATH` |
+| `response:NAME xpath:EXPR` | any | Short for `response:NAME body xpath:EXPR` |
 
-`NAME` is an attribute name: a letter or underscore, then letters, digits, underscores, or hyphens — so `attr:aria-expanded` and `attr:data-state` are valid. The formal grammar (section 17) calls this production `attr-name`.
+Inside an HTTP entry (section 7.3), omit `response:NAME`: `status`, `header:HEADER`, `location`, `body`, `bytes`, `json:PATH`, and `xpath:EXPR` examine that entry's response. These implicit forms are invalid in a browser entry.
 
-### 9.3 Page checks
+`NAME` in `attr:` and `HEADER` in `header:` are attribute names: a letter or underscore, then letters, digits, underscores, or hyphens. So `attr:aria-expanded` and `header:content-type` are valid. The formal grammar (section 17) calls this production `attr-name`. Header names support value interpolation.
 
-| Check | Subject value |
-| --- | --- |
-| `url op value-or-regex` | Full current URL |
-| `title op value-or-regex` | Document title |
+Normalization collapses each run of whitespace to one space, trims both ends, and removes zero-width spaces and soft hyphens.
 
-### 9.4 Operators
+The `eval` subject runs its script under the rules of `EVAL` (section 7) each time Whirl reads the value. Its result follows the `eval` capture rules of section 10 and keeps its type: a string, a number, a boolean, `null`, a list, or an object. The script must not change the page, because it can run many times.
 
-- String operators (`op`): `==`, `!=`, `contains`, `matches /re/`.
-- Count operators (`numop`): `==`, `!=`, `<`, `<=`, `>`, `>=`.
+A response subject waits for the body within the step timeout. The 1 MiB body limit of sections 7.2 and 7.3 applies. All checks for one response examine the same response.
 
-### 9.5 Response checks
+An `HTTP` entry reads the exact bytes of its body. A `RESPONSE` reads its body through the browser, and Chromium and WebKit can hand a text body back already decoded. When the `Content-Type` names a charset other than UTF-8, Whirl undoes that decoding, so `body` and `bytes` match what the server sent. WebKit replaces bytes it cannot decode, so in WebKit a `RESPONSE` text body in a charset other than UTF-8 can differ from the bytes the server sent.
 
-`response:name status numop number` compares the HTTP status using the same
-numeric operators as `count`. `response:name header:NAME str-check` checks a
-case-insensitive header name. `response:name json:POINTER str-check` checks a
-JSON value using JSON Pointer: `/items/0/id` selects an array item's field, `~1`
-escapes `/`, `~0` escapes `~`, and `json:""` selects the whole body. Header names
-follow `attr-name`. Header names and pointers support value interpolation.
+A subject can give a **missing value**:
 
-Strings are compared as-is, without whitespace normalization. Other JSON values
-are serialized as compact JSON (`true`, `null`, `42`, arrays, or objects). Missing
-headers, missing pointer targets, invalid pointers, and malformed JSON fail even
-with `!=`. All checks for a name examine the same response. Once its data is
-available, a mismatch fails immediately: an immutable response is not retried.
-A successful status alone does not prove streaming output or a background job
-completed; assert the user's result separately.
+- a locator with no match, for `text`, `value`, and `attr:`;
+- an attribute that the element does not have;
+- an absent response header, including an absent `Location` header for `location`;
+- a JSONPath singular query that selects nothing (section 9.5).
 
-Inside an HTTP entry, omit `response:name`: `status numop number`,
-`header:NAME str-check`, and `json:POINTER str-check` examine that entry's
-response. These implicit forms are invalid in a browser entry. Named
-`response:name` checks remain for responses observed by `RESPONSE`.
+`count` is never missing; zero is a value. Section 9.7 says how predicates treat a missing value.
+
+### 9.3 Types
+
+Every value has one of these types. Each type has one text form. Whirl uses the text form for interpolation (section 11), for reports, and for the `toString` filter.
+
+| Type | Example sources | Text form |
+| --- | --- | --- |
+| string | `text`, `url`, a JSON string | The string itself |
+| number | `count`, `status`, a JSON number, `toInt` | The number's JSON text, such as `42` or `1.5e3` |
+| boolean | a JSON `true` or `false` | `true` or `false` |
+| null | a JSON `null` | `null` |
+| list | a JSON array, `split` | Compact JSON |
+| object | a JSON object | Compact JSON, with keys in the order received |
+| bytes | `bytes`, `base64Decode` | Base64 |
+| date | `toDate` | RFC 3339 in UTC, such as `2026-09-26T08:00:00Z` |
+| node set | an XPath expression that selects nodes | None; a node set supports only `count` and `exists` |
+
+A JSON number keeps its exact text. Whirl does not convert it to floating point, except inside a JSONPath filter expression (section 9.5). So an integer larger than 2^53 compares and captures exactly. A number is an integer when its text has no fraction and no exponent, and a float otherwise. `toInt` gives an integer. `toFloat` gives a float, written with a fraction or an exponent, such as `3.0` or `1e20`.
+
+### 9.4 Predicates
+
+| Predicate | Passes when | Value types |
+| --- | --- | --- |
+| `== EXPECTED` | The value equals `EXPECTED` (section 9.6) | any |
+| `!= EXPECTED` | The value does not equal `EXPECTED` | any |
+| `> N`, `>= N`, `< N`, `<= N` | The value compares that way with `N` | number; a date against a date |
+| `startsWith EXPECTED` | The value starts with `EXPECTED` | string, bytes |
+| `endsWith EXPECTED` | The value ends with `EXPECTED` | string, bytes |
+| `contains EXPECTED` | A string has `EXPECTED` as a substring, a list has an item equal to `EXPECTED`, or bytes have `EXPECTED` as a byte sequence | string, list, bytes |
+| `matches /regex/` | The regex finds a match in the value | string |
+| `exists` | The value is not missing, and is not an empty node set | any |
+| `isBoolean` | The value is a boolean | any |
+| `isEmpty` | The value is an empty list or object | list, object |
+| `isFloat` | The value is a float | any |
+| `isInteger` | The value is an integer | any |
+| `isIpv4` | The value is a string that holds an IPv4 address | any |
+| `isIpv6` | The value is a string that holds an IPv6 address | any |
+| `isIsoDate` | The value is a string that holds an RFC 3339 date-time, such as `2026-09-26T08:00:00.000Z` | any |
+| `isList` | The value is a list | any |
+| `isNumber` | The value is a number | any |
+| `isObject` | The value is an object | any |
+| `isString` | The value is a string | any |
+| `isUuid` | The value is a string that holds a version 4 UUID | any |
+
+`not` before a predicate negates it: `not contains`, `not exists`, `not isEmpty`. `not ==` means the same as `!=`.
+
+A value whose type is not in the predicate's "Value types" column fails with a type mismatch (section 9.7). When `whirl check` can see the types before the run, it reports the mismatch as the error `filter-type` (section 16).
+
+### 9.5 Filters
+
+Filters run from left to right. Each filter takes the value before it and gives a new value.
+
+| Filter | Input | Output | Result |
+| --- | --- | --- | --- |
+| `count` | list, node set, bytes | number | Number of items, nodes, or bytes |
+| `first` | list | any | First item |
+| `last` | list | any | Last item |
+| `nth INDEX` | list | any | Item at `INDEX`; `0` is the first and `-1` the last |
+| `split SEPARATOR` | string | list | The parts between each occurrence of `SEPARATOR` |
+| `regex /regex/` | string | string | Capture group 1, or the whole match when the regex has no group |
+| `replace OLD NEW` | string | string | Every `OLD` replaced with `NEW` |
+| `replaceRegex /regex/ NEW` | string | string | Every match replaced with `NEW`; `$1`, `$<name>`, `$&`, and `$$` refer to the match as in ECMAScript |
+| `toString` | any | string | The text form (section 9.3) |
+| `toInt` | string, number | number | An integer. A string must hold an optional minus sign and decimal digits. A float is truncated toward zero. |
+| `toFloat` | string, number | number | A float. A string must hold a decimal number, such as `1.5`, `-2`, or `3e2`. |
+| `toHex` | bytes | string | Lowercase hexadecimal |
+| `toDate FORMAT` | string | date | The string parsed with `FORMAT` |
+| `dateFormat FORMAT` | date | string | The date written with `FORMAT` |
+| `daysAfterNow` | date | number | Whole days from now until the date, truncated toward zero |
+| `daysBeforeNow` | date | number | Whole days from the date until now, truncated toward zero |
+| `base64Decode` | string | bytes | Base64 decoded |
+| `base64Encode` | bytes | string | Base64 encoded |
+| `base64UrlSafeDecode` | string | bytes | URL-safe Base64 decoded, with or without padding |
+| `base64UrlSafeEncode` | bytes | string | URL-safe Base64 encoded, without padding |
+| `utf8Decode` | bytes | string | UTF-8 decoded |
+| `utf8Encode` | string | bytes | UTF-8 encoded |
+| `charsetDecode LABEL` | bytes | string | Decoded with the WHATWG Encoding Standard label `LABEL`, such as `gb2312` |
+| `urlQueryParam NAME` | string | string | Value of the first query parameter `NAME`, decoded as form data (`%XX` and `+` for a space); missing when there is none |
+| `urlEncode` | string | string | Percent-encoded, except unreserved characters and `/` |
+| `urlDecode` | string | string | Percent-decoded |
+| `htmlEscape` | string | string | `&`, `<`, and `>` replaced with character references |
+| `htmlUnescape` | string | string | Named and numeric character references replaced with their characters |
+| `json:PATH` | string, list, object | any | The result of the JSONPath query `PATH` |
+| `xpath:EXPR` | string, bytes | string, number, boolean, node set | The result of the XPath 1.0 expression `EXPR` |
+
+Filter arguments are values (section 3.1) and support interpolation. Regex arguments are regex literals and do not.
+
+`toDate` and `dateFormat` use the `%` codes of the Rust `chrono` crate, as Hurl does; `%+` is RFC 3339. A date without a time zone is UTC.
+
+`json:PATH` takes an RFC 9535 JSONPath query. A string input is parsed as JSON first; a list or an object is queried as it is. A singular query — one with only name and index selectors, such as `$.items[0].id` — gives one value, or a missing value when it selects nothing. Any other query gives a list of every match, which can be empty. Inside a filter expression such as `$.items[?@.price < 10]`, numbers compare as floating point, and the `match()` and `search()` functions use I-Regexp (RFC 9485), not ECMAScript. Whirl also accepts the Rust `regex` syntax that extends I-Regexp there, such as `\d`.
+
+`xpath:EXPR` takes an XPath 1.0 expression and evaluates it with libxml2. Whirl parses the input as XML when it is the `body` or `bytes` of a response whose `Content-Type` is `text/xml`, `application/xml`, or ends in `+xml`. Otherwise it parses the input as HTML. `bytes xpath:` decodes the body like `body`; other bytes must be UTF-8. Whirl ignores an encoding that the document declares. XML must be well-formed, and Whirl never loads external entities. As in Hurl, the namespaces declared on the root element keep their prefixes, and the default namespace gets the prefix `_`: `xpath:"string(//_:feed/_:title)"`.
+
+An expression that selects nodes gives a node set. An empty node set fails `exists`. Expressions such as `string(…)`, `count(…)`, and `boolean(…)` give a string, a number, and a boolean. A whole number is an integer, so `count(//li)` gives `3`; any other number is a float. NaN and infinity give a filter error.
+
+A `json:` or `xpath:` argument is one bare token or one quoted value. JSONPath strings use single quotes, as in `json:$[?@.sku=='A-1']`. Quote the whole argument when it contains spaces or double quotes: `json:"$[?@.name == 'Ada Lovelace']"`. A token that joins bare and quoted parts, such as `json:$["a"]`, is a parse error, because the lexer would drop its inner quotes.
+
+A filter that cannot work on its input gives a **filter error**. Examples are `toInt` on `abc`, `regex` with no match, invalid Base64, invalid JSON, an index outside a list, and `first` on an empty list. A missing value passes through filters without running them.
+
+### 9.6 Typed comparison
+
+How Whirl reads the expected value depends on the type that `whirl check` can see before the run:
+
+1. **String values.** When the subject and its filters always give a string, the expected value is text. Quotes do not matter: `testid:badge text == 1` and `testid:badge text == "1"` mean the same. This covers the `text`, `value`, `attr:`, `url`, `title`, `header:`, `location`, and `body` subjects, alone or followed by filters that give a string.
+2. **Typed values.** Otherwise the expected value is typed. This covers JSON values, `eval` results, numbers, and the output of filters such as `toInt`:
+   - A bare number, `true`, `false`, or `null` is that value.
+   - A quoted value is a string, and so is any other bare value.
+   - A bare bytes literal is bytes.
+   - A JSON literal is a list or an object.
+   - A bare `{{name}}` that is the whole expected value takes the variable's type (section 11).
+
+Equality follows JSON meaning:
+
+- Values of different types are not equal, so `==` fails with a type mismatch and `!=` passes. Integers and floats are both numbers: `3` equals `3.0`.
+- Numbers compare by value.
+- Strings compare character by character, without normalization.
+- Lists are equal when they have the same length and equal items in the same order.
+- Objects are equal when they have the same keys with equal values, in any order.
+- Bytes compare byte by byte, and dates compare as points in time.
+
+`contains` on a list uses this equality for each item. `startsWith`, `endsWith`, and `contains` on a string compare with the expected value's text form, as in Hurl: `json:$.code startsWith 12` passes on `"123"`.
+
+```whirl
+json:$.id == 42                     # the number 42, not the string "42"
+json:$.id == "42"                   # the string "42"
+json:$.active == true
+json:$.deleted_at == null
+json:$.tags == ["a", "b"]
+json:$.size == {"h": 20, "w": 10}   # key order does not matter
+json:$.items contains {"sku": "A-1", "qty": 1}
+testid:badge text == 1              # text, the same as "1"
+```
+
+### 9.7 Missing values, errors, and retries
+
+A missing value passes `not exists` and fails `exists`. It fails every other predicate with a missing-value error, including `!=` and predicates with `not`. So a typo in a JSONPath or a header name does not pass.
+
+One exception applies to attributes. When the element exists but does not have the attribute, `attr:NAME` passes `!=` and every predicate with `not`, and it fails every other predicate with a missing-value error. HTML gives absent attributes a meaning, so `attr:aria-current != page` passes on a link that has no `aria-current`.
+
+Page checks retry. A page check is a check on a locator subject, `url`, `title`, or `eval`. Whirl reads the value, applies the filters, and tests the predicate. When the check does not pass, Whirl reads again after 100 ms, 250 ms, 500 ms, and then every 1000 ms, until the check passes or the step timeout expires. A false predicate, a type mismatch, a filter error, a missing value, and an `eval` exception all count as "not passing yet". At the timeout, the check fails with the result of its last attempt. A locator that matches more than one element fails at once (section 6.2).
+
+Response checks do not retry. A false predicate, a type mismatch, a filter error, or a missing value fails the check at once.
+
+Each failure has a stable report code: `assert` for a false predicate, `type-mismatch`, `filter-error`, `missing-value`, `eval` for an exception in an `eval` script, `eval-result` for an `eval` result outside the contract of section 10, `strictness`, and `read` for a subject that cannot be read, such as `value` on an element that is not an input or a `RESPONSE` body over the limit. See section 16 and [machine-readable output](docs/engineering/machine-output.md).
 
 ## 10. Captures
 
 A `[Captures]` section extracts values into variables for later entries.
 
 ```
-capture   := name ":" source ["regex" /re/]
-source    := locator extractor | "url" | "title" | "eval" value | "response:" name response-field
-extractor := "text" | "value" | "count" | "attr:" NAME
+capture := name ":" subject { filter }
 ```
 
 - `name` matches `[A-Za-z_][A-Za-z0-9_]*`.
-- The optional `regex` filter applies the pattern to the extracted string and stores capture group 1 (the whole match if there is no group). No match fails the entry.
-- Extraction waits like an assert: `text`, `value`, and `attr:` wait for the locator to resolve to exactly one element, up to the step timeout. Once the element resolves, an absent attribute fails the entry — it does not wait further and does not become an empty value. `count` never waits: it records the current number of matches immediately, and zero is a valid result; assert a `count` first when the flow must wait for elements to appear.
-- A `response:name` source extracts `status`, `header:NAME`, or `json:POINTER` using the response-check rules above. Inside an HTTP entry, the same sources omit `response:name` and extract from that entry's response. The existing `regex` filter and interpolation work on the extracted string.
-- An `eval` source runs a script under the rules of section 7 and stores the result. Whirl owns the result contract, independent of Playwright's transport: a string is stored as-is; `null`, booleans, finite numbers, arrays, and plain objects that recursively contain only those values are stored as compact JSON; anything else — `undefined`, non-finite numbers, `BigInt`, functions, symbols, cyclic structures, and browser objects — fails the entry.
+- The subjects and filters are those of section 9. A capture keeps the type of its value (section 9.3), so a later check can compare it by type (section 11).
+- A page capture waits like a page check (section 9.7). Whirl reads again until the value is present and every filter succeeds, up to the step timeout. `text`, `value`, and `attr:` wait for the locator to resolve to exactly one element. A missing value at the timeout fails the entry; a capture never stores a missing value.
+- `count` never waits: it records the current number of matches immediately, and zero is a valid result. Check a `count` first when the flow must wait for elements to appear.
+- A response capture reads once, under the rules of section 9.7. Inside an HTTP entry, response subjects omit `response:name` (section 9.2).
+- An `eval` capture runs its script once under the rules of section 7, and does not retry. Whirl owns the result contract, independent of Playwright's transport. A string is stored as a string. `null`, booleans, finite numbers, arrays, and plain objects that contain only those values, at any depth, are stored with their type. Anything else — `undefined`, non-finite numbers, `BigInt`, functions, symbols, cyclic structures, and browser objects — fails the entry.
 - A capture that reuses a name overwrites it.
 
 ```whirl
 [Captures]
 order_id: testid:confirmation text regex /Order #(\w+)/
 cart_url: url
+item_count: response:cart json:$.items count
 ```
 
 ## 11. Variables
@@ -590,13 +904,24 @@ Sources, later entries overriding earlier ones:
 2. `--var name=value` flags,
 3. captures, as the file runs.
 
-Option values (section 5) resolve once, when the file starts, before the browser context is created. Only `--variables-file` entries, `--var` flags, and `{{env.NAME}}` are available there — captures do not exist yet, and a later capture never rewrites an option. A reference to an undefined variable in an option value fails the file before any entry runs and is reported as a failed run (exit 1).
+Variables are typed (section 9.3):
+
+- A capture keeps the type of its value, and so does `{{setup.NAME}}`.
+- A `--variables-file` entry, a `--var` flag, and `{{env.NAME}}` are typed the way Hurl types `--variable`. A JSON number, `true`, `false`, or `null` gives that type, and any other value is a string.
+
+A variable's type matters in three places:
+
+- **Typed comparisons.** In a typed comparison (section 9.6), an expected value that is exactly one bare `{{name}}` takes the variable's type. So `json:$.id == {{order_id}}` compares numbers when `order_id` holds a number. A quoted `"{{name}}"` is always a string.
+- **JSON.** In an HTTP JSON body and in a JSON literal, a bare `{{name}}` in a value position inserts the variable as JSON; a string gets quotes and escapes. A `{{name}}` inside a JSON string inserts the variable's text form with JSON escapes.
+- **Everywhere else.** `{{name}}` inserts the variable's text form (section 9.3). This includes a larger value, a URL, a header, and a fenced body.
+
+Option values (section 5) use the text form. They resolve once, when the file starts, before the browser context is created. Only `--variables-file` entries, `--var` flags, and `{{env.NAME}}` are available there — captures do not exist yet, and a later capture never rewrites an option. A reference to an undefined variable in an option value fails the file before any entry runs and is reported as a failed run (exit 1).
 
 `{{setup.NAME}}` reads a capture named `NAME` taken by the file's `setup` flow (section 5). It is available everywhere `{{name}}` is, including option values, and it is read-only: the file's own captures live in the plain namespace and never shadow it. A reference to a name the setup flow does not capture is a lint error, so `whirl check` catches it without a browser. A secret the setup flow masked stays masked in the dependent's output.
 
 `{{env.NAME}}` reads the environment variable `NAME` at run time. This is the intended path for secrets; secret values never belong in `.whirl` files. A reference to an undefined variable or unset environment variable fails the step.
 
-Whirl masks every value sourced from `env.*` in the textual output it generates: console failure details, rendered step text, the JSON and JUnit reports, and trace step titles. Browser-recorded artifacts — screenshots, video, HAR files, and saved storage state — can still contain secrets the flow typed or received. Treat the artifacts directory and storage-state files as sensitive, and prefer dedicated test credentials.
+Whirl masks every value sourced from `env.*` in the textual output it generates: console failure details, rendered step text, the JSON and JUnit reports, and trace step titles. Masking works on the text form. A masked capture keeps its type in the JSON report. Browser-recorded artifacts — screenshots, video, HAR files, and saved storage state — can still contain secrets the flow typed or received. Treat the artifacts directory and storage-state files as sensitive, and prefer dedicated test credentials.
 
 ## 12. Execution model
 
@@ -604,7 +929,8 @@ Whirl masks every value sourced from `env.*` in the textual output it generates:
 - **Order.** Entries run top to bottom. Within a browser entry: actions, then `PAGE`, then asserts, then captures. Within an HTTP entry: the request, then response asserts, then response captures.
 - **Failure.** The first failing step fails the entry, and a failed entry stops its file; remaining entries in that file are skipped and reported as skipped. Other files still run. On failure Whirl saves a full-page screenshot and, with `--trace`, a Playwright trace to the artifacts directory.
 - **Navigation.** `VISIT` completes when the new document reaches `DOMContentLoaded`: the HTML is parsed and its synchronous scripts have run. It does not wait for the `load` event, because images, fonts, iframes, and media hold `load` open for reasons a flow never asserted, and every later line waits for what it needs anyway: actions wait for their element to be actionable, asserts and `PAGE` retry. A page that only becomes usable after `load` needs an assert on that state before an `EVAL` or `SCREENSHOT`, which run once without waiting.
-- **ACT.** An `ACT` line is one step. Its snapshots, model calls, and actions share its step timeout. Model calls take seconds, so an `ACT` line that needs more than the step timeout sets its own, such as `@60s`.
+- **Retries.** Page checks and page captures read their value again on the schedule of section 9.7 until they pass or the step timeout expires. Response checks, response captures, and `eval` captures read once.
+- **ACT.** An `ACT` line is one step. Its snapshots, model calls, Jev requests, and actions share its step timeout. Model calls take seconds, so an `ACT` line that needs more than the step timeout sets its own, such as `@60s`.
 - **Timeouts.** Each action, PAGE, assert, and capture line gets the step timeout (`step-timeout` option, default 10s); `VISIT` gets the navigation timeout (`nav-timeout` option, default 30s). A trailing `@duration` on any such line overrides its own budget: `CLICK "Generate report" @60s`. The optional `entry-timeout` option caps an entry's total time across all of its lines; when it expires, the in-flight step fails with an entry-timeout error. An entry without one is still bounded by its per-step timeouts. The suffix must be bare: a line’s final bare token of the form `@duration` is always its timeout, and a quoted `"@60s"` is an ordinary value. Timeouts are enforced from outside the page, so they hold even when the page cannot respond — an `EVAL` script blocking the renderer or returning a Promise that never settles. When a timed-out step cannot be cancelled cleanly, Whirl closes that flow's browser context; if closing also stalls, it terminates and restarts only that worker's shim process. Either way the flow fails and reports normally, and other files are unaffected.
 - **Setup.** Files with a `setup` option run after their setup flows. Whirl first runs every distinct setup flow named by the inputs, once each and in parallel like any files, then runs the remaining files, each starting from its setup flow's saved state with the setup flow's captures as `{{setup.name}}`. A setup flow that is also an input runs once, as the setup. A failed setup flow reports normally, and each of its dependents reports a `[setup]` failure naming the setup flow and its first failing step, without opening a browser. Setup flows are one level deep.
 - **Parallelism.** Files run in parallel across worker slots (`--jobs`, default: logical CPU count). A single file is never parallelized.
@@ -626,7 +952,9 @@ whirl report <REPORT>... --html <PATH>  Generate HTML from saved results
 
 `whirl fmt` rewrites files to the canonical form: single spaces between tokens,
 quotes only where a value requires them, one HTTP header per line, and one blank
-line between entries. It preserves JSON and fenced body text, apart from the LF
+line between entries. It keeps the quotes on a value whose bare form is a typed
+literal, such as `"42"` or `"true"` (section 3.1), and it keeps JSON literals as
+written. It preserves JSON and fenced body text, apart from the LF
 line-ending normalization defined in section 7.3. `--check` writes
 nothing and exits with code 1 when any file would change.
 
@@ -655,6 +983,7 @@ nothing and exits with code 1 when any file would change.
 | `--save-storage PATH` | Write the final storage state after a successful run (single file only) |
 | `--entry-timeout DURATION` | Override the entry-timeout option |
 | `--user-agent UA` | Override the user-agent option with `chrome`, `firefox`, `safari`, or a literal string |
+| `--jev` | Plan `ACT` with TypeSafe's Jev first, and the `model` option when Jev is unsure (section 7.4) |
 
 Exit codes:
 
@@ -674,9 +1003,16 @@ does not check it against the catalog. `WHIRL_LLM_API_KEY`, when set, is sent
 to that server as a bearer token. These variables serve local model servers,
 proxies, and tests.
 
-`--video` records the `main` tab (section 7.1). On Chromium, Whirl records the page's own screencast frames through Playwright's bundled ffmpeg at 60 frames per second, or at the rate `--video-fps` names; a still page holds its last frame, so the recording always plays at a constant rate. Firefox and WebKit use Playwright's recorder at its fixed rate of 25 frames per second. `--video-fps` on those engines is not an error: the file records at 25 frames per second and reports a warning, because the recording is evidence, not a result. A missing ffmpeg fails the file as a runtime error; `whirl install` provisions it with every browser build, and `whirl doctor` checks for it.
+`--jev` reads Jev's key from `TYPESAFE_API_KEY`. Without it, a run whose files
+use `ACT` fails before any flow starts, with a runtime error (exit 3).
+`WHIRL_JEV_ENDPOINT=http://host:port` sends Jev's requests to
+`<url>/v1/systemone` on another server, such as a test double. `--jev` does
+nothing in a run whose files do not use `ACT`. `--rerun-failed` does not read
+it from a report; pass it again.
 
-`--rerun-failed` reads a version 1 report with an absolute `workingDirectory`. Relative file paths resolve against that directory, even when the report is moved. Each selected file runs from the beginning, including its setup. Existing CLI overrides and secrets must be supplied again; a report is not executable configuration. An unsupported or malformed report is a usage error. A report with no failed or errored files exits 0 with a message and launches no browser.
+`--video` records the `main` tab (section 7.1). On Chromium, Whirl records the page's own screencast frames through Playwright's bundled ffmpeg at 60 frames per second, or at the rate `--video-fps` names; a still page holds its last frame, so the recording always plays at a constant rate. Chromium sends a frame only when the page paints, so a short flow on a still page can end before the first frame arrives. Whirl then captures the page and holds that frame for the whole recording. Chromium cannot capture a page that has not painted yet, as right after a navigation, so Whirl tries again for up to 1 second. When Whirl still has no frame, as for a crashed page, the recording holds a white frame, as Playwright's recorder does, and Whirl reports a warning that says why. When ffmpeg fails while it finishes a recording, Whirl skips the recording and reports a warning. Neither warning changes the file's result. Firefox and WebKit use Playwright's recorder at its fixed rate of 25 frames per second. `--video-fps` on those engines is not an error: the file records at 25 frames per second and reports a warning, because the recording is evidence, not a result. A missing ffmpeg fails the file as a runtime error; `whirl install` provisions it with every browser build, and `whirl doctor` checks for it.
+
+`--rerun-failed` reads a version 1 or version 2 report with an absolute `workingDirectory`. Relative file paths resolve against that directory, even when the report is moved. Each selected file runs from the beginning, including its setup. Existing CLI overrides and secrets must be supplied again; a report is not executable configuration. An unsupported or malformed report is a usage error. A report with no failed or errored files exits 0 with a message and launches no browser.
 
 If the input paths select no `.whirl` files, run, `check`, and `fmt` report a usage error (exit 4).
 
@@ -687,8 +1023,8 @@ Whirl parses and lints every input file before it launches any browser: a parse 
 - Action failures retain Playwright's actionability log, including the locator being awaited and any element blocking interaction. Output masking applies to the log. Each trace artifact includes a shell-quoted `whirl show-trace -- <PATH>` command. The viewer uses Whirl's private runtime; a missing trace is a usage error, and a viewer launch failure is a runtime error.
 - Default console output: one line per file with pass/fail and duration, then a failure detail block per failed entry: file, line, the failing step, expected versus actual, and the artifact paths.
 - The JUnit report maps one file to one test suite and one entry to one test case. An entry is named by the comment line directly above it — the nearest comment line with no other content line between it and the entry's first action (`# Log in.`) — falling back to its first action line and line number. A failure before the first entry — option resolution, storage loading, or browser launch — reports as a synthetic test case named `[setup]` in that file's suite: an `<error>` for runtime errors, a `<failure>` otherwise. The JSON report carries the same synthetic entry, and masking applies to it like any other output.
-- The version 1 JSON report includes `workingDirectory`, `whirlVersion`, `platform`, and `architecture`. Files whose browser context starts include `runtime`: browser engine, viewport, the actual user agent string (with section 11's masking), and actual browser, Node, and Playwright versions. Unavailable user agent and version fields are null. Each step error has a stable `code`, separate from its human-readable message. Additive fields do not change the report version; readers must ignore unknown fields. See [machine-readable output](docs/engineering/machine-output.md) for schemas and codes.
-- The JSON report is the machine-readable superset: per-step timing, captures (with values sourced from `env.*` masked), and artifact paths.
+- The JSON report is version 2. Version 2 differs from version 1 only in the shape of captures (below). The report includes `workingDirectory`, `whirlVersion`, `platform`, and `architecture`. Files whose browser context starts include `runtime`: browser engine, viewport, the actual user agent string (with section 11's masking), and actual browser, Node, and Playwright versions. Unavailable user agent and version fields are null. Each step error has a stable `code`, separate from its human-readable message. Additive fields do not change the report version; readers must ignore unknown fields. See [machine-readable output](docs/engineering/machine-output.md) for schemas and codes.
+- The JSON report is the machine-readable superset: per-step timing, captures, and artifact paths. Each capture is written as its type and value, such as `{"type": "number", "value": 42}`. Bytes are written as Base64, dates as RFC 3339 text, and numbers with their exact JSON text. A capture with a value sourced from `env.*` keeps its type and has its value masked.
 - Artifacts: each flow writes to `<artifacts>/<flow path without the .whirl extension>/`. The mirrored path is the flow file's canonical path (made absolute, symlinks resolved) relative to the current working directory, so parallel flows never collide, and overlapping inputs or symlinked duplicates of one file resolve to one flow, run once, and write to one directory. A flow outside the working directory writes to `<file stem>-<hash>/` instead, where `<hash>` is the first 16 hex digits of the SHA-256 of the canonical path, so absolute paths and `..` segments never escape the artifacts directory. Because all inputs are known before the run starts, Whirl verifies that no two flows map to the same directory; a collision is a runtime error. Names inside are fixed: screenshots by their given name, `snapshot-<name>-actual.png` and `snapshot-<name>-diff.png`, `failure.png`, `trace.zip`, `video.webm`, and `network.har`. Duplicate `SCREENSHOT` names or duplicate `SNAPSHOT` names within one flow are a lint error; the two keywords have separate name spaces, because their artifact files never collide.
 
 ### 14.1 HTML reports
@@ -719,7 +1055,7 @@ All fields are optional. `details` maps labels to plain-text values, such as app
 
 ### 14.2 HTML from saved results
 
-`whirl report report.json --html evidence.html` renders a version 1 JSON report without parsing flows, resolving variables, installing a runtime, or starting browsers. It preserves the recorded results, original Whirl version, platform, browser environment, and run timestamps. It never uses the JSON file's modification time as execution time.
+`whirl report report.json --html evidence.html` renders a version 1 or version 2 JSON report without parsing flows, resolving variables, installing a runtime, or starting browsers. It preserves the recorded results, original Whirl version, platform, browser environment, and run timestamps. It never uses the JSON file's modification time as execution time.
 
 `--metadata context.json` replaces the saved author context. It uses the section 14.1 schema, but `files` keys match recorded `files[].path` strings exactly. Source files do not need to exist. Unmatched keys are ignored. Invalid author metadata remains a usage error.
 
@@ -735,7 +1071,7 @@ Each file includes `sourceSha256`: the lowercase SHA-256 of the exact UTF-8 byte
 
 Each file includes `roles` with independent `requested` and `setup` booleans. `requested` means the file was selected by the invocation's input paths or `--rerun-failed`. `setup` means another selected flow names it through the `setup` option. Both can be true; the flow still runs once as setup. A synthetic `[setup]` entry in a requested scenario does not make that scenario a setup flow. HTML labels these roles and shows both counts; a flow with both roles appears in both counts. Status totals count each reported file once.
 
-The run's `videoRequested` boolean distinguishes an absent requested recording from a run made without `--video`. A recorded file's `runtime.videoFps` is the frame rate of its recording (section 13), so a consumer can tell a 60 frames per second Chromium recording from a 25 frames per second one; the HTML report shows it in the recording's caption. These fields are additive within report version 1. Consumers must parse timestamps to compare execution times and must ignore unknown fields.
+The run's `videoRequested` boolean distinguishes an absent requested recording from a run made without `--video`. A recorded file's `runtime.videoFps` is the frame rate of its recording (section 13), so a consumer can tell a 60 frames per second Chromium recording from a 25 frames per second one; the HTML report shows it in the recording's caption. These fields were added within report version 1 and remain in version 2. Consumers must parse timestamps to compare execution times and must ignore unknown fields.
 
 ### 14.4 Combined evidence and expected scenarios
 
@@ -761,16 +1097,17 @@ The artifact override applies to each input's relative paths. Destination protec
 
 Rust source, configuration, and project setup follow the [Brynary Rust Style Guide](https://github.com/brynary/rust-style-guide). TypeScript source and language tooling follow the [Brynary TypeScript Style Guide](https://github.com/brynary/typescript-style-guide) for language-level and authoring conventions. The shim targets the pinned private Node runtime specified here, so the TypeScript guide's Bun-specific runtime, API, package-management, and test-runner policies do not apply. This specification and accepted Whirl ADRs take precedence over both guides.
 
-- `whirl` is a single Rust binary containing the parser, the runner, the reporters, and the shim manager. It also makes `ACT`'s language model calls itself, through the `lithos-llm` client; the shim only takes the page snapshot and runs the chosen action.
+- `whirl` is a single Rust binary containing the parser, the runner, the check engine, the reporters, and the shim manager. It also makes `ACT`'s language model calls and, with `--jev`, its Jev requests itself, through the `lithos-llm` client; the shim only takes the page snapshot and runs the chosen action.
 - Whirl drives browsers through a thin Node shim that Whirl owns: a small, stable JSON API over stdio pipes, shaped like Whirl's closed vocabulary and implemented on the Playwright library. The Rust binary launches the shim as a child process. Whirl does not reimplement browser automation and does not speak CDP or Playwright's internal driver protocol, so it inherits Playwright's auto-waiting, retrying assertions, locator engine, tracing, and three browser engines — and Playwright upgrades stay internal to the shim.
 - `whirl install` downloads the pinned shim bundle (a private Node runtime, the shim, and the `@playwright/test` package) and the browser builds. Users do not need Node installed. Each Whirl release pins exactly one Playwright version.
-- The shim bundles `@playwright/test` and drives its standalone `expect` for retried checks: they compile to Playwright's web-first assertions (`toHaveText`, `toHaveCount`, `toHaveURL`, ...) where a usable one exists, so retry timing and regex semantics match Playwright's. Checks with no usable web-first assertion — count comparators other than `==`, negated attribute checks, and `SNAPSHOT`, whose `toHaveScreenshot` runs only inside Playwright's test runner — run as shim-owned poll loops with the same step timeout; snapshot comparison uses Playwright's image comparator with the defaults of section 7.
+- Rust evaluates every filter and predicate (ADR [evaluate-checks-in-rust](docs/engineering/decisions/evaluate-checks-in-rust.md)). The shim reads raw values: page strings, `eval` results, and each response's status, headers, and body bytes. Rust owns the retry loop for page checks and page captures, on Playwright's poll schedule.
+- The shim bundles `@playwright/test` and drives its standalone `expect` for state checks, `tab:name closed`, and `PAGE`: they compile to Playwright's web-first assertions (`toBeVisible`, `toHaveURL`, ...). `SNAPSHOT` runs as a shim-owned poll loop with the same step timeout, because `toHaveScreenshot` runs only inside Playwright's test runner; snapshot comparison uses Playwright's image comparator with the defaults of section 7.
 
 ## 16. Errors
 
 - **JSON diagnostics.** `whirl check --json` writes one version 1 JSON document to stdout, containing `exitCode` and `diagnostics`, with no diagnostic text on stderr. Each diagnostic includes a stable code, severity, path, line, column, length, message, and expected alternatives. Positions are 1-based Unicode character positions; locations unavailable for input or I/O errors are null. CLI argument syntax errors still use the ordinary usage message.
-- **Parse errors** (exit 2) are reported with file, line, column, a caret under the offending token, and the expected alternatives. `whirl check` surfaces them without launching a browser. Lint warnings do not change the exit code. Whirl warns about a capture that is never used, about an HTTP entry without a `status` check, and about a `count >= 1` assert directly followed by a check on the same locator, only when the following check requires at least one element. A `hidden` check or a count comparison that accepts zero does not make the presence check redundant.
-- **Test failures** (exit 1) report the failing step the same way, plus expected versus actual and the artifacts.
+- **Parse errors** (exit 2) are reported with file, line, column, a caret under the offending token, and the expected alternatives. `whirl check` surfaces them without launching a browser. Lint warnings do not change the exit code. Whirl warns about a capture that is never used, about an HTTP entry without a `status` check, and about a `count >= 1` assert directly followed by a check on the same locator, only when the following check requires at least one element. A `hidden` check or a count comparison that accepts zero does not make the presence check redundant. `whirl check` reports a check whose types cannot work, such as `text toHex` or `url > 3`, as the error `filter-type`. It reports an invalid literal regex, JSONPath, or XPath as a parse error.
+- **Test failures** (exit 1) report the failing step the same way, plus expected versus actual and the artifacts. Check failures use the codes of section 9.7.
 - **Runtime errors** (exit 3) cover shim crashes, missing browsers, and similar environmental failures.
 
 ## 17. Grammar
@@ -788,7 +1125,7 @@ action     = action-body , [ step-timeout ] ;
 action-body = "VISIT" , value
            | "RESPONSE" , artifact-name , http-method , value
            | ( "POPUP" | "TAB" | "CLOSE" ) , artifact-name
-           | "CLICK" , locator
+           | ( "CLICK" | "RIGHTCLICK" | "MIDDLECLICK" ) , locator
            | "DBLCLICK" , locator
            | "FILL" , locator , value
            | "TYPE" , locator , value
@@ -797,11 +1134,15 @@ action-body = "VISIT" , value
            | "UNCHECK" , locator
            | "SELECT" , locator , value
            | "HOVER" , locator
+           | "DRAG" , locator , "to" , locator
+           | "SCROLL" , locator
+           | "SCROLL" , [ locator ] , scroll-motion
            | "UPLOAD" , locator , "file:" , value
+           | "DROP" , locator , "file:" , value
            | "SCREENSHOT" , artifact-name
            | "SNAPSHOT" , artifact-name
            | "EVAL" , value
-           | "ACT" , value
+           | "ACT" , [ locator ] , value
            | "STORE" , ( "local" | "session" | "cookie" ) , value , value ;
 
 http-request = http-headline , { http-header } , [ http-body ] ;
@@ -813,53 +1154,75 @@ page       = "PAGE" , ( value | "matches" , regex ) , [ step-timeout ] ;
 
 asserts    = "[Asserts]" , { assert } ;
 assert     = assert-body , [ step-timeout ] ;
-assert-body = "response:" , artifact-name , "status" , numop , number
-           | "response:" , artifact-name , ( "header:" , value | "json:" , value ) , str-check
+assert-body = locator , state-check
            | "tab:" , artifact-name , "closed"
-           | locator , state-check
-           | locator , value-check
-            | locator , "count" , numop , number
-           | ( "url" | "title" ) , str-check ;
+           | subject , { filter } , [ "not" ] , predicate ;
 http-asserts = "[Asserts]" , { http-assert } ;
-http-assert = http-assert-body , [ step-timeout ] ;
-http-assert-body = "status" , numop , number
-                 | ( "header:" , value | "json:" , value ) , str-check ;
+http-assert = response-field , { filter } , [ "not" ] , predicate
+            , [ step-timeout ] ;
 state-check= "visible" | "hidden" | "enabled" | "disabled"
            | "checked" | "unchecked" | "focused" ;
-value-check= ( "text" | "value" | "attr:" attr-name ) , str-check ;
-str-check  = ( "==" | "!=" | "contains" ) , value
-           | "matches" , regex ;
-numop      = "==" | "!=" | "<" | "<=" | ">" | ">=" ;
+
+subject    = locator , extractor
+           | "url" | "title"
+           | "eval" , value
+           | "response:" , artifact-name , response-field ;
+extractor  = "text" | "value" | "count" | "attr:" , attr-name ;
+response-field = "status" | "header:" , value | "location" | "body" | "bytes"
+               | json-path | xpath-expr ;
+
+filter     = "count" | "first" | "last" | "nth" , index
+           | "split" , value | "regex" , regex
+           | "replace" , value , value | "replaceRegex" , regex , value
+           | "toString" | "toInt" | "toFloat" | "toHex"
+           | "toDate" , value | "dateFormat" , value
+           | "daysAfterNow" | "daysBeforeNow"
+           | "base64Decode" | "base64Encode"
+           | "base64UrlSafeDecode" | "base64UrlSafeEncode"
+           | "utf8Decode" | "utf8Encode" | "charsetDecode" , value
+           | "urlQueryParam" , value | "urlEncode" | "urlDecode"
+           | "htmlEscape" | "htmlUnescape"
+           | json-path | xpath-expr ;
+json-path  = "json:" , value ;    (* RFC 9535; one bare token or one quoted value *)
+xpath-expr = "xpath:" , value ;   (* XPath 1.0; one bare token or one quoted value *)
+
+predicate  = ( "==" | "!=" | ">" | ">=" | "<" | "<="
+             | "startsWith" | "endsWith" | "contains" ) , expected
+           | "matches" , regex
+           | "exists" | "isBoolean" | "isEmpty" | "isFloat" | "isInteger"
+           | "isIpv4" | "isIpv6" | "isIsoDate" | "isList" | "isNumber"
+           | "isObject" | "isString" | "isUuid" ;
+expected   = value | json-literal ;   (* typed reading: section 9.6 *)
 
 captures   = "[Captures]" , { capture } ;
-capture    = name , ":" , source , [ "regex" , regex ] , [ step-timeout ] ;
-source     = locator , extractor | "url" | "title" | "eval" , value
-           | "response:" , artifact-name , response-field ;
+capture    = name , ":" , subject , { filter } , [ step-timeout ] ;
 http-captures = "[Captures]" , { http-capture } ;
-http-capture = name , ":" , response-field , [ "regex" , regex ]
-             , [ step-timeout ] ;
-response-field = "status" | "header:" , value | "json:" , value ;
+http-capture = name , ":" , response-field , { filter } , [ step-timeout ] ;
 http-method = uppercase-letter , { uppercase-letter } ;
-extractor  = "text" | "value" | "count" | "attr:" , attr-name ;
 
 locator    = segment , { ">>" , segment } ;
 segment    = ( "role:" | "role~:" ) , name , [ value ]
            | ( "label" | "placeholder" | "text" | "alt"
              | "title" ) , [ "~" ] , ":" , value
            | ( "testid:" | "css:" | "frame:" ) , value
-           | "nth:" , number   (* N >= 1; never the first segment *)
+           | "nth:" , index    (* never the first segment *)
            | value ;             (* default engine; actions only — see 6.1 *)
 
 step-timeout = "@" , duration ;
+scroll-motion = "down" | "up" | "left" | "right" | "to" , percent ;
+percent    = digit , { digit } , [ "." , digit , { digit } ] , "%" ;   (* 0% to 100% *)
 value      = quoted-string | bare-token ;
 name       = letter-or-underscore , { letter-digit-underscore } ;
 artifact-name = letter-or-underscore , { letter-digit-underscore | "-" } ;
 attr-name  = letter-or-underscore , { letter-digit-underscore | "-" } ;
 regex      = "/" , pattern , "/" , [ flags ] ;
+index      = [ "-" ] , digit , { digit } ;
+json-literal = json-array | json-object ;   (* on one line; section 3.1 *)
 ```
 
-`json-object` and `json-array` are JSON values whose outer delimiter can span
-lines. Interpolation is permitted as defined in section 7.3. `fenced-text` is
+`json-object` and `json-array` are JSON values. In an HTTP body, the outer
+delimiter can span lines; in a `json-literal`, the value ends on the same line.
+Interpolation is permitted as defined in sections 7.3 and 11. `fenced-text` is
 the text between lines that contain only three backticks. Comments and blank
 lines may appear between any two structural lines and are not part of the
 grammar. Inside a body they are body text.
@@ -870,12 +1233,12 @@ Permanent non-goals — these keep the format Hurl-grade:
 
 - Conditionals, loops, functions, includes, or user-defined keywords.
 - Arbitrary JavaScript woven into the language. `EVAL` (section 7) is the single, explicit escape hatch: Whirl passes its script to the browser without reading it, and offers no way to branch on the result.
-- A programming language of Whirl's own. The format has no Whirl-native expressions, conditionals, or control flow; when a flow outgrows Whirl, the answer is Playwright itself.
+- A programming language of Whirl's own. The format has no Whirl-native expressions, conditionals, or control flow; when a flow outgrows Whirl, the answer is Playwright itself. CSS selectors, ECMAScript regex, JSONPath (RFC 9535), and XPath 1.0 are standard query languages that Whirl accepts as values. They select data; they add no control flow.
 
 Deferred beyond V1 (candidate V2 features, not promised):
 
 - Network stubbing and request-body or request-count assertions.
+- The Hurl features that the check vocabulary does not adopt: the `sha256`, `md5`, `cookie`, `certificate`, `redirects`, `duration`, `ip`, `version`, `variable`, and `rawbytes` queries; `file,…;` values; and following redirects in HTTP entries.
 - Per-entry `[Options]` overrides and mobile device emulation.
 - An LLM-as-judge assertion (a `JUDGE` keyword with an explicit model option and advisory rather than hard-failing verdicts).
-- More `ACT` methods, each waiting for a matching Whirl action: scrolling (Stagehand's `scrollTo`, `nextChunk`, and `prevChunk`), drag and drop, and right-click and middle-click.
 - An `ACT` cache that replays a successful action without a model call, self-healing that plans again when a chosen action fails, and a step-two prompt that sends only the part of the snapshot that changed.

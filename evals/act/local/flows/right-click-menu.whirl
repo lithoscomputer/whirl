@@ -1,0 +1,9 @@
+[Options]
+base: {{env.EVAL_BASE}}
+model: {{model}}
+
+# A file list whose own menu opens on a right click; a left click only selects.
+VISIT /right-click-menu/
+ACT "open the context menu for budget.xlsx" @60s
+[Asserts]
+testid:menu-for text == budget.xlsx

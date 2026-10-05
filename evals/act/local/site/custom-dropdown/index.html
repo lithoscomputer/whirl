@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Custom dropdown</title>
+<style>
+  .trigger, .option { border: 1px solid #888; padding: 0.25rem 0.5rem; width: 12rem; cursor: pointer; }
+</style>
+</head>
+<body>
+<h1>Shipping</h1>
+<div class="select">
+  <div id="trigger" class="trigger" tabindex="0">Select a country</div>
+  <div id="options" class="options" hidden>
+    <div class="option">Canada</div>
+    <div class="option">Mexico</div>
+    <div class="option">United States</div>
+  </div>
+</div>
+<p>Selected: <span data-testid="selected-country">None</span></p>
+<script>
+  const trigger = document.getElementById("trigger");
+  const options = document.getElementById("options");
+  trigger.addEventListener("click", () => { options.hidden = !options.hidden; });
+  for (const option of options.querySelectorAll(".option")) {
+    option.addEventListener("click", () => {
+      document.querySelector("[data-testid=selected-country]").textContent = option.textContent;
+      trigger.textContent = option.textContent;
+      options.hidden = true;
+    });
+  }
+</script>
+</body>
+</html>

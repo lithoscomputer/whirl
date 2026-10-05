@@ -27,7 +27,7 @@ PRESS Enter
 url contains "q=widget"
 testid:result-card count >= 1
 [Captures]
-first_product: testid:result-card >> nth:1 >> role:link attr:href
+first_product: testid:result-card >> nth:0 >> role:link attr:href
 
 # Add it to the cart.
 VISIT {{first_product}}
@@ -123,7 +123,7 @@ Authorization: "Bearer {{env.E2E_SETUP_TOKEN}}"
 [Asserts]
 status == 201
 [Captures]
-user_id: json:/id
+user_id: json:$.id
 
 VISIT /users/{{user_id}}
 [Asserts]
@@ -131,6 +131,23 @@ role:heading Ada visible
 ```
 
 The status check is explicit. Whirl does not treat 2xx as implicit success.
+
+Checks use Hurl's vocabulary. A check reads a value, passes it through
+filters, and tests it with one predicate. JSON values keep their type,
+JSONPath selects them, and XPath reads HTML and XML:
+
+```whirl
+[Asserts]
+url urlQueryParam page == 2
+testid:price text replaceRegex /[^0-9.]/ "" toFloat < 200
+response:order json:$.items[*].sku contains ABC-1
+response:order json:$.id isInteger
+response:feed xpath:"count(//_:entry)" >= 1
+eval "window.dataLayer" json:$[?@.event=='purchase'] count == 1
+```
+
+Page checks retry until they pass or time out. See
+[SPEC section 9](SPEC.md#9-asserts) for every subject, filter, and predicate.
 
 Use `ACT` when a step is easier to describe than to locate. A language model
 reads a snapshot of the page and chooses one action, which Whirl runs like
@@ -239,3 +256,15 @@ Unless you explicitly state otherwise, any contribution intentionally
 submitted for inclusion in the work by you, as defined in the Apache-2.0
 license, shall be dual licensed as above, without any additional terms or
 conditions.
+
+## Acknowledgments
+
+Whirl drives every browser through [Playwright](https://playwright.dev), by
+Microsoft. Its locators, auto-waiting, tracing, and browser builds do much of
+the work under each flow.
+
+`ACT` is modeled on the `act()` method of
+[Stagehand](https://github.com/browserbase/stagehand), by Browserbase.
+Whirl's `ACT` prompts and parts of its Jev planner are ported from Stagehand
+under its MIT license, and some `ACT` evals run on pages saved from
+Stagehand's eval sites.

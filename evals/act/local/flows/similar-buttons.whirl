@@ -1,0 +1,10 @@
+[Options]
+base: {{env.EVAL_BASE}}
+model: {{model}}
+
+# Pick the right button among several with the same name.
+VISIT /similar-buttons/
+ACT "add the blue mug to the cart" @60s
+[Asserts]
+testid:cart text == "Blue mug"
+testid:wishlist text == empty

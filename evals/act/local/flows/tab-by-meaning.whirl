@@ -1,0 +1,9 @@
+[Options]
+base: {{env.EVAL_BASE}}
+model: {{model}}
+
+# No tab says "invoices"; the Billing tab holds them.
+VISIT /tab-by-meaning/
+ACT "show me my invoices" @60s
+[Asserts]
+role:tab Billing attr:aria-selected == "true"
