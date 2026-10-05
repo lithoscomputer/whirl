@@ -93,13 +93,13 @@ fn a_passing_flow_interpolates_a_capture_into_a_later_visit() {
          <button onclick=\\\"this.textContent='Done'\\\">Go</button>\"\n\
          FILL \"Name\" world\n\
          CLICK \"Go\"\n\
-         ASSERT role:heading \"One\" visible\n\
+         ASSERT heading:\"One\" visible\n\
          ASSERT label:Name value == world\n\
          CAPTURE next_page: eval \"'data:text/html,<h1>Two</h1>'\"\n\
          \n\
          # Second page via the capture.\n\
          VISIT {{next_page}}\n\
-         ASSERT role:heading \"Two\" visible\n",
+         ASSERT heading:\"Two\" visible\n",
     );
     let output = run_whirl(&dir, &[flow.to_str().expect("utf-8 path")]);
     let stdout = stdout_text(&output);
@@ -115,7 +115,7 @@ fn check_lines_run_in_the_order_written() {
     let flow = dir.file(
         "order.whirl",
         "VISIT \"data:text/html,<h1>Hello</h1><p>Hello</p>\"\n\
-         CAPTURE heading: role:heading text\n\
+         CAPTURE heading: heading:* text\n\
          ASSERT css:p text == {{heading}}\n",
     );
     let output = run_whirl(&dir, &[flow.to_str().expect("utf-8 path")]);
@@ -130,8 +130,8 @@ fn a_failing_assert_fails_the_file_and_skips_the_rest() {
         "fail.whirl",
         "# Failing entry.\n\
          VISIT \"data:text/html,<h1>Hi</h1>\"\n\
-         ASSERT role:heading \"Hi\" text == Bye @1s\n\
-         ASSERT role:heading \"Hi\" visible\n\
+         ASSERT heading:\"Hi\" text == Bye @1s\n\
+         ASSERT heading:\"Hi\" visible\n\
          \n\
          # Skipped entry.\n\
          SCREENSHOT after\n",
@@ -179,12 +179,12 @@ fn two_files_run_in_parallel_workers() {
     let first = dir.file(
         "first.whirl",
         "VISIT \"data:text/html,<h1>First</h1>\"\n\
-         ASSERT role:heading \"First\" visible\n",
+         ASSERT heading:\"First\" visible\n",
     );
     let second = dir.file(
         "second.whirl",
         "VISIT \"data:text/html,<h1>Second</h1>\"\n\
-         ASSERT role:heading \"Second\" visible\n",
+         ASSERT heading:\"Second\" visible\n",
     );
     let output = run_whirl(&dir, &[
         "--jobs",
@@ -211,7 +211,7 @@ fn press_and_eval_action_and_eval_capture_work() {
          CAPTURE squared: eval \"7 * 7\"\n\
          \n\
          VISIT \"data:text/html,<h1>{{squared}}</h1>\"\n\
-         ASSERT role:heading \"49\" visible\n",
+         ASSERT heading:\"49\" visible\n",
     );
     let output = run_whirl(&dir, &[flow.to_str().expect("utf-8 path")]);
     let stdout = stdout_text(&output);
@@ -400,7 +400,7 @@ fn a_run_writes_json_and_junit_reports_with_masking() {
         "# Fill the box.\n\
          VISIT \"data:text/html,<h1>Pass</h1><input aria-label=\\\"Box\\\">\"\n\
          FILL \"Box\" {{env.WHIRL_TEST_SECRET}}\n\
-         ASSERT role:heading \"Pass\" visible\n\
+         ASSERT heading:\"Pass\" visible\n\
          ASSERT label:Box value == {{env.WHIRL_TEST_SECRET}}\n\
          CAPTURE page_title: eval \"'captured-title'\"\n",
     );
@@ -408,7 +408,7 @@ fn a_run_writes_json_and_junit_reports_with_masking() {
         "fail.whirl",
         "# Mismatched heading.\n\
          VISIT \"data:text/html,<h1>Real</h1>\"\n\
-         ASSERT role:heading \"Real\" text == Wanted @1s\n",
+         ASSERT heading:\"Real\" text == Wanted @1s\n",
     );
     let output = run_whirl_env(
         &dir,
@@ -544,7 +544,7 @@ fn a_missing_element_reports_what_the_action_waited_for() {
     let dir = TestDir::new();
     dir.file(
         "missing.whirl",
-        "VISIT \"data:text/html,<button>Sign in</button>\"\nCLICK role:button \"Log in\" @200ms\n",
+        "VISIT \"data:text/html,<button>Sign in</button>\"\nCLICK button:\"Log in\" @200ms\n",
     );
     let output = run_whirl(&dir, &["missing.whirl"]);
     assert_eq!(exit_code(&output), 1);
@@ -561,7 +561,7 @@ fn a_covered_element_reports_the_overlay_and_masks_its_secret() {
     // Playwright names the covering element only after a click attempt's
     // hit test, so the budget must leave room for that attempt even on a
     // loaded CI runner; a 200 ms budget did not.
-    dir.file("covered.whirl", "VISIT \"data:text/html,<button>Sign in</button><div style=position:fixed;inset:0>{{env.OVERLAY}}</div>\"\nCLICK role:button \"Sign in\" @1s\n");
+    dir.file("covered.whirl", "VISIT \"data:text/html,<button>Sign in</button><div style=position:fixed;inset:0>{{env.OVERLAY}}</div>\"\nCLICK button:\"Sign in\" @1s\n");
     let output = run_whirl_env(
         &dir,
         &["--trace", "--report-json", "report.json", "covered.whirl"],
@@ -729,15 +729,15 @@ fn doctor_reports_the_selected_missing_browser_and_its_repair() {
 }
 
 #[test]
-fn tab_names_are_validated_before_launching_the_browser() {
+fn window_names_are_validated_before_launching_the_browser() {
     let dir = TestDir::new();
     dir.file(
         "unknown.whirl",
-        "VISIT /\nTAB missing\nASSERT tab:absent closed\n",
+        "VISIT /\nWINDOW missing\nASSERT window:absent closed\n",
     );
     let unknown = run_check(&dir, &["unknown.whirl"]);
     assert_eq!(exit_code(&unknown), 2, "{}", stdout_text(&unknown));
-    assert!(String::from_utf8_lossy(&unknown.stderr).contains("unknown tab"));
+    assert!(String::from_utf8_lossy(&unknown.stderr).contains("unknown window"));
     dir.file(
         "duplicate.whirl",
         "VISIT /\nPOPUP main\nPOPUP payment\nPOPUP payment\n",

@@ -6,3 +6,6 @@ pub(crate) mod fmt;
 pub(crate) mod lint;
 pub(crate) mod parse;
 pub(crate) mod schema;
+
+#[cfg(test)]
+mod grammar_tests;

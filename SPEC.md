@@ -9,7 +9,7 @@ Whirl is a command-line tool that runs web UI tests written in plain text files.
 
 1. **Closed vocabulary.** The language has a fixed set of actions, subjects, filters, and predicates. There are no conditionals, loops, functions, or user-defined keywords. A flow that needs branching is two files. `ACT` (section 7.4), `GOAL` (section 7.7), `ai:` targets (section 6.3), `EXTRACT` (section 7.6), and `JUDGE` (section 9.8) are fixed keywords too, but what a language model chooses for them can change from run to run, so a flow asserts the result it expects. The AI cache (section 12.1) records each choice, so later runs replay it.
 2. **No waits in the language.** Actions auto-wait for their target. Assertions retry until they pass or time out. The format has no `SLEEP` and no `WAIT`.
-3. **Semantic locators first.** The locator grammar puts `role:` and `label:` in front and makes raw CSS the visually distinct escape hatch.
+3. **Semantic locators first.** The locator grammar puts ARIA roles such as `button:` and `label:` in front and makes raw CSS the visually distinct escape hatch.
 4. **One flow per file, top to bottom.** A file is a linear sequence of entries. Execution order is textual order. A failure stops the file.
 5. **Plain text.** Files are UTF-8, line-oriented, comment-friendly, and review well in a diff.
 
@@ -26,9 +26,9 @@ VISIT /login
 
 FILL "Email" alice@example.com
 FILL "Password" {{env.TEST_PASSWORD}}
-CLICK role:button "Sign in"
+CLICK button:"Sign in"
 PAGE /dashboard
-ASSERT role:heading "Welcome back" visible
+ASSERT heading:"Welcome back" visible
 ASSERT testid:user-menu text == Alice
 
 # Find a product.
@@ -36,13 +36,13 @@ FILL placeholder:"Search products" widget
 PRESS Enter
 ASSERT url contains "q=widget"
 ASSERT testid:result-card count >= 1
-CAPTURE first_product: testid:result-card >> nth:0 >> role:link attr:href
+CAPTURE first_product: testid:result-card >> nth:0 >> link:* attr:href
 
 # Add it to the cart.
 VISIT {{first_product}}
 CLICK "Add to cart"
 ASSERT testid:cart-badge text == 1
-ASSERT role:alert text contains "Added to cart"
+ASSERT alert:* text contains "Added to cart"
 ```
 
 Run it:
@@ -59,9 +59,10 @@ $ whirl --report-junit report.xml flows/
   actions are one line. An independent `HTTP` request can also own the header
   and body lines defined in section 7.3; the complete request is one action.
   A `SNAPSHOT` owns the comparison option lines below it (section 7).
-- `#` starts a comment. A comment runs to the end of the line. A `#` inside a
-  quoted string, a regex literal, a JSON body, or a fenced HTTP body is literal
-  text.
+- A `#` at the start of a line, or after white space, starts a comment. A
+  comment runs to the end of the line. A `#` inside a token is text, as in
+  `VISIT /docs#install` or `css:#submit`, and so is a `#` inside a quoted
+  string, a regex literal, a JSON body, or a fenced HTTP body.
 - Blank lines are ignored outside HTTP bodies.
 - Keywords (`VISIT`, `PAGE`, `ASSERT`, checks, prefixes) are case-sensitive.
 
@@ -70,15 +71,14 @@ $ whirl --report-junit report.xml flows/
 A **value** is written in one of two forms:
 
 - **Quoted**: `"..."` with backslash escapes `\"`, `\\`, `\n`, `\t`, and `\u{XXXX}`.
-- **Bare**: a single token with no whitespace, no `"`, and no `#`. Bare and quoted forms are interchangeable, with five reservations:
-  - A line's final bare token of the form `@duration` always parses as the step timeout (section 12), so that value must stay quoted (`"@60s"`).
+- **Bare**: a single token with no whitespace and no `"`, which does not start with `#`. A bare value cannot start with `@`: a bare token that starts with `@` is always a step timeout, which must end its line (section 12). Quote a value such as `"@60s"` or `"@brynary"`. Option lines, HTTP header lines, `MOCK` lines, and snapshot settings take no timeout, so there a bare `@` token is an error. Otherwise bare and quoted forms are interchangeable, with three reservations:
   - In a typed comparison (section 9.6), a bare typed literal and its quoted form differ: `42` is a number and `"42"` is a string.
-  - In `ASSERT` and `CAPTURE` lines, a bare role name cannot be a subject, state, or predicate keyword such as `text` or `visible`, because that word ends the locator. Quote it: `role:button "visible" visible`.
-  - In `DRAG` and `SCROLL`, a bare `to` is a keyword, and in `SCROLL` so is a bare `down`, `up`, `left`, or `right` at the end of the line. Quote them to match the text: `DRAG "to" to testid:done`, `SCROLL "down"`.
-
   - In `snapshot-mask`, only bare `none` clears the mask list.
+  - Right after `SCROLL`, a bare `down`, `up`, `left`, `right`, or `to` is the motion. Quote it to match the text: `SCROLL "down"`.
 
-A token can join bare and quoted parts, as in `label:"First name"`; the parts form one value.
+A token is a quoted string, a bare run, or a bare run that ends in `:` or `:~` joined to a quoted string, as in `label:"First name"`, `button:~"Sign in"`, or `file:"a b"`; the parts form one value. A quote after other bare text, as in `a"b"`, or text right after a closing quote, as in `"a"b`, is a parse error.
+
+In a locator, a bare colon always marks a prefix (section 6.1). Each line reads left to right, so a keyword such as `to` in `DRAG` or a state such as `visible` in `ASSERT` never needs quotes: `DRAG to to testid:done` and `ASSERT button:visible visible` both work.
 
 `whirl fmt` never removes quotes whose removal would change the parse or the type.
 
@@ -106,7 +106,8 @@ http-entry    := HTTP-request check-line*
 check-line    := ASSERT-line | JUDGE-line | CAPTURE-line
 ```
 
-- The optional `[Options]` section appears once, before the first entry.
+- The optional `[Options]` section appears once, before the first entry. It is
+  the only section; any other `[...]` header is a parse error.
 - A **browser entry** is one or more browser action lines, then an optional
   `PAGE` line, then zero or more check lines, in that order. A check line is
   an `ASSERT` line (section 9), a `JUDGE` line (section 9.8), or a `CAPTURE`
@@ -127,20 +128,9 @@ check-line    := ASSERT-line | JUDGE-line | CAPTURE-line
   any `MOCK` lines (section 7.5), because no page exists yet. After it, later
   browser entries can start with any browser action.
 
-### 4.1 Removed sections
-
-Earlier versions marked checks with an `[Asserts]` section and captures with
-a `[Captures]` section: a header line, then one check or capture per line
-without a keyword. A run and `whirl check` reject a file with such a section
-with the parse error `sections-removed`. `whirl fmt` still rewrites each
-section as `ASSERT` and `CAPTURE` lines, with the same meaning: `[Asserts]`
-comes before `[Captures]`, and each entry has at most one of each. A file that
-uses both sections and check lines is the parse error `mixed-check-syntax`,
-and `whirl fmt` cannot rewrite it.
-
 ## 5. Options
 
-The `[Options]` section holds `key: value` lines. V1 keys:
+The `[Options]` section holds `key: value` lines. White space must follow the colon, so `base:x` is a parse error. V1 keys:
 
 | Key | Value | Default | Meaning |
 | --- | --- | --- | --- |
@@ -193,11 +183,11 @@ Unknown keys are a parse error. When section 13 defines a corresponding command-
 
 ## 6. Locators
 
-A locator selects one element (or, for `count`, a set of elements). It is a chain of one or more segments joined by `>>`. Each later segment searches inside the result of the chain so far. `nth:` may not be the first segment. Its index starts at 0, and a negative index counts from the end: `nth:0` is the first match and `nth:-1` is the last.
+A locator selects one element (or, for `count`, a set of elements). It is a chain of one or more segments joined by `>>`. Each segment is one token. Each later segment searches inside the result of the chain so far. `nth:` may not be the first segment. Its index starts at 0, and a negative index counts from the end: `nth:0` is the first match and `nth:-1` is the last. A `>>` after a segment always continues the locator, so `>>` is never a segment; quote it to match the text.
 
 ```
 locator := segment (">>" segment)*
-segment := prefix ":" value [value]   # second value: role name only
+segment := prefix ":" value
          | "nth:" index
          | value                      # default engine; actions only (6.1)
 ```
@@ -206,8 +196,8 @@ segment := prefix ":" value [value]   # second value: role name only
 
 | Segment | Playwright equivalent |
 | --- | --- |
-| `role:TYPE "Name"` | `getByRole('TYPE', { name: 'Name', exact: true })` |
-| `role:TYPE` | `getByRole('TYPE')` |
+| `button:"Name"` | `getByRole('button', { name: 'Name', exact: true })` |
+| `button:*` | `getByRole('button')` |
 | `label:"Text"` | `getByLabel('Text', { exact: true })` |
 | `placeholder:"Text"` | `getByPlaceholder('Text', { exact: true })` |
 | `text:"Text"` | `getByText('Text', { exact: true })` |
@@ -219,9 +209,13 @@ segment := prefix ":" value [value]   # second value: role name only
 | `nth:N` | `.nth(N)` — 0-based position; a negative `N` counts from the end |
 | `ai:"description"` | The one element that a language model finds for the description (section 6.3) |
 
+Every ARIA role that Playwright accepts, except `generic`, `none`, and `presentation`, is a prefix of its own, as `button:` is: `link:Docs`, `heading:"Welcome back"`, `textbox:Email`, `dialog:*`. The value is the element's accessible name. A bare `*` matches any name, and a quoted `"*"` is the literal name `*`. The grammar (section 17) lists the roles.
+
 Text matching is exact (after whitespace normalization). For partial or pattern matching, assert on the element instead (`text contains`, `text matches`, `text startsWith`).
 
-Every text-matching prefix has a substring variant marked with `~` — `role~:`, `label~:`, `placeholder~:`, `text~:`, `alt~:`, `title~:` — which matches by case-insensitive substring, Playwright's default matching. So `text~:"Added"` matches "Added to cart". `testid:` and `css:` have no `~` form, and the unprefixed default engine stays exact.
+A `~` right after the colon of a role prefix or a text-matching prefix (`label:`, `placeholder:`, `text:`, `alt:`, `title:`) matches the value by case-insensitive substring, Playwright's default matching: `button:~Sign`, `text:~"Added"`. So `text:~Added` matches "Added to cart". The `~` changes how the name or text matches, not the role. To match a value that starts with `~` exactly, quote it: `button:"~home"`. `button:~*` is a parse error, since `*` already matches any name. For `testid:`, `css:`, `frame:`, `ai:`, and `nth:`, a `~` is part of the value, and the unprefixed default engine stays exact.
+
+Prefixes are strict. In a locator, a bare colon always marks a prefix, so an unknown prefix such as `buton:Save` is a parse error. Quote unprefixed text that holds a colon: `CLICK "Note: saved"`.
 
 An unprefixed value in locator position selects a default engine: `label:` for form actions (`FILL`, `SELECT`, `CHECK`, `UNCHECK`, `UPLOAD`, and `PRESS` with a target), and `text:` for pointer actions (`CLICK`, `RIGHTCLICK`, `MIDDLECLICK`, `DBLCLICK`, `HOVER`, `DRAG`, `SCROLL`) and `DROP` — buttons and links have no label; their accessible name is their text, and a drop zone says what it takes, such as "Drop files here". So `FILL "Email" alice@example.com` fills the input labeled Email, and `CLICK "Add to cart"` clicks the element with that exact text. Prefixes stay available everywhere for precision. Default engines exist only in actions: in `ASSERT` and `CAPTURE` lines every segment must carry a prefix (or be `nth:`), and an unprefixed value there is a parse error. The scope of `ACT` (section 7.4), the target of `SNAPSHOT`, and `snapshot-mask` (section 7) follow the same rule.
 
@@ -246,7 +240,7 @@ names one element in words, where a precise locator is hard to write:
 model: anthropic/claude-sonnet-5
 
 CLICK ai:"the Add to cart button for the first product"
-FILL role:dialog >> ai:"the second email field" ada@example.com
+FILL dialog:* >> ai:"the second email field" ada@example.com
 ASSERT ai:"the order total" text == "$42.00"
 ```
 
@@ -255,7 +249,7 @@ and `CAPTURE` lines, as the target of `SNAPSHOT`, and as the scope of `ACT`,
 `EXTRACT`, and `JUDGE`. It cannot appear in `snapshot-mask`, which can match
 any number of elements. `ai:` must be the last segment: a segment after it is
 a parse error. The segments before it limit what the model sees, as the scope
-of `ACT` does: `role:dialog >> ai:"the second email field"` shows the model
+of `ACT` does: `dialog:* >> ai:"the second email field"` shows the model
 only the dialog. They follow the rules of section 6.1, and every one carries a
 prefix. The description supports interpolation.
 
@@ -264,7 +258,7 @@ A file that uses `ai:` needs the `model` option (section 5); without it,
 exactly one element, so it cannot be used with `count`: that is the lint
 error `ai-count`. `--jev` (section 13) does not apply to `ai:`.
 
-To resolve a target, Whirl takes the AI snapshot of the selected tab, or of
+To resolve a target, Whirl takes the AI snapshot of the selected window, or of
 the element that the earlier segments select, without link URLs, as `ACT`
 does (section 7.4). It asks the model for every element that matches the
 description. The model answers with a list of refs, each with a short
@@ -300,9 +294,9 @@ An action is a verb, an optional locator, and an optional value. Element-targeti
 | `HTTP METHOD url` | Send an independent HTTP request. Header and body lines can follow as defined in section 7.3. |
 | `MOCK METHOD url STATUS` | Serve a fixed response to matching browser requests until the file ends. Header and body lines can follow (section 7.5). |
 | `MOCK METHOD url failed` | Fail matching browser requests the way a dropped connection does (section 7.5). |
-| `POPUP name` | Name an unnamed popup opened by the selected tab in this entry; selection stays unchanged. |
-| `TAB name` | Select an open named tab for subsequent commands. The original tab is `main`. |
-| `CLOSE name` | Close a named tab; selection stays unchanged. Already closed tabs succeed. |
+| `POPUP name` | Name an unnamed popup opened by the selected window in this entry; selection stays unchanged. |
+| `WINDOW name` | Select an open named window for subsequent commands. The original window is `main`. |
+| `CLOSE name` | Close a named window; selection stays unchanged. Already closed windows succeed. |
 | `CLICK locator` | Click the element. |
 | `RIGHTCLICK locator` | Click the element with the right mouse button. |
 | `MIDDLECLICK locator` | Click the element with the middle mouse button. |
@@ -332,11 +326,11 @@ An action is a verb, an optional locator, and an optional value. Element-targeti
 | `STORE session "key" "value"` | Write one `sessionStorage` entry on the current page's origin. |
 | `STORE cookie "name" "value"` | Set one cookie for the current page's host, with path `/`. |
 
-`RIGHTCLICK` and `MIDDLECLICK` test what the page does with those buttons. A right click fires the page's `contextmenu` event, and a middle click fires `auxclick`; neither fires `click`. A page that shows its own menu on a right click, such as a file list, can be tested this way. The browser's own context menu is not part of the page, and no step can check it. What a middle click on a link does depends on the engine: Firefox opens a popup that `POPUP` can name, Chromium opens a tab without an opener that `POPUP` cannot name, and WebKit follows the link in the same tab. To test a link that opens a new tab, click it with `CLICK`.
+`RIGHTCLICK` and `MIDDLECLICK` test what the page does with those buttons. A right click fires the page's `contextmenu` event, and a middle click fires `auxclick`; neither fires `click`. A page that shows its own menu on a right click, such as a file list, can be tested this way. The browser's own context menu is not part of the page, and no step can check it. What a middle click on a link does depends on the engine: Firefox opens a popup that `POPUP` can name, Chromium opens a window without an opener that `POPUP` cannot name, and WebKit follows the link in the same window. To test a link that opens a new window, click it with `CLICK`.
 
 `DRAG` moves the pointer to the first element, presses the left button, and holds it for 500 ms. It then waits until the second element is visible and stable, moves to its center in 10 steps, waits two animation frames, and releases. The hold serves drag code that starts only after a press delay, commonly 100 to 300 ms, and cancels a drag when the pointer moves sooner; drag code with a longer delay does not start. The steps serve drag code that starts after the pointer moves a few pixels. Native HTML5 drag and drop works in every engine, including from one frame into another. `DRAG` does not check the result: assert where the element landed. In WebKit, a page that took a native HTML5 drag gets no `pointerdown` for later presses until it loads again, so put a `VISIT` between such a drag and drag code that uses pointer events.
 
-Every action already scrolls its element into view, so a flow needs `SCROLL` only for what scrolling itself does: content that loads as it comes into view, controls that react to the scroll position, and boxes that scroll on their own, such as a panel in a dialog. `SCROLL locator` brings the element into view, and passes when it already is. `down`, `up`, `left`, `right`, and `to N%` scroll a scroll box: the element when it can scroll in that direction, else the largest box inside it that can, else its nearest ancestor that can, else its document. An `iframe` element scrolls the page inside it, across origins too. So `SCROLL text:"Filter 3" down` and `SCROLL role:dialog Filters down` both scroll the dialog's list, and `html` or `body` stands for the page. A frame's elements scroll within that frame. A chunk is the box's visible height or width. A position is a share of the vertical scroll range, so `to 50%` centers the middle of the content. `SCROLL` scrolls at once, even when the page asks for smooth scrolling, and the step ends when the position holds for two animation frames. A box already at the requested position stays where it is, and the step passes. `SCROLL` fires the page's `scroll` events and intersection observers, but no `wheel` events. `SCROLL` cannot reach an element that the page has not rendered yet, such as a row far down a virtualized list; write as many `SCROLL locator down` lines as the list needs before the line that uses the row.
+Every action already scrolls its element into view, so a flow needs `SCROLL` only for what scrolling itself does: content that loads as it comes into view, controls that react to the scroll position, and boxes that scroll on their own, such as a panel in a dialog. `SCROLL locator` brings the element into view, and passes when it already is. `down`, `up`, `left`, `right`, and `to N%` scroll a scroll box: the element when it can scroll in that direction, else the largest box inside it that can, else its nearest ancestor that can, else its document. An `iframe` element scrolls the page inside it, across origins too. So `SCROLL text:"Filter 3" down` and `SCROLL dialog:Filters down` both scroll the dialog's list, and `html` or `body` stands for the page. A frame's elements scroll within that frame. A chunk is the box's visible height or width. A position is a share of the vertical scroll range, so `to 50%` centers the middle of the content. `SCROLL` scrolls at once, even when the page asks for smooth scrolling, and the step ends when the position holds for two animation frames. A box already at the requested position stays where it is, and the step passes. `SCROLL` fires the page's `scroll` events and intersection observers, but no `wheel` events. `SCROLL` cannot reach an element that the page has not rendered yet, such as a row far down a virtualized list; write as many `SCROLL locator down` lines as the list needs before the line that uses the row.
 
 `UPLOAD` sets the files of an `<input type=file>`. Many upload widgets are drop zones with no file input, so `UPLOAD` cannot reach them; use `DROP`. `DROP` fires `dragenter`, `dragover`, and `drop` at the element's center with one file, as when a user drops the file from the desktop. The page sees the file's own name and size, and a type from its extension, such as `text/csv` for `report.csv`; an extension with no known type gives `application/octet-stream`. A page takes a drop only when a `dragover` handler calls `preventDefault()`. When none does, the element rejects the drop: Whirl fires `dragleave` instead of `drop` and fails the step at once. A missing file also fails the step. The element must be visible, so a zone that appears only while a drag is over the page cannot be the target. The events are synthetic, so a page that ignores events whose `isTrusted` is false rejects the drop. `DROP` does not check what the page did with the file: assert it.
 
@@ -350,14 +344,14 @@ Every action already scrolls its element into view, so a flow needs `SCROLL` onl
 
 `SCREENSHOT` never fails the entry, even when it goes wrong: if the capture or the file write fails — a crashed page, an I/O error, or its step timeout expiring — Whirl skips the artifact and records a warning naming the screenshot and the cause, in the console output and in reports, so a missing artifact is always explained. One cap outranks this: an expiring `entry-timeout` fails the entry as usual, whatever line is in flight.
 
-`SNAPSHOT` is retried like an assert through a shim-owned polling loop and uses Playwright's image comparator. Whirl captures frames until two consecutive frames are identical, then compares against the baseline at `<flow>.whirl-snapshots/<name>-<browser>-<platform>.png` next to the flow file. Images must have identical dimensions. By default no pixel may differ; a pixel differs when its color distance exceeds `snapshot-pixel-threshold` (default `0.2` on a 0–1 scale). On a mismatch Whirl recaptures and recompares until the step timeout. A stable mismatch fails the entry and writes the actual and diff images to the artifacts directory. Tolerances do not change frame stabilization or retry timing. The platform tag (`linux`, `darwin`, `win32`) keeps baselines rendered on one OS separate. The viewport is not part of the key. A missing baseline fails the run; `--update-snapshots` writes or refreshes baselines instead of comparing.
+`SNAPSHOT` is retried like an assert through a shim-owned polling loop and uses Playwright's image comparator. Whirl captures frames until two consecutive frames are identical, then compares against the baseline at `<flow>.whirl-snapshots/<name>-<browser>-<platform>.png` next to the flow file. Images must have identical dimensions. By default no pixel may differ; a pixel differs when its color distance exceeds `snapshot-pixel-threshold` (default `0.2` on a 0–1 scale). On a mismatch Whirl recaptures and recompares until the step timeout. A stable mismatch fails the entry and writes the actual and diff images to the artifacts directory. Tolerances do not change frame stabilization or retry timing. When the browser refuses a capture for a moment, as Chromium can on a busy machine, Whirl takes it again within the step timeout; `SCREENSHOT` and `JUDGE` do the same. The platform tag (`linux`, `darwin`, `win32`) keeps baselines rendered on one OS separate. The viewport is not part of the key. A missing baseline fails the run; `--update-snapshots` writes or refreshes baselines instead of comparing.
 
 A locator after the name makes an element snapshot: `SNAPSHOT cart testid:cart`
 captures only the element's rendered rectangle. The name stays first. Every
 segment of the locator needs a prefix or is `nth:` (section 6.1), and chains,
 `nth:`, and frames work as in other locators. The target is part of the action,
 so it has no file default. Interpolation changes the locator's values, not its
-segments. The target resolves on the selected tab and must match exactly one
+segments. The target resolves on the selected window and must match exactly one
 element (section 6.2). A missing or hidden target waits until the step timeout.
 Whirl resolves the target again for every capture, so a replaced element or a
 changed size is seen. Each capture scrolls the element into view and waits
@@ -408,7 +402,7 @@ snapshot-max-diff: 0
 
 Each supplied local setting overrides only that setting. A local mask list replaces the complete file list. Omission inherits; explicit zero overrides. A later snapshot resumes the file defaults. Setup flows do not pass their snapshot settings to dependents. Repeated mask lines add masks within one scope. Literal, unquoted `none` clears the list and must be its only mask line. Duplicate scalar settings, conflicting masks, and unknown keys are parse errors. These duplicate rules apply only to the new options.
 
-Masks use explicit locator prefixes and support chaining, substring matching, `nth:`, and frames (section 6). There is no default locator engine. Masks resolve from the selected tab, not from an element snapshot's target, so file masks mean the same in page and element snapshots; chain a mask through the target to limit it, as in `testid:cart >> testid:total`. Parts of a mask outside an element snapshot's crop add nothing to its image, and a mask that covers the target covers the whole image. Interpolation changes locator values, not grammar; a quoted or interpolated `none` is not a sentinel. A mask may match zero, one, or many elements. Missing masks do not wait. Frame selection retains strictness. Invalid selectors and browser errors fail the step. Playwright covers matching bounding boxes with pink (`#FF00FF`) without removing elements from layout. Every capture uses the masks, including stabilization, baseline updates, and saved actual images. Locators resolve again on each capture, including replaced elements. Hidden elements and frames follow the pinned Playwright screenshot behavior. Moving or resizing a masked element can still cause a difference. Masks apply only to `SNAPSHOT`, not to `SCREENSHOT`, failure screenshots, traces, or video.
+Masks use explicit locator prefixes and support chaining, substring matching, `nth:`, and frames (section 6). There is no default locator engine. Masks resolve from the selected window, not from an element snapshot's target, so file masks mean the same in page and element snapshots; chain a mask through the target to limit it, as in `testid:cart >> testid:total`. Parts of a mask outside an element snapshot's crop add nothing to its image, and a mask that covers the target covers the whole image. Interpolation changes locator values, not grammar; a quoted or interpolated `none` is not a sentinel. A mask may match zero, one, or many elements. Missing masks do not wait. Frame selection retains strictness. Invalid selectors and browser errors fail the step. Playwright covers matching bounding boxes with pink (`#FF00FF`) without removing elements from layout. Every capture uses the masks, including stabilization, baseline updates, and saved actual images. Locators resolve again on each capture, including replaced elements. Hidden elements and frames follow the pinned Playwright screenshot behavior. Moving or resizing a masked element can still cause a difference. Masks apply only to `SNAPSHOT`, not to `SCREENSHOT`, failure screenshots, traces, or video.
 
 `snapshot-max-diff` accepts an unsigned decimal integer from `0` through `9007199254740991`, or a percent literal from `0%` through `100%`, including decimals. Counts reject signs, fractions, and exponent notation. Equality with the limit passes. Percentage limits use every pixel in the captured image, including masked regions, as the denominator: the full page, or the element's image in an element snapshot, so 100 changed pixels in a 10,000-pixel element image are 1%. Percentages convert to a ratio without rounding to an integer count. Dimensions must still match at `100%`.
 
@@ -421,38 +415,42 @@ Literal settings are validated before execution. File settings interpolate once 
 
 `EVAL` is the JavaScript escape hatch — the `css:` of actions — and the one place Whirl runs code it does not read: a script of one or more statements, such as `EVAL "foo(); bar();"`. Whirl runs the script as the body of an async function in the page's main world through Playwright's `page.evaluate`: a script that parses as a single expression runs as `return (expression);`, so its value is the result; any other script runs as written and yields its `return` value, or `undefined` without one. `await` is available in both forms, and a returned Promise is awaited. A syntax error, a thrown exception, a rejected Promise, or the step timeout fails the entry; the action form discards the result. `EVAL` has no target, does not auto-wait, and does not retry: it runs once, after the preceding line completes. `{{name}}` interpolation happens textually before evaluation, so interpolated values become source text — and a value sent into the page escapes the output masking of section 11, so keep secrets out of `EVAL`. A script the page cannot cancel — one that blocks the renderer or never settles — is still bounded: section 12 defines how Whirl enforces timeouts from outside the page.
 
-### 7.1 Popups and tabs
+### 7.1 Popups and windows
 
-`POPUP payment` waits for a popup from the selected tab and binds it to a name.
-Whirl records popup events before the entry's first action, so a popup that opens
-before `CLICK` returns is available. Only unnamed popups observed in the current
-entry qualify. Multiple qualifying popups fail strictly. A popup that has already
-closed can still be named and checked with `tab:payment closed`.
+A window is a page of the flow's browser context: the original page, or a
+popup or tab that the page opens. `POPUP payment` waits for a popup from the
+selected window and binds it to a name. Whirl records popup events before the
+entry's first action, so a popup that opens before `CLICK` returns is
+available. Only unnamed popups observed in the current entry qualify. Multiple
+qualifying popups fail strictly. A popup that has already closed can still be
+named and checked with `window:payment closed`.
 
-Names match `[A-Za-z_][A-Za-z0-9_-]*`. `main` is reserved for the original tab.
-Names last for the flow, including after closure. Duplicate names and references
-to names not yet declared are lint errors. Named tabs share their flow's browser
-context; separate flow files remain isolated. Setup transfers storage, not tabs.
+Names match `[A-Za-z_][A-Za-z0-9_-]*`. `main` is reserved for the original
+window. Names last for the flow, including after closure. Duplicate names and
+references to names not yet declared are lint errors (`duplicate-window` and
+`unknown-window`). Named windows share their flow's browser context; separate
+flow files remain isolated. Setup transfers storage, not windows.
 
-`TAB` selects a tab without waiting for navigation. `PAGE`, element assertions,
-captures, screenshots, and `EVAL` then operate on that tab. `POPUP` and `CLOSE`
-never change selection. After a selected tab closes, use `TAB` to select an open
-one; ordinary commands on a closed tab fail. `tab:name closed` can inspect a
-named tab regardless of which tab is selected. Context options, host filtering,
-and dialog handling apply to popups too. Failure screenshots use the selected
-tab; a closed selected tab cannot be screenshotted. Traces cover all tabs;
-`--video` continues to save the original `main` tab's recording.
+`WINDOW` selects a window without waiting for navigation. `PAGE`, element
+assertions, captures, screenshots, and `EVAL` then operate on that window.
+`POPUP` and `CLOSE` never change selection. After a selected window closes, use
+`WINDOW` to select an open one; ordinary commands on a closed window fail.
+`window:name closed` can inspect a named window regardless of which window is
+selected. Context options, host filtering, and dialog handling apply to popups
+too. Failure screenshots use the selected window; a closed selected window
+cannot be screenshotted. Traces cover all windows; `--video` continues to save
+the original `main` window's recording.
 
 ```whirl
-CLICK role:button "Pay with provider"
+CLICK button:"Pay with provider"
 POPUP payment
-TAB payment
-ASSERT role:heading "Confirm payment" visible
+WINDOW payment
+ASSERT heading:"Confirm payment" visible
 
-CLICK role:button Confirm
-ASSERT tab:payment closed @30s
+CLICK button:Confirm
+ASSERT window:payment closed @30s
 
-TAB main
+WINDOW main
 ASSERT text:"Payment complete" visible
 ```
 
@@ -460,14 +458,14 @@ ASSERT text:"Payment complete" visible
 
 `RESPONSE order POST /api/orders` names the response to the first request whose
 method and URL match. The request must start during the current entry and belong
-to the selected tab or one of its frames. Relative URLs resolve against `base`
+to the selected window or one of its frames. Relative URLs resolve against `base`
 the same way as `VISIT`. HTTP and HTTPS URLs are matched exactly after URL
 normalization, including their query; fragments are ignored. Methods are literal
 uppercase names, such as `GET`, `POST`, or `PATCH`.
 
 Whirl observes requests at browser-context level before actions execute. A fast
 response, including a popup's initial navigation, remains available after the
-triggering action returns. Earlier entries' requests and other tabs' requests
+triggering action returns. Earlier entries' requests and other windows' requests
 cannot satisfy the command. Put the action and its `RESPONSE` in the same entry.
 
 Selection uses method and URL only. It never skips a failed request or an error
@@ -477,7 +475,7 @@ request; select the final URL to check the final response.
 
 Names match `[A-Za-z_][A-Za-z0-9_-]*` and last for the flow. Duplicate names and
 references before declaration are lint errors. Named responses can be asserted
-or captured in later entries, including after their tab closes. Selecting the
+or captured in later entries, including after their window closes. Selecting the
 same method and URL under another name in one entry selects the same first
 request. Names and observed requests are not transferred by `setup`.
 
@@ -489,12 +487,12 @@ both finding the request and receiving those headers. Checks and captures that
 read the body (`body`, `bytes`, `json:`, and `xpath:`) wait for it within their
 own step timeout. Network observation does not change
 service-worker settings; worker-originated requests without a page frame are
-outside the selected-tab scope. Observation retains at most 10,000 requests per
+outside the selected-window scope. Observation retains at most 10,000 requests per
 entry; exceeding this limit fails `RESPONSE` explicitly. Body reads are limited
 to 1 MiB, with declared content length checked before reading when available.
 
 ```whirl
-CLICK role:button "Place order"
+CLICK button:"Place order"
 RESPONSE order POST /api/orders
 ASSERT response:order status == 201
 ASSERT response:order header:content-type contains application/json
@@ -509,7 +507,8 @@ CAPTURE order_id: response:order json:$.id
 
 `HTTP` starts its own entry and sends a request from Whirl's runtime. Its
 headline is `HTTP METHOD url`, with an optional trailing step timeout. It has no
-public name. Zero or more `NAME: value` header lines can follow. A JSON object,
+public name. Zero or more `NAME: value` header lines can follow; white space
+must follow the colon. A JSON object,
 a JSON array, or one fenced text body can then follow as the request body. The
 body is last. A check line, another action, or end of file ends the request.
 
@@ -526,11 +525,11 @@ ASSERT json:$.status == RUNNING
 CAPTURE test_id: json:$.id
 ```
 
-A JSON body starts with `{` or `[` on the line after the headers and ends when
-its outer value closes. Whirl validates its template-aware JSON structure while
-parsing and preserves its authored text. If no `Content-Type` header is present,
-Whirl sends `Content-Type: application/json`. An explicit header remains
-authoritative.
+A JSON body starts with `{` or `[` on the first line after the headers that is
+not blank or a comment, and ends when its outer value closes. Whirl validates
+its template-aware JSON structure while parsing and preserves its authored text.
+If no `Content-Type` header is present, Whirl sends
+`Content-Type: application/json`. An explicit header remains authoritative.
 
 A fenced text body starts and ends with three backticks on their own lines. The
 newline after the opening fence and the newline before the closing fence are
@@ -582,7 +581,7 @@ ASSERT json:$.name == Ada
 ### 7.4 ACT
 
 `ACT "instruction"` asks the language model named by the `model` option
-(section 5) to choose one element action on the selected tab. Whirl then runs
+(section 5) to choose one element action on the selected window. Whirl then runs
 that action.
 
 ```whirl
@@ -604,7 +603,7 @@ time. A page that does not settle is read as it is. Many pages load their
 content after the document, so a model that read the page at once would not
 see it. A cached locator's check (section 12.1) does not wait.
 
-Whirl takes a Playwright AI snapshot of the selected tab. The snapshot is an
+Whirl takes a Playwright AI snapshot of the selected window. The snapshot is an
 outline of the page's accessibility tree, and each element in it has a ref such
 as `e12`. Elements inside iframes are included, with refs such as `f1e3`. Whirl
 leaves out each link's URL and the cursor hints, which the model does not need
@@ -657,7 +656,9 @@ A long page can make the snapshot costly or larger than the model's context. A
 locator before the instruction limits the snapshot to one element and what it
 contains: `ACT css:form "click Buy"` shows the model only the form. The scope
 waits for its element and must match exactly one (section 6.2), and every
-segment carries a prefix (section 6.1).
+segment carries a prefix (section 6.1). A first token with a prefix always
+starts the scope, so `ACT css:form` alone is a parse error; quote an
+instruction that starts with text and a colon.
 
 To left-click a native checkbox or radio input, Whirl focuses it and presses Space,
 as `CHECK` does, because a styled control often covers the input. The effect is
@@ -801,8 +802,9 @@ The step's report text is the authored line. The JSON report adds an `act`
 object to the step: the model, the planner, each action that ran as a Whirl
 line with the description of the element and the planner that chose it, and
 the token usage and cost of the model calls, and with `--jev` Jev's requests,
-tokens, and cost. A rendered line such as `CLICK role:button "Sign in"` describes the
-element; it is not guaranteed to be unique on the page. The `act` object also
+tokens, and cost. A rendered line such as `CLICK button:"Sign in"` describes the
+element; it is not guaranteed to be unique on the page, and it can name a role
+that has no prefix, such as `generic`. The `act` object also
 holds the line's cache status, and a heal's cached and new lines.
 
 ### 7.5 MOCK
@@ -844,7 +846,7 @@ A mock matches a request when both of these hold:
   matches exactly, so `/api/items` does not match `/api/items?page=2`, and
   `/api/items*` matches both. A pattern cannot match a literal `*`.
 
-A mock lasts until the file ends. It applies to every tab and frame of the
+A mock lasts until the file ends. It applies to every window and frame of the
 flow, and to the page document that `VISIT` loads. A later `MOCK` with the same
 method and the same URL, after interpolation and resolution against `base`,
 replaces the earlier one.
@@ -916,7 +918,7 @@ the page to show the value; `whirl check` warns with `extract-unsettled` when
 between them.
 
 The model sees the instruction, with masked values as placeholders (section
-7.4), and the AI snapshot of the selected tab, or of the scope, without link
+7.4), and the AI snapshot of the selected window, or of the scope, without link
 URLs. It sees no screenshot. It answers through structured output in the shape
 of the schema. The prompt tells it to copy text exactly, with every symbol; to
 return every item when the instruction asks for a list or for "all"; to return
@@ -974,7 +976,7 @@ model: anthropic/claude-sonnet-5
 VISIT /products
 GOAL "add two blue mugs to the cart and open the cart"
 ASSERT testid:cart-badge text == 2
-ASSERT role:heading "Your cart" visible
+ASSERT heading:"Your cart" visible
 ```
 
 A `GOAL` must be the last action of its entry, and the entry must have an
@@ -986,7 +988,7 @@ opens every shadow root that a page script attaches, as for `ACT`.
 
 Each model call receives the goal, with masked values as placeholders
 (section 7.4), the Whirl lines that already ran for this `GOAL`, each with its
-error when it failed, and the AI snapshot of the selected tab, without link
+error when it failed, and the AI snapshot of the selected window, without link
 URLs. The model answers with actions in the form that `ACT` uses, or with
 `done`, or with `impossible` and a reason. An answer holds one action, or,
 to fill in a form, one action for each field that needs a value; they run in
@@ -1060,7 +1062,7 @@ An `ASSERT` line holds one check. Check lines run in the order written. The firs
 assert := "ASSERT" check [ "@" duration ]
 check  := subject { filter } [ "not" ] predicate
         | locator state-check
-        | "tab:" name "closed"
+        | "window:" name "closed"
 ```
 
 A check reads a value from its subject, passes it through zero or more filters from left to right, and tests the result with one predicate. `not` negates the predicate. For example, `url urlQueryParam page == 2` reads the current URL, takes its `page` query parameter, and compares it with 2.
@@ -1082,7 +1084,7 @@ Page checks retry until they pass or the step timeout expires. Response checks r
 
 `hidden` passes when the element is not visible, including when it does not exist. All others require the element to exist. A state check takes no filters and no `not`; write the opposite state instead.
 
-`tab:name closed` retries until the named tab closes. An unknown name never counts as closed.
+`window:name closed` retries until the named window closes. An unknown name never counts as closed.
 
 ### 9.2 Subjects
 
@@ -1113,7 +1115,7 @@ Page checks retry until they pass or the step timeout expires. Response checks r
 
 Inside an HTTP entry (section 7.3), omit `response:NAME`: `status`, `header:HEADER`, `location`, `body`, `bytes`, `json:PATH`, and `xpath:EXPR` examine that entry's response. These implicit forms are invalid in a browser entry.
 
-`NAME` in `attr:` and `HEADER` in `header:` are attribute names: a letter or underscore, then letters, digits, underscores, or hyphens. So `attr:aria-expanded` and `header:content-type` are valid. The formal grammar (section 17) calls this production `attr-name`. Header names support value interpolation.
+`NAME` in `attr:` and `HEADER` in `header:` are attribute names: a letter or underscore, then letters, digits, underscores, or hyphens. So `attr:aria-expanded` and `header:content-type` are valid. The grammar (section 17) calls this form `attr_name`. Header names support value interpolation.
 
 Normalization collapses each run of whitespace to one space, trims both ends, and removes zero-width spaces and soft hyphens.
 
@@ -1230,7 +1232,7 @@ Filter arguments are values (section 3.1) and support interpolation. Regex argum
 
 An expression that selects nodes gives a node set. An empty node set fails `exists`. Expressions such as `string(…)`, `count(…)`, and `boolean(…)` give a string, a number, and a boolean. A whole number is an integer, so `count(//li)` gives `3`; any other number is a float. NaN and infinity give a filter error.
 
-A `json:` or `xpath:` argument is one bare token or one quoted value. JSONPath strings use single quotes, as in `json:$[?@.sku=='A-1']`. Quote the whole argument when it contains spaces or double quotes: `json:"$[?@.name == 'Ada Lovelace']"`. A token that joins bare and quoted parts, such as `json:$["a"]`, is a parse error, because the lexer would drop its inner quotes.
+A `json:` or `xpath:` argument is a value like any other prefix's (section 3.1). JSONPath strings use single quotes, as in `json:$[?@.sku=='A-1']`. Quote the whole argument when it contains spaces or double quotes: `json:"$[?@.name == 'Ada Lovelace']"`. A quote inside a bare argument, such as `json:$["a"]`, is a parse error (section 3.1).
 
 A filter that cannot work on its input gives a **filter error**. Examples are `toInt` on `abc`, `regex` with no match, invalid Base64, invalid JSON, an index outside a list, and `first` on an empty list. A missing value passes through filters without running them.
 
@@ -1307,7 +1309,7 @@ and every segment carries a prefix.
 The model sees:
 
 - the claim, with masked values as placeholders (section 7.4),
-- the AI snapshot of the selected tab, or of the element, without link URLs,
+- the AI snapshot of the selected window, or of the element, without link URLs,
 - a screenshot of the element, or of the viewport without a locator. Whirl
   captures frames until two in a row are identical, as `SNAPSHOT` does. It
   uses at most half of the time left in the step timeout, then sends the last
@@ -1357,7 +1359,7 @@ A `CAPTURE` line extracts a value into a variable for later lines.
 capture := "CAPTURE" name ":" subject { filter } [ "@" duration ]
 ```
 
-- `name` matches `[A-Za-z_][A-Za-z0-9_]*`.
+- `name` matches `[A-Za-z_][A-Za-z0-9_]*`, and white space must follow the colon.
 - The subjects and filters are those of section 9. A capture keeps the type of its value (section 9.3), so a later check can compare it by type (section 11).
 - A page capture waits like a page check (section 9.7). Whirl reads again until the value is present and every filter succeeds, up to the step timeout. `text`, `value`, and `attr:` wait for the locator to resolve to exactly one element. A missing value at the timeout fails the entry; a capture never stores a missing value.
 - `count` never waits: it records the current number of matches immediately, and zero is a valid result. Check a `count` first when the flow must wait for elements to appear.
@@ -1410,7 +1412,7 @@ Whirl masks every value sourced from `env.*` in the textual output it generates:
 - **Retries.** Page checks and page captures read their value again on the schedule of section 9.7 until they pass or the step timeout expires. Response checks, response captures, and `eval` captures read once.
 - **JUDGE.** A `JUDGE` line runs once, after the check lines before it in its entry pass. Its screenshot, snapshot, and model call share its step timeout, so a `JUDGE` line that needs more sets its own `@duration`.
 - **ACT.** An `ACT` line is one step. Its snapshots, model calls, Jev requests, and actions share its step timeout. Model calls take seconds, so an `ACT` line that needs more than the step timeout sets its own, such as `@60s`.
-- **Timeouts.** Each action, PAGE, assert, and capture line gets the step timeout (`step-timeout` option, default 10s); `VISIT` gets the navigation timeout (`nav-timeout` option, default 30s), and `GOAL` gets 2 minutes (section 7.7). A trailing `@duration` on any such line overrides its own budget: `CLICK "Generate report" @60s`. The optional `entry-timeout` option caps an entry's total time across all of its lines; when it expires, the in-flight step fails with an entry-timeout error. An entry without one is still bounded by its per-step timeouts. The suffix must be bare: a line’s final bare token of the form `@duration` is always its timeout, and a quoted `"@60s"` is an ordinary value. Timeouts are enforced from outside the page, so they hold even when the page cannot respond — an `EVAL` script blocking the renderer or returning a Promise that never settles. When a timed-out step cannot be cancelled cleanly, Whirl closes that flow's browser context; if closing also stalls, it terminates and restarts only that worker's shim process. Either way the flow fails and reports normally, and other files are unaffected.
+- **Timeouts.** Each action, PAGE, assert, and capture line gets the step timeout (`step-timeout` option, default 10s); `VISIT` gets the navigation timeout (`nav-timeout` option, default 30s), and `GOAL` gets 2 minutes (section 7.7). A trailing `@duration` on any such line overrides its own budget: `CLICK "Generate report" @60s`. The optional `entry-timeout` option caps an entry's total time across all of its lines; when it expires, the in-flight step fails with an entry-timeout error. An entry without one is still bounded by its per-step timeouts. The suffix must be bare and end the line: a bare token that starts with `@` is always a timeout (section 3.1), and a quoted `"@60s"` is an ordinary value. A timeout whose number does not fit in 64 bits is a parse error. Timeouts are enforced from outside the page, so they hold even when the page cannot respond — an `EVAL` script blocking the renderer or returning a Promise that never settles. When a timed-out step cannot be cancelled cleanly, Whirl closes that flow's browser context; if closing also stalls, it terminates and restarts only that worker's shim process. Either way the flow fails and reports normally, and other files are unaffected.
 - **Setup.** Files with a `setup` option run after their setup flows. Whirl first runs every distinct setup flow named by the inputs, once each and in parallel like any files, then runs the remaining files, each starting from its setup flow's saved state with the setup flow's captures as `{{setup.name}}`. A setup flow that is also an input runs once, as the setup. A failed setup flow reports normally, and each of its dependents reports a `[setup]` failure naming the setup flow and its first failing step, without opening a browser. Setup flows are one level deep.
 - **Parallelism.** Files run in parallel across worker slots (`--jobs`, default: logical CPU count). A single file is never parallelized.
 - **Dialogs.** `alert`, `confirm`, and `prompt` dialogs are auto-dismissed by default. The `dialogs: accept` option auto-accepts them instead.
@@ -1436,7 +1438,7 @@ It records what each `ai:` target (section 6.3), each `ACT` line (section
       "occurrence": 1,
       "target": "ai:\"the Add to cart button\"",
       "model": "anthropic/claude-sonnet-5",
-      "locator": "role:button \"Add to cart\"",
+      "locator": "button:\"Add to cart\"",
       "fingerprint": {"role": "button", "name": "Add to cart"}
     },
     {
@@ -1450,7 +1452,7 @@ It records what each `ai:` target (section 6.3), each `ACT` line (section
           "fingerprints": [{"role": "textbox", "name": "Email"}]
         },
         {
-          "line": "CLICK role:button \"Sign in\"",
+          "line": "CLICK button:\"Sign in\"",
           "fingerprints": [{"role": "button", "name": "Sign in"}]
         }
       ]
@@ -1491,16 +1493,18 @@ entry: that line resolves with the model on every run and reports the warning
 `cache-secret`.
 
 **Locators.** The locator generator turns the element the model chose into a
-strict Whirl locator. It prefers, in order, `testid:`, `role:TYPE "Name"`,
-`label:`, `placeholder:`, and `text:`. When the best of these matches more than
+strict Whirl locator. It prefers, in order, `testid:`, a role prefix with
+the element's name, such as `button:"Name"`, `label:`, `placeholder:`, and
+`text:`. When the best of these matches more than
 one element, it adds the nearest named landmark, dialog, or region around the
 element as a scope with `>>`, and it adds `nth:` only as a last resort. It
 never uses `css:`, except in a `frame:` segment: an element inside an iframe
 gets a `frame:` prefix whose CSS selector names the iframe by its `title`,
 `name`, or `id` attribute, as in `frame:"iframe[title='Payment']"`. Whirl
 checks that the locator finds that element and no other. When no such locator
-exists, Whirl does not write the entry: the line resolves with the model on
-every run and reports the warning `cache-unstable`.
+exists, or when it would need a role that has no prefix (section 6.1), Whirl
+does not write the entry: the line resolves with the model on every run and
+reports the warning `cache-unstable`.
 
 **Replay.** For an `ai:` target with an entry, Whirl waits for the cached
 locator for at most half of the step's remaining time. When it finds exactly
@@ -1566,8 +1570,7 @@ whirl report <REPORT>... --html <PATH>  Generate HTML from saved results
 `whirl fmt` rewrites files to the canonical form: single spaces between tokens,
 quotes only where a value requires them, one HTTP header per line, check lines
 directly after the actions of their entry, and one blank line between entries.
-It rewrites removed `[Asserts]` and `[Captures]` sections as `ASSERT` and
-`CAPTURE` lines (section 4.1). It keeps the quotes on a value whose bare form is a typed
+It keeps the quotes on a value whose bare form is a typed
 literal, such as `"42"` or `"true"` (section 3.1), and it keeps JSON literals as
 written. It preserves JSON and fenced body text, apart from the LF
 line-ending normalization defined in section 7.3. `--check` writes
@@ -1626,7 +1629,7 @@ use `ACT` fails before any flow starts, with a runtime error (exit 3).
 nothing in a run whose files do not use `ACT`. `--rerun-failed` does not read
 it from a report; pass it again.
 
-`--video` records the `main` tab (section 7.1). On Chromium, Whirl records the page's own screencast frames through Playwright's bundled ffmpeg at 60 frames per second, or at the rate `--video-fps` names; a still page holds its last frame, so the recording always plays at a constant rate. Chromium sends a frame only when the page paints, so a short flow on a still page can end before the first frame arrives. Whirl then captures the page and holds that frame for the whole recording. Chromium cannot capture a page that has not painted yet, as right after a navigation, so Whirl tries again for up to 1 second. When Whirl still has no frame, as for a crashed page, the recording holds a white frame, as Playwright's recorder does, and Whirl reports a warning that says why. When ffmpeg fails while it finishes a recording, Whirl skips the recording and reports a warning. Neither warning changes the file's result. Firefox and WebKit use Playwright's recorder at its fixed rate of 25 frames per second. `--video-fps` on those engines is not an error: the file records at 25 frames per second and reports a warning, because the recording is evidence, not a result. A missing ffmpeg fails the file as a runtime error; `whirl install` provisions it with every browser build, and `whirl doctor` checks for it.
+`--video` records the `main` window (section 7.1). On Chromium, Whirl records the page's own screencast frames through Playwright's bundled ffmpeg at 60 frames per second, or at the rate `--video-fps` names; a still page holds its last frame, so the recording always plays at a constant rate. Chromium sends a frame only when the page paints, so a short flow on a still page can end before the first frame arrives. Whirl then captures the page and holds that frame for the whole recording. Chromium cannot capture a page that has not painted yet, as right after a navigation, so Whirl tries again for up to 1 second. When Whirl still has no frame, as for a crashed page, the recording holds a white frame, as Playwright's recorder does, and Whirl reports a warning that says why. When ffmpeg fails while it finishes a recording, Whirl skips the recording and reports a warning. Neither warning changes the file's result. Firefox and WebKit use Playwright's recorder at its fixed rate of 25 frames per second. `--video-fps` on those engines is not an error: the file records at 25 frames per second and reports a warning, because the recording is evidence, not a result. A missing ffmpeg fails the file as a runtime error; `whirl install` provisions it with every browser build, and `whirl doctor` checks for it.
 
 `--rerun-failed` reads a version 1 or version 2 report with an absolute `workingDirectory`. Relative file paths resolve against that directory, even when the report is moved. Each selected file runs from the beginning, including its setup. Existing CLI overrides and secrets must be supplied again; a report is not executable configuration. An unsupported or malformed report is a usage error. A report with no failed or errored files exits 0 with a message and launches no browser.
 
@@ -1717,147 +1720,352 @@ Rust source, configuration, and project setup follow the [Brynary Rust Style Gui
 - Whirl drives browsers through a thin Node shim that Whirl owns: a small, stable JSON API over stdio pipes, shaped like Whirl's closed vocabulary and implemented on the Playwright library. The Rust binary launches the shim as a child process. Whirl does not reimplement browser automation and does not speak CDP or Playwright's internal driver protocol, so it inherits Playwright's auto-waiting, retrying assertions, locator engine, tracing, and three browser engines — and Playwright upgrades stay internal to the shim.
 - `whirl install` downloads the pinned shim bundle (a private Node runtime, the shim, and the `@playwright/test` package) and the browser builds. Users do not need Node installed. Each Whirl release pins exactly one Playwright version.
 - Rust evaluates every filter and predicate (ADR [evaluate-checks-in-rust](docs/engineering/decisions/evaluate-checks-in-rust.md)). The shim reads raw values: page strings, `eval` results, and each response's status, headers, and body bytes. Rust owns the retry loop for page checks and page captures, on Playwright's poll schedule.
-- The shim bundles `@playwright/test` and drives its standalone `expect` for state checks, `tab:name closed`, and `PAGE`: they compile to Playwright's web-first assertions (`toBeVisible`, `toHaveURL`, ...). `SNAPSHOT` runs as a shim-owned poll loop with the same step timeout, because `toHaveScreenshot` runs only inside Playwright's test runner; snapshot comparison uses Playwright's image comparator with the defaults of section 7.
+- The shim bundles `@playwright/test` and drives its standalone `expect` for state checks, `window:name closed`, and `PAGE`: they compile to Playwright's web-first assertions (`toBeVisible`, `toHaveURL`, ...). `SNAPSHOT` runs as a shim-owned poll loop with the same step timeout, because `toHaveScreenshot` runs only inside Playwright's test runner; snapshot comparison uses Playwright's image comparator with the defaults of section 7.
 
 ## 16. Errors
 
 - **JSON diagnostics.** `whirl check --json` writes one version 1 JSON document to stdout, containing `exitCode` and `diagnostics`, with no diagnostic text on stderr. Each diagnostic includes a stable code, severity, path, line, column, length, message, and expected alternatives. Positions are 1-based Unicode character positions; locations unavailable for input or I/O errors are null. CLI argument syntax errors still use the ordinary usage message.
-- **Parse errors** (exit 2) are reported with file, line, column, a caret under the offending token, and the expected alternatives. `whirl check` surfaces them without launching a browser. Lint warnings do not change the exit code. Whirl warns about a capture that is never used, about an HTTP entry without a `status` check, and about a `count >= 1` assert directly followed by a check on the same locator, only when the following check requires at least one element. A `hidden` check or a count comparison that accepts zero does not make the presence check redundant. `whirl check` reports a check whose types cannot work, such as `text toHex` or `url > 3`, as the error `filter-type`. It reports an invalid literal regex, JSONPath, or XPath as a parse error. A file with an `[Asserts]` or `[Captures]` section is the parse error `sections-removed`, and a file that mixes such sections with check lines is the parse error `mixed-check-syntax` (section 4.1).
+- **Parse errors** (exit 2) are reported with file, line, column, a caret under the offending token, and the expected alternatives. `whirl check` surfaces them without launching a browser. Lint warnings do not change the exit code. Whirl warns about a capture that is never used, about an HTTP entry without a `status` check, and about a `count >= 1` assert directly followed by a check on the same locator, only when the following check requires at least one element. A `hidden` check or a count comparison that accepts zero does not make the presence check redundant. `whirl check` reports a check whose types cannot work, such as `text toHex` or `url > 3`, as the error `filter-type`. It reports an invalid literal regex, JSONPath, or XPath as a parse error.
 - **Test failures** (exit 1) report the failing step the same way, plus expected versus actual and the artifacts. Check failures use the codes of section 9.7.
 - **Warnings** do not change a step's status or the exit code. Each has a stable code in the JSON report: `unused-mock` (section 7.5); `cache-miss`, `healed`, `uncached`, `cache-secret`, and `cache-unstable` (section 12.1). `whirl check` reports `cache-stale-entry` as a warning and `cache-invalid`, `ai-count`, `unknown-extract`, `duplicate-extract`, `extract-schema-unsupported`, `judge-without-images`, and `goal-unchecked` as errors, and `extract-unsettled`, `judge-alone`, and `judge-images-unknown` as warnings. A `JUDGE` that answers `unsure` is the step warning `judge-unsure`, and one that answers `no` fails with `judge-false`.
 - **Runtime errors** (exit 3) cover shim crashes, missing browsers, and similar environmental failures.
 
 ## 17. Grammar
 
-```ebnf
-file       = [ options ] , entry , { entry } ;
-options    = "[Options]" , { option-line } ;
-option-line= key , ":" , value , { value } ;
+This section defines the syntax of a `.whirl` file completely. The grammar is
+a parsing expression grammar (PEG), in the notation of
+[pest](https://pest.rs/book/grammars/syntax.html). Whirl's tests run it
+against the parser on every sample file and on a set of edge cases.
 
-entry      = browser-entry | http-entry ;
-browser-entry = action , { action } , [ page ] , { check-line } ;
-http-entry = http-request , { http-check-line } ;
-check-line = assert | judge | capture ;
-judge      = "JUDGE" , [ locator ] , value , [ step-timeout ] ;   (* prefixed segments only *)
-http-check-line = http-assert | http-capture ;
+| Notation | Meaning |
+| --- | --- |
+| `a ~ b` | `a`, then `b` |
+| `a \| b` | `a`, or else `b`. The first alternative that matches wins. |
+| `a?`, `a*`, `a+` | Zero or one, zero or more, one or more. A repetition takes as much as it can and never gives any back. |
+| `a{n}`, `a{n, m}` | Exactly `n`, or `n` to `m` |
+| `&a`, `!a` | `a` must follow, or must not follow. Neither uses any input. |
+| `"x"`, `'a'..'z'` | Literal text, which is case-sensitive, and a range of characters |
+| `r = { }` | A rule. `_{ }` marks a helper rule, and `@{ }` a rule that matches one token. |
+| `SOI`, `EOI`, `ANY` | The start of the input, the end of the input, and any character |
+| `WHITE_SPACE` | A character with the Unicode `White_Space` property |
+| `ASCII_DIGIT`, `ASCII_ALPHA`, ... | A character of that ASCII class |
 
-action     = action-body , [ step-timeout ] | snapshot | mock | extract ;
-extract    = "EXTRACT" , artifact-name , [ locator ] , value , [ step-timeout ]
-           , [ json-object ] ;   (* schema: section 7.6 *)
-snapshot   = "SNAPSHOT" , artifact-name , [ locator ] , [ step-timeout ]
-           , { snapshot-option } ;   (* prefixed segments only; 6.1 *)
-snapshot-option = "snapshot-mask:" , ( locator | "none" )
-                | "snapshot-max-diff:" , value
-                | "snapshot-pixel-threshold:" , value ;
-action-body = "VISIT" , value
-           | "RESPONSE" , artifact-name , http-method , value
-           | ( "POPUP" | "TAB" | "CLOSE" ) , artifact-name
-           | ( "CLICK" | "RIGHTCLICK" | "MIDDLECLICK" ) , locator
-           | "DBLCLICK" , locator
-           | "FILL" , locator , value
-           | "TYPE" , locator , value
-           | "PRESS" , [ locator ] , value
-           | "CHECK" , locator
-           | "UNCHECK" , locator
-           | "SELECT" , locator , value
-           | "HOVER" , locator
-           | "DRAG" , locator , "to" , locator
-           | "SCROLL" , locator
-           | "SCROLL" , [ locator ] , scroll-motion
-           | "UPLOAD" , locator , "file:" , value
-           | "DROP" , locator , "file:" , value
-           | "SCREENSHOT" , artifact-name
-           | "EVAL" , value
-           | "ACT" , [ locator ] , value
-           | "GOAL" , value   (* default timeout 2 minutes; section 7.7 *)
-           | "STORE" , ( "local" | "session" | "cookie" ) , value , value ;
+Numbers in comments are sections of this specification.
 
-mock       = "MOCK" , http-method , value
-           , ( status-code , { http-header } , [ http-body ] | "failed" ) ;
-status-code = digit , digit , digit ;   (* 200 to 599 *)
+```pest
+// ---------------------------------------------------------------- Files (4)
 
-http-request = http-headline , { http-header } , [ http-body ] ;
-http-headline = "HTTP" , http-method , value , [ step-timeout ] ;
-http-header = attr-name , ":" , value ;
-http-body  = json-object | json-array | fenced-text ;
+file = { SOI ~ gap ~ options? ~ entries ~ ws* ~ comment? ~ EOI }
 
-page       = "PAGE" , ( value | "matches" , regex ) , [ step-timeout ] ;
+// HTTP entries can come first. The first browser entry starts with VISIT,
+// after any MOCK lines.
+entries = _{
+    http_entry* ~ first_browser_entry ~ (http_entry | browser_entry)*
+  | http_entry+
+}
+first_browser_entry = { mock_action* ~ visit_action ~ browser_action* ~ page_line? ~ check_line* }
+browser_entry       = { browser_action+ ~ page_line? ~ check_line* }
+http_entry          = { http_action ~ http_check_line* }
 
-assert     = "ASSERT" , assert-body , [ step-timeout ] ;
-assert-body = locator , state-check
-           | "tab:" , artifact-name , "closed"
-           | subject , { filter } , [ "not" ] , predicate ;
-http-assert = "ASSERT" , response-field , { filter } , [ "not" ] , predicate
-            , [ step-timeout ] ;
-state-check= "visible" | "hidden" | "enabled" | "disabled"
-           | "checked" | "unchecked" | "focused" ;
+// ---------------------------------------------------------------- Lines (3)
 
-subject    = locator , extractor
-           | "url" | "title"
-           | "eval" , value
-           | "response:" , artifact-name , response-field
-           | "request:" , artifact-name , request-field
-           | "extract:" , artifact-name ;
-request-field = "method" | "url" | "header:" , value | "body" | "bytes"
-              | json-path | xpath-expr ;
-extractor  = "text" | "value" | "count" | "attr:" , attr-name ;
-response-field = "status" | "header:" , value | "location" | "body" | "bytes"
-               | json-path | xpath-expr ;
+// A line ends with LF or CRLF. A CR alone is white space.
+NL      = _{ "\r\n" | "\n" }
+ws      = _{ !NL ~ WHITE_SPACE }
+comment =  { "#" ~ (!NL ~ ANY)* }
+// Blank lines and comment lines.
+gap     = _{ (ws* ~ comment? ~ NL)* }
+// The end of a line, and the blank and comment lines after it. A comment
+// starts at a `#` at the start of a line or after white space.
+eol     = _{ (ws+ ~ comment)? ~ ws* ~ (NL ~ gap | EOI) }
+// The end of a line that can hold a step timeout (12).
+tail    = _{ (ws+ ~ timeout)? ~ eol }
+// The end of a keyword or other fixed word.
+kw_end  = _{ &(WHITE_SPACE | EOI) }
 
-filter     = "count" | "first" | "last" | "nth" , index
-           | "split" , value | "regex" , regex
-           | "replace" , value , value | "replaceRegex" , regex , value
-           | "toString" | "toInt" | "toFloat" | "toHex"
-           | "toDate" , value | "dateFormat" , value
-           | "daysAfterNow" | "daysBeforeNow"
-           | "base64Decode" | "base64Encode"
-           | "base64UrlSafeDecode" | "base64UrlSafeEncode"
-           | "utf8Decode" | "utf8Encode" | "charsetDecode" , value
-           | "urlQueryParam" , value | "urlEncode" | "urlDecode"
-           | "htmlEscape" | "htmlUnescape"
-           | json-path | xpath-expr ;
-json-path  = "json:" , value ;    (* RFC 9535; one bare token or one quoted value *)
-xpath-expr = "xpath:" , value ;   (* XPath 1.0; one bare token or one quoted value *)
+// ---------------------------------------------------------------- Tokens and values (3.1, 11)
 
-predicate  = ( "==" | "!=" | ">" | ">=" | "<" | "<="
-             | "startsWith" | "endsWith" | "contains" ) , expected
-           | "matches" , regex
-           | "exists" | "isBoolean" | "isEmpty" | "isFloat" | "isInteger"
-           | "isIpv4" | "isIpv6" | "isIsoDate" | "isList" | "isNumber"
-           | "isObject" | "isString" | "isUuid" ;
-expected   = value | json-literal ;   (* typed reading: section 9.6 *)
+// A value is one token: a quoted string, a bare run, or a bare run that
+// ends in `:` or `:~` joined to a quoted string, such as
+// `label:"First name"`. A bare value cannot start with `@`, and a `#`
+// inside a token is text.
+token  = @{ quoted ~ !"\"" | !("@" | "#") ~ (joined | bare ~ !"\"") }
+joined = _{ (!(":" ~ "~"? ~ "\"") ~ bare_char)* ~ ":" ~ "~"? ~ quoted ~ !"\"" }
+value  = _{ token }
+// The value after a prefix such as `css:`.
+part   = _{ quoted ~ !"\"" | joined | bare ~ !"\"" }
+bare   = _{ bare_char+ }
+bare_char = _{ "\\{" | var_ref | !("{{" | "\"" | WHITE_SPACE) ~ ANY }
+quoted = _{ "\"" ~ ("\\" ~ escape | var_ref | !("\"" | "\\" | "{{" | NL) ~ ANY)* ~ "\"" }
+escape = _{ "\"" | "\\" | "n" | "t" | "{" | "u{" ~ scalar ~ "}" }
+// The hex digits of a Unicode scalar value, with any leading zeros.
+scalar = _{
+    "0"* ~ ("10" ~ hex{4} | hex_nz ~ hex{4} | !surrogate ~ hex_nz ~ hex{3} | hex_nz ~ hex{0, 2}) ~ &"}"
+  | "0"+ ~ &"}"
+}
+hex       = _{ ASCII_HEX_DIGIT }
+hex_nz    = _{ '1'..'9' | 'a'..'f' | 'A'..'F' }
+surrogate = _{ ("d" | "D") ~ ('8'..'9' | 'a'..'f' | 'A'..'F') }
+var_ref   = _{ "{{" ~ ("env." | "setup.")? ~ ident ~ "}}" }
 
-capture    = "CAPTURE" , name , ":" , subject , { filter } , [ step-timeout ] ;
-http-capture = "CAPTURE" , name , ":" , response-field , { filter } , [ step-timeout ] ;
-http-method = uppercase-letter , { uppercase-letter } ;
+// A step timeout: a bare token that starts with `@`, at the end of its line.
+timeout = @{ "@" ~ ASCII_DIGIT+ ~ ("ms" | "s") ~ kw_end }
 
-locator    = segment , { ">>" , segment } ;
-segment    = ( "role:" | "role~:" ) , name , [ value ]
-           | "ai:" , value     (* the last segment only; 6.3 *)
-           | ( "label" | "placeholder" | "text" | "alt"
-             | "title" ) , [ "~" ] , ":" , value
-           | ( "testid:" | "css:" | "frame:" ) , value
-           | "nth:" , index    (* never the first segment *)
-           | value ;             (* default engine; actions only — see 6.1 *)
+ident     = _{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+attr_name = _{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-")* }
+// A window, response, extract, screenshot, or snapshot name.
+name      = @{ attr_name ~ kw_end }
 
-step-timeout = "@" , duration ;
-scroll-motion = "down" | "up" | "left" | "right" | "to" , percent ;
-percent    = digit , { digit } , [ "." , digit , { digit } ] , "%" ;   (* 0% to 100% *)
-value      = quoted-string | bare-token ;
-name       = letter-or-underscore , { letter-digit-underscore } ;
-artifact-name = letter-or-underscore , { letter-digit-underscore | "-" } ;
-attr-name  = letter-or-underscore , { letter-digit-underscore | "-" } ;
-regex      = "/" , pattern , "/" , [ flags ] ;
-index      = [ "-" ] , digit , { digit } ;
-json-literal = json-array | json-object ;   (* on one line; section 3.1 *)
+// ---------------------------------------------------------------- Options (5)
+
+options     = { ws* ~ "[Options]" ~ eol ~ option_line* }
+option_line = { ws* ~ (allow_hosts | snapshot_setting | option) ~ eol }
+option      = { option_key ~ ":" ~ ws+ ~ value }
+option_key  = {
+    "base" | "browser" | "viewport" | "step-timeout" | "entry-timeout" | "nav-timeout"
+  | "dialogs" | "reduced-motion" | "storage" | "user-agent" | "setup" | "model"
+}
+allow_hosts = { "allow-hosts:" ~ (ws+ ~ value)+ }
+
+// Snapshot settings, in [Options] and below a SNAPSHOT (7).
+snapshot_setting         = { snapshot_mask | snapshot_max_diff | snapshot_pixel_threshold }
+snapshot_mask            = { "snapshot-mask:" ~ ws+ ~ (mask_none | mask) }
+mask_none                = @{ "none" ~ &eol }
+snapshot_max_diff        = { "snapshot-max-diff:" ~ ws+ ~ value }
+snapshot_pixel_threshold = { "snapshot-pixel-threshold:" ~ ws+ ~ value }
+
+// ---------------------------------------------------------------- Locators (6)
+
+// Every segment is one token. A bare colon in a locator always marks a
+// prefix, so unprefixed text has none. A `~` right after the colon of a
+// role or text prefix matches the value by substring.
+role_segment   = @{ role ~ ":" ~ ("*" ~ kw_end | "~" ~ !("*" ~ kw_end) ~ part | !"~" ~ part) }
+engine_segment = @{ ("label" | "placeholder" | "text" | "alt" | "title") ~ ":" ~ "~"? ~ part | ("testid" | "css") ~ ":" ~ part }
+frame_segment  = @{ "frame:" ~ part }
+ai_segment     = @{ "ai:" ~ part }
+nth_segment    = @{ "nth:" ~ "-"? ~ ASCII_DIGIT+ ~ kw_end }
+unprefixed     = @{ quoted ~ !"\"" | !(">>" ~ kw_end | "@" | "#") ~ (!":" ~ bare_char)+ ~ !(":" | "\"") }
+element        = _{ role_segment | engine_segment }
+// The ARIA roles that Playwright accepts, except generic, none, and
+// presentation. Reverse alphabetical order tries a longer name, such as
+// `alertdialog`, before a name it starts with, such as `alert`.
+role = _{
+    "treeitem" | "treegrid" | "tree" | "tooltip" | "toolbar" | "timer" | "time" | "textbox"
+  | "term" | "tabpanel" | "tablist" | "table" | "tab" | "switch" | "superscript" | "subscript"
+  | "strong" | "status" | "spinbutton" | "slider" | "separator" | "searchbox" | "search"
+  | "scrollbar" | "rowheader" | "rowgroup" | "row" | "region" | "radiogroup" | "radio"
+  | "progressbar" | "paragraph" | "option" | "note" | "navigation" | "meter" | "menuitemradio"
+  | "menuitemcheckbox" | "menuitem" | "menubar" | "menu" | "math" | "marquee" | "main" | "log"
+  | "listitem" | "listbox" | "list" | "link" | "insertion" | "img" | "heading" | "group"
+  | "gridcell" | "grid" | "form" | "figure" | "feed" | "emphasis" | "document" | "directory"
+  | "dialog" | "deletion" | "definition" | "contentinfo" | "complementary" | "combobox"
+  | "columnheader" | "code" | "checkbox" | "cell" | "caption" | "button" | "blockquote"
+  | "banner" | "article" | "application" | "alertdialog" | "alert"
+}
+
+// Segments join with `>>`. nth: never comes first, ai: comes last, and
+// each frame: is followed by an element. A `>>` after a segment always
+// continues the locator.
+sep     = _{ ws+ ~ ">>" ~ kw_end ~ ws+ }
+nths    = _{ (sep ~ nth_segment)* }
+locator = { ((frame_segment | element) ~ nths ~ sep)* ~ (ai_segment | element ~ nths) ~ !sep_word }
+// In actions, a segment can also be unprefixed text.
+target  = { ((frame_segment | element | unprefixed) ~ nths ~ sep)* ~ (ai_segment | (element | unprefixed) ~ nths) ~ !sep_word }
+// A mask can match many elements, so it has no ai:.
+mask    = { ((frame_segment | element) ~ nths ~ sep)* ~ element ~ nths ~ !sep_word }
+sep_word = _{ ws+ ~ ">>" ~ kw_end }
+
+// ---------------------------------------------------------------- Actions (7)
+
+mock_action    = { ws* ~ mock }
+visit_action   = { ws* ~ visit }
+http_action    = { ws* ~ http }
+browser_action = {
+    ws* ~ (
+        mock | visit | response | named_action | element_action | input_action | press
+      | drag | scroll | file_action | snapshot | eval | act | goal | extract | store
+    )
+}
+
+visit          = { "VISIT" ~ kw_end ~ ws+ ~ value ~ tail }
+response       = { "RESPONSE" ~ kw_end ~ ws+ ~ name ~ ws+ ~ method ~ ws+ ~ value ~ tail }
+named_action   = { ("POPUP" | "WINDOW" | "CLOSE" | "SCREENSHOT") ~ kw_end ~ ws+ ~ name ~ tail }
+element_action = { ("CLICK" | "RIGHTCLICK" | "MIDDLECLICK" | "DBLCLICK" | "HOVER" | "CHECK" | "UNCHECK") ~ kw_end ~ ws+ ~ target ~ tail }
+input_action   = { ("FILL" | "TYPE" | "SELECT") ~ kw_end ~ ws+ ~ target ~ ws+ ~ value ~ tail }
+// With one value, PRESS takes it as the key.
+press          = { "PRESS" ~ kw_end ~ ws+ ~ (target ~ ws+ ~ &value)? ~ value ~ tail }
+drag           = { "DRAG" ~ kw_end ~ ws+ ~ target ~ ws+ ~ "to" ~ kw_end ~ ws+ ~ target ~ tail }
+// A bare direction or `to` right after SCROLL is the motion.
+scroll         = { "SCROLL" ~ kw_end ~ ws+ ~ (motion | !motion_word ~ target ~ (ws+ ~ motion)?) ~ tail }
+motion         = { direction | "to" ~ kw_end ~ ws+ ~ percent }
+motion_word    = _{ ("down" | "up" | "left" | "right" | "to") ~ kw_end }
+direction      = @{ ("down" | "up" | "left" | "right") ~ kw_end }
+percent        = @{ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? ~ "%" ~ kw_end }
+file_action    = { ("UPLOAD" | "DROP") ~ kw_end ~ ws+ ~ target ~ ws+ ~ file_path ~ tail }
+file_path      = @{ "file:" ~ part }
+snapshot       = { "SNAPSHOT" ~ kw_end ~ ws+ ~ name ~ (ws+ ~ locator)? ~ tail ~ snapshot_option* }
+snapshot_option = { ws* ~ snapshot_setting ~ eol }
+eval           = { "EVAL" ~ kw_end ~ ws+ ~ value ~ tail }
+// A first token with a prefix starts the scope.
+act            = { "ACT" ~ kw_end ~ ws+ ~ scoped ~ tail }
+scoped         = _{ locator ~ ws+ ~ value | !(bare_word ~ ":") ~ value }
+bare_word      = _{ (!(":" | "\"") ~ bare_char)* }
+goal           = { "GOAL" ~ kw_end ~ ws+ ~ value ~ tail }
+extract        = { "EXTRACT" ~ kw_end ~ ws+ ~ name ~ ws+ ~ scoped ~ tail ~ schema? }
+store          = { "STORE" ~ kw_end ~ ws+ ~ store_scope ~ ws+ ~ value ~ ws+ ~ value ~ tail }
+store_scope    = @{ ("local" | "session" | "cookie") ~ kw_end }
+
+// HTTP requests and mocks (7.3, 7.5).
+http        = { "HTTP" ~ kw_end ~ ws+ ~ method ~ ws+ ~ value ~ tail ~ http_header* ~ http_body? }
+mock        = { "MOCK" ~ kw_end ~ ws+ ~ method ~ ws+ ~ value ~ ws+ ~ (mock_failed ~ eol | status ~ eol ~ http_header* ~ http_body?) }
+mock_failed = @{ "failed" ~ kw_end }
+status      = @{ '2'..'5' ~ ASCII_DIGIT{2} ~ kw_end }
+method      = @{ ASCII_ALPHA_UPPER+ ~ kw_end }
+http_header = { ws* ~ header_name ~ ":" ~ kw_end ~ ws+ ~ value ~ eol }
+header_name = @{ attr_name }
+http_body   = _{ json_body | fenced_body }
+json_body   = { (!NL ~ json_space)* ~ (json_object | json_array) ~ (!NL ~ json_space)* ~ (NL ~ gap | EOI) }
+fenced_body = { ws* ~ "```" ~ NL ~ fenced_line* ~ ws* ~ "```" ~ ws* ~ (NL ~ gap | EOI) }
+fenced_line = _{ !(ws* ~ "```" ~ ws* ~ (NL | EOI)) ~ ("\\{" | var_ref | !("{{" | NL) ~ ANY)* ~ NL }
+// An EXTRACT schema (7.6): a JSON object without {{ }}.
+schema      = { (!NL ~ json_space)* ~ plain_object ~ (!NL ~ json_space)* ~ (NL ~ gap | EOI) }
+
+// ---------------------------------------------------------------- PAGE and checks (8, 9, 10)
+
+page_line  = { ws* ~ "PAGE" ~ kw_end ~ ws+ ~ ("matches" ~ kw_end ~ ws+ ~ regex | !("matches" ~ kw_end) ~ value) ~ tail }
+check_line = _{ assert_line | judge_line | capture_line }
+
+assert_line  = { ws* ~ "ASSERT" ~ kw_end ~ ws+ ~ (window_check | state_check | value_check) ~ tail }
+window_check = { window_ref ~ ws+ ~ "closed" ~ kw_end }
+window_ref   = @{ "window:" ~ attr_name ~ kw_end }
+state_check  = { locator ~ ws+ ~ state }
+state        = @{ ("visible" | "hidden" | "enabled" | "disabled" | "checked" | "unchecked" | "focused") ~ kw_end }
+value_check  = { subject ~ filters ~ predicate_part }
+judge_line   = { ws* ~ "JUDGE" ~ kw_end ~ ws+ ~ scoped ~ tail }
+capture_line = { ws* ~ "CAPTURE" ~ kw_end ~ ws+ ~ capture_name ~ ":" ~ ws+ ~ subject ~ filters ~ tail }
+capture_name = @{ ident }
+
+// In an HTTP entry, checks and captures read its response (7.3).
+http_check_line   = _{ http_assert_line | http_capture_line }
+http_assert_line  = { ws* ~ "ASSERT" ~ kw_end ~ ws+ ~ response_field ~ filters ~ predicate_part ~ tail }
+http_capture_line = { ws* ~ "CAPTURE" ~ kw_end ~ ws+ ~ capture_name ~ ":" ~ ws+ ~ response_field ~ filters ~ tail }
+
+// Subjects (9.2).
+subject          = _{ extract_ref | request_subject | response_subject | url | title | eval_subject | element_subject }
+element_subject  = { locator ~ ws+ ~ extractor }
+extractor        = @{ ("text" | "value" | "count") ~ kw_end | "attr:" ~ attr_name ~ kw_end }
+extract_ref      = @{ "extract:" ~ attr_name ~ kw_end }
+request_subject  = { request_ref ~ ws+ ~ request_field }
+request_ref      = @{ "request:" ~ attr_name ~ kw_end }
+request_field    = { ("method" | "url" | "body" | "bytes") ~ kw_end | json_query | xpath_query | header_field }
+response_subject = { response_ref ~ ws+ ~ response_field }
+response_ref     = @{ "response:" ~ attr_name ~ kw_end }
+response_field   = { ("status" | "location" | "body" | "bytes") ~ kw_end | json_query | xpath_query | header_field }
+header_field     = @{ "header:" ~ part }
+json_query       = @{ "json:" ~ part }
+xpath_query      = @{ "xpath:" ~ part }
+url              = @{ "url" ~ kw_end }
+title            = @{ "title" ~ kw_end }
+eval_subject     = { "eval" ~ kw_end ~ ws+ ~ value }
+
+// Filters (9.5).
+filters = _{ (ws+ ~ filter)* }
+filter  = {
+    json_query
+  | xpath_query
+  | "nth" ~ kw_end ~ ws+ ~ index
+  | ("split" | "urlQueryParam" | "toDate" | "dateFormat" | "charsetDecode") ~ kw_end ~ ws+ ~ value
+  | "replace" ~ kw_end ~ ws+ ~ value ~ ws+ ~ value
+  | "regex" ~ kw_end ~ ws+ ~ regex
+  | "replaceRegex" ~ kw_end ~ ws+ ~ regex ~ ws+ ~ value
+  | (
+        "count" | "first" | "last" | "toString" | "toInt" | "toFloat" | "toHex"
+      | "daysAfterNow" | "daysBeforeNow" | "base64Decode" | "base64Encode"
+      | "base64UrlSafeDecode" | "base64UrlSafeEncode" | "utf8Decode" | "utf8Encode"
+      | "urlEncode" | "urlDecode" | "htmlEscape" | "htmlUnescape"
+    ) ~ kw_end
+}
+index = @{ "-"? ~ ASCII_DIGIT+ ~ kw_end }
+
+// Predicates (9.4). A value that starts with [ or with one { is a JSON
+// literal (3.1).
+predicate_part = _{ (ws+ ~ negation)? ~ ws+ ~ predicate }
+negation       = @{ "not" ~ kw_end }
+predicate      = {
+    "matches" ~ kw_end ~ ws+ ~ regex
+  | compare ~ ws+ ~ (&json_start ~ json_literal | !json_start ~ value)
+  | word_predicate
+}
+compare        = @{ ("==" | "!=" | ">=" | "<=" | ">" | "<" | "startsWith" | "endsWith" | "contains") ~ kw_end }
+word_predicate = @{
+    (
+        "exists" | "isBoolean" | "isEmpty" | "isFloat" | "isInteger" | "isIpv4" | "isIpv6"
+      | "isIsoDate" | "isList" | "isNumber" | "isObject" | "isString" | "isUuid"
+    ) ~ kw_end
+}
+json_start     = _{ "[" | "{" ~ !"{" }
+regex          = @{ "/" ~ ("\\" ~ (!NL ~ ANY) | !("/" | NL) ~ ANY)* ~ "/" ~ ("i" | "s" | "m")* ~ kw_end }
+
+// ---------------------------------------------------------------- JSON (3.1, 7.3, 7.6)
+
+// RFC 8259 JSON. In a body or a JSON literal, a {{name}} reference can
+// stand for a value or sit inside a string, and \{{ writes a literal {{.
+json_space  = _{ " " | "\t" | "\r" | "\n" }
+json_object = { "{" ~ json_space* ~ (json_member ~ (json_space* ~ "," ~ json_space* ~ json_member)*)? ~ json_space* ~ "}" }
+json_member = _{ json_string ~ json_space* ~ ":" ~ json_space* ~ json_value }
+json_array  = { "[" ~ json_space* ~ (json_value ~ (json_space* ~ "," ~ json_space* ~ json_value)*)? ~ json_space* ~ "]" }
+json_value  = _{ var_ref | json_object | json_array | json_string | json_number | "true" | "false" | "null" }
+json_string = @{ "\"" ~ (json_escape | "\\{{" | var_ref | !("\"" | "\\" | "{{" | '\u{00}'..'\u{1F}') ~ ANY)* ~ "\"" }
+json_escape = _{ "\\" ~ ("\"" | "\\" | "/" | "b" | "f" | "n" | "r" | "t" | "u" ~ json_unit) }
+// A \u escape of a surrogate names a pair.
+json_unit   = _{
+    ("d" | "D") ~ ('8'..'9' | 'a'..'b' | 'A'..'B') ~ hex{2} ~ "\\u" ~ ("d" | "D") ~ ('c'..'f' | 'C'..'F') ~ hex{2}
+  | !surrogate ~ hex{4}
+}
+json_number = @{ "-"? ~ ("0" | ASCII_NONZERO_DIGIT ~ ASCII_DIGIT*) ~ ("." ~ ASCII_DIGIT+)? ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)? }
+
+// A JSON literal ends on its line.
+json_literal = { line_object | line_array }
+line_space   = _{ " " | "\t" | !NL ~ "\r" }
+line_object  = { "{" ~ line_space* ~ (line_member ~ (line_space* ~ "," ~ line_space* ~ line_member)*)? ~ line_space* ~ "}" }
+line_member  = _{ json_string ~ line_space* ~ ":" ~ line_space* ~ line_value }
+line_array   = { "[" ~ line_space* ~ (line_value ~ (line_space* ~ "," ~ line_space* ~ line_value)*)? ~ line_space* ~ "]" }
+line_value   = _{ var_ref | line_object | line_array | json_string | json_number | "true" | "false" | "null" }
+
+// JSON with no {{ anywhere.
+plain_object = { "{" ~ json_space* ~ (plain_member ~ (json_space* ~ "," ~ json_space* ~ plain_member)*)? ~ json_space* ~ "}" }
+plain_member = _{ plain_string ~ json_space* ~ ":" ~ json_space* ~ plain_value }
+plain_array  = { "[" ~ json_space* ~ (plain_value ~ (json_space* ~ "," ~ json_space* ~ plain_value)*)? ~ json_space* ~ "]" }
+plain_value  = _{ plain_object | plain_array | plain_string | json_number | "true" | "false" | "null" }
+plain_string = @{ "\"" ~ (json_escape | !("\"" | "\\" | "{{" | '\u{00}'..'\u{1F}') ~ ANY)* ~ "\"" }
 ```
 
-`json-object` and `json-array` are JSON values. In an HTTP body, the outer
-delimiter can span lines; in a `json-literal`, the value ends on the same line.
-Interpolation is permitted as defined in sections 7.3 and 11. `fenced-text` is
-the text between lines that contain only three backticks. Comments and blank
-lines may appear between any two structural lines and are not part of the
-grammar. Inside a body they are body text.
+### 17.1 Rules outside the grammar
+
+A file must also follow these rules. `whirl check` reports a file that breaks
+one as a parse error.
+
+1. A literal option value has the form that section 5 gives for its key. A
+   literal `snapshot-max-diff` or `snapshot-pixel-threshold` value has the form
+   that section 7 gives. A value with a `{{name}}` reference is checked when
+   the file runs.
+2. The snapshot settings of one scope follow the duplicate rules of section 7.
+3. A regex is valid ECMAScript in Unicode mode (section 3.1).
+4. A literal `json:` argument is an RFC 9535 JSONPath query, and a literal
+   `xpath:` argument is an XPath 1.0 expression (section 9.5).
+5. A literal `header:` argument, after its escapes apply, is an `attr_name`
+   (section 9.2).
+6. The header names of one `HTTP` or `MOCK` line are unique, ignoring ASCII
+   case (section 7.3).
+7. A literal `toDate` or `dateFormat` argument is a `chrono` format, and a
+   literal `charsetDecode` argument is a WHATWG Encoding Standard label
+   (section 9.5).
+8. In a typed comparison, a bare bytes literal decodes (sections 3.1 and 9.6).
+9. A `percent` is at most 100, read as a 64-bit floating-point number.
+10. An `index` or `nth_segment` number fits in a signed 64-bit integer, and a
+    step timeout's number fits in an unsigned one.
+11. A JSON number fits in a 64-bit floating-point number, and JSON arrays and
+    objects nest at most 127 deep.
 
 ## 18. Non-goals and deferred features
 

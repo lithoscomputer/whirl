@@ -4,7 +4,7 @@ model: {{model}}
 
 # EXTRACT: a number read from text that holds a currency sign.
 VISIT /cheapest-red-shirt/
-ASSERT role:heading Shirts visible
+ASSERT heading:Shirts visible
 EXTRACT price "the price in dollars of the cheapest red tee" @60s
 { "type": "number" }
 ASSERT extract:price == 21

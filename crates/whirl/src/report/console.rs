@@ -249,7 +249,7 @@ mod tests {
             model:   "gpt-test".to_owned(),
             planner: "llm".to_owned(),
             actions: vec![ActActionReport {
-                line:        "CLICK role:button \"Sign in\"".to_owned(),
+                line:        "CLICK button:\"Sign in\"".to_owned(),
                 description: "the sign-in button".to_owned(),
                 planned_by:  "llm".to_owned(),
                 error:       None,
@@ -260,9 +260,7 @@ mod tests {
         });
         let out = render(&report);
         assert!(
-            out.contains(&format!(
-                "act (line {act_line}): CLICK role:button \"Sign in\""
-            )),
+            out.contains(&format!("act (line {act_line}): CLICK button:\"Sign in\"")),
             "out:
 {out}"
         );

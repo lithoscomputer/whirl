@@ -5,4 +5,4 @@ model: {{model}}
 # Click a form button that works without JavaScript.
 VISIT /no-js-click/
 ACT "click Continue to payment" @60s
-ASSERT role:heading "Payment" visible
+ASSERT heading:"Payment" visible

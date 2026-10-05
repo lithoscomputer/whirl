@@ -166,7 +166,7 @@ export interface LocatorSubject {
 	readonly locator: readonly LocatorSegment[];
 }
 
-/** A state check; `tab:NAME closed` is dispatched before this shape. */
+/** A state check; `window:NAME closed` is dispatched before this shape. */
 export interface AssertSpec {
 	readonly subject: LocatorSubject;
 	readonly check: StateCheck;

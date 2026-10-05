@@ -41,8 +41,8 @@ running them in parallel is safe.
 
 ## Try a failure
 
-Change `role:button "Place order"` in the checkout flow to
-`role:button "Buy now"`, then run `mise run example:test`. The failure log shows
+Change `button:"Place order"` in the checkout flow to
+`button:"Buy now"`, then run `mise run example:test`. The failure log shows
 which locator Whirl awaited and prints a `whirl show-trace` command. Restore
 `Place order` to repair the test.
 

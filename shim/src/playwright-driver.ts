@@ -56,7 +56,11 @@ import type {
 } from "./protocol.js";
 import { assertNever, ShimError } from "./protocol.js";
 import { runRead } from "./reads.js";
-import { runSnapshot, settledScreenshot } from "./snapshots.js";
+import {
+	retryUnableToCapture,
+	runSnapshot,
+	settledScreenshot,
+} from "./snapshots.js";
 import {
 	actionErrorMessage,
 	Deadline,
@@ -1175,7 +1179,16 @@ export class PlaywrightDriver implements ShimDriver {
 			case "screenshot": {
 				const path = fieldString(params, "path");
 				await mkdir(dirname(path), { recursive: true });
-				await page.screenshot({ path, fullPage: true, timeout: timeoutMs });
+				const deadline = new Deadline(timeoutMs);
+				await retryUnableToCapture(
+					() =>
+						page.screenshot({
+							path,
+							fullPage: true,
+							timeout: deadline.remainingMs(),
+						}),
+					deadline,
+				);
 				return {};
 			}
 			case "judgeScreenshot": {

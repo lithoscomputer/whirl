@@ -20,7 +20,7 @@ def act_report(calls=1, input_tokens=3000, output_tokens=150, cost=7500, planned
     usage = {"modelCalls": calls, "inputTokens": input_tokens, "outputTokens": output_tokens}
     if cost is not None:
         usage["costUsdMicros"] = cost
-    actions = [{"line": "CLICK role:button", "description": "", "plannedBy": planner} for planner in planned_by]
+    actions = [{"line": "CLICK button:*", "description": "", "plannedBy": planner} for planner in planned_by]
     return {"model": "m", "actions": actions, "usage": usage}
 
 

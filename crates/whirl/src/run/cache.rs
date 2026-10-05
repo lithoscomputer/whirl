@@ -330,7 +330,7 @@ pub(crate) fn file_keys(file: &File) -> Vec<CacheKey> {
                             subject: Subject::Element { locator, .. },
                             ..
                         }) => Some(locator),
-                        AssertBody::Check(_) | AssertBody::TabClosed { .. } => None,
+                        AssertBody::Check(_) | AssertBody::WindowClosed { .. } => None,
                     };
                     (assert.line, assert.text.as_str(), locator)
                 }
@@ -383,7 +383,7 @@ mod tests {
             occurrence:  1,
             target:      "ai:\"the buy button\"".to_owned(),
             model:       "gpt-test".to_owned(),
-            locator:     "role:button Buy".to_owned(),
+            locator:     "button:Buy".to_owned(),
             fingerprint: Fingerprint {
                 role: "button".to_owned(),
                 name: Some("Buy".to_owned()),
@@ -413,7 +413,7 @@ mod tests {
       "occurrence": 1,
       "target": "ai:\"the buy button\"",
       "model": "gpt-test",
-      "locator": "role:button Buy",
+      "locator": "button:Buy",
       "fingerprint": {
         "role": "button",
         "name": "Buy"

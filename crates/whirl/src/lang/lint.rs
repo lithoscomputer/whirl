@@ -46,7 +46,7 @@ pub(crate) struct Lint {
 pub(crate) fn lint_file_with(file: &File, external_uses: &HashSet<String>) -> Vec<Lint> {
     let mut lints = Vec::new();
     duplicate_artifact_names(file, &mut lints);
-    tab_names(file, &mut lints);
+    window_names(file, &mut lints);
     response_names(file, &mut lints);
     unasserted_http_status(file, &mut lints);
     unused_captures(file, external_uses, &mut lints);
@@ -914,7 +914,7 @@ fn collect_action_refs<'a>(action: &'a Action, refs: &mut Vec<VarRef<'a>>) {
             collect_value_refs(value, line, refs);
         }
         ActionKind::Popup { .. }
-        | ActionKind::Tab { .. }
+        | ActionKind::Window { .. }
         | ActionKind::Close { .. }
         | ActionKind::Screenshot { .. } => {}
         ActionKind::Snapshot {
@@ -933,7 +933,7 @@ fn collect_action_refs<'a>(action: &'a Action, refs: &mut Vec<VarRef<'a>>) {
 fn collect_assert_refs<'a>(assert: &'a Assert, refs: &mut Vec<VarRef<'a>>) {
     let line = assert.line;
     match &assert.body {
-        AssertBody::TabClosed { .. } => {}
+        AssertBody::WindowClosed { .. } => {}
         AssertBody::ElementState { locator, .. } => collect_locator_refs(locator, line, refs),
         AssertBody::Check(check) => {
             collect_chain_refs(&check.subject, &check.filters, line, refs);
@@ -1147,7 +1147,7 @@ fn unasserted_http_status(file: &File, lints: &mut Vec<Lint>) {
     }
 }
 
-fn tab_names(file: &File, lints: &mut Vec<Lint>) {
+fn window_names(file: &File, lints: &mut Vec<Lint>) {
     let mut names = HashSet::from(["main"]);
     for entry in &file.entries {
         for action in &entry.actions {
@@ -1157,36 +1157,36 @@ fn tab_names(file: &File, lints: &mut Vec<Lint>) {
                         lints.push(lint_at(
                             file,
                             Severity::Error,
-                            "duplicate-tab",
+                            "duplicate-window",
                             name.span,
-                            format!("tab `{}` is already named", name.text),
+                            format!("window `{}` is already named", name.text),
                         ));
                     }
                 }
-                ActionKind::Tab { name } | ActionKind::Close { name }
+                ActionKind::Window { name } | ActionKind::Close { name }
                     if !names.contains(name.text.as_str()) =>
                 {
                     lints.push(lint_at(
                         file,
                         Severity::Error,
-                        "unknown-tab",
+                        "unknown-window",
                         name.span,
-                        format!("unknown tab `{}`; name it with POPUP first", name.text),
+                        format!("unknown window `{}`; name it with POPUP first", name.text),
                     ));
                 }
                 _ => {}
             }
         }
         for assertion in entry.asserts() {
-            if let AssertBody::TabClosed { name } = &assertion.body
+            if let AssertBody::WindowClosed { name } = &assertion.body
                 && !names.contains(name.text.as_str())
             {
                 lints.push(lint_at(
                     file,
                     Severity::Error,
-                    "unknown-tab",
+                    "unknown-window",
                     name.span,
-                    format!("unknown tab `{}`", name.text),
+                    format!("unknown window `{}`", name.text),
                 ));
             }
         }
@@ -1292,7 +1292,7 @@ mod tests {
         );
         for source in [
             "VISIT /\nASSERT css:\"li.item\" count > 0\nASSERT css:\"li.item\" count == 3\n",
-            "VISIT /\nASSERT role:button \"Save\" count != 0\nASSERT role:button \"Save\" enabled\n",
+            "VISIT /\nASSERT button:\"Save\" count != 0\nASSERT button:\"Save\" enabled\n",
             // `not` flips a count comparison.
             "VISIT /\nASSERT testid:card count not < 1\nASSERT testid:card visible\n",
             "VISIT /\nASSERT testid:card count >= 1\nASSERT testid:card count not == 0\n",
@@ -1316,7 +1316,7 @@ mod tests {
             // A page check sits between them.
             "VISIT /\nASSERT testid:card count >= 1\nASSERT title == Home\nASSERT testid:card visible\n",
             // The same text through a different segment shape.
-            "VISIT /\nASSERT text:Save count >= 1\nASSERT text~:Save visible\n",
+            "VISIT /\nASSERT text:Save count >= 1\nASSERT text:~Save visible\n",
             // Counts that accept zero do not wait for the element.
             "VISIT /\nASSERT testid:card count >= 1\nASSERT testid:card count not > 0\n",
             "VISIT /\nASSERT testid:card count >= 1\nASSERT testid:card count > -1\n",

@@ -1,0 +1,2 @@
+MOCK GET /api/flags 200
+{ "checkout_v2": true }

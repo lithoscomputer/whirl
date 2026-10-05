@@ -76,27 +76,18 @@ impl ParseError {
 pub(crate) enum ParseErrorCode {
     /// An ordinary syntax error.
     Syntax,
-    /// A file that mixes check lines with the removed `[Asserts]` and
-    /// `[Captures]` sections (SPEC 4.1).
-    MixedCheckSyntax,
-    /// A file with a removed `[Asserts]` or `[Captures]` section, outside
-    /// `whirl fmt` (SPEC 4.1).
-    SectionsRemoved,
 }
 
 impl ParseErrorCode {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Syntax => "parse-error",
-            Self::MixedCheckSyntax => "mixed-check-syntax",
-            Self::SectionsRemoved => "sections-removed",
         }
     }
 }
 
 /// A diagnostic local to one line; the parser adds file and line context.
 struct LineError {
-    code:     ParseErrorCode,
     line:     Option<u32>,
     column:   u32,
     len:      u32,
@@ -108,7 +99,6 @@ struct LineError {
 impl LineError {
     fn new(span: Span, message: impl Into<String>) -> Self {
         Self {
-            code:     ParseErrorCode::Syntax,
             line:     None,
             column:   span.column,
             len:      span.len,
@@ -120,11 +110,6 @@ impl LineError {
 
     fn expecting<S: fmt::Display>(mut self, expected: impl IntoIterator<Item = S>) -> Self {
         self.expected = expected.into_iter().map(|item| item.to_string()).collect();
-        self
-    }
-
-    fn with_code(mut self, code: ParseErrorCode) -> Self {
-        self.code = code;
         self
     }
 
@@ -153,12 +138,34 @@ fn is_attr_name(text: &str) -> bool {
         && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
 }
 
-/// One whitespace-free run of source: adjacent bare runs and quoted
-/// strings form a single token (`placeholder:"Search products"`).
+/// Reads a bare token that starts with `@`: always a step timeout, since
+/// a bare value cannot start with `@` (SPEC 3.1).
+fn timeout_token(text: &str, span: Span) -> Result<DurationLit, LineError> {
+    let rest = &text[1..];
+    if let Ok(duration) = rest.parse::<DurationLit>() {
+        return Ok(duration);
+    }
+    let digits = rest.trim_end_matches(['m', 's']);
+    let message = if !digits.is_empty()
+        && digits.bytes().all(|byte| byte.is_ascii_digit())
+        && matches!(&rest[digits.len()..], "ms" | "s")
+    {
+        "the step timeout is too long"
+    } else {
+        "a bare value cannot start with `@`; quote it"
+    };
+    Err(LineError::new(span, message).expecting(["a duration like @10s", "a quoted value"]))
+}
+
+/// One whitespace-free run of source (SPEC 3.1): a quoted string, a bare
+/// run, or a bare run that ends in `:` joined to a quoted string, such as
+/// `placeholder:"Search products"`.
 #[derive(Clone, Debug)]
 struct RawToken {
-    parts: Vec<RawPart>,
-    span:  Span,
+    parts:   Vec<RawPart>,
+    span:    Span,
+    /// The step timeout, when the token is a bare `@duration`.
+    timeout: Option<DurationLit>,
 }
 
 #[derive(Clone, Debug)]
@@ -180,8 +187,15 @@ impl RawToken {
         }
     }
 
-    /// Converts the token to a value, splitting bare interpolation.
+    /// Converts the token to a value, splitting bare interpolation. A step
+    /// timeout is never a value.
     fn into_value(self) -> Result<Value, LineError> {
+        if self.timeout.is_some() {
+            return Err(
+                LineError::new(self.span, "a step timeout must end the line")
+                    .expecting(["a value", "end of line"]),
+            );
+        }
         let mut segments = Vec::new();
         let mut quoted = false;
         for part in self.parts {
@@ -246,6 +260,58 @@ fn bare_segments(text: &str, column: u32) -> Result<Vec<ValueSegment>, LineError
             literal.push(ch);
             pos += 1;
         }
+    }
+    if !literal.is_empty() || segments.is_empty() {
+        segments.push(ValueSegment::Literal(literal));
+    }
+    Ok(segments)
+}
+
+/// Splits one line of JSON into interpolation segments (SPEC 7.3, 11), as
+/// the runner reads it: `\{{` writes a literal `{{`, and inside a string a
+/// backslash escapes the next character, so `\\{{name}}` is an escaped
+/// backslash before a reference.
+fn json_segments(text: &str, column: u32) -> Result<Vec<ValueSegment>, LineError> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut segments = Vec::new();
+    let mut literal = String::new();
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut pos = 0;
+    while pos < chars.len() {
+        let ch = chars[pos];
+        if ch == '\\'
+            && !escaped
+            && chars.get(pos + 1) == Some(&'{')
+            && chars.get(pos + 2) == Some(&'{')
+        {
+            literal.push_str("{{");
+            pos += 3;
+            continue;
+        }
+        if ch == '{' && chars.get(pos + 1) == Some(&'{') {
+            if !literal.is_empty() {
+                segments.push(ValueSegment::Literal(mem::take(&mut literal)));
+            }
+            let at = column + u32::try_from(pos).unwrap_or(u32::MAX);
+            let (segment, used) = scan_var_ref(&chars[pos..], at)?;
+            segments.push(segment);
+            pos += used;
+            continue;
+        }
+        literal.push(ch);
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+        } else if ch == '"' {
+            in_string = true;
+        }
+        pos += 1;
     }
     if !literal.is_empty() || segments.is_empty() {
         segments.push(ValueSegment::Literal(literal));
@@ -333,10 +399,20 @@ impl Cursor {
         }
     }
 
+    /// True when a comment starts at the cursor: a `#` at the start of the
+    /// line or after white space (SPEC 3). Inside a token, `#` is text.
+    fn at_comment(&self) -> bool {
+        self.peek() == Some('#')
+            && self
+                .pos
+                .checked_sub(1)
+                .is_none_or(|before| self.chars[before].is_whitespace())
+    }
+
     /// The trailing comment at the cursor, if the rest of the line is one.
     fn take_comment(&mut self) -> Option<Comment> {
         self.skip_ws();
-        if self.peek() != Some('#') {
+        if !self.at_comment() {
             return None;
         }
         let column = self.column();
@@ -353,7 +429,7 @@ impl Cursor {
     /// True when only whitespace or a comment remains.
     fn at_line_end(&mut self) -> bool {
         self.skip_ws();
-        matches!(self.peek(), None | Some('#'))
+        self.peek().is_none() || self.at_comment()
     }
 
     fn span_from(&self, start: usize) -> Span {
@@ -365,24 +441,61 @@ impl Cursor {
     }
 
     /// Scans the next token, or `None` at the end of the line or at a
-    /// comment. Bare runs end at whitespace, `"`, or `#` (SPEC 3.1);
-    /// adjacent runs and quoted strings join into one token.
+    /// comment (SPEC 3.1). Bare runs end at whitespace or `"`; a `#` inside
+    /// a token is text. A quoted string joins only a bare run that ends in
+    /// `:` or `:~`, and nothing joins a closing quote. A bare token that
+    /// starts with `@` is a step timeout.
     fn next_token(&mut self) -> Result<Option<RawToken>, LineError> {
         if self.at_line_end() {
             return Ok(None);
         }
         let start = self.pos;
         let mut parts = Vec::new();
-        loop {
-            match self.peek() {
-                Some('"') => parts.push(self.scan_quoted()?),
-                Some(ch) if !ch.is_whitespace() && ch != '#' => parts.push(self.scan_bare()),
-                _ => break,
+        if self.peek() == Some('"') {
+            parts.push(self.scan_quoted()?);
+        } else {
+            let bare = self.scan_bare();
+            let prefix = matches!(
+                &bare,
+                RawPart::Bare { text, .. } if text.ends_with(':') || text.ends_with(":~")
+            );
+            parts.push(bare);
+            if prefix && self.peek() == Some('"') {
+                parts.push(self.scan_quoted()?);
             }
         }
+        if let Some(ch) = self.peek()
+            && !ch.is_whitespace()
+        {
+            let span = Span {
+                line:   self.line_no,
+                column: self.column(),
+                len:    1,
+            };
+            let message = if matches!(parts.last(), Some(RawPart::Quoted { .. })) {
+                "expected white space after the closing quote"
+            } else {
+                "a quote can follow only a prefix such as `label:`; quote the whole value"
+            };
+            return Err(LineError::new(span, message).expecting(["white space"]));
+        }
+        let span = self.span_from(start);
+        let timeout = match parts.as_slice() {
+            [RawPart::Bare { text, .. }] if text.starts_with('@') => {
+                Some(timeout_token(text, span)?)
+            }
+            [RawPart::Bare { text, .. }, _] if text.starts_with('@') => {
+                return Err(
+                    LineError::new(span, "a bare value cannot start with `@`; quote it")
+                        .expecting(["a quoted value"]),
+                );
+            }
+            _ => None,
+        };
         Ok(Some(RawToken {
             parts,
-            span: self.span_from(start),
+            span,
+            timeout,
         }))
     }
 
@@ -390,7 +503,7 @@ impl Cursor {
         let start = self.pos;
         let column = self.column();
         while let Some(ch) = self.peek() {
-            if ch.is_whitespace() || ch == '"' || ch == '#' {
+            if ch.is_whitespace() || ch == '"' {
                 break;
             }
             self.pos += 1;
@@ -565,7 +678,7 @@ impl Cursor {
                 format!("invalid JSON literal: {error}"),
             ));
         }
-        let segments = bare_segments(&text, column)?;
+        let segments = json_segments(&text, column)?;
         Ok(JsonLiteral {
             value: Value {
                 segments: merge_literals(segments),
@@ -625,7 +738,7 @@ impl Cursor {
         }
         let mut flags = RegexFlags::default();
         while let Some(ch) = self.peek() {
-            if ch.is_whitespace() || ch == '#' {
+            if ch.is_whitespace() {
                 break;
             }
             let column = self.column();
@@ -655,8 +768,99 @@ impl Cursor {
     }
 }
 
+/// The ARIA roles that are locator prefixes, such as `button:` (SPEC
+/// 6.1): every role the pinned Playwright accepts, except `generic`,
+/// `none`, and `presentation`.
+pub(crate) const ROLES: [&str; 79] = [
+    "alert",
+    "alertdialog",
+    "application",
+    "article",
+    "banner",
+    "blockquote",
+    "button",
+    "caption",
+    "cell",
+    "checkbox",
+    "code",
+    "columnheader",
+    "combobox",
+    "complementary",
+    "contentinfo",
+    "definition",
+    "deletion",
+    "dialog",
+    "directory",
+    "document",
+    "emphasis",
+    "feed",
+    "figure",
+    "form",
+    "grid",
+    "gridcell",
+    "group",
+    "heading",
+    "img",
+    "insertion",
+    "link",
+    "list",
+    "listbox",
+    "listitem",
+    "log",
+    "main",
+    "marquee",
+    "math",
+    "meter",
+    "menu",
+    "menubar",
+    "menuitem",
+    "menuitemcheckbox",
+    "menuitemradio",
+    "navigation",
+    "note",
+    "option",
+    "paragraph",
+    "progressbar",
+    "radio",
+    "radiogroup",
+    "region",
+    "row",
+    "rowgroup",
+    "rowheader",
+    "scrollbar",
+    "search",
+    "searchbox",
+    "separator",
+    "slider",
+    "spinbutton",
+    "status",
+    "strong",
+    "subscript",
+    "superscript",
+    "switch",
+    "tab",
+    "table",
+    "tablist",
+    "tabpanel",
+    "term",
+    "textbox",
+    "time",
+    "timer",
+    "toolbar",
+    "tooltip",
+    "tree",
+    "treegrid",
+    "treeitem",
+];
+
+/// True when `text` names a role prefix, such as `button`.
+pub(crate) fn is_role(text: &str) -> bool {
+    ROLES.contains(&text)
+}
+
+/// The segment prefixes, for diagnostics (SPEC 6.1).
 const SEGMENT_PREFIXES: [&str; 11] = [
-    "role:",
+    "a role such as button:",
     "label:",
     "placeholder:",
     "text:",
@@ -706,118 +910,125 @@ fn strip_prefix_token(token: RawToken, prefix_len: usize) -> Option<RawToken> {
     Some(RawToken {
         parts: new_parts,
         span,
+        timeout: None,
     })
 }
 
-/// Parses one locator segment from a token (SPEC 6, 17). A `Role`
-/// segment's accessible name may follow in the next token; the locator
-/// loops attach it.
+/// The prefix of a token that starts with a bare part holding a colon:
+/// the text before the first `:`, and the colon's byte index. In a
+/// locator, a bare colon always marks a prefix (SPEC 6.1).
+fn segment_prefix(token: &RawToken) -> Option<(String, usize)> {
+    let Some(RawPart::Bare { text, .. }) = token.parts.first() else {
+        return None;
+    };
+    let colon = text.find(':')?;
+    Some((text[..colon].to_owned(), colon))
+}
+
+/// Parses one locator segment from one token (SPEC 6, 17): `prefix:value`,
+/// or unprefixed text where `allow_default` holds.
 fn parse_segment(
     token: RawToken,
     allow_default: bool,
     is_first: bool,
 ) -> Result<LocatorSegment, LineError> {
     let span = token.span;
-    let head = match token.parts.first() {
-        Some(RawPart::Bare { text, .. }) => text.clone(),
-        _ => String::new(),
+    let Some((name, colon)) = segment_prefix(&token) else {
+        return unprefixed_segment(token, allow_default);
     };
-    let value_after = |prefix: &str| -> Result<Value, LineError> {
-        strip_prefix_token(token.clone(), prefix.len())
-            .ok_or_else(|| {
-                LineError::new(span, format!("`{prefix}` needs a value")).expecting(["a value"])
-            })
-            .and_then(RawToken::into_value)
-    };
-    for (name, prefix) in TEXT_PREFIXES {
-        for (marker, substring) in [(format!("{name}:"), false), (format!("{name}~:"), true)] {
-            if head.starts_with(&marker) {
-                let value = value_after(&marker)?;
-                let kind = SegmentKind::TextEngine {
-                    prefix,
-                    substring,
-                    value,
-                };
-                return Ok(LocatorSegment { kind, span });
-            }
-        }
-    }
-    for (marker, substring) in [("role:", false), ("role~:", true)] {
-        if let Some(role) = head.strip_prefix(marker) {
-            let role = role.to_owned();
-            if !is_ident(&role) || token.parts.len() > 1 {
-                return Err(LineError::new(span, "expected a role type after `role:`")
-                    .expecting(["a role type like button or heading"]));
-            }
-            let kind = SegmentKind::Role {
+    let name = name.as_str();
+    let rest = strip_prefix_token(token, colon + 1);
+    let missing =
+        |what: &str| LineError::new(span, format!("`{name}:` needs {what}")).expecting([what]);
+    let text_prefix = TEXT_PREFIXES.iter().find(|(text, _)| *text == name);
+    if text_prefix.is_some() || is_role(name) {
+        let rest = rest.ok_or_else(|| missing("a value"))?;
+        let (substring, rest) = match_mode(rest).ok_or_else(|| missing("a value after `~`"))?;
+        let kind = if let Some((_, prefix)) = text_prefix {
+            SegmentKind::TextEngine {
+                prefix: *prefix,
                 substring,
-                role,
-                name: None,
-            };
-            return Ok(LocatorSegment { kind, span });
-        }
-    }
-    if head.starts_with("testid:") {
-        let value = value_after("testid:")?;
-        return Ok(LocatorSegment {
-            kind: SegmentKind::TestId(value),
-            span,
-        });
-    }
-    if head.starts_with("frame:") {
-        let value = value_after("frame:")?;
-        return Ok(LocatorSegment {
-            kind: SegmentKind::Frame(value),
-            span,
-        });
-    }
-    if head.starts_with("ai:") {
-        let value = value_after("ai:")?;
-        return Ok(LocatorSegment {
-            kind: SegmentKind::Ai(value),
-            span,
-        });
-    }
-    if head.starts_with("css:") {
-        let value = value_after("css:")?;
-        return Ok(LocatorSegment {
-            kind: SegmentKind::Css(value),
-            span,
-        });
-    }
-    if let Some(rest) = head.strip_prefix("nth:") {
-        let index = if token.parts.len() > 1 {
-            None
+                value: rest.into_value()?,
+            }
         } else {
-            parse_index(rest)
+            let any = rest.bare_single() == Some("*");
+            if any && substring {
+                return Err(
+                    LineError::new(span, format!("`{name}:~` needs a name")).expecting(["a name"])
+                );
+            }
+            SegmentKind::Role {
+                substring,
+                role: name.to_owned(),
+                name: if any { None } else { Some(rest.into_value()?) },
+            }
         };
-        let Some(index) = index else {
-            return Err(LineError::new(span, "expected an index after `nth:`")
-                .expecting(["a 0-based index like 0 or -1"]));
-        };
-        if is_first {
-            return Err(
-                LineError::new(span, "`nth:` may not be the first segment of a locator")
-                    .expecting(["a locator segment before `nth:`"]),
-            );
+        return Ok(LocatorSegment { kind, span });
+    }
+    if !matches!(name, "testid" | "css" | "frame" | "ai" | "nth") {
+        return Err(LineError::new(
+            span,
+            format!("unknown prefix `{name}:`; quote text that holds a colon"),
+        )
+        .expecting(SEGMENT_PREFIXES));
+    }
+    let rest = rest.ok_or_else(|| missing("a value"))?;
+    let kind = match name {
+        "testid" => SegmentKind::TestId(rest.into_value()?),
+        "css" => SegmentKind::Css(rest.into_value()?),
+        "frame" => SegmentKind::Frame(rest.into_value()?),
+        "ai" => SegmentKind::Ai(rest.into_value()?),
+        _ => {
+            let Some(index) = rest.bare_single().and_then(parse_index) else {
+                return Err(LineError::new(span, "expected an index after `nth:`")
+                    .expecting(["a 0-based index like 0 or -1"]));
+            };
+            if is_first {
+                return Err(LineError::new(
+                    span,
+                    "`nth:` may not be the first segment of a locator",
+                )
+                .expecting(["a locator segment before `nth:`"]));
+            }
+            SegmentKind::Nth(index)
         }
-        return Ok(LocatorSegment {
-            kind: SegmentKind::Nth(index),
-            span,
-        });
+    };
+    Ok(LocatorSegment { kind, span })
+}
+
+/// Splits the substring marker from the value of a role or text prefix
+/// (SPEC 6.1): a bare `~` right after the colon, as in `button:~Sign`,
+/// matches by substring. Returns `None` when nothing follows the `~`.
+fn match_mode(rest: RawToken) -> Option<(bool, RawToken)> {
+    match rest.parts.first() {
+        Some(RawPart::Bare { text, .. }) if text.starts_with('~') => {
+            strip_prefix_token(rest, 1).map(|rest| (true, rest))
+        }
+        _ => Some((false, rest)),
     }
-    if allow_default {
-        let value = token.into_value()?;
-        return Ok(LocatorSegment {
-            kind: SegmentKind::Default(value),
-            span,
-        });
+}
+
+/// Unprefixed text: a default-engine segment, which only actions allow
+/// (SPEC 6.1). `>>` separates segments, so it is never one.
+fn unprefixed_segment(token: RawToken, allow_default: bool) -> Result<LocatorSegment, LineError> {
+    let span = token.span;
+    if token.bare_single() == Some(">>") {
+        return Err(
+            LineError::new(span, "`>>` separates segments; quote it to match the text")
+                .expecting(["a locator segment"]),
+        );
     }
-    Err(LineError::new(
+    if !allow_default {
+        return Err(LineError::new(
+            span,
+            "unprefixed locator segments are only allowed in actions; use a prefix here",
+        )
+        .expecting(SEGMENT_PREFIXES));
+    }
+    Ok(LocatorSegment {
+        kind: SegmentKind::Default(token.into_value()?),
         span,
-        "unprefixed locator segments are only allowed in actions; use a prefix here",
-    )
-    .expecting(SEGMENT_PREFIXES))
+    })
 }
 
 fn finish_locator(segments: Vec<LocatorSegment>, span: Span) -> Result<Locator, LineError> {
@@ -853,35 +1064,27 @@ fn locator_span(first: Span, last: Span) -> Span {
     }
 }
 
-/// Builds a locator from a fixed token list (action lines, SPEC 6):
-/// segments joined by `>>`, with a role segment's optional accessible
-/// name taken from the following token.
-fn build_locator(
-    tokens: Vec<RawToken>,
+/// Takes a locator from the front of `tokens`: segments joined by `>>`
+/// (SPEC 6). It ends at the first token after a segment that is not `>>`.
+fn take_locator(
+    tokens: &mut Peekable<IntoIter<RawToken>>,
     allow_default: bool,
     missing_at: Span,
 ) -> Result<Locator, LineError> {
-    let mut iter = tokens.into_iter().peekable();
-    let Some(first) = iter.next() else {
+    let Some(first) = tokens.next() else {
         return Err(LineError::new(missing_at, "expected a locator").expecting(["a locator"]));
     };
     let first_span = first.span;
     let mut last_span = first.span;
     let mut segments = vec![parse_segment(first, allow_default, true)?];
-    loop {
-        attach_role_name(&mut segments, &mut iter, &mut last_span)?;
-        let Some(sep) = iter.next() else {
-            break;
-        };
-        if sep.bare_single() != Some(">>") {
+    while tokens
+        .peek()
+        .is_some_and(|token| token.bare_single() == Some(">>"))
+    {
+        let separator = tokens.next().expect("the peeked separator is present");
+        let Some(next) = tokens.next() else {
             return Err(
-                LineError::new(sep.span, "expected `>>` between locator segments")
-                    .expecting([">>"]),
-            );
-        }
-        let Some(next) = iter.next() else {
-            return Err(
-                LineError::new(sep.span, "expected a locator segment after `>>`")
+                LineError::new(separator.span, "expected a locator segment after `>>`")
                     .expecting(["a locator segment"]),
             );
         };
@@ -891,46 +1094,27 @@ fn build_locator(
     finish_locator(segments, locator_span(first_span, last_span))
 }
 
-/// When the last segment is a nameless `role:`, consumes the next token
-/// as its accessible name unless the token is the `>>` separator.
-fn attach_role_name(
-    segments: &mut [LocatorSegment],
-    iter: &mut Peekable<IntoIter<RawToken>>,
-    last_span: &mut Span,
-) -> Result<(), LineError> {
-    let Some(segment) = segments.last_mut() else {
-        return Ok(());
-    };
-    let SegmentKind::Role {
-        name: name @ None, ..
-    } = &mut segment.kind
-    else {
-        return Ok(());
-    };
-    let takes_name = iter
-        .peek()
-        .is_some_and(|token| token.bare_single() != Some(">>"));
-    if takes_name {
-        let token = iter.next().expect("peeked token is present");
-        *last_span = token.span;
-        segment.span = locator_span(segment.span, token.span);
-        *name = Some(token.into_value()?);
+/// Builds a locator from all of `tokens`.
+fn build_locator(
+    tokens: Vec<RawToken>,
+    allow_default: bool,
+    missing_at: Span,
+) -> Result<Locator, LineError> {
+    let mut tokens = tokens.into_iter().peekable();
+    let locator = take_locator(&mut tokens, allow_default, missing_at)?;
+    if let Some(extra) = tokens.next() {
+        return Err(
+            LineError::new(extra.span, "expected `>>` between locator segments").expecting([">>"]),
+        );
     }
-    Ok(())
+    Ok(locator)
 }
 
-/// Strips a final `@duration` step-timeout suffix (SPEC 12). Only a bare
-/// token counts: a quoted `"@60s"` is an ordinary value (SPEC 3.1). A bare
-/// `@` token that is not a valid duration (`@zzz`) is not "of the form
-/// `@duration`", so it stays an ordinary value too.
+/// Strips the final step timeout, a bare `@duration` token (SPEC 12).
 fn split_timeout(tokens: &mut Vec<RawToken>) -> Option<DurationLit> {
-    let duration = tokens
-        .last()?
-        .bare_single()
-        .and_then(|text| text.strip_prefix('@'))
-        .and_then(|text| text.parse::<DurationLit>().ok())?;
+    let timeout = tokens.last()?.timeout?;
     tokens.pop();
-    Some(duration)
+    Some(timeout)
 }
 
 const ACTION_KEYWORDS: [&str; 29] = [
@@ -938,7 +1122,7 @@ const ACTION_KEYWORDS: [&str; 29] = [
     "RESPONSE",
     "MOCK",
     "POPUP",
-    "TAB",
+    "WINDOW",
     "CLOSE",
     "VISIT",
     "CLICK",
@@ -965,84 +1149,8 @@ const ACTION_KEYWORDS: [&str; 29] = [
     "STORE",
 ];
 
-fn one_value(mut tokens: Vec<RawToken>, keyword_span: Span) -> Result<Value, LineError> {
-    if tokens.len() > 1 {
-        let extra = &tokens[1];
-        return Err(LineError::new(extra.span, "expected end of line")
-            .expecting(["a single value", "@duration"]));
-    }
-    let Some(token) = tokens.pop() else {
-        return Err(LineError::new(keyword_span, "expected a value").expecting(["a value"]));
-    };
-    token.into_value()
-}
-
-/// Parses `STORE scope key value` (SPEC 7): a bare storage scope, then
-/// exactly two values.
-fn parse_store(tokens: Vec<RawToken>, keyword_span: Span) -> Result<ActionKind, LineError> {
-    let scope_expected = ["local", "session", "cookie"];
-    let mut tokens = tokens.into_iter();
-    let Some(scope_token) = tokens.next() else {
-        return Err(
-            LineError::new(keyword_span, "expected a storage scope").expecting(scope_expected)
-        );
-    };
-    let scope = match scope_token.bare_single() {
-        Some("local") => StoreScope::Local,
-        Some("session") => StoreScope::Session,
-        Some("cookie") => StoreScope::Cookie,
-        _ => {
-            return Err(LineError::new(scope_token.span, "expected a storage scope")
-                .expecting(scope_expected));
-        }
-    };
-    let value_expected = ["a key and a value"];
-    let Some(key) = tokens.next() else {
-        return Err(
-            LineError::new(scope_token.span, "expected a key and a value")
-                .expecting(value_expected),
-        );
-    };
-    let Some(value) = tokens.next() else {
-        return Err(
-            LineError::new(key.span, "expected a value after the key").expecting(["a value"])
-        );
-    };
-    if let Some(extra) = tokens.next() {
-        return Err(LineError::new(extra.span, "expected end of line").expecting(["@duration"]));
-    }
-    Ok(ActionKind::Store {
-        scope,
-        key: key.into_value()?,
-        value: value.into_value()?,
-    })
-}
-
-/// Splits `locator value` tokens: the final token is the value, everything
-/// before it is the locator (SPEC 7).
-fn locator_and_value(
-    mut tokens: Vec<RawToken>,
-    keyword_span: Span,
-    allow_default: bool,
-) -> Result<(Locator, Value), LineError> {
-    let Some(value_token) = tokens.pop() else {
-        return Err(
-            LineError::new(keyword_span, "expected a locator and a value")
-                .expecting(["a locator", "a value"]),
-        );
-    };
-    if tokens.is_empty() {
-        return Err(
-            LineError::new(value_token.span, "expected a locator and a value")
-                .expecting(["a locator before this value"]),
-        );
-    }
-    let locator = build_locator(tokens, allow_default, keyword_span)?;
-    Ok((locator, value_token.into_value()?))
-}
-
-/// `SCREENSHOT` and `SNAPSHOT` names: an identifier that may also contain
-/// hyphens, since the name only becomes a file name (SPEC 7, 14).
+/// `SCREENSHOT`, `SNAPSHOT`, window, response, and extract names: an
+/// identifier that may also contain hyphens (SPEC 7, 14).
 fn is_artifact_name(text: &str) -> bool {
     let mut chars = text.chars();
     let Some(first) = chars.next() else {
@@ -1052,69 +1160,142 @@ fn is_artifact_name(text: &str) -> bool {
         && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
 }
 
-fn parse_name(mut tokens: Vec<RawToken>, keyword_span: Span) -> Result<Ident, LineError> {
-    let expected = ["a name matching [A-Za-z_][A-Za-z0-9_-]*"];
-    if tokens.len() > 1 {
-        return Err(LineError::new(tokens[1].span, "expected end of line").expecting(expected));
-    }
-    let Some(token) = tokens.pop() else {
-        return Err(LineError::new(keyword_span, "expected a name").expecting(expected));
-    };
+/// Reads a name token.
+fn name_token(token: &RawToken) -> Result<Ident, LineError> {
     match token.bare_single() {
         Some(text) if is_artifact_name(text) => Ok(Ident {
             text: text.to_owned(),
             span: token.span,
         }),
-        _ => Err(LineError::new(token.span, "expected a name").expecting(expected)),
+        _ => Err(LineError::new(token.span, "expected a name")
+            .expecting(["a name matching [A-Za-z_][A-Za-z0-9_-]*"])),
     }
 }
 
-fn parse_network_action(
-    keyword: &str,
-    mut tokens: Vec<RawToken>,
-    span: Span,
-) -> Result<ActionKind, LineError> {
-    let expected_len = if keyword == "HTTP" { 2 } else { 3 };
-    if tokens.len() != expected_len {
-        let expected = if keyword == "HTTP" {
-            "expected HTTP METHOD url"
-        } else {
-            "expected RESPONSE name METHOD url"
-        };
-        return Err(LineError::new(span, expected));
+/// The tokens of an action line after its keyword and step timeout, read
+/// left to right (SPEC 7).
+struct Args {
+    tokens: Peekable<IntoIter<RawToken>>,
+    /// The span of the last token read; an error about a missing token
+    /// points just after it.
+    last:   Span,
+}
+
+impl Args {
+    fn new(tokens: Vec<RawToken>, keyword_span: Span) -> Self {
+        Self {
+            tokens: tokens.into_iter().peekable(),
+            last:   keyword_span,
+        }
     }
+
+    fn remaining(&self) -> usize {
+        self.tokens.len()
+    }
+
+    fn peek(&mut self) -> Option<&RawToken> {
+        self.tokens.peek()
+    }
+
+    /// The next token, or an error that names what should come next.
+    fn next(&mut self, expected: &str) -> Result<RawToken, LineError> {
+        let Some(token) = self.tokens.next() else {
+            return Err(
+                LineError::new(after_span(self.last), format!("expected {expected}"))
+                    .expecting([expected]),
+            );
+        };
+        self.last = token.span;
+        Ok(token)
+    }
+
+    fn value(&mut self, expected: &str) -> Result<Value, LineError> {
+        self.next(expected)?.into_value()
+    }
+
+    fn name(&mut self) -> Result<Ident, LineError> {
+        name_token(&self.next("a name")?)
+    }
+
+    fn locator(&mut self, allow_default: bool) -> Result<Locator, LineError> {
+        let locator = take_locator(&mut self.tokens, allow_default, after_span(self.last))?;
+        self.last = locator.span;
+        Ok(locator)
+    }
+
+    /// An uppercase HTTP method, such as `GET`.
+    fn method(&mut self) -> Result<String, LineError> {
+        let token = self.next("an HTTP method like GET or POST")?;
+        token
+            .bare_single()
+            .filter(|text| text.chars().all(|ch| ch.is_ascii_uppercase()))
+            .map(str::to_owned)
+            .ok_or_else(|| {
+                LineError::new(
+                    token.span,
+                    "expected an uppercase HTTP method like GET or POST",
+                )
+            })
+    }
+
+    /// Requires the line to end here.
+    fn end(mut self) -> Result<(), LineError> {
+        match self.tokens.next() {
+            Some(extra) => Err(LineError::new(extra.span, "expected end of line")
+                .expecting(["end of line", "@duration"])),
+            None => Ok(()),
+        }
+    }
+}
+
+/// The one value of a line's remaining tokens.
+fn only_value(tokens: Vec<RawToken>, span: Span) -> Result<Value, LineError> {
+    let mut args = Args::new(tokens, span);
+    let value = args.value("a value")?;
+    args.end()?;
+    Ok(value)
+}
+
+/// Parses `STORE scope key value` (SPEC 7): a bare storage scope, then a
+/// key and a value.
+fn parse_store(mut args: Args) -> Result<ActionKind, LineError> {
+    let scope_expected = ["local", "session", "cookie"];
+    let scope_token = args.next("a storage scope")?;
+    let scope = match scope_token.bare_single() {
+        Some("local") => StoreScope::Local,
+        Some("session") => StoreScope::Session,
+        Some("cookie") => StoreScope::Cookie,
+        _ => {
+            return Err(LineError::new(scope_token.span, "expected a storage scope")
+                .expecting(scope_expected));
+        }
+    };
+    let key = args.value("a key")?;
+    let value = args.value("a value")?;
+    args.end()?;
+    Ok(ActionKind::Store { scope, key, value })
+}
+
+/// Parses `HTTP METHOD url` or `RESPONSE name METHOD url` (SPEC 7.2,
+/// 7.3).
+fn parse_network_action(keyword: &str, mut args: Args) -> Result<ActionKind, LineError> {
     let name = if keyword == "RESPONSE" {
-        Some(parse_name(vec![tokens.remove(0)], span)?)
+        Some(args.name()?)
     } else {
         None
     };
-    let [method, url]: [RawToken; 2] = tokens
-        .try_into()
-        .map_err(|_| LineError::new(span, format!("expected {keyword} METHOD url")))?;
-    let method_text = method
-        .bare_single()
-        .filter(|text| !text.is_empty() && text.chars().all(|ch| ch.is_ascii_uppercase()))
-        .ok_or_else(|| {
-            LineError::new(
-                method.span,
-                "expected an uppercase HTTP method like GET or POST",
-            )
-        })?;
-    let method = method_text.to_owned();
-    let url = url.into_value()?;
-    if keyword == "RESPONSE" {
-        return Ok(ActionKind::Response {
-            name: name.expect("RESPONSE parsed a name"),
+    let method = args.method()?;
+    let url = args.value("a URL")?;
+    args.end()?;
+    Ok(match name {
+        Some(name) => ActionKind::Response { name, method, url },
+        None => ActionKind::Http {
             method,
             url,
-        });
-    }
-    Ok(ActionKind::Http {
-        method,
-        url,
-        headers: Vec::new(),
-        body: None,
-        source: String::new(),
+            headers: Vec::new(),
+            body: None,
+            source: String::new(),
+        },
     })
 }
 
@@ -1122,7 +1303,7 @@ fn response_name(token: RawToken) -> Result<Ident, LineError> {
     let span = token.span;
     let name = strip_prefix_token(token, "response:".len())
         .ok_or_else(|| LineError::new(span, "expected a response name"))?;
-    parse_name(vec![name], span)
+    name_token(&name)
 }
 
 /// Response field keywords, for diagnostics (SPEC 9.2).
@@ -1235,30 +1416,21 @@ fn parse_response_field_token(token: RawToken) -> Result<ResponseField, LineErro
     Ok(ResponseField::Header(value))
 }
 
-/// The argument of a `json:` or `xpath:` token: one bare token or one
-/// quoted value (SPEC 9.5). The lexer drops quote characters inside a
-/// joined token, so `json:$["a"]` would silently become `$[a]`.
-fn prefixed_single(token: RawToken, prefix: &str) -> Result<Value, LineError> {
+/// The argument of a `json:` or `xpath:` token (SPEC 9.5), which joins a
+/// quoted string like any other prefix value.
+fn prefixed_value(token: RawToken, prefix: &str) -> Result<Value, LineError> {
     let span = token.span;
-    let rest = strip_prefix_token(token, prefix.len()).ok_or_else(|| {
-        LineError::new(span, format!("`{prefix}` needs an argument")).expecting(["a query"])
-    })?;
-    if rest.parts.len() > 1 {
-        return Err(LineError::new(
-            span,
-            format!(
-                "a `{prefix}` argument must be one bare token or one quoted value; \
-                 use single quotes inside it, or quote the whole argument"
-            ),
-        ));
-    }
-    rest.into_value()
+    strip_prefix_token(token, prefix.len())
+        .ok_or_else(|| {
+            LineError::new(span, format!("`{prefix}` needs an argument")).expecting(["a query"])
+        })?
+        .into_value()
 }
 
 /// A `json:PATH` argument, with a literal path checked here (SPEC 9.5).
 fn json_path_value(token: RawToken) -> Result<Value, LineError> {
     let span = token.span;
-    let value = prefixed_single(token, "json:")?;
+    let value = prefixed_value(token, "json:")?;
     if let Some(literal) = value.as_literal() {
         JsonQuery::parse(&literal).map_err(|message| LineError::new(span, message))?;
     }
@@ -1269,32 +1441,19 @@ fn json_path_value(token: RawToken) -> Result<Value, LineError> {
 /// 9.5).
 fn xpath_value(token: RawToken) -> Result<Value, LineError> {
     let span = token.span;
-    let value = prefixed_single(token, "xpath:")?;
+    let value = prefixed_value(token, "xpath:")?;
     if let Some(literal) = value.as_literal() {
         XpathQuery::parse(&literal).map_err(|message| LineError::new(span, message))?;
     }
     Ok(value)
 }
 
-/// Parses an action line after its keyword (SPEC 7, 17).
 /// Parses `MOCK METHOD url STATUS` or `MOCK METHOD url failed` (SPEC
 /// 7.5). Header and body lines follow in [`Parser::parse_http_tail`].
-fn parse_mock(tokens: Vec<RawToken>, span: Span) -> Result<ActionKind, LineError> {
-    let Ok([method, url, answer]) = <[RawToken; 3]>::try_from(tokens) else {
-        return Err(LineError::new(span, "expected MOCK METHOD url STATUS")
-            .expecting(["MOCK METHOD url STATUS", "MOCK METHOD url failed"]));
-    };
-    let method = method
-        .bare_single()
-        .filter(|text| !text.is_empty() && text.chars().all(|ch| ch.is_ascii_uppercase()))
-        .ok_or_else(|| {
-            LineError::new(
-                method.span,
-                "expected an uppercase HTTP method like GET or POST",
-            )
-        })?
-        .to_owned();
-    let url = url.into_value()?;
+fn parse_mock(mut args: Args) -> Result<ActionKind, LineError> {
+    let method = args.method()?;
+    let url = args.value("a URL")?;
+    let answer = args.next("a status code from 200 to 599, or `failed`")?;
     let response = match answer.bare_single() {
         Some("failed") => MockResponse::Failed,
         Some(text)
@@ -1316,6 +1475,7 @@ fn parse_mock(tokens: Vec<RawToken>, span: Span) -> Result<ActionKind, LineError
             .expecting(["a status code", "failed"]));
         }
     };
+    args.end()?;
     Ok(ActionKind::Mock {
         method,
         url,
@@ -1324,6 +1484,7 @@ fn parse_mock(tokens: Vec<RawToken>, span: Span) -> Result<ActionKind, LineError
     })
 }
 
+/// Parses an action line after its keyword (SPEC 7, 17), left to right.
 fn parse_action_body(
     keyword: &str,
     keyword_span: Span,
@@ -1335,90 +1496,125 @@ fn parse_action_body(
     }
     if keyword == "MOCK" {
         // A mock registers at once (SPEC 7.5).
-        if let Some(last) = tokens.last()
-            && split_timeout(&mut vec![last.clone()]).is_some()
-        {
+        if let Some(last) = tokens.last().filter(|last| last.timeout.is_some()) {
             return Err(LineError::new(last.span, "MOCK has no step timeout"));
         }
-        return Ok((parse_mock(tokens, keyword_span)?, None));
+        return Ok((parse_mock(Args::new(tokens, keyword_span))?, None));
     }
     let timeout = split_timeout(&mut tokens);
-    let locator_only = |tokens| build_locator(tokens, true, keyword_span);
+    let mut args = Args::new(tokens, keyword_span);
     let kind = match keyword {
-        "HTTP" | "RESPONSE" => parse_network_action(keyword, tokens, keyword_span)?,
-        "MOCK" => unreachable!("MOCK returns before the timeout split"),
-        "POPUP" => ActionKind::Popup {
-            name: parse_name(tokens, keyword_span)?,
-        },
-        "TAB" => ActionKind::Tab {
-            name: parse_name(tokens, keyword_span)?,
-        },
-        "CLOSE" => ActionKind::Close {
-            name: parse_name(tokens, keyword_span)?,
-        },
+        "HTTP" | "RESPONSE" => return Ok((parse_network_action(keyword, args)?, timeout)),
+        "STORE" => return Ok((parse_store(args)?, timeout)),
+        "SCROLL" => return Ok((parse_scroll(args)?, timeout)),
+        "POPUP" => ActionKind::Popup { name: args.name()? },
+        "WINDOW" => ActionKind::Window { name: args.name()? },
+        "CLOSE" => ActionKind::Close { name: args.name()? },
+        "SCREENSHOT" => ActionKind::Screenshot { name: args.name()? },
         "VISIT" => ActionKind::Visit {
-            url: one_value(tokens, keyword_span)?,
+            url: args.value("a URL")?,
         },
-        "CLICK" => ActionKind::Click {
-            target: locator_only(tokens)?,
-            button: MouseButton::Left,
+        "EVAL" => ActionKind::Eval {
+            script: args.value("a script")?,
         },
-        "RIGHTCLICK" => ActionKind::Click {
-            target: locator_only(tokens)?,
-            button: MouseButton::Right,
+        "GOAL" => ActionKind::Goal {
+            goal: args.value("a goal")?,
         },
-        "MIDDLECLICK" => ActionKind::Click {
-            target: locator_only(tokens)?,
-            button: MouseButton::Middle,
+        "CLICK" | "RIGHTCLICK" | "MIDDLECLICK" => ActionKind::Click {
+            target: args.locator(true)?,
+            button: match keyword {
+                "RIGHTCLICK" => MouseButton::Right,
+                "MIDDLECLICK" => MouseButton::Middle,
+                _ => MouseButton::Left,
+            },
         },
         "DBLCLICK" => ActionKind::Dblclick {
-            target: locator_only(tokens)?,
+            target: args.locator(true)?,
         },
         "HOVER" => ActionKind::Hover {
-            target: locator_only(tokens)?,
+            target: args.locator(true)?,
         },
         "CHECK" => ActionKind::Check {
-            target: locator_only(tokens)?,
+            target: args.locator(true)?,
         },
         "UNCHECK" => ActionKind::Uncheck {
-            target: locator_only(tokens)?,
+            target: args.locator(true)?,
         },
-        "FILL" => {
-            let (target, value) = locator_and_value(tokens, keyword_span, true)?;
-            ActionKind::Fill { target, value }
-        }
-        "TYPE" => {
-            let (target, text) = locator_and_value(tokens, keyword_span, true)?;
-            ActionKind::Type { target, text }
-        }
-        "SELECT" => {
-            let (target, option) = locator_and_value(tokens, keyword_span, true)?;
-            ActionKind::Select { target, option }
-        }
-        "PRESS" => parse_press(tokens, keyword_span)?,
-        "DRAG" => parse_drag(tokens, keyword_span)?,
-        "SCROLL" => parse_scroll(tokens, keyword_span)?,
-        "UPLOAD" => {
-            let (target, path) = locator_and_file(tokens, keyword_span)?;
-            ActionKind::Upload { target, path }
-        }
-        "DROP" => {
-            let (target, path) = locator_and_file(tokens, keyword_span)?;
-            ActionKind::Drop { target, path }
-        }
-        "SCREENSHOT" => ActionKind::Screenshot {
-            name: parse_name(tokens, keyword_span)?,
+        "FILL" => ActionKind::Fill {
+            target: args.locator(true)?,
+            value:  args.value("a value")?,
         },
-        "SNAPSHOT" => parse_snapshot(tokens, keyword_span)?,
-        "STORE" => parse_store(tokens, keyword_span)?,
-        "EVAL" => ActionKind::Eval {
-            script: one_value(tokens, keyword_span)?,
+        "TYPE" => ActionKind::Type {
+            target: args.locator(true)?,
+            text:   args.value("the text to type")?,
         },
-        "ACT" => parse_act(tokens, keyword_span)?,
-        "GOAL" => ActionKind::Goal {
-            goal: one_value(tokens, keyword_span)?,
+        "SELECT" => ActionKind::Select {
+            target: args.locator(true)?,
+            option: args.value("an option label")?,
         },
-        "EXTRACT" => parse_extract(tokens, keyword_span)?,
+        // With one value, PRESS takes it as the key (SPEC 7).
+        "PRESS" if args.remaining() > 1 => ActionKind::Press {
+            target: Some(args.locator(true)?),
+            key:    args.value("a key")?,
+        },
+        "PRESS" => ActionKind::Press {
+            target: None,
+            key:    args.value("a key like Enter")?,
+        },
+        "DRAG" => {
+            let source = args.locator(true)?;
+            let to = args.next("`to` and the drop target")?;
+            if to.bare_single() != Some("to") {
+                return Err(LineError::new(
+                    to.span,
+                    "expected `to` between the element to drag and its target",
+                )
+                .expecting(["to", ">>"]));
+            }
+            ActionKind::Drag {
+                source,
+                target: args.locator(true)?,
+            }
+        }
+        "UPLOAD" | "DROP" => {
+            let target = args.locator(true)?;
+            let path = file_path(args.next("a `file:` path")?)?;
+            if keyword == "UPLOAD" {
+                ActionKind::Upload { target, path }
+            } else {
+                ActionKind::Drop { target, path }
+            }
+        }
+        "SNAPSHOT" => {
+            let name = args.name()?;
+            let target = if args.remaining() > 0 {
+                Some(args.locator(false)?)
+            } else {
+                None
+            };
+            ActionKind::Snapshot {
+                name,
+                target,
+                options: Vec::new(),
+            }
+        }
+        "ACT" => {
+            let (scope, instruction) = parse_act(args)?;
+            return Ok((ActionKind::Act { scope, instruction }, timeout));
+        }
+        "EXTRACT" => {
+            let name = args.name()?;
+            let (scope, instruction) = parse_act(args)?;
+            return Ok((
+                ActionKind::Extract {
+                    name,
+                    scope,
+                    instruction,
+                    schema: None,
+                },
+                timeout,
+            ));
+        }
         other => {
             return Err(
                 LineError::new(keyword_span, format!("unknown action `{other}`"))
@@ -1426,220 +1622,98 @@ fn parse_action_body(
             );
         }
     };
+    args.end()?;
     Ok((kind, timeout))
 }
 
-/// Parses `EXTRACT name [locator] "instruction"` (SPEC 7.6). The schema
-/// lines follow in [`Parser::parse_extract_schema`].
-fn parse_extract(mut tokens: Vec<RawToken>, keyword_span: Span) -> Result<ActionKind, LineError> {
-    if tokens.len() < 2 {
-        return Err(LineError::new(
-            keyword_span,
-            "expected EXTRACT name [locator] \"instruction\"",
-        )
-        .expecting(["EXTRACT name \"instruction\""]));
-    }
-    let name = parse_name(vec![tokens.remove(0)], keyword_span)?;
-    let ActionKind::Act { scope, instruction } = parse_act(tokens, keyword_span)? else {
-        unreachable!("parse_act returns ACT");
-    };
-    Ok(ActionKind::Extract {
-        name,
-        scope,
-        instruction,
-        schema: None,
-    })
-}
-
-/// `ACT "instruction"` or `ACT locator "instruction"` (SPEC 7.4). The scope
-/// takes prefixed segments only, as in `ASSERT`: a region has no
-/// natural default engine.
-fn parse_act(tokens: Vec<RawToken>, keyword_span: Span) -> Result<ActionKind, LineError> {
-    if tokens.len() < 2 {
-        return Ok(ActionKind::Act {
-            scope:       None,
-            instruction: one_value(tokens, keyword_span)?,
-        });
-    }
-    let (scope, instruction) = locator_and_value(tokens, keyword_span, false)?;
-    Ok(ActionKind::Act {
-        scope: Some(scope),
-        instruction,
-    })
-}
-
-/// `SNAPSHOT name` or `SNAPSHOT name locator` (SPEC 7). The name comes
-/// first; the target takes prefixed segments only, like an `ACT` scope.
-fn parse_snapshot(mut tokens: Vec<RawToken>, keyword_span: Span) -> Result<ActionKind, LineError> {
-    let rest = if tokens.len() > 1 {
-        tokens.split_off(1)
-    } else {
-        Vec::new()
-    };
-    let name = parse_name(tokens, keyword_span)?;
-    let target = if rest.is_empty() {
-        None
-    } else {
-        Some(build_locator(rest, false, name.span)?)
-    };
-    Ok(ActionKind::Snapshot {
-        name,
-        target,
-        options: Vec::new(),
-    })
-}
-
-/// `PRESS` with one argument treats it as the key; only with two is the
-/// first a locator (SPEC 7).
-fn parse_press(tokens: Vec<RawToken>, keyword_span: Span) -> Result<ActionKind, LineError> {
-    match tokens.len() {
-        0 => Err(LineError::new(keyword_span, "expected a key").expecting(["a key like Enter"])),
-        1 => {
-            let mut tokens = tokens;
-            let key = tokens.pop().expect("one token is present").into_value()?;
-            Ok(ActionKind::Press { target: None, key })
-        }
-        _ => {
-            let (target, key) = locator_and_value(tokens, keyword_span, true)?;
-            Ok(ActionKind::Press {
-                target: Some(target),
-                key,
-            })
-        }
-    }
-}
-
-/// `DRAG source to target` (SPEC 7). A bare `to` separates the two
-/// locators; a quoted `"to"` is text (SPEC 3.1).
-fn parse_drag(mut tokens: Vec<RawToken>, keyword_span: Span) -> Result<ActionKind, LineError> {
-    let separators: Vec<usize> = tokens
-        .iter()
-        .enumerate()
-        .filter(|(_, token)| token.bare_single() == Some("to"))
-        .map(|(index, _)| index)
-        .collect();
-    let at = match separators.as_slice() {
-        [at] => *at,
-        [] => {
-            return Err(LineError::new(
-                tokens.last().map_or(keyword_span, |token| token.span),
-                "expected `to` between the element to drag and its target",
-            )
-            .expecting(["to"]));
-        }
-        [_, second, ..] => {
-            return Err(LineError::new(
-                tokens[*second].span,
-                "expected one `to`; quote \"to\" to match the text",
-            )
-            .expecting(["a locator"]));
-        }
-    };
-    let target = tokens.split_off(at + 1);
-    let to = tokens.pop().expect("the separator is present");
-    if tokens.is_empty() {
-        return Err(
-            LineError::new(to.span, "expected the element to drag before `to`")
-                .expecting(["a locator"]),
-        );
-    }
-    if target.is_empty() {
-        return Err(
-            LineError::new(after_span(to.span), "expected the drop target after `to`")
-                .expecting(["a locator"]),
-        );
-    }
-    Ok(ActionKind::Drag {
-        source: build_locator(tokens, true, keyword_span)?,
-        target: build_locator(target, true, to.span)?,
-    })
-}
-
-/// `SCROLL locator`, `SCROLL [locator] down|up|left|right`, or `SCROLL
-/// [locator] to N%` (SPEC 7). The motion is read from the end of the line;
-/// a bare `to` anywhere else is an error, since only a quoted `"to"` is
-/// text (SPEC 3.1).
-fn parse_scroll(mut tokens: Vec<RawToken>, keyword_span: Span) -> Result<ActionKind, LineError> {
-    let expected = ["a locator", "down", "up", "left", "right", "to"];
-    let Some(last) = tokens.last() else {
-        return Err(LineError::new(keyword_span, "expected what to scroll").expecting(expected));
-    };
-    let motion = if let Some(direction) = last.bare_single().and_then(ScrollDirection::from_keyword)
-    {
-        tokens.pop();
-        Some(ScrollMotion::Chunk(direction))
-    } else if tokens.len() >= 2 && tokens[tokens.len() - 2].bare_single() == Some("to") {
-        let percent = tokens.pop().expect("two tokens are present");
-        let Some(percent) = percent.bare_single().and_then(Percent::parse) else {
-            return Err(LineError::new(
-                percent.span,
-                "expected a percent from 0% to 100% after `to`",
-            )
-            .expecting(["a percent such as 50%"]));
-        };
-        tokens.pop();
-        Some(ScrollMotion::To(percent))
+/// The scope and instruction of `ACT`, `EXTRACT`, and `JUDGE` (SPEC 7.4):
+/// a first token with a prefix starts the scope, and the instruction
+/// follows it.
+fn parse_act(mut args: Args) -> Result<(Option<Locator>, Value), LineError> {
+    let scoped = args
+        .peek()
+        .is_some_and(|token| segment_prefix(token).is_some());
+    let scope = if scoped {
+        Some(args.locator(false)?)
     } else {
         None
     };
-    if let Some(to) = tokens
-        .iter()
-        .find(|token| token.bare_single() == Some("to"))
-    {
-        return Err(LineError::new(
-            to.span,
-            "expected a percent after `to`; quote \"to\" to match the text",
-        )
-        .expecting(["a percent such as 50%"]));
+    let instruction = args.value("an instruction")?;
+    args.end()?;
+    Ok((scope, instruction))
+}
+
+/// `SCROLL motion`, or `SCROLL locator [motion]` (SPEC 7). A bare
+/// direction or `to` right after `SCROLL` is always the motion.
+fn parse_scroll(mut args: Args) -> Result<ActionKind, LineError> {
+    if args.remaining() == 0 {
+        return Err(
+            LineError::new(after_span(args.last), "expected what to scroll").expecting([
+                "a locator",
+                "down",
+                "up",
+                "left",
+                "right",
+                "to",
+            ]),
+        );
     }
-    match motion {
-        Some(motion) if tokens.is_empty() => Ok(ActionKind::Scroll {
+    if let Some(motion) = scroll_motion(&mut args)? {
+        args.end()?;
+        return Ok(ActionKind::Scroll {
             target: None,
             motion,
-        }),
-        Some(motion) => Ok(ActionKind::Scroll {
-            target: Some(build_locator(tokens, true, keyword_span)?),
-            motion,
-        }),
-        None => Ok(ActionKind::ScrollIntoView {
-            target: build_locator(tokens, true, keyword_span)?,
-        }),
+        });
     }
+    let target = args.locator(true)?;
+    let kind = match scroll_motion(&mut args)? {
+        Some(motion) => ActionKind::Scroll {
+            target: Some(target),
+            motion,
+        },
+        None => ActionKind::ScrollIntoView { target },
+    };
+    args.end()?;
+    Ok(kind)
 }
 
-/// `UPLOAD locator file:path` and `DROP locator file:path` — the final
-/// value carries the `file:` prefix (SPEC 7). A quoted `"file:..."` is a
-/// value, not the prefix.
-fn locator_and_file(
-    mut tokens: Vec<RawToken>,
-    keyword_span: Span,
-) -> Result<(Locator, Value), LineError> {
-    let Some(file_token) = tokens.pop() else {
-        return Err(
-            LineError::new(keyword_span, "expected a locator and a `file:` path")
-                .expecting(["file:"]),
-        );
+/// Reads a scroll motion, when the next token starts one: a bare
+/// direction, or a bare `to` and a percent.
+fn scroll_motion(args: &mut Args) -> Result<Option<ScrollMotion>, LineError> {
+    let word = args.peek().and_then(RawToken::bare_single);
+    if let Some(direction) = word.and_then(ScrollDirection::from_keyword) {
+        args.next("a direction")?;
+        return Ok(Some(ScrollMotion::Chunk(direction)));
+    }
+    if word != Some("to") {
+        return Ok(None);
+    }
+    args.next("`to`")?;
+    let percent = args.next("a percent such as 50%")?;
+    let Some(percent) = percent.bare_single().and_then(Percent::parse) else {
+        return Err(LineError::new(
+            percent.span,
+            "expected a percent from 0% to 100% after `to`",
+        )
+        .expecting(["a percent such as 50%"]));
     };
-    let starts_with_file = matches!(
-        file_token.parts.first(),
+    Ok(Some(ScrollMotion::To(percent)))
+}
+
+/// The `file:path` value of `UPLOAD` and `DROP` (SPEC 7). A quoted
+/// `"file:..."` is a value, not the prefix.
+fn file_path(token: RawToken) -> Result<Value, LineError> {
+    let span = token.span;
+    let prefixed = matches!(
+        token.parts.first(),
         Some(RawPart::Bare { text, .. }) if text.starts_with("file:")
     );
-    if !starts_with_file {
-        return Err(LineError::new(file_token.span, "expected a `file:` path").expecting(["file:"]));
+    if !prefixed {
+        return Err(LineError::new(span, "expected a `file:` path").expecting(["file:"]));
     }
-    let path = strip_prefix_token(file_token.clone(), "file:".len())
-        .ok_or_else(|| {
-            LineError::new(file_token.span, "expected a path after `file:`").expecting(["a path"])
-        })?
-        .into_value()?;
-    if tokens.is_empty() {
-        return Err(
-            LineError::new(keyword_span, "expected a locator before the `file:` path")
-                .expecting(["a locator"]),
-        );
-    }
-    let target = build_locator(tokens, true, keyword_span)?;
-    Ok((target, path))
+    strip_prefix_token(token, "file:".len())
+        .ok_or_else(|| LineError::new(span, "expected a path after `file:`").expecting(["a path"]))?
+        .into_value()
 }
 
 /// The position just after a span, for "expected more here" diagnostics.
@@ -1651,60 +1725,31 @@ fn after_span(span: Span) -> Span {
     }
 }
 
-/// Scans a locator token by token until a stop keyword ends it (the check
-/// in `ASSERT`, the extractor in `CAPTURE`). Returns the locator
-/// and the consumed stop token, or `None` when the line ended first.
-/// A bare stop keyword after a nameless `role:` segment is the stop, not
-/// the accessible name; a quoted name is never a keyword (SPEC 3.1).
+/// Scans the locator of an `ASSERT` or `CAPTURE` line (SPEC 9.2):
+/// segments joined by `>>`, each one token. Returns the locator and the
+/// token after it, or `None` when the line ended first.
 fn scan_locator(
     first: RawToken,
     cursor: &mut Cursor,
-    is_stop: &dyn Fn(&str) -> bool,
-    stop_expected: &[&str],
 ) -> Result<(Locator, Option<RawToken>), LineError> {
     let first_span = first.span;
     let mut last_span = first.span;
     let mut segments = vec![parse_segment(first, false, true)?];
     loop {
         let span = locator_span(first_span, last_span);
-        let Some(token) = cursor.next_token()? else {
-            return Ok((finish_locator(segments, span)?, None));
+        let token = cursor.next_token()?;
+        if token.as_ref().and_then(RawToken::bare_single) != Some(">>") {
+            return Ok((finish_locator(segments, span)?, token));
+        }
+        let separator = token.expect("a separator token is present");
+        let Some(next) = cursor.next_token()? else {
+            return Err(
+                LineError::new(separator.span, "expected a locator segment after `>>`")
+                    .expecting(["a locator segment"]),
+            );
         };
-        if let Some(text) = token.bare_single() {
-            if is_stop(text) {
-                return Ok((finish_locator(segments, span)?, Some(token)));
-            }
-            if text == ">>" {
-                let Some(next) = cursor.next_token()? else {
-                    return Err(LineError::new(
-                        token.span,
-                        "expected a locator segment after `>>`",
-                    )
-                    .expecting(["a locator segment"]));
-                };
-                last_span = next.span;
-                segments.push(parse_segment(next, false, false)?);
-                continue;
-            }
-        }
-        if let Some(LocatorSegment {
-            kind: SegmentKind::Role {
-                name: name @ None, ..
-            },
-            span: role_span,
-        }) = segments.last_mut()
-        {
-            *role_span = locator_span(*role_span, token.span);
-            last_span = token.span;
-            *name = Some(token.into_value()?);
-            continue;
-        }
-        let mut expected = vec![">>"];
-        expected.extend_from_slice(stop_expected);
-        return Err(
-            LineError::new(token.span, "expected `>>` or the end of the locator")
-                .expecting(expected),
-        );
+        last_span = next.span;
+        segments.push(parse_segment(next, false, false)?);
     }
 }
 
@@ -1748,17 +1793,11 @@ fn parse_operand(cursor: &mut Cursor, op_span: Span) -> Result<Value, LineError>
     let Some(token) = cursor.next_token()? else {
         return Err(LineError::new(after_span(op_span), "expected a value").expecting(["a value"]));
     };
-    let is_trailing_timeout = token
-        .bare_single()
-        .and_then(|text| text.strip_prefix('@'))
-        .is_some_and(|rest| rest.parse::<DurationLit>().is_ok())
-        && cursor.at_line_end();
-    if is_trailing_timeout {
-        return Err(LineError::new(
-            token.span,
-            "a final bare `@duration` is the step timeout; quote it to use it as a value",
-        )
-        .expecting(["a value"]));
+    if token.timeout.is_some() && cursor.at_line_end() {
+        return Err(
+            LineError::new(token.span, "expected a value before the step timeout")
+                .expecting(["a value"]),
+        );
     }
     token.into_value()
 }
@@ -1990,14 +2029,14 @@ fn parse_subject(
         let span = first.span;
         let name = strip_prefix_token(first, "extract:".len())
             .ok_or_else(|| LineError::new(span, "expected an EXTRACT name"))?;
-        let name = parse_name(vec![name], span)?;
+        let name = name_token(&name)?;
         return Ok(Head::Subject(Subject::Extract { name, text: false }));
     }
     if head_text.starts_with("request:") {
         let span = first.span;
         let name = strip_prefix_token(first, "request:".len())
             .ok_or_else(|| LineError::new(span, "expected a response name"))?;
-        let name = parse_name(vec![name], span)?;
+        let name = name_token(&name)?;
         let field = parse_request_field(cursor, first_span)?;
         return Ok(Head::Subject(Subject::Request { name, field }));
     }
@@ -2023,7 +2062,18 @@ fn parse_subject(
     } else {
         (is_extractor, &EXTRACTORS)
     };
-    let (locator, stop) = scan_locator(first, cursor, &is_stop, expected)?;
+    let (locator, stop) = scan_locator(first, cursor)?;
+    if let Some(token) = stop
+        .as_ref()
+        .filter(|token| !token.bare_single().is_some_and(is_stop))
+    {
+        let mut alternatives = vec![">>"];
+        alternatives.extend_from_slice(expected);
+        return Err(
+            LineError::new(token.span, "expected `>>` or the end of the locator")
+                .expecting(alternatives),
+        );
+    }
     let Some(stop) = stop else {
         let what = if in_asserts {
             "a check"
@@ -2065,19 +2115,19 @@ fn parse_assert_body(
     implicit_http: bool,
 ) -> Result<(AssertBody, Option<DurationLit>), LineError> {
     let first_span = first.span;
-    let is_tab = !implicit_http
-        && matches!(first.parts.first(), Some(RawPart::Bare { text, .. }) if text.starts_with("tab:"));
-    let body = if is_tab {
-        let name_token = strip_prefix_token(first, 4)
-            .ok_or_else(|| LineError::new(first_span, "expected a tab name"))?;
-        let name = parse_name(vec![name_token], first_span)?;
+    let is_window = !implicit_http
+        && matches!(first.parts.first(), Some(RawPart::Bare { text, .. }) if text.starts_with("window:"));
+    let body = if is_window {
+        let rest = strip_prefix_token(first, "window:".len())
+            .ok_or_else(|| LineError::new(first_span, "expected a window name"))?;
+        let name = name_token(&rest)?;
         let check = cursor
             .next_token()?
-            .ok_or_else(|| LineError::new(first_span, "expected `closed`"))?;
+            .ok_or_else(|| LineError::new(after_span(first_span), "expected `closed`"))?;
         if check.bare_single() != Some("closed") {
             return Err(LineError::new(check.span, "expected `closed`"));
         }
-        AssertBody::TabClosed { name }
+        AssertBody::WindowClosed { name }
     } else {
         match parse_subject(first, cursor, implicit_http, true)? {
             Head::State { locator, state } => AssertBody::ElementState { locator, state },
@@ -2147,12 +2197,7 @@ fn parse_page_body(
         validate_regex(&regex)?;
         PageCheck::Matches(regex)
     } else {
-        let is_trailing_timeout = token
-            .bare_single()
-            .and_then(|text| text.strip_prefix('@'))
-            .is_some_and(|rest| rest.parse::<DurationLit>().is_ok())
-            && cursor.at_line_end();
-        if is_trailing_timeout {
+        if token.timeout.is_some() && cursor.at_line_end() {
             return Err(
                 LineError::new(token.span, "expected a value before the step timeout")
                     .expecting(["a value", "matches /re/"]),
@@ -2164,48 +2209,61 @@ fn parse_page_body(
     Ok((check, timeout))
 }
 
-/// Splits a leading `name:` from a token: the identifier before the first
-/// `:` and the remaining token, if anything follows the colon.
-fn split_name_colon(token: RawToken) -> Option<(Ident, Option<RawToken>)> {
-    let RawPart::Bare { text, .. } = token.parts.first()? else {
-        return None;
+/// Reads the head of a `name: value` line (SPEC 3.1): the text before
+/// the token's first colon, and its span. White space must follow the
+/// colon, so `base:x` is an error. `None` when the token holds no colon.
+fn colon_head(token: &RawToken) -> Result<Option<(String, Span)>, LineError> {
+    let Some(RawPart::Bare { text, .. }) = token.parts.first() else {
+        return Ok(None);
     };
-    let colon = text.find(':')?;
+    let Some(colon) = text.find(':') else {
+        return Ok(None);
+    };
     let name = text[..colon].to_owned();
-    if !is_ident(&name) {
-        return None;
+    if colon + 1 < text.len() || token.parts.len() > 1 {
+        return Err(
+            LineError::new(token.span, format!("put a space after `{name}:`"))
+                .expecting(["white space"]),
+        );
     }
     let span = Span {
         line:   token.span.line,
         column: token.span.column,
-        len:    u32::try_from(colon).unwrap_or(u32::MAX),
+        len:    u32::try_from(name.chars().count()).unwrap_or(u32::MAX),
     };
-    let ident = Ident { text: name, span };
-    let rest = strip_prefix_token(token, colon + 1);
-    Some((ident, rest))
+    Ok(Some((name, span)))
+}
+
+/// Reads the `name:` head of a `CAPTURE` line (SPEC 10).
+fn capture_name(token: Option<RawToken>, keyword_span: Span) -> Result<Ident, LineError> {
+    let expected = || {
+        LineError::new(after_span(keyword_span), "expected a capture name")
+            .expecting(["name: source"])
+    };
+    let token = token.ok_or_else(expected)?;
+    match colon_head(&token)? {
+        Some((text, span)) if is_ident(&text) => Ok(Ident { text, span }),
+        _ => Err(LineError::new(token.span, "expected a capture name").expecting(["name: source"])),
+    }
 }
 
 /// Parses one `CAPTURE` line after its `name:` head (SPEC 10, 17).
 fn parse_capture_body(
     name: Ident,
-    rest: Option<RawToken>,
     cursor: &mut Cursor,
     implicit_http: bool,
 ) -> Result<Capture, LineError> {
-    let first = match rest {
-        Some(token) => token,
-        None => cursor.next_token()?.ok_or_else(|| {
-            LineError::new(after_span(name.span), "expected a capture source").expecting([
-                "a locator",
-                "url",
-                "title",
-                "eval",
-                "response:NAME",
-            ])
-        })?,
-    };
+    let first = cursor.next_token()?.ok_or_else(|| {
+        LineError::new(after_span(name.span), "expected a capture source").expecting([
+            "a locator",
+            "url",
+            "title",
+            "eval",
+            "response:NAME",
+        ])
+    })?;
     let Head::Subject(subject) = parse_subject(first, cursor, implicit_http, false)? else {
-        unreachable!("state checks only end `[Asserts]` lines");
+        unreachable!("state checks only end ASSERT lines");
     };
     let (filters, next) = parse_filters(cursor)?;
     let mut timeout = None;
@@ -2243,22 +2301,14 @@ fn parse_capture_body(
 }
 
 fn parse_snapshot_option(
-    first: RawToken,
+    first: &RawToken,
     cursor: &mut Cursor,
 ) -> Result<SnapshotOption, LineError> {
     let span = first.span;
-    let head = match first.parts.first() {
-        Some(RawPart::Bare { text, .. }) => text.as_str(),
-        _ => "",
-    };
-    let key = head.split(':').next().unwrap_or_default().to_owned();
-    let Some(colon) = head.find(':') else {
+    let Some((key, _)) = colon_head(first)? else {
         return Err(LineError::new(span, "expected a snapshot option"));
     };
     let mut tokens = Vec::new();
-    if let Some(rest) = strip_prefix_token(first, colon + 1) {
-        tokens.push(rest);
-    }
     while let Some(token) = cursor.next_token()? {
         tokens.push(token);
     }
@@ -2288,12 +2338,12 @@ fn parse_snapshot_option(
             }
         }
         "snapshot-max-diff" => Ok(SnapshotOption::MaxDiff(option_shape(
-            one_value(tokens, span)?,
+            only_value(tokens, span)?,
             |text| text.parse::<MaxDiff>().ok(),
             &["a pixel count or percentage from 0% to 100%"],
         )?)),
         "snapshot-pixel-threshold" => Ok(SnapshotOption::PixelThreshold(option_shape(
-            one_value(tokens, span)?,
+            only_value(tokens, span)?,
             |text| text.parse::<PixelThreshold>().ok(),
             &["a JSON number from 0 to 1"],
         )?)),
@@ -2366,22 +2416,12 @@ fn option_shape<T>(
 }
 
 /// Parses one `key: value` line in `[Options]` (SPEC 5).
-fn parse_option_line(first: RawToken, cursor: &mut Cursor) -> Result<FileOption, LineError> {
+fn parse_option_line(first: &RawToken, cursor: &mut Cursor) -> Result<FileOption, LineError> {
     let first_span = first.span;
-    let head = match first.parts.first() {
-        Some(RawPart::Bare { text, .. }) => text.clone(),
-        _ => String::new(),
-    };
-    let Some(colon) = head.find(':') else {
+    let Some((key, key_span)) = colon_head(first)? else {
         return Err(LineError::new(first_span, "expected an option line").expecting(["key: value"]));
     };
-    let key = head[..colon].to_owned();
     if !OPTION_KEYS.contains(&key.as_str()) {
-        let key_span = Span {
-            line:   first_span.line,
-            column: first_span.column,
-            len:    u32::try_from(colon).unwrap_or(u32::MAX),
-        };
         return Err(
             LineError::new(key_span, format!("unknown option key `{key}`")).expecting(OPTION_KEYS),
         );
@@ -2390,9 +2430,6 @@ fn parse_option_line(first: RawToken, cursor: &mut Cursor) -> Result<FileOption,
         return parse_snapshot_option(first, cursor).map(FileOption::Snapshot);
     }
     let mut values = Vec::new();
-    if let Some(rest) = strip_prefix_token(first, colon + 1) {
-        values.push(rest.into_value()?);
-    }
     while let Some(token) = cursor.next_token()? {
         values.push(token.into_value()?);
     }
@@ -2468,12 +2505,8 @@ enum State {
     Actions,
     /// After an entry's `PAGE` line.
     AfterPage,
-    /// After an entry's first `ASSERT` or `CAPTURE` line.
+    /// After an entry's first check line.
     Checks,
-    /// Inside an entry's deprecated `[Asserts]` section.
-    Asserts,
-    /// Inside an entry's deprecated `[Captures]` section.
-    Captures,
 }
 
 /// The keywords that start a check line (SPEC 9, 10).
@@ -2487,32 +2520,37 @@ struct Parser {
     state:          State,
     options_header: Option<u32>,
     seen_visit:     bool,
-    /// The line of the file's first `ASSERT` or `CAPTURE` line.
-    first_keyword:  Option<u32>,
-    /// The line of the file's first `[Asserts]` or `[Captures]` header.
-    first_section:  Option<u32>,
+}
+
+/// True when a line starts with the `[Options]` header.
+fn is_options_header(trimmed: &str) -> bool {
+    trimmed.split_whitespace().next() == Some("[Options]")
 }
 
 fn structural_line(line: &str) -> bool {
-    let first = line
-        .trim_start()
-        .split(|ch: char| ch.is_whitespace() || ch == '#')
-        .next()
-        .unwrap_or_default();
+    let first = line.split_whitespace().next().unwrap_or_default();
     first.starts_with('[')
         || first == "PAGE"
         || ACTION_KEYWORDS.contains(&first)
         || CHECK_KEYWORDS.contains(&first)
 }
 
-fn multiline_value(lines: &[&str], start: usize, text: &str) -> Result<Value, LineError> {
+/// A body that spans lines, split line by line with `split`:
+/// [`json_segments`] for a JSON body and [`bare_segments`] for a fenced one.
+/// A JSON string cannot hold a line break, so no string crosses a line.
+fn multiline_value(
+    lines: &[&str],
+    start: usize,
+    text: &str,
+    split: fn(&str, u32) -> Result<Vec<ValueSegment>, LineError>,
+) -> Result<Value, LineError> {
     let mut segments = Vec::new();
     for (offset, line) in text.split('\n').enumerate() {
         if offset > 0 {
             segments.push(ValueSegment::Literal("\n".to_owned()));
         }
         let line_no = u32::try_from(start + offset + 1).unwrap_or(u32::MAX);
-        match bare_segments(line, 1) {
+        match split(line, 1) {
             Ok(line_segments) => segments.extend(line_segments),
             Err(error) => {
                 return Err(error.at_source(
@@ -2708,30 +2746,6 @@ pub(crate) fn parse_action_line(text: &str) -> Result<Action, String> {
     })
 }
 
-/// Rejects a parsed file that still has an `[Asserts]` or `[Captures]`
-/// section (SPEC 4.1). Only `whirl fmt` accepts them, to rewrite them.
-pub(crate) fn reject_sections(file: &File, source: &str) -> Result<(), ParseError> {
-    let Some(span) = file.entries.iter().flat_map(|entry| &entry.sections).next() else {
-        return Ok(());
-    };
-    let source_line = source
-        .lines()
-        .nth(usize::try_from(span.line.saturating_sub(1)).unwrap_or(0))
-        .unwrap_or_default()
-        .trim_end_matches('\r')
-        .to_owned();
-    Err(ParseError {
-        code: ParseErrorCode::SectionsRemoved,
-        path: file.path.clone(),
-        line: span.line,
-        column: span.column,
-        len: span.len,
-        source_line,
-        message: "`[Asserts]` and `[Captures]` sections were removed; run `whirl fmt` to rewrite them as ASSERT and CAPTURE lines".to_owned(),
-        expected: Vec::new(),
-    })
-}
-
 /// Parses one `.whirl` source, stopping at the file's first error.
 pub(crate) fn parse_file(path: &Path, source: &str) -> Result<File, ParseError> {
     let mut parser = Parser {
@@ -2742,8 +2756,6 @@ pub(crate) fn parse_file(path: &Path, source: &str) -> Result<File, ParseError> 
         state:          State::Preamble,
         options_header: None,
         seen_visit:     false,
-        first_keyword:  None,
-        first_section:  None,
     };
     let lines: Vec<&str> = source.lines().collect();
     let mut index = 0;
@@ -2760,6 +2772,27 @@ pub(crate) fn parse_file(path: &Path, source: &str) -> Result<File, ParseError> 
         } else {
             index += 1;
         }
+    }
+    if parser.awaiting_visit() {
+        let mock = parser
+            .current
+            .as_ref()
+            .and_then(|entry| entry.actions.last())
+            .expect("an entry of MOCK lines has an action");
+        return Err(ParseError {
+            code:        ParseErrorCode::Syntax,
+            path:        path.to_path_buf(),
+            line:        mock.line,
+            column:      mock.span.column,
+            len:         mock.span.len,
+            source_line: lines
+                .get(usize::try_from(mock.line.saturating_sub(1)).unwrap_or(0))
+                .copied()
+                .unwrap_or_default()
+                .to_owned(),
+            message:     "MOCK lines must be followed by VISIT".to_owned(),
+            expected:    vec!["MOCK".to_owned(), "VISIT".to_owned()],
+        });
     }
     if let Some(entry) = parser.current.take() {
         parser.entries.push(entry);
@@ -2814,24 +2847,9 @@ fn mark_text_extracts(file: &mut File) {
     }
 }
 
-/// A check line whose form differs from the file's first check form
-/// (SPEC 4).
-fn mixed_check_syntax(span: Span, this_form: &str, first_line: u32) -> LineError {
-    let message = if this_form == "section" {
-        format!(
-            "this file has an ASSERT or CAPTURE line on line {first_line}, so it cannot also have sections; run `whirl fmt` to rewrite the sections as lines"
-        )
-    } else {
-        format!(
-            "this file has a section on line {first_line}, so it cannot also have ASSERT or CAPTURE lines; run `whirl fmt` to rewrite the sections as lines"
-        )
-    };
-    LineError::new(span, message).with_code(ParseErrorCode::MixedCheckSyntax)
-}
-
 fn into_parse_error(path: &Path, error: LineError, line_no: u32, line: &str) -> ParseError {
     ParseError {
-        code:        error.code,
+        code:        ParseErrorCode::Syntax,
         path:        path.to_path_buf(),
         line:        error.line.unwrap_or(line_no),
         column:      error.column,
@@ -2867,10 +2885,7 @@ impl Parser {
         };
         let trimmed = line.trim_start();
         if !trimmed.starts_with('{') {
-            let header = trimmed.split_whitespace().next().unwrap_or_default();
-            if trimmed.starts_with('[')
-                && !matches!(header, "[Options]" | "[Asserts]" | "[Captures]")
-            {
+            if trimmed.starts_with('[') && !is_options_header(trimmed) {
                 let error = LineError::new(
                     Span {
                         line:   0,
@@ -2972,13 +2987,15 @@ impl Parser {
                 index += 1;
                 continue;
             }
-            if structural_line(line) {
+            // A JSON array body starts with `[`, as `[Options]` does.
+            let json_start = trimmed.starts_with('{')
+                || (trimmed.starts_with('[') && !is_options_header(trimmed));
+            if !json_start && structural_line(line) {
                 break;
             }
 
             if body.is_some() {
-                let duplicate_body =
-                    trimmed == "```" || trimmed.starts_with('{') || trimmed.starts_with('[');
+                let duplicate_body = trimmed == "```" || json_start;
                 let header_after_body = trimmed
                     .split_whitespace()
                     .next()
@@ -3032,7 +3049,7 @@ impl Parser {
                 };
                 let text = lines[index + 1..close].join("\n");
                 let value_start = (index + 1).min(lines.len().saturating_sub(1));
-                let value = multiline_value(lines, value_start, &text)
+                let value = multiline_value(lines, value_start, &text, bare_segments)
                     .map_err(|error| into_parse_error(path, error, 0, line))?;
                 body = Some(HttpBody {
                     kind: HttpBodyKind::Text,
@@ -3046,7 +3063,7 @@ impl Parser {
                 continue;
             }
 
-            if trimmed.starts_with('{') || trimmed.starts_with('[') {
+            if json_start {
                 let end = json_body_end(lines, index)
                     .map_err(|error| into_parse_error(path, error, 0, line))?;
                 let text = lines[index..=end].join("\n");
@@ -3069,7 +3086,7 @@ impl Parser {
                     .at_source(u32::try_from(error_line).unwrap_or(u32::MAX), source);
                     return Err(into_parse_error(path, local, 0, source));
                 }
-                let value = multiline_value(lines, index, &text)
+                let value = multiline_value(lines, index, &text, json_segments)
                     .map_err(|error| into_parse_error(path, error, 0, line))?;
                 body = Some(HttpBody {
                     kind: HttpBodyKind::Json,
@@ -3221,7 +3238,7 @@ impl Parser {
         if let Some(text) = header {
             self.handle_header(&text, first.span)?;
         } else {
-            self.handle_step(first, &mut cursor, content_start)?;
+            self.handle_step(&first, &mut cursor, content_start)?;
         }
         if let Some(comment) = cursor.take_comment() {
             self.comments.push(comment);
@@ -3248,62 +3265,11 @@ impl Parser {
                     )
                 }
             }
-            "[Asserts]" | "[Captures]" => self.handle_section(text, span),
-            other => Err(
-                LineError::new(span, format!("unknown section `{other}`")).expecting([
-                    "[Options]",
-                    "[Asserts]",
-                    "[Captures]",
-                ]),
-            ),
+            other => {
+                Err(LineError::new(span, format!("unknown section `{other}`"))
+                    .expecting(["[Options]"]))
+            }
         }
-    }
-
-    /// Opens a deprecated `[Asserts]` or `[Captures]` section (SPEC 4).
-    fn handle_section(&mut self, text: &str, span: Span) -> Result<(), LineError> {
-        let is_asserts = text == "[Asserts]";
-        if let Some(line) = self.first_keyword {
-            return Err(mixed_check_syntax(span, "section", line));
-        }
-        match self.state {
-            State::Preamble | State::Options => {
-                return Err(LineError::new(
-                    span,
-                    format!("`{text}` must follow an entry's actions"),
-                )
-                .expecting(["an action"]));
-            }
-            State::Asserts if is_asserts => {
-                return Err(LineError::new(span, "an entry has one `[Asserts]` section")
-                    .expecting(["a check", "an action", "[Captures]"]));
-            }
-            State::Captures if is_asserts => {
-                return Err(LineError::new(
-                    span,
-                    "`[Asserts]` must come before `[Captures]` in an entry",
-                )
-                .expecting(["a capture", "an action"]));
-            }
-            State::Captures => {
-                return Err(
-                    LineError::new(span, "an entry has one `[Captures]` section")
-                        .expecting(["a capture", "an action"]),
-                );
-            }
-            State::Actions | State::AfterPage | State::Asserts | State::Checks => {}
-        }
-        self.first_section.get_or_insert(span.line);
-        let entry = self
-            .current
-            .as_mut()
-            .expect("the entry states always have a current entry");
-        entry.sections.push(span);
-        self.state = if is_asserts {
-            State::Asserts
-        } else {
-            State::Captures
-        };
-        Ok(())
     }
 
     /// True when the current entry is an independent HTTP request, whose
@@ -3315,6 +3281,12 @@ impl Parser {
                 Some(ActionKind::Http { .. })
             )
         })
+    }
+
+    /// True when the current entry holds only `MOCK` lines, before the
+    /// file's first `VISIT`: it needs a `VISIT` next (SPEC 4).
+    fn awaiting_visit(&self) -> bool {
+        !self.seen_visit && self.current.is_some() && !self.in_http_entry()
     }
 
     /// Parses an `ASSERT` or `CAPTURE` line after its keyword (SPEC 9,
@@ -3334,16 +3306,15 @@ impl Parser {
                 )
                 .expecting(["an action"]));
             }
-            State::Actions
-            | State::AfterPage
-            | State::Checks
-            | State::Asserts
-            | State::Captures => {}
+            State::Actions | State::AfterPage | State::Checks => {}
         }
-        if let Some(line) = self.first_section {
-            return Err(mixed_check_syntax(keyword_span, "keyword", line));
+        if self.awaiting_visit() {
+            return Err(LineError::new(
+                keyword_span,
+                format!("`{keyword}` needs an earlier VISIT"),
+            )
+            .expecting(["MOCK", "VISIT"]));
         }
-        self.first_keyword.get_or_insert(keyword_span.line);
         let implicit_http = self.in_http_entry();
         let line_no = cursor.line_no;
         let check = if keyword == "JUDGE" {
@@ -3358,9 +3329,7 @@ impl Parser {
                 tokens.push(token);
             }
             let timeout = split_timeout(&mut tokens);
-            let ActionKind::Act { scope, instruction } = parse_act(tokens, keyword_span)? else {
-                unreachable!("parse_act returns ACT");
-            };
+            let (scope, instruction) = parse_act(Args::new(tokens, keyword_span))?;
             let (text, span) = cursor.content(content_start);
             CheckStep::Judge(Judge {
                 scope,
@@ -3379,7 +3348,7 @@ impl Parser {
                         "title",
                         "eval",
                         "response:NAME",
-                        "tab:NAME",
+                        "window:NAME",
                     ]));
             };
             let (body, timeout) = parse_assert_body(first, cursor, implicit_http)?;
@@ -3392,14 +3361,8 @@ impl Parser {
                 text,
             })
         } else {
-            let name_token = cursor.next_token()?;
-            let Some((name, rest)) = name_token.and_then(split_name_colon) else {
-                return Err(
-                    LineError::new(after_span(keyword_span), "expected a capture name")
-                        .expecting(["name: source"]),
-                );
-            };
-            let mut capture = parse_capture_body(name, rest, cursor, implicit_http)?;
+            let name = capture_name(cursor.next_token()?, keyword_span)?;
+            let mut capture = parse_capture_body(name, cursor, implicit_http)?;
             let (text, span) = cursor.content(content_start);
             capture.line = line_no;
             capture.span = span;
@@ -3417,7 +3380,7 @@ impl Parser {
 
     fn handle_step(
         &mut self,
-        first: RawToken,
+        first: &RawToken,
         cursor: &mut Cursor,
         content_start: usize,
     ) -> Result<(), LineError> {
@@ -3466,14 +3429,19 @@ impl Parser {
                     .expect("the Actions state always has a current entry");
                 entry.actions.push(action);
             } else {
+                if self.awaiting_visit() {
+                    return Err(
+                        LineError::new(first_span, "MOCK lines must be followed by VISIT")
+                            .expecting(["MOCK", "VISIT"]),
+                    );
+                }
                 if let Some(entry) = self.current.take() {
                     self.entries.push(entry);
                 }
                 self.current = Some(Entry {
-                    actions:  vec![action],
-                    page:     None,
-                    checks:   Vec::new(),
-                    sections: Vec::new(),
+                    actions: vec![action],
+                    page:    None,
+                    checks:  Vec::new(),
                 });
                 self.state = State::Actions;
             }
@@ -3514,6 +3482,10 @@ impl Parser {
                 if self.in_http_entry() {
                     return Err(LineError::new(first.span, "an HTTP entry cannot have PAGE")
                         .expecting(["ASSERT", "CAPTURE", "an action"]));
+                }
+                if self.awaiting_visit() {
+                    return Err(LineError::new(first.span, "`PAGE` needs an earlier VISIT")
+                        .expecting(["MOCK", "VISIT"]));
                 }
                 let (check, timeout) = parse_page_body(first.span, cursor)?;
                 let (text, span) = cursor.content(content_start);
@@ -3587,52 +3559,6 @@ impl Parser {
                 "expected a step line",
             )
             .expecting(["an action", "ASSERT", "CAPTURE"])),
-            State::Asserts if is_page => Err(LineError::new(
-                first.span,
-                "`PAGE` must come before an entry's check lines",
-            )
-            .expecting(["a check", "an action"])),
-            State::Asserts => {
-                let implicit_http = self.in_http_entry();
-                let (body, timeout) = parse_assert_body(first, cursor, implicit_http)?;
-                let (text, span) = cursor.content(content_start);
-                let entry = self
-                    .current
-                    .as_mut()
-                    .expect("the Asserts state always has a current entry");
-                entry.checks.push(CheckStep::Assert(Assert {
-                    body,
-                    timeout,
-                    line: line_no,
-                    span,
-                    text,
-                }));
-                Ok(())
-            }
-            State::Captures if is_page => Err(LineError::new(
-                first.span,
-                "`PAGE` must come before an entry's check lines",
-            )
-            .expecting(["a capture", "an action"])),
-            State::Captures => {
-                let first_span = first.span;
-                let Some((name, rest)) = split_name_colon(first) else {
-                    return Err(LineError::new(first_span, "expected a capture line")
-                        .expecting(["name: source"]));
-                };
-                let implicit_http = self.in_http_entry();
-                let mut capture = parse_capture_body(name, rest, cursor, implicit_http)?;
-                let (text, span) = cursor.content(content_start);
-                capture.line = line_no;
-                capture.span = span;
-                capture.text = text;
-                let entry = self
-                    .current
-                    .as_mut()
-                    .expect("the Captures state always has a current entry");
-                entry.checks.push(CheckStep::Capture(capture));
-                Ok(())
-            }
         }
     }
 }
@@ -3904,11 +3830,21 @@ mod tests {
         );
         let error = parse_err("VISIT /\nASSERT response:r json:$[\"a\"] == 1\n");
         assert!(
-            error.message.contains("one bare token or one quoted value"),
+            error.message.contains("quote the whole value"),
             "{}",
             error.message
         );
         only_check("response:r json:\"$[?@.name == 'Ada Lovelace']\" count == 1");
+        // A quote joins the argument after a colon, as after any prefix.
+        let check = only_check("response:r json:$[?@.time=='12:\"00 am']\" exists");
+        let Subject::Response {
+            field: ResponseField::Json(path),
+            ..
+        } = check.subject
+        else {
+            panic!("expected a JSONPath field");
+        };
+        assert_eq!(path.as_literal().as_deref(), Some("$[?@.time=='12:00 am']"));
     }
 
     #[test]
@@ -3953,7 +3889,7 @@ mod tests {
         }
         let error = parse_err("VISIT /\nASSERT response:r xpath://a[@x=\"1\"] exists\n");
         assert!(
-            error.message.contains("one bare token or one quoted value"),
+            error.message.contains("quote the whole value"),
             "{}",
             error.message
         );
@@ -3992,17 +3928,27 @@ mod tests {
     }
 
     #[test]
-    fn a_final_bare_at_token_that_is_not_a_duration_is_a_value() {
-        // SPEC 3.1 reserves only tokens "of the form `@duration`"; `@zzz`
-        // is an ordinary value in every position, action lines included.
-        let source = "VISIT /\nFILL Email @zzz\n";
-        let file = parse(source);
-        let action = &only_entry(&file).actions[1];
-        assert_eq!(action.timeout, None);
-        let ActionKind::Fill { value, .. } = &action.kind else {
+    fn a_bare_value_cannot_start_with_an_at_sign() {
+        // SPEC 3.1: a bare token that starts with `@` is always the step
+        // timeout, so it must be a duration at the end of the line.
+        for (line, message) in [
+            (
+                "FILL Email @zzz",
+                "a bare value cannot start with `@`; quote it",
+            ),
+            ("FILL Email @5s x", "a step timeout must end the line"),
+            (
+                "FILL Email x @99999999999999999999s",
+                "the step timeout is too long",
+            ),
+        ] {
+            let error = parse_err(&format!("VISIT /\n{line}\n"));
+            assert_eq!(error.message, message, "{line}");
+        }
+        let ActionKind::Fill { value, .. } = action_kind("FILL Email \"@zzz\"") else {
             panic!("expected FILL");
         };
-        assert_eq!(lit(value), "@zzz");
+        assert_eq!(lit(&value), "@zzz");
     }
 
     #[test]
@@ -4031,7 +3977,7 @@ mod tests {
 
     #[test]
     fn capture_sources_parse() {
-        let source = "VISIT /\nCAPTURE heading: role:heading \"Hi\" text\nCAPTURE input: label:Email value\nCAPTURE rows: testid:row count\nCAPTURE href: role:link attr:href\nCAPTURE here: url\nCAPTURE name: title\nCAPTURE result: eval \"1 + 1\"\n";
+        let source = "VISIT /\nCAPTURE heading: heading:\"Hi\" text\nCAPTURE input: label:Email value\nCAPTURE rows: testid:row count\nCAPTURE href: link:* attr:href\nCAPTURE here: url\nCAPTURE name: title\nCAPTURE result: eval \"1 + 1\"\n";
         let file = parse(source);
         let captures = &only_entry(&file).captures().collect::<Vec<_>>();
         assert_eq!(captures.len(), 7);
@@ -4125,9 +4071,9 @@ VISIT /login
 
 FILL "Email" alice@example.com
 FILL "Password" {{env.TEST_PASSWORD}}
-CLICK role:button "Sign in"
+CLICK button:"Sign in"
 PAGE /dashboard
-ASSERT role:heading "Welcome back" visible
+ASSERT heading:"Welcome back" visible
 ASSERT testid:user-menu text == Alice
 
 # Find a product.
@@ -4135,13 +4081,13 @@ FILL placeholder:"Search products" widget
 PRESS Enter
 ASSERT url contains "q=widget"
 ASSERT testid:result-card count >= 1
-CAPTURE first_product: testid:result-card >> nth:1 >> role:link attr:href
+CAPTURE first_product: testid:result-card >> nth:1 >> link:* attr:href
 
 # Add it to the cart.
 VISIT {{first_product}}
 CLICK "Add to cart"
 ASSERT testid:cart-badge text == 1
-ASSERT role:alert text contains "Added to cart"
+ASSERT alert:* text contains "Added to cart"
 "#;
 
     #[test]
@@ -4342,6 +4288,35 @@ ASSERT role:alert text contains "Added to cart"
     }
 
     #[test]
+    fn a_hash_inside_a_token_is_text() {
+        let ActionKind::Visit { url } = action_kind("VISIT /docs#install") else {
+            panic!("expected VISIT");
+        };
+        assert_eq!(lit(&url), "/docs#install");
+        let ActionKind::Click { target, .. } = action_kind("CLICK css:#submit") else {
+            panic!("expected CLICK");
+        };
+        let SegmentKind::Css(selector) = &target.segments[0].kind else {
+            panic!("expected a css segment");
+        };
+        assert_eq!(lit(selector), "#submit");
+        // A comment starts only at a `#` after white space (SPEC 3).
+        let file = parse("VISIT /\nCLICK Save # a note\n");
+        assert_eq!(file.comments.len(), 1);
+        for (line, message) in [
+            (
+                "FILL Note \"a\"#b",
+                "expected white space after the closing quote",
+            ),
+            ("ASSERT url matches /a/i#b", "invalid regex flag `#`"),
+            ("CLICK #submit", "expected a locator"),
+        ] {
+            let error = parse_err(&format!("VISIT /\n{line}\n"));
+            assert_eq!(error.message, message, "{line}");
+        }
+    }
+
+    #[test]
     fn crlf_line_endings_parse() {
         let file = parse("VISIT /login\r\nCLICK \"Go\"\r\n");
         assert_eq!(only_entry(&file).actions.len(), 2);
@@ -4508,7 +4483,7 @@ ASSERT status == 202
     #[test]
     fn check_lines_keep_their_written_order() {
         let file = parse(
-            "VISIT /\nPAGE /\nCAPTURE id: testid:x text\nASSERT testid:y text == {{id}} @5s\nASSERT tab:main closed\n",
+            "VISIT /\nPAGE /\nCAPTURE id: testid:x text\nASSERT testid:y text == {{id}} @5s\nASSERT window:main closed\n",
         );
         let entry = only_entry(&file);
         let lines: Vec<(u32, bool)> = entry
@@ -4520,7 +4495,6 @@ ASSERT status == 202
         let asserts = entry.asserts().collect::<Vec<_>>();
         assert_eq!(asserts[0].text, "ASSERT testid:y text == {{id}} @5s");
         assert_eq!(asserts[0].timeout.map(DurationLit::millis), Some(5000));
-        assert!(entry.sections.is_empty());
     }
 
     #[test]
@@ -4569,25 +4543,11 @@ ASSERT status == 202
     }
 
     #[test]
-    fn sections_still_parse_and_are_recorded() {
-        let file = parse("VISIT /\n[Asserts]\nurl == /\n[Captures]\nc: url\n");
-        let entry = only_entry(&file);
-        assert_eq!(entry.checks.len(), 2);
-        let lines: Vec<u32> = entry.sections.iter().map(|span| span.line).collect();
-        assert_eq!(lines, [2, 4]);
-    }
-
-    #[test]
-    fn a_file_cannot_mix_sections_and_check_lines() {
-        let error = parse_err("VISIT /\nASSERT url == /\nVISIT /b\n[Asserts]\nurl == /b\n");
-        assert_eq!(error.code, ParseErrorCode::MixedCheckSyntax);
-        assert_eq!(error.line, 4);
-        assert!(error.message.contains("line 2"), "{}", error.message);
-        let error = parse_err("VISIT /\n[Asserts]\nurl == /\nVISIT /b\nASSERT url == /b\n");
-        assert_eq!(error.code, ParseErrorCode::MixedCheckSyntax);
-        assert_eq!(error.line, 5);
-        let error = parse_err("VISIT /\n[Asserts]\nASSERT url == /\n");
-        assert_eq!(error.code, ParseErrorCode::MixedCheckSyntax);
+    fn the_removed_sections_are_unknown() {
+        for header in ["[Asserts]", "[Captures]"] {
+            let error = parse_err(&format!("VISIT /\n{header}\nurl == /\n"));
+            assert_eq!(error.message, format!("unknown section `{header}`"));
+        }
     }
 
     #[test]
@@ -4638,7 +4598,10 @@ ASSERT status == 202
     fn malformed_mocks_are_parse_errors() {
         for (source, message) in [
             ("MOCK GET /a 200 @5s\n", "MOCK has no step timeout"),
-            ("MOCK GET /a\n", "expected MOCK METHOD url STATUS"),
+            (
+                "MOCK GET /a\n",
+                "expected a status code from 200 to 599, or `failed`",
+            ),
             (
                 "MOCK get /a 200\n",
                 "expected an uppercase HTTP method like GET or POST",
@@ -4664,6 +4627,85 @@ ASSERT status == 202
         }
         let error = parse_err("MOCK GET /a failed\n# note\nX-Test: yes\n");
         assert_eq!(error.line, 3);
+    }
+
+    #[test]
+    fn http_and_mock_bodies_can_be_json_arrays() {
+        let file = parse("HTTP POST /a\n[1, {{n}}]\nMOCK GET /b 200\n[\n  \"x\"\n]\nVISIT /\n");
+        let ActionKind::Http { body, .. } = &file.entries[0].actions[0].kind else {
+            panic!("expected HTTP");
+        };
+        let body = body.as_ref().expect("JSON body");
+        assert_eq!(body.kind, HttpBodyKind::Json);
+        assert_eq!(body.text, "[1, {{n}}]");
+        let ActionKind::Mock {
+            response: MockResponse::Fulfill { body, .. },
+            ..
+        } = &file.entries[1].actions[0].kind
+        else {
+            panic!("expected a fulfilling mock");
+        };
+        assert_eq!(
+            body.as_ref().map(|body| body.text.as_str()),
+            Some("[\n  \"x\"\n]")
+        );
+    }
+
+    #[test]
+    fn a_backslash_before_a_reference_in_a_json_string_is_an_escaped_backslash() {
+        let file = parse("HTTP POST /a\n{\"a\": \"\\\\{{x}}\", \"b\": \"\\{{y}}\"}\n");
+        let ActionKind::Http { body, .. } = &file.entries[0].actions[0].kind else {
+            panic!("expected HTTP");
+        };
+        assert_eq!(body.as_ref().expect("JSON body").value.segments, vec![
+            ValueSegment::Literal("{\"a\": \"\\\\".to_owned()),
+            ValueSegment::Var("x".to_owned()),
+            ValueSegment::Literal("\", \"b\": \"{{y}}\"}".to_owned()),
+        ]);
+
+        let AssertBody::Check(CheckLine {
+            predicate:
+                PredicateSpec::Compare {
+                    expected: Operand::Json(literal),
+                    ..
+                },
+            ..
+        }) = only_assert("url == [\"\\\\{{x}}\"]")
+        else {
+            panic!("expected a JSON literal");
+        };
+        assert_eq!(literal.value.segments, vec![
+            ValueSegment::Literal("[\"\\\\".to_owned()),
+            ValueSegment::Var("x".to_owned()),
+            ValueSegment::Literal("\"]".to_owned()),
+        ]);
+    }
+
+    #[test]
+    fn mock_lines_need_a_visit_after_them() {
+        for (source, message) in [
+            ("MOCK GET /a 204\n", "MOCK lines must be followed by VISIT"),
+            (
+                "MOCK GET /a 204\nHTTP GET /b\nVISIT /\n",
+                "MOCK lines must be followed by VISIT",
+            ),
+            (
+                "MOCK GET /a 204\nASSERT url == x\nVISIT /\n",
+                "`ASSERT` needs an earlier VISIT",
+            ),
+            ("MOCK GET /a 204\nPAGE /\n", "`PAGE` needs an earlier VISIT"),
+        ] {
+            assert_eq!(parse_err(source).message, message, "{source}");
+        }
+        let error = parse_err("MOCK GET /a 204\n# the end\n");
+        assert_eq!((error.line, error.column), (1, 1));
+        assert_eq!(
+            parse("HTTP GET /b\nMOCK GET /a 204\nVISIT /\n")
+                .entries
+                .len(),
+            2
+        );
+        assert_eq!(parse("VISIT /\nPAGE /\nMOCK GET /a 204\n").entries.len(), 2);
     }
 
     #[test]
@@ -4719,7 +4761,7 @@ ASSERT status == 202
     #[test]
     fn ai_segments_parse_last_in_a_locator() {
         let file = parse(
-            "VISIT /\nCLICK role:dialog >> ai:\"the {{which}} email field\"\nASSERT ai:\"the total\" text == 1\n",
+            "VISIT /\nCLICK dialog:* >> ai:\"the {{which}} email field\"\nASSERT ai:\"the total\" text == 1\n",
         );
         let locators = file.locator_uses();
         let description = locators[0]
@@ -4735,7 +4777,7 @@ ASSERT status == 202
     #[test]
     fn misplaced_ai_segments_are_parse_errors() {
         assert_eq!(
-            parse_err("VISIT /\nCLICK ai:\"a row\" >> role:button\n").message,
+            parse_err("VISIT /\nCLICK ai:\"a row\" >> button:*\n").message,
             "`ai:` must be the last segment of a locator"
         );
         assert_eq!(
@@ -4835,7 +4877,7 @@ ASSERT status == 202
             parse_err("VISIT /\nGOAL \"a\" \"b\"\n").message,
             "expected end of line"
         );
-        assert_eq!(parse_err("VISIT /\nGOAL\n").message, "expected a value");
+        assert_eq!(parse_err("VISIT /\nGOAL\n").message, "expected a goal");
     }
 
     #[test]
@@ -4868,7 +4910,11 @@ ASSERT status == 202
         );
         assert_eq!(
             parse_err("VISIT /\nEXTRACT \"x\"\n").message,
-            "expected EXTRACT name [locator] \"instruction\""
+            "expected a name"
+        );
+        assert_eq!(
+            parse_err("VISIT /\nEXTRACT n\n").message,
+            "expected an instruction"
         );
     }
 
@@ -5063,7 +5109,7 @@ ASSERT status == 202
     fn unknown_sections_are_an_error() {
         let error = parse_err("VISIT /\n[Wibble]\n");
         assert_eq!(error.message, "unknown section `[Wibble]`");
-        assert_eq!(error.expected.len(), 3);
+        assert_eq!(error.expected, ["[Options]"]);
     }
 
     #[test]
@@ -5104,7 +5150,7 @@ ASSERT status == 202
 
     #[test]
     fn locator_chains_join_segments_with_arrows() {
-        let source = "VISIT /\nCAPTURE link: testid:result-card >> nth:-1 >> role:link attr:href\n";
+        let source = "VISIT /\nCAPTURE link: testid:result-card >> nth:-1 >> link:* attr:href\n";
         let file = parse(source);
         let capture = &only_entry(&file).captures().collect::<Vec<_>>()[0];
         let Subject::Element { locator, extractor } = &capture.subject else {
@@ -5117,7 +5163,7 @@ ASSERT status == 202
 
     #[test]
     fn role_takes_an_optional_accessible_name() {
-        let ActionKind::Click { target, .. } = action_kind("CLICK role:button \"Sign in\"") else {
+        let ActionKind::Click { target, .. } = action_kind("CLICK button:\"Sign in\"") else {
             panic!("expected CLICK");
         };
         let SegmentKind::Role {
@@ -5135,7 +5181,7 @@ ASSERT status == 202
             "Sign in"
         );
 
-        let ActionKind::Click { target, .. } = action_kind("CLICK role:button") else {
+        let ActionKind::Click { target, .. } = action_kind("CLICK button:*") else {
             panic!("expected CLICK");
         };
         assert!(matches!(&target.segments[0].kind, SegmentKind::Role {
@@ -5146,7 +5192,7 @@ ASSERT status == 202
 
     #[test]
     fn substring_prefix_variants_parse() {
-        let ActionKind::Click { target, .. } = action_kind("CLICK text~:\"Added\"") else {
+        let ActionKind::Click { target, .. } = action_kind("CLICK text:~\"Added\"") else {
             panic!("expected CLICK");
         };
         let SegmentKind::TextEngine {
@@ -5160,6 +5206,50 @@ ASSERT status == 202
         assert_eq!(*prefix, TextPrefix::Text);
         assert!(substring);
         assert_eq!(lit(value), "Added");
+    }
+
+    #[test]
+    fn a_tilde_after_the_colon_matches_by_substring() {
+        let role = |line: &str| {
+            let ActionKind::Click { target, .. } = action_kind(line) else {
+                panic!("expected CLICK");
+            };
+            let SegmentKind::Role {
+                substring, name, ..
+            } = &target.segments[0].kind
+            else {
+                panic!("expected a role segment");
+            };
+            (*substring, name.as_ref().map(lit))
+        };
+        assert_eq!(role("CLICK button:~Sign"), (true, Some("Sign".to_owned())));
+        assert_eq!(
+            role("CLICK button:~\"Sign in\""),
+            (true, Some("Sign in".to_owned()))
+        );
+        assert_eq!(role("CLICK button:~~x"), (true, Some("~x".to_owned())));
+        assert_eq!(role("CLICK button:\"~x\""), (false, Some("~x".to_owned())));
+        assert_eq!(role("CLICK button:~\"*\""), (true, Some("*".to_owned())));
+        for (line, message) in [
+            ("CLICK button:~*", "`button:~` needs a name"),
+            ("CLICK label:~", "`label:` needs a value after `~`"),
+            ("CLICK button~:Sign", "unknown prefix `button~:`"),
+        ] {
+            let error = parse_err(&format!("VISIT /\n{line}\n"));
+            assert!(
+                error.message.starts_with(message),
+                "{line}: {}",
+                error.message
+            );
+        }
+        // Prefixes without a substring form keep the `~` in the value.
+        let ActionKind::Click { target, .. } = action_kind("CLICK css:~x") else {
+            panic!("expected CLICK");
+        };
+        let SegmentKind::Css(value) = &target.segments[0].kind else {
+            panic!("expected a css segment");
+        };
+        assert_eq!(lit(value), "~x");
     }
 
     #[test]
@@ -5312,7 +5402,7 @@ ASSERT status == 202
     fn right_and_middle_click_press_their_buttons_with_the_text_engine() {
         for (line, expected) in [
             ("RIGHTCLICK \"report.pdf\"", MouseButton::Right),
-            ("MIDDLECLICK role:link Docs", MouseButton::Middle),
+            ("MIDDLECLICK link:Docs", MouseButton::Middle),
             ("CLICK Save", MouseButton::Left),
         ] {
             let kind = action_kind(line);
@@ -5362,7 +5452,7 @@ ASSERT status == 202
     fn type_with_one_argument_is_an_error() {
         let error = parse_err("VISIT /\nTYPE 424242\n");
         assert!(
-            error.message.contains("expected a locator and a value"),
+            error.message.contains("expected the text to type"),
             "message: {}",
             error.message
         );
@@ -5399,7 +5489,7 @@ ASSERT status == 202
         assert!(error.expected.iter().any(|alt| alt == "local"));
         assert!(error.expected.iter().any(|alt| alt == "cookie"));
         let error = parse_err("VISIT /\nSTORE local flag\n");
-        assert_eq!(error.message, "expected a value after the key");
+        assert_eq!(error.message, "expected a value");
         let error = parse_err("VISIT /\nSTORE local flag on extra\n");
         assert_eq!(error.message, "expected end of line");
     }
@@ -5413,7 +5503,7 @@ ASSERT status == 202
         assert_eq!(lit(&instruction), "click Buy");
 
         let ActionKind::Act { scope, instruction } =
-            action_kind("ACT css:form >> role:group \"click Buy\"")
+            action_kind("ACT css:form >> group:* \"click Buy\"")
         else {
             panic!("expected ACT");
         };
@@ -5517,12 +5607,12 @@ ASSERT status == 202
                 "expected a `file:` path",
             ),
             ("DROP \"Drop files here\" a.csv", "expected a `file:` path"),
-            ("DROP file:a.csv", "expected a locator before"),
+            ("DROP file:a.csv", "unknown prefix `file:`"),
             (
                 "DROP \"Drop files here\" file:",
                 "expected a path after `file:`",
             ),
-            ("DROP", "expected a locator and a `file:` path"),
+            ("DROP", "expected a locator"),
         ] {
             let error = parse_err(&format!("VISIT /\n{line}\n"));
             assert!(error.message.contains(message), "{line}: {}", error.message);
@@ -5541,7 +5631,7 @@ ASSERT status == 202
 
         // A role takes its name before `to`; a quoted "to" is text.
         let ActionKind::Drag { source, target } =
-            action_kind("DRAG role:listitem \"to\" to role:region Done")
+            action_kind("DRAG listitem:\"to\" to region:Done")
         else {
             panic!("expected DRAG");
         };
@@ -5563,16 +5653,21 @@ ASSERT status == 202
     }
 
     #[test]
-    fn drag_needs_one_bare_to_between_two_locators() {
+    fn drag_reads_to_after_its_first_locator() {
         for (line, message) in [
             ("DRAG \"Write spec\" testid:done", "expected `to`"),
-            ("DRAG to testid:done", "before `to`"),
-            ("DRAG \"Write spec\" to", "after `to`"),
-            ("DRAG a to b to c", "quote \"to\""),
+            ("DRAG to testid:done", "expected `to`"),
+            ("DRAG \"Write spec\" to", "expected a locator"),
+            ("DRAG a to b to c", "expected end of line"),
         ] {
             let error = parse_err(&format!("VISIT /\n{line}\n"));
             assert!(error.message.contains(message), "{line}: {}", error.message);
         }
+        // Reading left to right, a first `to` is text to match.
+        let ActionKind::Drag { source, .. } = action_kind("DRAG to to testid:done") else {
+            panic!("expected DRAG");
+        };
+        assert_eq!(default_segment_text(&source), "to");
     }
 
     #[test]
@@ -5588,7 +5683,7 @@ ASSERT status == 202
         let ActionKind::Scroll {
             target: Some(target),
             motion,
-        } = action_kind("SCROLL role:dialog Filters left")
+        } = action_kind("SCROLL dialog:Filters left")
         else {
             panic!("expected SCROLL with a locator");
         };
@@ -5621,8 +5716,8 @@ ASSERT status == 202
             ("SCROLL", "expected what to scroll"),
             ("SCROLL to 150%", "from 0% to 100%"),
             ("SCROLL to fifty", "from 0% to 100%"),
-            ("SCROLL to", "quote \"to\""),
-            ("SCROLL a to b down", "quote \"to\""),
+            ("SCROLL to", "expected a percent"),
+            ("SCROLL a to b down", "from 0% to 100%"),
         ] {
             let error = parse_err(&format!("VISIT /\n{line}\n"));
             assert!(error.message.contains(message), "{line}: {}", error.message);
@@ -5696,7 +5791,7 @@ ASSERT status == 202
             "snapshot-pixel-threshold: 0",
             "snapshot-pixel-threshold: 1",
             "snapshot-mask: text:none",
-            "snapshot-mask: role~:button \"Buy now\" >> nth:0",
+            "snapshot-mask: button:~\"Buy now\" >> nth:0",
             "snapshot-max-diff: {{limit}}",
             "snapshot-pixel-threshold: {{threshold}}",
             "snapshot-mask: testid:{{id}}",
@@ -5729,7 +5824,7 @@ ASSERT status == 202
     #[test]
     fn snapshot_takes_an_optional_explicit_target_after_its_name() {
         let file = parse(
-            "VISIT /\nSNAPSHOT page\nSNAPSHOT cart testid:cart @10s\nsnapshot-max-diff: 1\nSNAPSHOT pay frame:\"#pay iframe\" >> role:button \"Pay now\" >> nth:0\nSNAPSHOT row testid:{{row}}\n",
+            "VISIT /\nSNAPSHOT page\nSNAPSHOT cart testid:cart @10s\nsnapshot-max-diff: 1\nSNAPSHOT pay frame:\"#pay iframe\" >> button:\"Pay now\" >> nth:0\nSNAPSHOT row testid:{{row}}\n",
         );
         let actions = &file.entries[0].actions;
         let ActionKind::Snapshot { name, target, .. } = &actions[1].kind else {
