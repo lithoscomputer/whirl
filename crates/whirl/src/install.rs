@@ -1,8 +1,9 @@
 //! `whirl install` (SPEC section 13): provisions the shim bundle and the
 //! browser builds so users need no Node of their own.
 //!
-//! The bundle lives under the Whirl data directory
-//! ([`shim::whirl_data_dir`]) in the layout `run/shim.rs` resolves:
+//! The bundle lives under the Whirl data directory ([`bundle::data_dir`])
+//! in the layout `whirl_shim::bundle` names and `whirl_shim::resolve_launch`
+//! resolves:
 //! `bundle/node/` holds the pinned Node runtime, `bundle/bun/` holds the
 //! pinned Bun binary that installs dependencies, and `bundle/shim/`
 //! holds the shim entry `index.js`, its sibling dist files, a
@@ -27,8 +28,7 @@ use anyhow::{Context as _, bail};
 use flate2::read::GzDecoder;
 use reqwest::blocking::{Client, Response};
 use sha2::{Digest as _, Sha256};
-
-use crate::run::shim;
+use whirl_shim::bundle;
 
 mod embedded {
     include!(concat!(env!("OUT_DIR"), "/shim_embed.rs"));
@@ -54,7 +54,7 @@ pub(crate) type Progress<'a> = &'a mut dyn FnMut(&str);
 /// dependencies, and browser builds. Each step prints a progress line
 /// and is safe to re-run.
 pub(crate) fn run(browsers: &[String], progress: Progress<'_>) -> anyhow::Result<()> {
-    let data_dir = shim::whirl_data_dir()
+    let data_dir = bundle::data_dir()
         .context("no data directory on this platform; set WHIRL_DATA_DIR to choose one")?;
     let bundle = BundleLayout::new(&data_dir);
     provision_node(&bundle, progress)?;
@@ -69,8 +69,8 @@ pub(crate) fn run(browsers: &[String], progress: Progress<'_>) -> anyhow::Result
     Ok(())
 }
 
-/// The on-disk layout of the installed bundle, matching the constants
-/// `run/shim.rs` resolves.
+/// The on-disk layout of the installed bundle, matching the constants of
+/// `whirl_shim::bundle`.
 struct BundleLayout {
     /// `<data dir>` — the directory containing `bundle/`.
     root:     PathBuf,
@@ -93,7 +93,7 @@ impl BundleLayout {
     }
 
     /// The bundled node executable; equals
-    /// `<data dir>/<`[`shim::BUNDLE_NODE`]`>`.
+    /// `<data dir>/<`[`bundle::BUNDLE_NODE`]`>`.
     fn node_bin(&self) -> PathBuf {
         self.node_dir.join("bin/node")
     }
@@ -281,9 +281,10 @@ fn provision_shim_files(bundle: &BundleLayout, progress: Progress<'_>) -> anyhow
     fs::write(&package_json, bundle_package_json())
         .with_context(|| format!("writing {}", package_json.display()))?;
     // Written last: the marker says this version's shim is complete, and
-    // run/shim.rs refuses a bundle whose marker names another version.
-    let version_file = bundle.root.join(shim::BUNDLE_VERSION_FILE);
-    fs::write(&version_file, format!("{}\n", shim::WHIRL_VERSION))
+    // the shim launch resolver refuses a bundle whose marker names another
+    // version.
+    let version_file = bundle.root.join(bundle::BUNDLE_VERSION_FILE);
+    fs::write(&version_file, format!("{}\n", bundle::WHIRL_VERSION))
         .with_context(|| format!("writing {}", version_file.display()))?;
     Ok(())
 }
@@ -298,13 +299,13 @@ fn shim_source_files() -> anyhow::Result<Vec<(String, Vec<u8>)>> {
             .map(|&(name, contents)| (name.to_owned(), contents.to_vec()))
             .collect());
     }
-    let Some(shim_js) = env::var_os(shim::SHIM_JS_ENV).map(PathBuf::from) else {
+    let Some(shim_js) = env::var_os(bundle::SHIM_JS_ENV).map(PathBuf::from) else {
         bail!(
             "this whirl binary was built without an embedded shim and {env} is not set; \
              build the shim (cd shim && bun install --frozen-lockfile && bun run build) \
              and either rebuild whirl \
              or set {env} to shim/dist/index.js",
-            env = shim::SHIM_JS_ENV
+            env = bundle::SHIM_JS_ENV
         );
     };
     let dist_dir = shim_js.parent().unwrap_or(Path::new("."));
@@ -326,7 +327,7 @@ fn shim_source_files() -> anyhow::Result<Vec<(String, Vec<u8>)>> {
         bail!(
             "no index.js next to {env}={shim_js}; point {env} at the built shim entry \
              (shim/dist/index.js)",
-            env = shim::SHIM_JS_ENV,
+            env = bundle::SHIM_JS_ENV,
             shim_js = shim_js.display()
         );
     }
@@ -559,7 +560,7 @@ pub(crate) fn show_trace(path: &Path) -> anyhow::Result<()> {
     let trace = path
         .canonicalize()
         .with_context(|| format!("reading trace '{}'", path.display()))?;
-    let launch = shim::resolve_launch()?;
+    let launch = whirl_shim::resolve_launch()?;
     let cli = playwright_cli_for(&launch)?;
     let status = Command::new(&launch.node)
         .arg(cli)
@@ -575,7 +576,7 @@ pub(crate) fn show_trace(path: &Path) -> anyhow::Result<()> {
 
 /// Finds Playwright beside an installed shim or above the development dist
 /// tree.
-pub(crate) fn playwright_cli_for(launch: &shim::ShimLaunch) -> anyhow::Result<PathBuf> {
+pub(crate) fn playwright_cli_for(launch: &whirl_shim::ShimLaunch) -> anyhow::Result<PathBuf> {
     let parent = launch
         .shim_js
         .parent()
@@ -716,11 +717,11 @@ mod tests {
         let bundle = BundleLayout::new(Path::new("/data"));
         assert_eq!(
             bundle.node_bin(),
-            Path::new("/data").join(shim::BUNDLE_NODE)
+            Path::new("/data").join(bundle::BUNDLE_NODE)
         );
         assert_eq!(
             bundle.shim_dir.join("index.js"),
-            Path::new("/data").join(shim::BUNDLE_SHIM_JS)
+            Path::new("/data").join(bundle::BUNDLE_SHIM_JS)
         );
         assert_eq!(bundle.bun_bin(), Path::new("/data/bundle/bun/bun"));
     }

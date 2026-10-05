@@ -2981,36 +2981,131 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "clap",
- "dirs",
- "encoding_rs",
  "flate2",
- "form_urlencoded",
- "html-escape",
- "lithos-llm",
- "percent-encoding",
- "pest",
- "pest_meta",
- "pest_vm",
- "proptest",
- "quick-junit",
- "regress",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
- "serde_json_path",
  "sha2",
  "tar",
  "tempfile",
  "thiserror",
  "tiny_http",
  "tokio",
- "tracing",
  "tracing-subscriber",
  "trycmd",
  "twin-openai",
- "url",
- "whirl-xpath",
+ "whirl-ai",
+ "whirl-check",
+ "whirl-lang",
+ "whirl-report",
+ "whirl-run",
+ "whirl-shim",
  "zip",
+]
+
+[[package]]
+name = "whirl-ai"
+version = "0.20.0"
+dependencies = [
+ "base64 0.22.1",
+ "lithos-llm",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "whirl-lang",
+ "whirl-shim",
+]
+
+[[package]]
+name = "whirl-check"
+version = "0.20.0"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "encoding_rs",
+ "form_urlencoded",
+ "html-escape",
+ "percent-encoding",
+ "proptest",
+ "regress",
+ "serde_json",
+ "serde_json_path",
+ "thiserror",
+ "whirl-lang",
+ "whirl-types",
+ "whirl-xpath",
+]
+
+[[package]]
+name = "whirl-lang"
+version = "0.20.0"
+dependencies = [
+ "pest",
+ "pest_meta",
+ "pest_vm",
+ "serde_json",
+ "thiserror",
+ "whirl-types",
+]
+
+[[package]]
+name = "whirl-report"
+version = "0.20.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "chrono",
+ "quick-junit",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "whirl-run"
+version = "0.20.0"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "url",
+ "whirl-ai",
+ "whirl-check",
+ "whirl-lang",
+ "whirl-report",
+ "whirl-shim",
+ "whirl-types",
+]
+
+[[package]]
+name = "whirl-shim"
+version = "0.20.0"
+dependencies = [
+ "dirs",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "url",
+ "whirl-lang",
+]
+
+[[package]]
+name = "whirl-types"
+version = "0.20.0"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "proptest",
+ "serde_json",
 ]
 
 [[package]]
