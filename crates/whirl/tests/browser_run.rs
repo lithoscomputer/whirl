@@ -162,14 +162,14 @@ fn an_undefined_option_variable_is_a_setup_failure() {
     let dir = TestDir::new();
     let flow = dir.file(
         "setup.whirl",
-        "[Options]\nbase: {{missing_base}}\n\nVISIT /\n",
+        "[Options]\napp-url: {{missing_app_url}}\n\nVISIT /\n",
     );
     let output = run_whirl(&dir, &[flow.to_str().expect("utf-8 path")]);
     let stdout = stdout_text(&output);
     assert_eq!(exit_code(&output), 1, "stdout:\n{stdout}");
     assert!(stdout.contains("[setup]"), "stdout:\n{stdout}");
     assert!(
-        stdout.contains("undefined variable 'missing_base'"),
+        stdout.contains("undefined variable 'missing_app_url'"),
         "stdout:\n{stdout}"
     );
 }

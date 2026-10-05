@@ -1,1 +1,1 @@
-whirl: error: --base was removed; use -O base=URL
+whirl: error: --base was removed; use -O app-url=URL

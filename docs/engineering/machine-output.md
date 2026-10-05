@@ -134,7 +134,7 @@ a list, or null when unset), its `source` (`default`, `file`, or
 `command-line`), and `active`, which is false for a `browsersim-*` setting that
 ordinary runs validate but do not apply. Values use the text form and are
 masked like other output (SPEC 11); `allow-hosts` lists the configured hosts
-without the implicit `base` host. `blockedHosts` lists each blocked hostname,
+without the implicit `app-url` host. `blockedHosts` lists each blocked hostname,
 and `blockedHostRules` gives the rule behind each one: its `option`
 (`allow-hosts` or `block-hosts`) and the `block-hosts` `glob` that matched, or
 null when no `allow-hosts` glob matched. Both new fields are absent in older

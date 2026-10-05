@@ -24,9 +24,9 @@ const VIDEO_TEMP_DIR: &str = "video-temp";
 pub struct BrowserOptions {
     pub engine:         BrowserKind,
     pub viewport:       Viewport,
-    /// The `base` option; its host is always allowed (SPEC 5).
-    pub base:           Option<String>,
-    /// As the options set it; `startFlow` adds the `base` host (SPEC 5).
+    /// The `app-url` option; its host is always allowed (SPEC 5).
+    pub app_url:        Option<String>,
+    /// As the options set it; `startFlow` adds the `app-url` host (SPEC 5).
     pub allow_hosts:    Option<Vec<String>>,
     /// Hosts blocked even when `allow_hosts` allows them (SPEC 5).
     pub block_hosts:    Option<Vec<String>>,
@@ -45,11 +45,11 @@ pub struct BrowserOptions {
 }
 
 impl BrowserOptions {
-    /// The `allow-hosts` list the shim enforces: the `base` host is always
+    /// The `allow-hosts` list the shim enforces: the `app-url` host is always
     /// allowed (SPEC 5).
     fn shim_allow_hosts(&self) -> Option<Vec<String>> {
         let mut hosts = self.allow_hosts.clone()?;
-        if let Some(host) = self.base.as_deref().and_then(url_host) {
+        if let Some(host) = self.app_url.as_deref().and_then(url_host) {
             hosts.push(host);
         }
         Some(hosts)
@@ -164,7 +164,7 @@ mod tests {
                 width:  1280,
                 height: 720,
             },
-            base:           None,
+            app_url:        None,
             allow_hosts:    None,
             block_hosts:    None,
             dialogs:        DialogPolicy::Dismiss,
@@ -210,7 +210,7 @@ mod tests {
                 width:  800,
                 height: 600,
             },
-            base:           Some("https://user:pw@shop.test:8443/path?q#f".to_owned()),
+            app_url:        Some("https://user:pw@shop.test:8443/path?q#f".to_owned()),
             allow_hosts:    Some(vec!["*.cdn.test".to_owned()]),
             block_hosts:    Some(vec!["*.analytics.test".to_owned()]),
             dialogs:        DialogPolicy::Accept,
@@ -280,9 +280,9 @@ mod tests {
     }
 
     #[test]
-    fn the_base_host_joins_the_allow_list_only_when_one_is_set() {
+    fn the_app_url_host_joins_the_allow_list_only_when_one_is_set() {
         let mut browser = options();
-        browser.base = Some("https://shop.test/".to_owned());
+        browser.app_url = Some("https://shop.test/".to_owned());
         let params =
             StartFlowParams::from_options(&browser, &Recording::default(), &Features::default());
         assert_eq!(params.allow_hosts, None);

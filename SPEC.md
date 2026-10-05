@@ -18,7 +18,7 @@ Whirl is a command-line tool that runs web UI tests written in plain text files.
 ```whirl
 # checkout.whirl — buy a widget as a signed-in user.
 [Options]
-base: https://shop.example.com
+app-url: https://shop.example.com
 viewport: 1280x800
 
 # Log in.
@@ -130,11 +130,11 @@ check-line    := ASSERT-line | JUDGE-line | CAPTURE-line
 
 ## 5. Options
 
-The `[Options]` section holds `key: value` lines. White space must follow the colon, so `base:x` is a parse error. V1 keys:
+The `[Options]` section holds `key: value` lines. White space must follow the colon, so `app-url:x` is a parse error. V1 keys:
 
 | Key | Value | Default | Meaning |
 | --- | --- | --- | --- |
-| `base` | URL | none | Base URL for relative `VISIT` and `PAGE` |
+| `app-url` | URL | none | URL of the app under test; relative `VISIT` and `PAGE` resolve against it |
 | `browser` | `chromium` \| `firefox` \| `webkit` | `chromium` | Browser engine |
 | `viewport` | `WxH` | `1280x720` | Viewport size |
 | `step-timeout` | duration | `10s` | Default per-step timeout for actions, asserts, and captures |
@@ -153,11 +153,11 @@ The `[Options]` section holds `key: value` lines. White space must follow the co
 | `snapshot-pixel-threshold` | number from 0 to 1 | `0.2` | Color distance above which a pixel counts as different |
 | `browsersim-origin` | `build` \| `recorded` | `build` | The origin a page sees when BrowserSim replays a recording; inactive in ordinary runs |
 
-`allow-hosts` and `block-hosts` each take one or more host globs (`allow-hosts: example.com *.example.com`). Globs match the request's hostname only — scheme, port, and path are ignored — and `*.example.com` does not match the apex `example.com`; list both to cover both. With `allow-hosts`, the `base` host is always allowed, and Whirl aborts requests to any other host, including fetch/XHR, WebSockets, subresources, and independent `HTTP` requests. Without it, all hosts are allowed. `block-hosts` aborts the requests to the hosts it matches in the same way. An explicit block wins over an allowance, including the `base` host's:
+`allow-hosts` and `block-hosts` each take one or more host globs (`allow-hosts: example.com *.example.com`). Globs match the request's hostname only — scheme, port, and path are ignored — and `*.example.com` does not match the apex `example.com`; list both to cover both. With `allow-hosts`, the `app-url` host is always allowed, and Whirl aborts requests to any other host, including fetch/XHR, WebSockets, subresources, and independent `HTTP` requests. Without it, all hosts are allowed. `block-hosts` aborts the requests to the hosts it matches in the same way. An explicit block wins over an allowance, including the `app-url` host's:
 
 ```whirl
 [Options]
-base: http://localhost:3000
+app-url: http://localhost:3000
 block-hosts: analytics.example.com *.analytics.example.com
 ```
 
@@ -309,7 +309,7 @@ An action is a verb, an optional locator, and an optional value. Element-targeti
 
 | Syntax | Meaning |
 | --- | --- |
-| `VISIT url` | Navigate, and continue once the new document has parsed. A `url` starting with `/` resolves against `base`. |
+| `VISIT url` | Navigate, and continue once the new document has parsed. A `url` starting with `/` resolves against `app-url`. |
 | `RESPONSE name METHOD url` | Name the first matching HTTP request started in this entry and wait for its response headers. |
 | `HTTP METHOD url` | Send an independent HTTP request. Header and body lines can follow as defined in section 7.3. |
 | `MOCK METHOD url STATUS` | Serve a fixed response to matching browser requests until the file ends. Header and body lines can follow (section 7.5). |
@@ -478,7 +478,7 @@ ASSERT text:"Payment complete" visible
 
 `RESPONSE order POST /api/orders` names the response to the first request whose
 method and URL match. The request must start during the current entry and belong
-to the selected window or one of its frames. Relative URLs resolve against `base`
+to the selected window or one of its frames. Relative URLs resolve against `app-url`
 the same way as `VISIT`. HTTP and HTTPS URLs are matched exactly after URL
 normalization, including their query; fragments are ignored. Methods are literal
 uppercase names, such as `GET`, `POST`, or `PATCH`.
@@ -576,7 +576,7 @@ header names are rejected.
 `GET` and `HEAD` cannot have a body. `CONNECT`, `TRACE`, and `TRACK` are not
 supported. These requests fail the action without contacting the server.
 
-Relative paths resolve against `base`. Only HTTP and HTTPS URLs without embedded
+Relative paths resolve against `app-url`. Only HTTP and HTTPS URLs without embedded
 credentials are accepted. `allow-hosts` and `block-hosts` apply. Redirects and failed requests are
 never retried or followed automatically; assert a 3xx, 4xx, or 5xx like any other
 response. The step timeout covers receiving the entire response, with a 1 MiB
@@ -860,7 +860,7 @@ A mock matches a request when both of these hold:
 
 - The method is the same. Methods are literal uppercase names.
 - The URL matches the pattern. A URL that starts with `/` resolves against
-  `base`, as for `VISIT`. Whirl normalizes the pattern and the request URL as
+  `app-url`, as for `VISIT`. Whirl normalizes the pattern and the request URL as
   `RESPONSE` does (section 7.2) and ignores fragments. Every `*` in the pattern
   matches any run of characters, including none, `/`, and `?`. The rest
   matches exactly, so `/api/items` does not match `/api/items?page=2`, and
@@ -868,7 +868,7 @@ A mock matches a request when both of these hold:
 
 A mock lasts until the file ends. It applies to every window and frame of the
 flow, and to the page document that `VISIT` loads. A later `MOCK` with the same
-method and the same URL, after interpolation and resolution against `base`,
+method and the same URL, after interpolation and resolution against `app-url`,
 replaces the earlier one.
 When mocks with different patterns match one request, the one registered last
 serves it. There is no way to remove a mock. `setup` does not carry mocks to a
@@ -1664,7 +1664,7 @@ still launches no browser.
   even when the values agree.
 - The removed `--base`, `--step-timeout`, `--entry-timeout`, and
   `--user-agent` flags are usage errors that name their `-O` form, such as
-  `-O base=URL`.
+  `-O app-url=URL`.
 - A path from `-O storage=` resolves against the working directory, and it
   cannot be combined with `--load-state`.
 
@@ -1892,7 +1892,7 @@ option_line = { ws* ~ (host_list | snapshot_setting | option) ~ eol }
 option      = { option_key ~ ":" ~ ws+ ~ value }
 // `browsersim-origin` comes before `browser`, which is its prefix.
 option_key  = {
-    "base" | "browsersim-origin" | "browser" | "viewport" | "step-timeout"
+    "app-url" | "browsersim-origin" | "browser" | "viewport" | "step-timeout"
   | "entry-timeout" | "nav-timeout" | "dialogs" | "reduced-motion" | "storage"
   | "user-agent" | "setup" | "model"
 }

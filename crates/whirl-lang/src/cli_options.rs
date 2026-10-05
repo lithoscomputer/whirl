@@ -317,7 +317,7 @@ mod tests {
             error(&["browser=netscape"]).starts_with("-O browser=netscape: invalid option value")
         );
         assert!(error(&["step-timeout=soon"]).contains("a duration"));
-        assert_eq!(error(&["base="]), "-O base=: expected a value");
+        assert_eq!(error(&["app-url="]), "-O app-url=: expected a value");
         assert!(error(&["setup=login.whirl"]).starts_with("-O setup:"));
     }
 

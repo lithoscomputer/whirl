@@ -83,14 +83,15 @@ impl SiteServer {
         Self { port }
     }
 
-    /// The site's base URL under the IPv4 loopback hostname.
-    fn base(&self) -> String {
+    /// The site's URL under the IPv4 loopback hostname: the `app-url` of
+    /// its flows.
+    fn app_url(&self) -> String {
         format!("http://127.0.0.1:{}", self.port)
     }
 
-    /// The `-O` value that sets `base` to [`SiteServer::base`].
-    fn base_option(&self) -> String {
-        format!("base={}", self.base())
+    /// The `-O` value that sets `app-url` to [`SiteServer::app_url`].
+    fn app_url_option(&self) -> String {
+        format!("app-url={}", self.app_url())
     }
 }
 
@@ -343,12 +344,12 @@ fn user_agent_aliases_set_headers_and_navigator_without_changing_browser_or_view
         dir.file(
             "agent.whirl",
             &format!(
-                "[Options]\nbase: {}\nviewport: 960x540\nuser-agent: {value}\n\
+                "[Options]\napp-url: {}\nviewport: 960x540\nuser-agent: {value}\n\
                  VISIT /user-agent\n\
                  CAPTURE header: css:body text\n\
                  CAPTURE navigator: eval \"navigator.userAgent\"\n\
                  CAPTURE viewport: eval \"innerWidth + 'x' + innerHeight\"\n",
-                server.base(),
+                server.app_url(),
             ),
         );
         let mut args = vec!["--report-json", "report.json", "--var", "agent=firefox"];
@@ -396,7 +397,7 @@ fn user_agent_runtime_metadata_masks_environment_values() {
         &dir,
         &[
             "-O",
-            &server.base_option(),
+            &server.app_url_option(),
             "--report-json",
             "report.json",
             "agent.whirl",
@@ -425,7 +426,7 @@ fn platform_tag() -> &'static str {
 }
 
 /// The happy-path flow body; the `[Options]` header with the site's
-/// base URL is prepended per run.
+/// `app-url` is prepended per run.
 const HAPPY_FLOW_BODY: &str = r##"# Fill the form.
 VISIT /form.html
 FILL "Email" alice@example.com
@@ -478,8 +479,8 @@ fn a_full_flow_passes_against_the_site() {
     dir.file(
         "happy.whirl",
         &format!(
-            "[Options]\nbase: {base}\n\n{HAPPY_FLOW_BODY}",
-            base = server.base()
+            "[Options]\napp-url: {app_url}\n\n{HAPPY_FLOW_BODY}",
+            app_url = server.app_url()
         ),
     );
     let output = run_whirl(&dir, &["happy.whirl"]);
@@ -511,7 +512,7 @@ fn check_and_uncheck_handle_hidden_inputs_and_role_switches() {
          UNCHECK switch:\"Dark mode\"\n\
          ASSERT switch:\"Dark mode\" unchecked\n",
     );
-    let output = run_whirl(&dir, &["-O", &server.base_option(), "switch.whirl"]);
+    let output = run_whirl(&dir, &["-O", &server.app_url_option(), "switch.whirl"]);
     let stdout = stdout_text(&output);
     assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
 }
@@ -521,7 +522,7 @@ fn check_on_a_display_none_input_fails_with_a_focus_message() {
     let server = SiteServer::start();
     let dir = TestDir::new();
     dir.file("gone.whirl", "VISIT /form.html\nCHECK \"Gone\"\n");
-    let output = run_whirl(&dir, &["-O", &server.base_option(), "gone.whirl"]);
+    let output = run_whirl(&dir, &["-O", &server.app_url_option(), "gone.whirl"]);
     let stdout = stdout_text(&output);
     assert_eq!(exit_code(&output), 1, "stdout:\n{stdout}");
     assert!(stdout.contains("cannot take focus"), "stdout:\n{stdout}");
@@ -544,7 +545,7 @@ fn store_session_and_cookie_reach_the_page_after_the_next_visit() {
          ASSERT css:\"#session-flag\" text == \"from session\"\n\
          ASSERT css:\"#cookie-flag\" text == v1\n",
     );
-    let output = run_whirl(&dir, &["-O", &server.base_option(), "store.whirl"]);
+    let output = run_whirl(&dir, &["-O", &server.app_url_option(), "store.whirl"]);
     let stdout = stdout_text(&output);
     assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
 }
@@ -558,9 +559,9 @@ fn visit_completes_at_domcontentloaded_while_a_subresource_stalls_load() {
     dir.file(
         "slow.whirl",
         &format!(
-            "[Options]\nbase: {base}\nnav-timeout: 3s\n\n\
+            "[Options]\napp-url: {app_url}\nnav-timeout: 3s\n\n\
              VISIT /slow-load.html\nASSERT heading:\"Parsed\" visible\n",
-            base = server.base()
+            app_url = server.app_url()
         ),
     );
     let output = run_whirl(&dir, &["slow.whirl"]);
@@ -578,7 +579,7 @@ fn asserts_retry_until_delayed_text_appears() {
         "waits.whirl",
         "VISIT /form.html\nASSERT css:\"#late\" text == ready\n",
     );
-    let output = run_whirl(&dir, &["-O", &server.base_option(), "waits.whirl"]);
+    let output = run_whirl(&dir, &["-O", &server.app_url_option(), "waits.whirl"]);
     let stdout = stdout_text(&output);
     assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
 }
@@ -597,7 +598,7 @@ fn store_local_is_visible_to_the_page_after_the_next_visit() {
          VISIT /form.html\n\
          ASSERT css:\"#stored-flag\" text == \"seen it\"\n",
     );
-    let output = run_whirl(&dir, &["-O", &server.base_option(), "store.whirl"]);
+    let output = run_whirl(&dir, &["-O", &server.app_url_option(), "store.whirl"]);
     let stdout = stdout_text(&output);
     assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
 }
@@ -614,7 +615,7 @@ fn a_wrong_assert_times_out_with_expected_and_actual() {
     );
     let output = run_whirl(&dir, &[
         "-O",
-        &server.base_option(),
+        &server.app_url_option(),
         "-O",
         "step-timeout=900ms",
         "wrong.whirl",
@@ -655,7 +656,7 @@ ASSERT css:"#dbl" text == dblclicked
 ASSERT css:"#upload-name" text == avatar.txt
 "##,
     );
-    let output = run_whirl(&dir, &["-O", &server.base_option(), "controls.whirl"]);
+    let output = run_whirl(&dir, &["-O", &server.app_url_option(), "controls.whirl"]);
     let stdout = stdout_text(&output);
     assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
 }
@@ -686,7 +687,7 @@ ASSERT css:"#counter" attr:data-button == 2
     for engine in engines() {
         let output = run_whirl(&dir, &[
             "-O",
-            &server.base_option(),
+            &server.app_url_option(),
             "--browser",
             engine,
             "buttons.whirl",
@@ -723,7 +724,7 @@ ASSERT testid:native-done >> text:to visible
     for engine in engines() {
         let output = run_whirl(&dir, &[
             "-O",
-            &server.base_option(),
+            &server.app_url_option(),
             "--browser",
             engine,
             "boards.whirl",
@@ -751,7 +752,7 @@ ASSERT frame:"#board" >> testid:frame-done >> text:"Outside card" visible
     for engine in engines() {
         let output = run_whirl(&dir, &[
             "-O",
-            &server.base_option(),
+            &server.app_url_option(),
             "--browser",
             engine,
             "frames.whirl",
@@ -769,7 +770,7 @@ fn an_ambiguous_drop_target_fails_with_its_candidates() {
         "ambiguous.whirl",
         "VISIT /drag.html\nDRAG \"Write spec\" to css:.column\n",
     );
-    let output = run_whirl(&dir, &["-O", &server.base_option(), "ambiguous.whirl"]);
+    let output = run_whirl(&dir, &["-O", &server.app_url_option(), "ambiguous.whirl"]);
     let stdout = stdout_text(&output);
     assert_eq!(exit_code(&output), 1, "stdout:\n{stdout}");
     assert!(stdout.contains("strictness"), "stdout:\n{stdout}");
@@ -841,7 +842,7 @@ ASSERT eval "window.scrollY" == 0
     for engine in engines() {
         let output = run_whirl(&dir, &[
             "-O",
-            &server.base_option(),
+            &server.app_url_option(),
             "--browser",
             engine,
             "scroll.whirl",
@@ -882,7 +883,7 @@ ASSERT frame:"#remote" >> css:"#dropped li" text == "report.csv, 18 bytes, text/
     for engine in engines() {
         let output = run_whirl(&dir, &[
             "-O",
-            &server.base_option(),
+            &server.app_url_option(),
             "--browser",
             engine,
             "drop.whirl",
@@ -906,7 +907,7 @@ fn a_drop_zone_that_rejects_the_drop_fails_the_step() {
     for engine in engines() {
         let output = run_whirl(&dir, &[
             "-O",
-            &server.base_option(),
+            &server.app_url_option(),
             "--browser",
             engine,
             "closed.whirl",
@@ -939,7 +940,7 @@ fn a_drop_of_a_missing_file_fails_with_its_path() {
     for engine in engines() {
         let output = run_whirl(&dir, &[
             "-O",
-            &server.base_option(),
+            &server.app_url_option(),
             "--browser",
             engine,
             "missing.whirl",
@@ -968,7 +969,7 @@ fn an_ambiguous_drop_zone_fails_with_its_candidates() {
     for engine in engines() {
         let output = run_whirl(&dir, &[
             "-O",
-            &server.base_option(),
+            &server.app_url_option(),
             "--browser",
             engine,
             "ambiguous.whirl",
@@ -1004,7 +1005,7 @@ fn a_middle_click_on_a_link_follows_each_engines_own_rule() {
         );
         let output = run_whirl(&dir, &[
             "-O",
-            &server.base_option(),
+            &server.app_url_option(),
             "--browser",
             engine,
             "middle.whirl",
@@ -1031,7 +1032,7 @@ fn an_ambiguous_locator_fails_with_the_candidate_list() {
     // Two buttons carry the exact text "Dup": strict mode fails
     // immediately and lists the candidates (SPEC 6.2).
     dir.file("dup.whirl", "VISIT /form.html\nCLICK \"Dup\"\n");
-    let output = run_whirl(&dir, &["-O", &server.base_option(), "dup.whirl"]);
+    let output = run_whirl(&dir, &["-O", &server.app_url_option(), "dup.whirl"]);
     let stdout = stdout_text(&output);
     assert_eq!(exit_code(&output), 1, "stdout:\n{stdout}");
     assert!(stdout.contains("dup.whirl FAILED"), "stdout:\n{stdout}");
@@ -1048,9 +1049,9 @@ fn allow_hosts_blocks_a_cross_host_fetch_and_reports_the_host() {
     dir.file(
         "cross.whirl",
         &format!(
-            "[Options]\nbase: {base}\nallow-hosts: 127.0.0.1\n\n\
+            "[Options]\napp-url: {app_url}\nallow-hosts: 127.0.0.1\n\n\
              VISIT /cross.html\nASSERT css:\"#fetch-result\" text == blocked\n",
-            base = server.base()
+            app_url = server.app_url()
         ),
     );
     let output = run_whirl(&dir, &[
@@ -1092,8 +1093,8 @@ fn allow_hosts_blocks_a_server_side_redirect_to_a_cross_host_target() {
     dir.file(
         "redir.whirl",
         &format!(
-            "[Options]\nbase: {base}\nallow-hosts: 127.0.0.1\n\nVISIT /redirect-cross\n",
-            base = server.base()
+            "[Options]\napp-url: {app_url}\nallow-hosts: 127.0.0.1\n\nVISIT /redirect-cross\n",
+            app_url = server.app_url()
         ),
     );
     let output = run_whirl(&dir, &["--report-json", "report.json", "redir.whirl"]);
@@ -1136,11 +1137,11 @@ fn blocked_host_rules(report: &serde_json::Value, file: usize) -> Vec<String> {
 fn block_hosts_blocks_its_matches_and_wins_over_allow_hosts() {
     let server = SiteServer::start();
     let dir = TestDir::new();
-    let base = server.base();
+    let app_url = server.app_url();
     // cross.html fetches from localhost; the page itself is on 127.0.0.1.
     let flow = |options: &str, expected: &str| {
         format!(
-            "[Options]\nbase: {base}\n{options}\n\n\
+            "[Options]\napp-url: {app_url}\n{options}\n\n\
              VISIT /cross.html\nASSERT css:\"#fetch-result\" text == {expected}\n"
         )
     };
@@ -1183,23 +1184,23 @@ fn block_hosts_blocks_its_matches_and_wins_over_allow_hosts() {
         "stdout:\n{stdout}"
     );
 
-    // A block wins over the base host's implicit allowance too: the page
+    // A block wins over the app-url host's implicit allowance too: the page
     // itself cannot load, and neither can an HTTP entry to its host.
     dir.file(
-        "base.whirl",
-        &format!("[Options]\nbase: {base}\nallow-hosts: localhost\nblock-hosts: 127.0.0.1\n\nVISIT /cross.html\n"),
+        "app-url.whirl",
+        &format!("[Options]\napp-url: {app_url}\nallow-hosts: localhost\nblock-hosts: 127.0.0.1\n\nVISIT /cross.html\n"),
     );
     dir.file(
         "http.whirl",
         &format!(
-            "[Options]\nbase: {base}\nblock-hosts: 127.0.0.1\n\n\
+            "[Options]\napp-url: {app_url}\nblock-hosts: 127.0.0.1\n\n\
              HTTP GET /ping.txt\nASSERT status == 200\n"
         ),
     );
     let output = run_whirl(&dir, &[
         "--report-json",
         "blocked.json",
-        "base.whirl",
+        "app-url.whirl",
         "http.whirl",
     ]);
     let stdout = stdout_text(&output);
@@ -1228,10 +1229,10 @@ fn browsersim_settings_are_inactive_and_settings_mask_secrets() {
     dir.file(
         "flow.whirl",
         &format!(
-            "[Options]\nbase: {base}\nbrowsersim-origin: recorded\n\
+            "[Options]\napp-url: {app_url}\nbrowsersim-origin: recorded\n\
              user-agent: {{{{env.WHIRL_TEST_AGENT}}}}\n\n\
              VISIT /cross.html\nASSERT eval \"navigator.userAgent\" == {{{{env.WHIRL_TEST_AGENT}}}}\n",
-            base = server.base()
+            app_url = server.app_url()
         ),
     );
     let output = run_whirl_env(
@@ -1292,16 +1293,16 @@ fn command_line_options_apply_to_every_flow_and_replace_or_clear_lists() {
     // check the user agent that `--var ua` names.
     let body = "VISIT /cross.html\nASSERT css:\"#fetch-result\" text != waiting\n\
                 ASSERT eval \"navigator.userAgent\" == {{ua}}\n";
-    let base = server.base();
+    let app_url = server.app_url();
     dir.file(
         "first.whirl",
         &format!(
-            "[Options]\nbase: {base}\nallow-hosts: localhost\nuser-agent: from-file\n\n{body}"
+            "[Options]\napp-url: {app_url}\nallow-hosts: localhost\nuser-agent: from-file\n\n{body}"
         ),
     );
     dir.file(
         "second.whirl",
-        &format!("[Options]\nbase: {base}\nallow-hosts: example.invalid\n\n{body}"),
+        &format!("[Options]\napp-url: {app_url}\nallow-hosts: example.invalid\n\n{body}"),
     );
     let blocked = |report: &serde_json::Value| -> Vec<Vec<String>> {
         let files = report["files"].as_array().expect("files is an array");
@@ -1372,7 +1373,7 @@ fn cross_host_requests_pass_without_allow_hosts() {
         "open.whirl",
         "VISIT /cross.html\nASSERT css:\"#fetch-result\" text == fetched\n",
     );
-    let output = run_whirl(&dir, &["-O", &server.base_option(), "open.whirl"]);
+    let output = run_whirl(&dir, &["-O", &server.app_url_option(), "open.whirl"]);
     let stdout = stdout_text(&output);
     assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
 }
@@ -1393,15 +1394,15 @@ ASSERT css:"#dialog-result" text == dismissed
     dir.file(
         "accept.whirl",
         &format!(
-            "[Options]\nbase: {base}\ndialogs: accept\n\n\
+            "[Options]\napp-url: {app_url}\ndialogs: accept\n\n\
              VISIT /form.html\nCLICK \"Confirm thing\"\n\
              ASSERT css:\"#dialog-result\" text == accepted\n",
-            base = server.base()
+            app_url = server.app_url()
         ),
     );
     let output = run_whirl(&dir, &[
         "-O",
-        &server.base_option(),
+        &server.app_url_option(),
         "dismiss.whirl",
         "accept.whirl",
     ]);
@@ -1429,7 +1430,7 @@ ASSERT css:"#status" text == "logged in"
     );
     let output = run_whirl(&dir, &[
         "-O",
-        &server.base_option(),
+        &server.app_url_option(),
         "--save-state",
         state_arg,
         "login.whirl",
@@ -1444,9 +1445,9 @@ ASSERT css:"#status" text == "logged in"
     dir.file(
         "reuse.whirl",
         &format!(
-            "[Options]\nbase: {base}\nstorage: nested/state.json\n\n\
+            "[Options]\napp-url: {app_url}\nstorage: nested/state.json\n\n\
              VISIT /login.html\nASSERT css:\"#status\" text == \"already logged in\"\n",
-            base = server.base()
+            app_url = server.app_url()
         ),
     );
     let output = run_whirl(&dir, &["reuse.whirl"]);
@@ -1457,9 +1458,9 @@ ASSERT css:"#status" text == "logged in"
     dir.file(
         "loaded.whirl",
         &format!(
-            "[Options]\nbase: {base}\n\n\
+            "[Options]\napp-url: {app_url}\n\n\
              VISIT /login.html\nASSERT css:\"#status\" text == \"already logged in\"\n",
-            base = server.base()
+            app_url = server.app_url()
         ),
     );
     let output = run_whirl(&dir, &["--load-state", state_arg, "loaded.whirl"]);
@@ -1479,24 +1480,24 @@ fn a_setup_flow_runs_once_and_hands_state_and_captures_to_its_dependents() {
     dir.file(
         "login.whirl",
         &format!(
-            "[Options]\nbase: {base}\n\n\
+            "[Options]\napp-url: {app_url}\n\n\
              VISIT /login.html\nCLICK \"Log in\"\n\
              ASSERT css:\"#status\" text == \"logged in\"\n\
              CAPTURE token: css:\"#token\" text\n",
-            base = server.base()
+            app_url = server.app_url()
         ),
     );
     for name in ["a", "b"] {
         dir.file(
             &format!("{name}.whirl"),
             &format!(
-                "[Options]\nbase: {base}\nsetup: login.whirl\n\n\
+                "[Options]\napp-url: {app_url}\nsetup: login.whirl\n\n\
                  VISIT /login.html\n\
                  EVAL \"document.title = 'token={{{{setup.token}}}}'\"\n\
                  ASSERT css:\"#status\" text == \"already logged in\"\n\
                  ASSERT css:\"#logins\" text == 1\n\
                  ASSERT title == token=t123\n",
-                base = server.base()
+                app_url = server.app_url()
             ),
         );
     }
@@ -1565,17 +1566,17 @@ fn a_failing_setup_flow_fails_its_dependents_without_running_them() {
     dir.file(
         "bad-login.whirl",
         &format!(
-            "[Options]\nbase: {base}\nstep-timeout: 500ms\n\n\
+            "[Options]\napp-url: {app_url}\nstep-timeout: 500ms\n\n\
              VISIT /login.html\nASSERT css:\"#status\" text == \"never\"\n",
-            base = server.base()
+            app_url = server.app_url()
         ),
     );
     dir.file(
         "dependent.whirl",
         &format!(
-            "[Options]\nbase: {base}\nsetup: bad-login.whirl\n\n\
+            "[Options]\napp-url: {app_url}\nsetup: bad-login.whirl\n\n\
              VISIT /login.html\nASSERT css:\"#status\" text == \"already logged in\"\n",
-            base = server.base()
+            app_url = server.app_url()
         ),
     );
     let output = run_whirl(&dir, &["--report-json", "report.json", "dependent.whirl"]);
@@ -1630,7 +1631,7 @@ fn update_snapshots_writes_a_baseline_that_a_second_run_matches() {
     // keyed by browser and platform.
     let output = run_whirl(&dir, &[
         "-O",
-        &server.base_option(),
+        &server.app_url_option(),
         "--update-snapshots",
         "snap.whirl",
     ]);
@@ -1639,7 +1640,7 @@ fn update_snapshots_writes_a_baseline_that_a_second_run_matches() {
     assert!(baseline.is_file(), "baseline should exist at {baseline:?}");
 
     // A second run compares against the baseline and passes.
-    let output = run_whirl(&dir, &["-O", &server.base_option(), "snap.whirl"]);
+    let output = run_whirl(&dir, &["-O", &server.app_url_option(), "snap.whirl"]);
     let stdout = stdout_text(&output);
     assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
 }
@@ -1653,7 +1654,7 @@ fn a_snapshot_mismatch_fails_and_writes_actual_and_diff() {
     // Write the baseline from the stable page.
     let output = run_whirl(&dir, &[
         "-O",
-        &server.base_option(),
+        &server.app_url_option(),
         "--update-snapshots",
         "snap.whirl",
     ]);
@@ -1668,7 +1669,7 @@ fn a_snapshot_mismatch_fails_and_writes_actual_and_diff() {
     );
     let output = run_whirl(&dir, &[
         "-O",
-        &server.base_option(),
+        &server.app_url_option(),
         "-O",
         "step-timeout=1s",
         "snap.whirl",
@@ -1694,7 +1695,7 @@ fn a_snapshot_without_a_baseline_is_a_runtime_error() {
     // A snapshot with no baseline is a runtime error without
     // --update-snapshots.
     dir.file("fresh.whirl", "VISIT /stable.html\nSNAPSHOT fresh\n");
-    let output = run_whirl(&dir, &["-O", &server.base_option(), "fresh.whirl"]);
+    let output = run_whirl(&dir, &["-O", &server.app_url_option(), "fresh.whirl"]);
     let stdout = stdout_text(&output);
     assert_eq!(exit_code(&output), 3, "stdout:\n{stdout}");
 }
@@ -1712,7 +1713,7 @@ fn trace_video_and_har_artifacts_follow_their_flags() {
     );
     let output = run_whirl(&dir, &[
         "-O",
-        &server.base_option(),
+        &server.app_url_option(),
         "--trace",
         "fail.whirl",
     ]);
@@ -1731,7 +1732,7 @@ fn trace_video_and_har_artifacts_follow_their_flags() {
     );
     let output = run_whirl(&dir, &[
         "-O",
-        &server.base_option(),
+        &server.app_url_option(),
         "--trace",
         "--video",
         "--har",
@@ -1763,12 +1764,12 @@ fn the_viewport_option_sizes_the_page() {
     dir.file(
         "viewport.whirl",
         &format!(
-            "[Options]\nbase: {base}\nviewport: 777x444\n\n\
+            "[Options]\napp-url: {app_url}\nviewport: 777x444\n\n\
              VISIT /second.html\n\
              EVAL \"document.title = window.innerWidth + 'x' + window.innerHeight\"\n\
              ASSERT title == 777x444\n\
              CAPTURE width: eval \"window.innerWidth\"\n",
-            base = server.base()
+            app_url = server.app_url()
         ),
     );
     let output = run_whirl(&dir, &["--report-json", "report.json", "viewport.whirl"]);
@@ -1803,7 +1804,7 @@ fn fail_fast_stops_scheduling_after_the_first_failure() {
     // files are never scheduled and never appear in the report.
     let output = run_whirl(&dir, &[
         "-O",
-        &server.base_option(),
+        &server.app_url_option(),
         "--fail-fast",
         "--jobs",
         "1",
@@ -1831,8 +1832,8 @@ fn all_engines_run_the_site_flow_when_requested() {
         dir.file(
             "happy.whirl",
             &format!(
-                "[Options]\nbase: {base}\n\n{HAPPY_FLOW_BODY}",
-                base = server.base()
+                "[Options]\napp-url: {app_url}\n\n{HAPPY_FLOW_BODY}",
+                app_url = server.app_url()
             ),
         );
         let output = run_whirl(&dir, &["--browser", engine, "happy.whirl"]);
@@ -1853,7 +1854,7 @@ fn frame_locators_fill_assert_and_capture_across_origins_and_nested_frames() {
         "frames.whirl",
         &format!(
             r##"[Options]
-base: {}
+app-url: {}
 VISIT /frames.html
 FILL css:"#payments" >> frame:iframe >> label:Email alice@example.com
 TYPE frame:"#payment" >> label:Code 4242
@@ -1867,7 +1868,7 @@ CAPTURE email: frame:"#payment" >> label:Email value
 FILL frame:iframe >> nth:0 >> label:Email {{{{email}}}}
 ASSERT frame:iframe >> nth:0 >> label:Email value == alice@example.com
 "##,
-            site.base()
+            site.app_url()
         ),
     );
     let output = run_whirl(&dir, &["frames.whirl"]);
@@ -1882,13 +1883,13 @@ fn frame_locators_wait_for_a_frame_created_after_the_action() {
         "delayed.whirl",
         &format!(
             r##"[Options]
-base: {}
+app-url: {}
 VISIT /frames.html
 CLICK button:"Load frame"
 FILL frame:"#delayed" >> label:Email late@example.com
 ASSERT frame:"#delayed" >> label:Email value == late@example.com
 "##,
-            site.base()
+            site.app_url()
         ),
     );
     let output = run_whirl(&dir, &["delayed.whirl"]);
@@ -1903,11 +1904,11 @@ fn frame_locators_reject_multiple_matching_frames() {
         "ambiguous.whirl",
         &format!(
             r"[Options]
-base: {}
+app-url: {}
 VISIT /frames.html
 FILL frame:iframe >> label:Email wrong@example.com @1s
 ",
-            site.base()
+            site.app_url()
         ),
     );
     let output = run_whirl(&dir, &["ambiguous.whirl"]);
@@ -1927,7 +1928,7 @@ fn popups_are_named_without_switching_and_return_after_self_closure() {
         "popup.whirl",
         &format!(
             r#"[Options]
-base: {}
+app-url: {}
 VISIT /popups.html
 CLICK button:"Pay with provider"
 POPUP payment
@@ -1945,7 +1946,7 @@ ASSERT text:"Payment complete" visible
 FILL label:Customer {{{{name}}}}
 ASSERT label:Customer value == Alice
 "#,
-            site.base()
+            site.app_url()
         ),
     );
     let output = run_whirl(&dir, &["--trace", "popup.whirl"]);
@@ -1960,7 +1961,7 @@ fn popup_closure_before_click_delivery_fails_the_action() {
         "early-close.whirl",
         &format!(
             r#"[Options]
-base: {}
+app-url: {}
 VISIT /popups.html
 CLICK button:"Pay with provider"
 POPUP payment
@@ -1968,7 +1969,7 @@ WINDOW payment
 EVAL "setTimeout(() => window.close(), 50)"
 CLICK button:Unavailable
 "#,
-            site.base()
+            site.app_url()
         ),
     );
     let output = run_whirl(&dir, &["early-close.whirl"]);
@@ -1993,7 +1994,7 @@ fn named_tabs_support_nested_popups_and_explicit_close() {
         "nested.whirl",
         &format!(
             r#"[Options]
-base: {}
+app-url: {}
 VISIT /popups.html
 CLICK button:"Pay with provider"
 POPUP payment
@@ -2009,7 +2010,7 @@ CLOSE payment
 WINDOW main
 ASSERT heading:Checkout visible
 "#,
-            site.base()
+            site.app_url()
         ),
     );
     let output = run_whirl(&dir, &["nested.whirl"]);
@@ -2024,13 +2025,13 @@ fn a_popup_from_an_earlier_entry_does_not_satisfy_popup() {
         "stale.whirl",
         &format!(
             r#"[Options]
-base: {}
+app-url: {}
 VISIT /popups.html
 CLICK button:"Pay with provider"
 ASSERT text:"Provider ready" visible
 POPUP stale @300ms
 "#,
-            site.base()
+            site.app_url()
         ),
     );
     let output = run_whirl(&dir, &["stale.whirl"]);
@@ -2050,14 +2051,14 @@ fn selecting_a_closed_tab_fails_without_switching_implicitly() {
         "closed.whirl",
         &format!(
             r#"[Options]
-base: {}
+app-url: {}
 VISIT /popups.html
 CLICK button:"Pay with provider"
 POPUP payment
 CLOSE payment
 WINDOW payment
 "#,
-            site.base()
+            site.app_url()
         ),
     );
     let output = run_whirl(&dir, &["closed.whirl"]);
@@ -2074,12 +2075,12 @@ fn multiple_unnamed_popups_fail_strictly() {
     let site = SiteServer::start();
     let dir = TestDir::new();
     dir.file("multiple.whirl", &format!(r#"[Options]
-base: {}
+app-url: {}
 VISIT /popups.html
 CLICK button:"Open two"
 EVAL "await new Promise(resolve => {{ const observer = new MutationObserver(() => {{ if (document.body.dataset.popups === '2') {{ observer.disconnect(); resolve(); }} }}); if (document.body.dataset.popups === '2') resolve(); else observer.observe(document.body, {{attributes: true}}); }})"
 POPUP payment @1s
-"#, site.base()));
+"#, site.app_url()));
     let output = run_whirl(&dir, &["multiple.whirl"]);
     assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
     assert!(
@@ -2097,7 +2098,7 @@ fn response_assertions_and_captures_observe_the_request_before_click_returns() {
         "response.whirl",
         &format!(
             r#"[Options]
-base: {}
+app-url: {}
 VISIT /network.html
 EVAL "await fetch('/api/orders')"
 CLICK button:"Place order"
@@ -2128,7 +2129,7 @@ VISIT /network.html?id={{{{order_id}}}}&item={{{{item_number}}}}
 PAGE /network.html?id=order-42&item=1
 ASSERT response:order json:$.status == paid
 "#,
-            site.base()
+            site.app_url()
         ),
     );
     let output = run_whirl(&dir, &["--report-json", "report.json", "response.whirl"]);
@@ -2145,14 +2146,14 @@ fn response_selection_does_not_replace_a_failed_request_with_a_successful_retry(
         "retry.whirl",
         &format!(
             r#"[Options]
-base: {}
+app-url: {}
 VISIT /network.html
 CLICK button:"Retry order"
 EVAL "await window.orderRequest"
 RESPONSE order POST /api/orders
 ASSERT response:order status == 201
 "#,
-            site.base()
+            site.app_url()
         ),
     );
     let output = run_whirl(&dir, &["retry.whirl"]);
@@ -2172,13 +2173,13 @@ fn response_selection_excludes_requests_from_previous_entries() {
         "stale-response.whirl",
         &format!(
             r#"[Options]
-base: {}
+app-url: {}
 VISIT /network.html
 CLICK button:"Place order"
 ASSERT text:"Order confirmed" visible
 RESPONSE stale POST /api/orders @300ms
 "#,
-            site.base()
+            site.app_url()
         ),
     );
     let output = run_whirl(&dir, &["stale-response.whirl"]);
@@ -2194,12 +2195,12 @@ RESPONSE stale POST /api/orders @300ms
 fn responses_from_cross_origin_frames_and_popup_navigation_are_observed() {
     let site = SiteServer::start();
     let dir = TestDir::new();
-    let cross = site.base().replace("127.0.0.1", "localhost");
+    let cross = site.app_url().replace("127.0.0.1", "localhost");
     dir.file(
         "contexts.whirl",
         &format!(
             r##"[Options]
-base: {}
+app-url: {}
 VISIT /network.html
 CLICK frame:"#checkout" >> button:"Place order"
 RESPONSE embedded POST {cross}/api/orders
@@ -2217,7 +2218,7 @@ ASSERT window:checkout closed
 ASSERT response:order json:$.status == paid
 WINDOW main
 "##,
-            site.base()
+            site.app_url()
         ),
     );
     let engines: &[&str] = if env::var_os("WHIRL_TEST_ALL_BROWSERS").is_some() {
@@ -2239,7 +2240,7 @@ fn response_selection_does_not_use_another_tabs_requests() {
         "wrong-tab.whirl",
         &format!(
             r#"[Options]
-base: {}
+app-url: {}
 VISIT /network.html
 CLICK button:"Place order"
 EVAL "await window.orderRequest"
@@ -2248,7 +2249,7 @@ POPUP checkout
 WINDOW checkout
 RESPONSE wrong POST /api/orders @300ms
 "#,
-            site.base()
+            site.app_url()
         ),
     );
     let output = run_whirl(&dir, &["wrong-tab.whirl"]);
@@ -2268,13 +2269,13 @@ fn missing_json_fields_do_not_pass_inequality_assertions() {
         "missing.whirl",
         &format!(
             r#"[Options]
-base: {}
+app-url: {}
 VISIT /network.html
 CLICK button:"Place order"
 RESPONSE order POST /api/orders
 ASSERT response:order json:$.missing != paid
 "#,
-            site.base()
+            site.app_url()
         ),
     );
     let output = run_whirl(&dir, &["missing.whirl"]);
@@ -2298,13 +2299,13 @@ fn absent_headers_and_malformed_json_fail_response_assertions() {
             "invalid-response.whirl",
             &format!(
                 r#"[Options]
-base: {}
+app-url: {}
 VISIT /network.html
 EVAL "await fetch('/api/malformed')"
 RESPONSE invalid GET /api/malformed
 ASSERT response:invalid {check}
 "#,
-                site.base()
+                site.app_url()
             ),
         );
         let output = run_whirl(&dir, &["invalid-response.whirl"]);
@@ -2325,13 +2326,13 @@ fn failed_network_requests_report_failure_instead_of_waiting_for_a_retry() {
         "failed-request.whirl",
         &format!(
             r#"[Options]
-base: {}
+app-url: {}
 allow-hosts: 127.0.0.1
 VISIT /network.html
 EVAL "void fetch('https://blocked.invalid/fail').catch(() => {{}})"
 RESPONSE rejected GET https://blocked.invalid/fail @2s
 "#,
-            site.base()
+            site.app_url()
         ),
     );
     let output = run_whirl(&dir, &["failed-request.whirl"]);
@@ -2351,12 +2352,12 @@ fn waiting_for_response_headers_obeys_the_step_timeout() {
         "slow-response.whirl",
         &format!(
             r#"[Options]
-base: {}
+app-url: {}
 VISIT /network.html
 EVAL "void fetch('/stall').catch(() => {{}})"
 RESPONSE stalled GET /stall @200ms
 "#,
-            site.base()
+            site.app_url()
         ),
     );
     let output = run_whirl(&dir, &["slow-response.whirl"]);
@@ -2395,7 +2396,7 @@ VISIT /network.html?authenticated={{authenticated}}
 PAGE /network.html?authenticated=true
 "#,
     );
-    let output = run_whirl(&dir, &["-O", &site.base_option(), "http.whirl"]);
+    let output = run_whirl(&dir, &["-O", &site.app_url_option(), "http.whirl"]);
     assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
 }
 
@@ -2415,7 +2416,7 @@ PAGE /network.html?authenticated=true
 "#,
     );
 
-    let output = run_whirl(&dir, &["-O", &site.base_option(), "setup.whirl"]);
+    let output = run_whirl(&dir, &["-O", &site.app_url_option(), "setup.whirl"]);
 
     assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
 }
@@ -2438,7 +2439,7 @@ ASSERT json:$.body == "first # literal\nsecond\\line"
 "#,
     );
 
-    let output = run_whirl(&dir, &["-O", &site.base_option(), "text.whirl"]);
+    let output = run_whirl(&dir, &["-O", &site.app_url_option(), "text.whirl"]);
 
     assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
 }
@@ -2451,7 +2452,7 @@ fn http_returns_redirects_without_following_them() {
         "redirect.whirl",
         "HTTP GET /redirect-cross\nASSERT status == 302\nASSERT header:location contains localhost\n",
     );
-    let output = run_whirl(&dir, &["-O", &site.base_option(), "redirect.whirl"]);
+    let output = run_whirl(&dir, &["-O", &site.app_url_option(), "redirect.whirl"]);
     assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
 }
 
@@ -2463,7 +2464,7 @@ fn http_enforces_host_allowlists_before_sending_a_request() {
         "blocked.whirl",
         "[Options]\nallow-hosts: 127.0.0.1\nHTTP GET https://blocked.invalid/\n",
     );
-    let output = run_whirl(&dir, &["-O", &site.base_option(), "blocked.whirl"]);
+    let output = run_whirl(&dir, &["-O", &site.app_url_option(), "blocked.whirl"]);
     assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
     assert!(
         stdout_text(&output).contains("HTTP host blocked.invalid is blocked"),
@@ -2477,7 +2478,7 @@ fn http_enforces_its_step_timeout() {
     let site = SiteServer::start();
     let dir = TestDir::new();
     dir.file("timeout.whirl", "HTTP GET /stall @200ms\n");
-    let output = run_whirl(&dir, &["-O", &site.base_option(), "timeout.whirl"]);
+    let output = run_whirl(&dir, &["-O", &site.app_url_option(), "timeout.whirl"]);
     assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
     assert!(
         stdout_text(&output).contains("timeout"),
@@ -2492,7 +2493,7 @@ fn http_limits_declared_and_streamed_response_bodies() {
     let dir = TestDir::new();
     for path in ["/api/large", "/api/large?chunked"] {
         dir.file("large.whirl", &format!("HTTP GET {path}\n"));
-        let output = run_whirl(&dir, &["-O", &site.base_option(), "large.whirl"]);
+        let output = run_whirl(&dir, &["-O", &site.app_url_option(), "large.whirl"]);
         assert_eq!(exit_code(&output), 1, "{path}: {}", stdout_text(&output));
         assert!(
             stdout_text(&output).contains("HTTP response exceeds the 1 MiB body limit"),
@@ -2511,7 +2512,7 @@ fn http_head_allows_a_large_content_length_without_a_response_body() {
         "HTTP HEAD /api/large\n\
          ASSERT status == 200\nASSERT header:content-length == 1048577\n",
     );
-    let output = run_whirl(&dir, &["-O", &site.base_option(), "head.whirl"]);
+    let output = run_whirl(&dir, &["-O", &site.app_url_option(), "head.whirl"]);
     assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
 }
 
@@ -2521,7 +2522,7 @@ fn http_rejects_non_http_urls_and_embedded_credentials() {
     let dir = TestDir::new();
     for url in ["data:text/plain,example", "http://user:password@127.0.0.1/"] {
         dir.file("url.whirl", &format!("HTTP GET {url}\n"));
-        let output = run_whirl(&dir, &["-O", &site.base_option(), "url.whirl"]);
+        let output = run_whirl(&dir, &["-O", &site.app_url_option(), "url.whirl"]);
         assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
         assert!(
             stdout_text(&output).contains("HTTP or HTTPS URL without embedded credentials"),
@@ -2553,7 +2554,7 @@ fn http_interpolates_headers_and_bodies_without_leaking_secrets() {
         &dir,
         &[
             "-O",
-            &site.base_option(),
+            &site.app_url_option(),
             "--var",
             "endpoint=/api/http-check",
             "--report-json",
@@ -2626,7 +2627,7 @@ fn html_report_is_portable_and_preserves_results_and_author_context() {
     }"#);
     let output = run_whirl(&dir, &[
         "-O",
-        &server.base_option(),
+        &server.app_url_option(),
         "--video",
         "--report-html",
         "report.html",
@@ -2730,7 +2731,7 @@ fn html_report_escapes_hostile_text_and_keeps_environment_values_masked() {
         &dir,
         &[
             "-O",
-            &server.base_option(),
+            &server.app_url_option(),
             "--report-html",
             "report.html",
             "--report-metadata",
@@ -2761,7 +2762,7 @@ fn html_output_errors_preserve_other_reports_and_do_not_replace_inputs() {
     dir.file("flow.whirl", flow);
     let conflict = run_whirl(&dir, &[
         "-O",
-        &server.base_option(),
+        &server.app_url_option(),
         "--report-html",
         "flow.whirl",
         "flow.whirl",
@@ -2781,7 +2782,7 @@ fn html_output_errors_preserve_other_reports_and_do_not_replace_inputs() {
     assert_eq!(exit_code(&collision), 4);
     let output = run_whirl(&dir, &[
         "-O",
-        &server.base_option(),
+        &server.app_url_option(),
         "--report-html",
         "missing/report.html",
         "--report-json",
@@ -2796,7 +2797,7 @@ fn html_output_errors_preserve_other_reports_and_do_not_replace_inputs() {
     dir.file("existing.html/keep", "untouched");
     let output = run_whirl(&dir, &[
         "-O",
-        &server.base_option(),
+        &server.app_url_option(),
         "--report-html",
         "existing.html",
         "flow.whirl",
@@ -2935,7 +2936,7 @@ fn html_metadata_matches_symlinked_flows_and_ignores_unselected_flows() {
     dir.file("metadata.json", r#"{"files":{"flow.whirl":{"title":"Canonical title"},"unused.whirl":{"title":"Must not appear"}}}"#);
     let output = run_whirl(&dir, &[
         "-O",
-        &server.base_option(),
+        &server.app_url_option(),
         "--report-html",
         "report.html",
         "--report-json",
@@ -2972,7 +2973,7 @@ fn html_report_does_not_replace_a_recorded_artifact() {
     dir.file("flow.whirl", "VISIT /stable.html\nSCREENSHOT image\n");
     let output = run_whirl(&dir, &[
         "-O",
-        &server.base_option(),
+        &server.app_url_option(),
         "--report-html",
         "artifacts/flow/image.png",
         "flow.whirl",
@@ -3014,7 +3015,7 @@ fn combined_report_keeps_embedded_media_and_missing_scenarios_offline() {
     for name in ["first", "second"] {
         let output = run_whirl(&dir, &[
             "-O",
-            &server.base_option(),
+            &server.app_url_option(),
             "--video",
             "--report-json",
             &format!("{name}.json"),
@@ -3165,7 +3166,7 @@ fn chromium_video_records_at_60_fps_by_default_and_at_the_requested_rate() {
     // the page.
     let output = run_whirl(&dir, &[
         "-O",
-        &server.base_option(),
+        &server.app_url_option(),
         "--video",
         "--trace",
         "--report-json",
@@ -3204,7 +3205,7 @@ fn chromium_video_records_at_60_fps_by_default_and_at_the_requested_rate() {
     // An explicit rate.
     let output = run_whirl(&dir, &[
         "-O",
-        &server.base_option(),
+        &server.app_url_option(),
         "--video",
         "--video-fps",
         "30",
@@ -3247,7 +3248,7 @@ fn a_cancelled_flow_with_video_leaves_no_recorder_behind() {
     );
     let output = run_whirl(&dir, &[
         "-O",
-        &server.base_option(),
+        &server.app_url_option(),
         "--video",
         "hang.whirl",
     ]);
@@ -3287,7 +3288,7 @@ fn short_video_flows_on_still_pages_pass_with_a_recording() {
     // One job runs every flow in one warm browser.
     let output = run_whirl(&dir, &[
         "-O",
-        &server.base_option(),
+        &server.app_url_option(),
         "--video",
         "--jobs",
         "1",
@@ -3438,7 +3439,7 @@ fn an_explicit_video_fps_on_firefox_warns_and_records_at_the_engine_rate() {
     dir.file("firefox.whirl", ANIMATED_FLOW);
     let output = run_whirl(&dir, &[
         "-O",
-        &server.base_option(),
+        &server.app_url_option(),
         "--browser",
         "firefox",
         "--video",
@@ -3494,7 +3495,7 @@ VISIT /checks.html?order={{order}}&rows={{rows}}
 PAGE /checks.html?order=A42&rows=3
 "#,
     );
-    let output = run_whirl(&dir, &["-O", &site.base_option(), "checks.whirl"]);
+    let output = run_whirl(&dir, &["-O", &site.app_url_option(), "checks.whirl"]);
     assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
 }
 
@@ -3517,7 +3518,7 @@ fn check_failures_report_their_codes() {
         );
         let output = run_whirl(&dir, &[
             "-O",
-            &site.base_option(),
+            &site.app_url_option(),
             "-O",
             "step-timeout=600ms",
             "--report-json",
@@ -3570,7 +3571,7 @@ PAGE /checks.html?id=1234567890123456789
     );
     let output = run_whirl(&dir, &[
         "-O",
-        &site.base_option(),
+        &site.app_url_option(),
         "--report-json",
         "report.json",
         "http.whirl",
@@ -3613,7 +3614,7 @@ ASSERT testid:current attr:href xpath:"count(//a)" == 0
     );
     let output = run_whirl(&dir, &[
         "-O",
-        &site.base_option(),
+        &site.app_url_option(),
         "--var",
         "last=Three",
         "--report-json",
@@ -3651,7 +3652,7 @@ ASSERT response:latin bytes toHex == 636166e9
 ASSERT response:latin body == café
 "#,
     );
-    let output = run_whirl(&dir, &["-O", &site.base_option(), "latin.whirl"]);
+    let output = run_whirl(&dir, &["-O", &site.app_url_option(), "latin.whirl"]);
     assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
 }
 
@@ -3675,7 +3676,7 @@ fn xpath_failures_report_their_codes() {
         );
         let output = run_whirl(&dir, &[
             "-O",
-            &site.base_option(),
+            &site.app_url_option(),
             "--report-json",
             "report.json",
             "fail.whirl",
@@ -3723,7 +3724,7 @@ ASSERT json:$.body == "{\"count\": 2, \"zip\": \"007\", \"id\": 1234567890123456
     );
     let output = run_whirl(&dir, &[
         "-O",
-        &site.base_option(),
+        &site.app_url_option(),
         "--var",
         "count=2",
         "--var",
@@ -3771,7 +3772,7 @@ fn snapshot_count_percent_threshold_and_dimension_boundaries() {
     );
     let output = run_whirl(&dir, &[
         "-O",
-        &server.base_option(),
+        &server.app_url_option(),
         "--update-snapshots",
         "snap.whirl",
     ]);
@@ -3791,7 +3792,7 @@ fn snapshot_count_percent_threshold_and_dimension_boundaries() {
         dir.file("snap.whirl", &format!("[Options]\nviewport: 100x100\nsnapshot-max-diff: 100%\nsnapshot-pixel-threshold: 1\nVISIT /snapshot.html?{query}\nSNAPSHOT pixels @1s\nsnapshot-max-diff: {limit}\nsnapshot-pixel-threshold: {threshold}\n"));
         let output = run_whirl(&dir, &[
             "-O",
-            &server.base_option(),
+            &server.app_url_option(),
             "--report-json",
             "report.json",
             "--report-html",
@@ -3841,7 +3842,7 @@ fn snapshot_masks_replace_clear_and_cover_every_capture() {
     dir.file("mask.whirl", &source("", ""));
     let output = run_whirl(&dir, &[
         "-O",
-        &server.base_option(),
+        &server.app_url_option(),
         "--update-snapshots",
         "mask.whirl",
     ]);
@@ -3859,18 +3860,18 @@ fn snapshot_masks_replace_clear_and_cover_every_capture() {
     // Replacement on every capture must still settle and compare successfully.
     for query in ["a&b", "replace&b", "hidden"] {
         dir.file("mask.whirl", &source(query, ""));
-        let output = run_whirl(&dir, &["-O", &server.base_option(), "mask.whirl"]);
+        let output = run_whirl(&dir, &["-O", &server.app_url_option(), "mask.whirl"]);
         assert_eq!(exit_code(&output), 0, "{query}: {}", stdout_text(&output));
     }
     // Moving a masked box still changes the image. The saved actual must
     // match a fresh baseline made from that same page with the same masks.
     dir.file("mask.whirl", &source("a&b&move", ""));
-    let output = run_whirl(&dir, &["-O", &server.base_option(), "mask.whirl"]);
+    let output = run_whirl(&dir, &["-O", &server.app_url_option(), "mask.whirl"]);
     assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
     let actual = fs::read(dir.artifacts().join("mask/snapshot-masked-actual.png")).expect("actual");
     let output = run_whirl(&dir, &[
         "-O",
-        &server.base_option(),
+        &server.app_url_option(),
         "--update-snapshots",
         "mask.whirl",
     ]);
@@ -3882,13 +3883,13 @@ fn snapshot_masks_replace_clear_and_cover_every_capture() {
         dir.file("mask.whirl", &source("", local));
         let output = run_whirl(&dir, &[
             "-O",
-            &server.base_option(),
+            &server.app_url_option(),
             "--update-snapshots",
             "mask.whirl",
         ]);
         assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
         dir.file("mask.whirl", &source("a", local));
-        let output = run_whirl(&dir, &["-O", &server.base_option(), "mask.whirl"]);
+        let output = run_whirl(&dir, &["-O", &server.app_url_option(), "mask.whirl"]);
         assert_eq!(exit_code(&output), 1, "{local}: {}", stdout_text(&output));
     }
 }
@@ -3901,7 +3902,7 @@ fn snapshot_options_resolve_at_their_scope_and_do_not_leak() {
     dir.file("scope.whirl", source);
     let output = run_whirl(&dir, &[
         "-O",
-        &server.base_option(),
+        &server.app_url_option(),
         "--var",
         "mask=a",
         "--var",
@@ -3941,7 +3942,7 @@ fn snapshot_options_resolve_at_their_scope_and_do_not_leak() {
         dir.file("invalid.whirl", prefix);
         let output = run_whirl(&dir, &[
             "-O",
-            &server.base_option(),
+            &server.app_url_option(),
             "--var",
             "limit=-1",
             "--report-json",
@@ -3976,7 +3977,7 @@ fn snapshot_masks_use_the_selected_tab_and_strict_frame_owners() {
     dir.file("frames.whirl", &source("void 0", mask));
     let output = run_whirl(&dir, &[
         "-O",
-        &server.base_option(),
+        &server.app_url_option(),
         "--update-snapshots",
         "frames.whirl",
     ]);
@@ -3998,7 +3999,7 @@ fn snapshot_masks_use_the_selected_tab_and_strict_frame_owners() {
         dir.file("frames.whirl", &source(script, mask));
         let output = run_whirl(&dir, &[
             "-O",
-            &server.base_option(),
+            &server.app_url_option(),
             "--report-json",
             "report.json",
             "frames.whirl",
@@ -4059,7 +4060,7 @@ fn element_snapshots_compare_only_the_target_crop() {
     dir.file("crop.whirl", &flow(""));
     let output = run_whirl(&dir, &[
         "-O",
-        &server.base_option(),
+        &server.app_url_option(),
         "--update-snapshots",
         "crop.whirl",
     ]);
@@ -4083,7 +4084,7 @@ fn element_snapshots_compare_only_the_target_crop() {
     );
     let output = run_whirl(&dir, &[
         "-O",
-        &server.base_option(),
+        &server.app_url_option(),
         "--report-json",
         "report.json",
         "--report-html",
@@ -4101,7 +4102,7 @@ fn element_snapshots_compare_only_the_target_crop() {
     dir.file("crop.whirl", &flow("dot"));
     let output = run_whirl(&dir, &[
         "-O",
-        &server.base_option(),
+        &server.app_url_option(),
         "--report-json",
         "report.json",
         "crop.whirl",
@@ -4123,7 +4124,7 @@ fn element_snapshots_compare_only_the_target_crop() {
             "snapshot-max-diff: 100%\nsnapshot-pixel-threshold: 1\n",
         ),
     );
-    let output = run_whirl(&dir, &["-O", &server.base_option(), "crop.whirl"]);
+    let output = run_whirl(&dir, &["-O", &server.app_url_option(), "crop.whirl"]);
     assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
 }
 
@@ -4137,7 +4138,7 @@ fn element_snapshot_tolerances_count_the_crop_pixels() {
     );
     let output = run_whirl(&dir, &[
         "-O",
-        &server.base_option(),
+        &server.app_url_option(),
         "--update-snapshots",
         "tolerance.whirl",
     ]);
@@ -4161,7 +4162,7 @@ fn element_snapshot_tolerances_count_the_crop_pixels() {
                 &format!("snapshot-max-diff: {limit}\nsnapshot-pixel-threshold: {threshold}\n"),
             ),
         );
-        let output = run_whirl(&dir, &["-O", &server.base_option(), "tolerance.whirl"]);
+        let output = run_whirl(&dir, &["-O", &server.app_url_option(), "tolerance.whirl"]);
         assert_eq!(
             exit_code(&output),
             expected,
@@ -4181,7 +4182,7 @@ fn element_snapshot_targets_are_strict_and_wait_within_the_step() {
     );
     let output = run_whirl(&dir, &[
         "-O",
-        &server.base_option(),
+        &server.app_url_option(),
         "--update-snapshots",
         "strict.whirl",
     ]);
@@ -4199,7 +4200,7 @@ fn element_snapshot_targets_are_strict_and_wait_within_the_step() {
         );
         let output = run_whirl(&dir, &[
             "-O",
-            &server.base_option(),
+            &server.app_url_option(),
             "--report-json",
             "report.json",
             "strict.whirl",
@@ -4227,7 +4228,7 @@ fn element_snapshot_targets_are_strict_and_wait_within_the_step() {
         );
         let output = run_whirl(&dir, &[
             "-O",
-            &server.base_option(),
+            &server.app_url_option(),
             "--update-snapshots",
             "--report-json",
             "report.json",
@@ -4264,7 +4265,10 @@ fn element_snapshots_scroll_to_and_capture_the_whole_element() {
         for args in [&["--update-snapshots"][..], &[]] {
             let output = run_whirl(
                 &dir,
-                &[&["-O", &server.base_option()][..], args, &["scroll.whirl"]].concat(),
+                &[&["-O", &server.app_url_option()][..], args, &[
+                    "scroll.whirl",
+                ]]
+                .concat(),
             );
             assert_eq!(exit_code(&output), 0, "{query}: {}", stdout_text(&output));
         }
@@ -4279,13 +4283,13 @@ fn element_snapshots_scroll_to_and_capture_the_whole_element() {
 fn element_snapshots_settle_on_the_target_and_never_pass_on_stale_pixels() {
     let server = SiteServer::start();
     let dir = TestDir::new();
-    let base = server.base_option();
+    let app_url = server.app_url_option();
     let run = |query: &str, update: bool| {
         dir.file(
             "settle.whirl",
             &element_flow(query, "SNAPSHOT cart testid:target @5s", ""),
         );
-        let mut args = vec!["-O", &base, "--report-json", "report.json"];
+        let mut args = vec!["-O", &app_url, "--report-json", "report.json"];
         if update {
             args.push("--update-snapshots");
         }
@@ -4364,7 +4368,7 @@ fn element_snapshot_masks_resolve_from_the_page() {
         );
         let output = run_whirl(&dir, &[
             "-O",
-            &server.base_option(),
+            &server.app_url_option(),
             "--update-snapshots",
             "mask.whirl",
         ]);
@@ -4373,7 +4377,7 @@ fn element_snapshot_masks_resolve_from_the_page() {
             "mask.whirl",
             &element_flow(query, &format!("SNAPSHOT {name} testid:target @1s"), masks),
         );
-        let output = run_whirl(&dir, &["-O", &server.base_option(), "mask.whirl"]);
+        let output = run_whirl(&dir, &["-O", &server.app_url_option(), "mask.whirl"]);
         assert_eq!(
             exit_code(&output),
             expected,
@@ -4390,13 +4394,13 @@ fn element_snapshot_masks_resolve_from_the_page() {
     dir.file("mask.whirl", &flow(""));
     let output = run_whirl(&dir, &[
         "-O",
-        &server.base_option(),
+        &server.app_url_option(),
         "--update-snapshots",
         "mask.whirl",
     ]);
     assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
     dir.file("mask.whirl", &flow("dot"));
-    let output = run_whirl(&dir, &["-O", &server.base_option(), "mask.whirl"]);
+    let output = run_whirl(&dir, &["-O", &server.app_url_option(), "mask.whirl"]);
     assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
 }
 
@@ -4412,7 +4416,7 @@ fn element_snapshots_use_the_selected_tab_and_nested_cross_origin_frames() {
     dir.file("frames.whirl", &source(""));
     let output = run_whirl(&dir, &[
         "-O",
-        &server.base_option(),
+        &server.app_url_option(),
         "--update-snapshots",
         "frames.whirl",
     ]);
@@ -4422,7 +4426,7 @@ fn element_snapshots_use_the_selected_tab_and_nested_cross_origin_frames() {
         let baseline = baselines.join(format!("{name}-chromium-{}.png", platform_tag()));
         assert_eq!(png_size(&baseline), (20, 20), "{name}");
     }
-    let output = run_whirl(&dir, &["-O", &server.base_option(), "frames.whirl"]);
+    let output = run_whirl(&dir, &["-O", &server.app_url_option(), "frames.whirl"]);
     assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
     // The popup's own page is unchanged, so the first comparison passes
     // and the framed target's changed dot fails the second.
@@ -4435,7 +4439,7 @@ fn element_snapshots_use_the_selected_tab_and_nested_cross_origin_frames() {
     );
     let output = run_whirl(&dir, &[
         "-O",
-        &server.base_option(),
+        &server.app_url_option(),
         "--report-json",
         "report.json",
         "frames.whirl",
@@ -4468,7 +4472,7 @@ fn element_snapshot_targets_interpolate_and_mask_secrets_in_reports() {
         &dir,
         &[
             "-O",
-            &server.base_option(),
+            &server.app_url_option(),
             "--update-snapshots",
             "--report-json",
             "report.json",
@@ -4501,7 +4505,7 @@ fn element_snapshots_crop_and_compare_in_each_engine() {
         dir.file("engine.whirl", &flow(""));
         let output = run_whirl(&dir, &[
             "-O",
-            &server.base_option(),
+            &server.app_url_option(),
             "--update-snapshots",
             "engine.whirl",
         ]);
@@ -4513,7 +4517,7 @@ fn element_snapshots_crop_and_compare_in_each_engine() {
         assert_eq!(png_size(&baseline), (20, 20), "{engine}");
         for (query, expected) in [("outside", 0), ("dot", 1)] {
             dir.file("engine.whirl", &flow(query));
-            let output = run_whirl(&dir, &["-O", &server.base_option(), "engine.whirl"]);
+            let output = run_whirl(&dir, &["-O", &server.app_url_option(), "engine.whirl"]);
             assert_eq!(
                 exit_code(&output),
                 expected,
@@ -4532,7 +4536,7 @@ fn mocks_serve_browser_requests_and_request_checks_read_what_the_page_sent() {
         "mock.whirl",
         &format!(
             r##"[Options]
-base: {}
+app-url: {}
 allow-hosts: 127.0.0.1
 
 MOCK GET /api/flags 200
@@ -4562,7 +4566,7 @@ ASSERT request:cart json:$.qty == 1
 ASSERT request:cart body contains A-1
 ASSERT request:cart bytes startsWith hex,7b;
 "##,
-            site.base()
+            site.app_url()
         ),
     );
     let output = run_whirl(&dir, &["--report-json", "report.json", "mock.whirl"]);
@@ -4590,7 +4594,7 @@ ASSERT request:cart bytes startsWith hex,7b;
     assert_eq!(file["mocks"][0]["method"], "GET");
     assert_eq!(
         file["mocks"][0]["url"],
-        format!("{}/api/flags", site.base())
+        format!("{}/api/flags", site.app_url())
     );
 }
 
@@ -4602,7 +4606,7 @@ fn a_failed_mock_drops_the_request_and_a_later_mock_replaces_it() {
         "replace.whirl",
         &format!(
             r##"[Options]
-base: {}
+app-url: {}
 
 MOCK GET /api/flags failed
 VISIT /mock.html
@@ -4615,7 +4619,7 @@ ASSERT css:"#flags" text == v1
 
 MOCK GET /never 204
 "##,
-            site.base()
+            site.app_url()
         ),
     );
     let output = run_whirl(&dir, &["--report-json", "report.json", "replace.whirl"]);
@@ -4639,7 +4643,7 @@ fn a_mock_serves_the_page_document_that_visit_loads() {
         "document.whirl",
         &format!(
             r#"[Options]
-base: {}
+app-url: {}
 MOCK GET /virtual.html 200
 Content-Type: text/html
 ```
@@ -4648,7 +4652,7 @@ Content-Type: text/html
 VISIT /virtual.html
 ASSERT heading:"Virtual page" visible
 "#,
-            site.base()
+            site.app_url()
         ),
     );
     let output = run_whirl(&dir, &["document.whirl"]);
@@ -4663,13 +4667,13 @@ fn response_fails_on_a_request_that_a_failed_mock_served() {
         "failed.whirl",
         &format!(
             r#"[Options]
-base: {}
+app-url: {}
 VISIT /mock.html
 MOCK POST /api/cart* failed
 CLICK "Add to cart"
 RESPONSE cart POST /api/cart?source=page
 "#,
-            site.base()
+            site.app_url()
         ),
     );
     let output = run_whirl(&dir, &["failed.whirl"]);
@@ -4743,8 +4747,8 @@ fn shared_state_fixture_restores_and_saves_binary_databases_and_session_storage(
     let mut state: serde_json::Value =
         serde_json::from_str(include_str!("../../../state/fixtures/full.state.json"))
             .expect("the shared fixture is JSON");
-    state["origins"][0]["origin"] = server.base().into();
-    state["pages"][0]["origins"][0]["origin"] = server.base().into();
+    state["origins"][0]["origin"] = server.app_url().into();
+    state["pages"][0]["origins"][0]["origin"] = server.app_url().into();
     state["cookies"][0]["domain"] = "127.0.0.1".into();
     state["cookies"][0]["secure"] = false.into();
     let before = serde_json::to_string(&state).expect("state is JSON");
@@ -4752,7 +4756,7 @@ fn shared_state_fixture_restores_and_saves_binary_databases_and_session_storage(
     dir.file("state.whirl", "VISIT /shared-state.html\nASSERT css:\"#storage\" text == \"Ada/prepared\"\nASSERT css:\"#database\" text == \"Ada/11,22,33,44/true/true\"\nCLICK \"Change\"\nASSERT css:\"#storage\" text == \"Grace/changed\"\nVISIT /shared-state.html\nASSERT css:\"#storage\" text == \"Grace/changed\"\n");
     let output = run_whirl(&dir, &[
         "-O",
-        &server.base_option(),
+        &server.app_url_option(),
         "--load-state",
         "input.state.json",
         "--save-state",
@@ -4770,7 +4774,7 @@ fn shared_state_fixture_restores_and_saves_binary_databases_and_session_storage(
         .as_array()
         .expect("origins are an array")
         .iter()
-        .find(|item| item["origin"] == server.base())
+        .find(|item| item["origin"] == server.app_url())
         .expect("app state was captured");
     assert_eq!(origin["indexedDB"][0]["stores"][0]["nextKey"], 51);
     assert_eq!(
@@ -4801,10 +4805,10 @@ fn shared_state_restores_main_session_storage_at_each_origin() {
     let second = SiteServer::start();
     let dir = TestDir::new();
     let state = serde_json::json!({"format":"whirl-state","version":1,"redacted":false,"cookies":[],
-        "origins":[{"origin":first.base(),"localStorage":[{"name":"account","value":"one"}]},{"origin":second.base(),"localStorage":[{"name":"account","value":"two"}]}],
-        "pages":[{"id":"main","origins":[{"origin":first.base(),"sessionStorage":[{"name":"tab","value":"first"}]},{"origin":second.base(),"sessionStorage":[{"name":"tab","value":"second"}]}]}]});
+        "origins":[{"origin":first.app_url(),"localStorage":[{"name":"account","value":"one"}]},{"origin":second.app_url(),"localStorage":[{"name":"account","value":"two"}]}],
+        "pages":[{"id":"main","origins":[{"origin":first.app_url(),"sessionStorage":[{"name":"tab","value":"first"}]},{"origin":second.app_url(),"sessionStorage":[{"name":"tab","value":"second"}]}]}]});
     dir.file("input.state.json", &state.to_string());
-    dir.file("state.whirl", &format!("VISIT {}/shared-state.html\nASSERT css:\"#storage\" text == \"one/first\"\nVISIT {}/shared-state.html\nASSERT css:\"#storage\" text == \"two/second\"\n", first.base(), second.base()));
+    dir.file("state.whirl", &format!("VISIT {}/shared-state.html\nASSERT css:\"#storage\" text == \"one/first\"\nVISIT {}/shared-state.html\nASSERT css:\"#storage\" text == \"two/second\"\n", first.app_url(), second.app_url()));
     let output = run_whirl(&dir, &[
         "--load-state",
         "input.state.json",
@@ -4864,7 +4868,7 @@ fn shared_state_expiry_and_redaction_are_reported_without_values() {
     );
     let output = run_whirl(&dir, &[
         "-O",
-        &server.base_option(),
+        &server.app_url_option(),
         "--load-state",
         "input.state.json",
         "state.whirl",
@@ -4886,7 +4890,7 @@ fn shared_state_export_bypasses_service_workers() {
     );
     let output = run_whirl(&dir, &[
         "-O",
-        &server.base_option(),
+        &server.app_url_option(),
         "--save-state",
         "output.state.json",
         "state.whirl",

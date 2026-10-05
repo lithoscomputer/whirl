@@ -110,7 +110,7 @@ export class FlowNetwork {
 		} catch {
 			throw new ShimError(
 				"action",
-				"HTTP needs an absolute HTTP URL or a path with base",
+				"HTTP needs an absolute HTTP URL or a path with app-url",
 			);
 		}
 		if (
@@ -213,7 +213,7 @@ export class FlowNetwork {
 		} catch {
 			throw new ShimError(
 				"action",
-				"RESPONSE needs an absolute HTTP URL or a path with base",
+				"RESPONSE needs an absolute HTTP URL or a path with app-url",
 			);
 		}
 		if (!/^https?:$/.test(normalizedUrl.protocol))

@@ -38,7 +38,7 @@ export interface BlockedHost {
 /**
  * Compiles both host lists once and returns a hostname check: the rule that
  * blocks the host, or null when the page may reach it. A `block-hosts` glob
- * wins over `allow-hosts`, including the base host that Rust appends to it.
+ * wins over `allow-hosts`, including the app-url host that Rust appends to it.
  * A null list sets no rule.
  */
 export function createHostPolicy(

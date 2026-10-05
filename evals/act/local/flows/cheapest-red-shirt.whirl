@@ -1,5 +1,5 @@
 [Options]
-base: {{env.EVAL_BASE}}
+app-url: {{env.EVAL_BASE}}
 model: {{model}}
 
 # Compare prices: the cheapest red tee, not a cheaper polo or a cheaper blue tee.

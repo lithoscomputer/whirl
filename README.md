@@ -9,7 +9,7 @@ Playwright.
 ```whirl
 # checkout.whirl — buy a widget as a signed-in user.
 [Options]
-base: https://shop.example.com
+app-url: https://shop.example.com
 
 VISIT /login
 FILL "Email" alice@example.com
@@ -108,7 +108,7 @@ Use an HTTP entry to create fixture data before the browser starts its flow:
 
 ```whirl
 [Options]
-base: https://shop.example.com
+app-url: https://shop.example.com
 
 HTTP POST /api/test-fixtures/users
 Authorization: "Bearer {{env.E2E_SETUP_TOKEN}}"

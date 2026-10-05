@@ -1,6 +1,6 @@
 # Sign in once for all dependent flows.
 [Options]
-base: http://127.0.0.1:4173
+app-url: http://127.0.0.1:4173
 
 VISIT /login
 FILL Email demo@example.com

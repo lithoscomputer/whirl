@@ -45,7 +45,7 @@ fn value_of(key: &str, options: &ResolvedOptions) -> Option<SettingValue> {
             .map(|path| SettingValue::Text(path.to_string_lossy().into_owned()))
     };
     match key {
-        "base" => options.browser.base.as_deref().and_then(text),
+        "app-url" => options.browser.app_url.as_deref().and_then(text),
         "browser" => text(options.browser.engine.as_str()),
         "viewport" => text(&format!(
             "{}x{}",
