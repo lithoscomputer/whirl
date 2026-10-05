@@ -26,6 +26,9 @@ use tracing::{Instrument as _, debug, debug_span, warn};
 
 pub(super) mod wire;
 
+/// The protocol version this Whirl speaks (protocol section 3).
+pub(crate) const PROTOCOL: u64 = 2;
+
 /// Environment variable naming the built shim entry (protocol section 8).
 pub(crate) const SHIM_JS_ENV: &str = "WHIRL_SHIM_JS";
 /// Environment variable naming the node executable (protocol section 8).
@@ -89,6 +92,11 @@ pub(crate) enum ShimError {
         )
     )]
     BundleOutdated { installed: Option<String> },
+    #[error(
+        "the shim speaks protocol {protocol}, but this whirl needs protocol {PROTOCOL}; \
+         run `whirl install` to refresh it"
+    )]
+    ProtocolMismatch { protocol: u64 },
     #[error("the shim did not complete {command} within {timeout_ms}ms")]
     TimedOut {
         command:    &'static str,
@@ -219,6 +227,9 @@ pub(crate) struct StartFlowParams {
     pub(crate) video:              Option<VideoParams>,
     pub(crate) har_path:           Option<String>,
     pub(crate) trace:              bool,
+    /// Open every shadow root that page scripts attach, so `ACT` sees
+    /// closed ones (SPEC 7.4).
+    pub(crate) open_shadow_roots:  bool,
 }
 
 /// `endFlow` params (protocol section 3).
@@ -235,6 +246,12 @@ pub(crate) struct EndFlowParams {
 pub(crate) struct EndFlowResult {
     pub(crate) blocked_hosts: Vec<String>,
     pub(crate) video_path:    Option<String>,
+    /// Why the shim skipped a requested recording. Older shims omit it.
+    #[serde(default)]
+    pub(crate) video_skipped: Option<String>,
+    /// Why a saved recording holds only a white frame. Older shims omit it.
+    #[serde(default)]
+    pub(crate) video_blank:   Option<String>,
 }
 
 /// A step command's own params (protocol section 4). Locator, PAGE
@@ -269,6 +286,8 @@ pub(crate) enum StepCommand {
     },
     Click {
         locator: Json,
+        /// `left`, `right`, or `middle`.
+        button:  String,
     },
     Dblclick {
         locator: Json,
@@ -297,7 +316,22 @@ pub(crate) enum StepCommand {
     Hover {
         locator: Json,
     },
+    /// `DRAG`: `locator` is the element to drag.
+    Drag {
+        locator: Json,
+        target:  Json,
+    },
+    /// `SCROLL`: `locator` is null for the page.
+    Scroll {
+        locator: Option<Json>,
+        motion:  Json,
+    },
     Upload {
+        locator: Json,
+        path:    String,
+    },
+    /// `DROP`: `path` is absolute, as for `UPLOAD`.
+    Drop {
         locator: Json,
         path:    String,
     },
@@ -319,37 +353,77 @@ pub(crate) enum StepCommand {
         key:   String,
         value: String,
     },
-    /// ACT's view of the selected tab (SPEC 7.4); result
-    /// [`AriaSnapshotResult`].
-    AriaSnapshot,
+    /// ACT's view of the selected tab, or of one element when `locator`
+    /// is given (SPEC 7.4); result [`AriaSnapshotResult`].
+    AriaSnapshot {
+        locator: Option<Json>,
+    },
     Page {
         expect: Json,
     },
+    /// State checks and tab closure (protocol 4.3).
     Assert {
         spec: Json,
     },
-    Capture {
-        source: Json,
-        filter: Json,
+    /// One non-waiting read of a page subject (protocol 4.4); result
+    /// [`ReadResult`].
+    Read {
+        subject: Json,
     },
+    /// A named response's status, URL, headers, and optionally its body
+    /// (protocol 4.5); result [`ResponseReadResult`].
+    ReadResponse {
+        name: String,
+        body: bool,
+    },
+    /// Opens the trace group for the reads of one check.
+    TraceGroup,
+    /// Closes the group [`StepCommand::TraceGroup`] opened.
+    TraceGroupEnd,
 }
 
 /// One step request: the command plus the common `timeoutMs` and
 /// `title` params (protocol section 4). `title` is the rendered,
-/// secret-masked step text.
+/// secret-masked step text, or `None` for a read inside a check's own
+/// trace group.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct StepRequest {
     /// Starts a new event observation window before this step executes.
     pub(crate) entry_start: bool,
     pub(crate) command:     StepCommand,
     pub(crate) timeout_ms:  u64,
-    pub(crate) title:       String,
+    pub(crate) title:       Option<String>,
 }
 
-/// `capture` result (protocol section 4).
+/// `read` result (protocol section 4.4).
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub(crate) enum ReadResult {
+    Value { value: Json },
+    Missing { reason: MissingReason },
+}
+
+/// Why a `read` found nothing.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum MissingReason {
+    NoElement,
+    AbsentAttribute,
+}
+
+/// `readResponse` result (protocol section 4.5).
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-pub(crate) struct CaptureResult {
-    pub(crate) value: String,
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ResponseReadResult {
+    pub(crate) status:              u16,
+    pub(crate) url:                 String,
+    pub(crate) headers:             Vec<(String, String)>,
+    pub(crate) body_base64:         Option<String>,
+    pub(crate) body_error:          Option<String>,
+    /// The browser may have handed a text body back decoded and
+    /// re-encoded as UTF-8 (protocol 4.5).
+    #[serde(default)]
+    pub(crate) body_may_be_decoded: bool,
 }
 
 /// `ariaSnapshot` result (protocol section 4).
@@ -361,8 +435,8 @@ pub(crate) struct AriaSnapshotResult {
 /// The outcome of one step run under the external watchdog.
 #[derive(Debug)]
 pub(crate) enum StepOutcome {
-    /// The shim answered `ok: true`; the raw result object. `capture`
-    /// deserializes to [`CaptureResult`]; snapshot updates return
+    /// The shim answered `ok: true`; the raw result object. `read`
+    /// deserializes to [`ReadResult`]; snapshot updates return
     /// `{"updated": true}` and other steps return `{}`.
     Ok(Json),
     /// The shim answered `ok: false` with a protocol error object.
@@ -580,7 +654,13 @@ impl ShimClient {
 
     /// `hello` (protocol section 3): sent once after spawn.
     pub(crate) async fn hello(&mut self) -> Result<HelloResult, ShimError> {
-        self.request("hello", serde_json::json!({})).await
+        let hello: HelloResult = self.request("hello", serde_json::json!({})).await?;
+        if hello.protocol != PROTOCOL {
+            return Err(ShimError::ProtocolMismatch {
+                protocol: hello.protocol,
+            });
+        }
+        Ok(hello)
     }
 
     /// `startFlow` (protocol section 3): creates the browser context
@@ -945,9 +1025,10 @@ mod tests {
             (
                 StepCommand::Click {
                     locator: locator.clone(),
+                    button:  "right".to_owned(),
                 },
                 "click",
-                serde_json::json!({"locator": locator}),
+                serde_json::json!({"locator": locator, "button": "right"}),
             ),
             (
                 StepCommand::Dblclick {
@@ -1004,12 +1085,36 @@ mod tests {
                 serde_json::json!({"locator": locator}),
             ),
             (
+                StepCommand::Drag {
+                    locator: locator.clone(),
+                    target:  serde_json::json!([{"type": "testid", "id": "done"}]),
+                },
+                "drag",
+                serde_json::json!({"locator": locator, "target": [{"type": "testid", "id": "done"}]}),
+            ),
+            (
+                StepCommand::Scroll {
+                    locator: None,
+                    motion:  serde_json::json!({"type": "chunk", "direction": "down"}),
+                },
+                "scroll",
+                serde_json::json!({"locator": null, "motion": {"type": "chunk", "direction": "down"}}),
+            ),
+            (
                 StepCommand::Upload {
                     locator: locator.clone(),
                     path:    "/abs/file.txt".to_owned(),
                 },
                 "upload",
                 serde_json::json!({"locator": locator, "path": "/abs/file.txt"}),
+            ),
+            (
+                StepCommand::Drop {
+                    locator: locator.clone(),
+                    path:    "/abs/report.csv".to_owned(),
+                },
+                "drop",
+                serde_json::json!({"locator": locator, "path": "/abs/report.csv"}),
             ),
             (
                 StepCommand::Screenshot {
@@ -1059,9 +1164,9 @@ mod tests {
                 serde_json::json!({"script": "1 + 1"}),
             ),
             (
-                StepCommand::AriaSnapshot,
+                StepCommand::AriaSnapshot { locator: None },
                 "ariaSnapshot",
-                serde_json::json!({}),
+                serde_json::json!({"locator": null}),
             ),
             (
                 StepCommand::Page {
@@ -1078,12 +1183,25 @@ mod tests {
                 serde_json::json!({"spec": {"subject": {"type": "url"}}}),
             ),
             (
-                StepCommand::Capture {
-                    source: serde_json::json!({"type": "title"}),
-                    filter: Json::Null,
+                StepCommand::Read {
+                    subject: serde_json::json!({"type": "title"}),
                 },
-                "capture",
-                serde_json::json!({"source": {"type": "title"}, "filter": null}),
+                "read",
+                serde_json::json!({"subject": {"type": "title"}}),
+            ),
+            (
+                StepCommand::ReadResponse {
+                    name: "order".to_owned(),
+                    body: true,
+                },
+                "readResponse",
+                serde_json::json!({"name": "order", "body": true}),
+            ),
+            (StepCommand::TraceGroup, "traceGroup", serde_json::json!({})),
+            (
+                StepCommand::TraceGroupEnd,
+                "traceGroupEnd",
+                serde_json::json!({}),
             ),
         ];
         for (command, expected_cmd, expected_params) in cases {

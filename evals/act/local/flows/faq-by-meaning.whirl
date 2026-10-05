@@ -1,0 +1,9 @@
+[Options]
+base: {{env.EVAL_BASE}}
+model: {{model}}
+
+# No question says "refund"; "Can I get my money back?" answers it.
+VISIT /faq-by-meaning/
+ACT "open the question about refunds" @60s
+[Asserts]
+text:"Yes, within 30 days of delivery." visible

@@ -1,0 +1,9 @@
+[Options]
+base: {{env.EVAL_BASE}}
+model: {{model}}
+
+# Fill a form inside a same-origin iframe.
+VISIT /iframe-form/
+ACT "type Ada Lovelace into the name field" @60s
+[Asserts]
+frame:iframe >> label:Name value == "Ada Lovelace"

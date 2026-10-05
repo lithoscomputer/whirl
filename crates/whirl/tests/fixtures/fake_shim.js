@@ -13,7 +13,11 @@
 //                which lets tests exercise the kill path
 //
 // FAKE_SHIM_IGNORE_CANCEL=1 in the environment also enables the
-// ignore-cancel mode from the start.
+// ignore-cancel mode from the start. FAKE_SHIM_VIDEO_SKIPPED=REASON makes
+// startFlow start a 60 fps recording and endFlow report it skipped with
+// that reason. FAKE_SHIM_VIDEO_BLANK=REASON makes startFlow start a 60 fps
+// recording and endFlow report it saved, but blank for that reason; no
+// file is written.
 
 "use strict";
 
@@ -24,6 +28,9 @@ const inFlight = [];
 let ignoreLifecycle = false;
 let ignoreShutdown = false;
 let ignoreCancel = process.env.FAKE_SHIM_IGNORE_CANCEL === "1";
+const videoSkipped = process.env.FAKE_SHIM_VIDEO_SKIPPED ?? null;
+const videoBlank = process.env.FAKE_SHIM_VIDEO_BLANK ?? null;
+let videoPath = null;
 
 function reply(id, result) {
   process.stdout.write(JSON.stringify({ id, ok: true, result }) + "\n");
@@ -80,15 +87,21 @@ rl.on("line", (line) => {
   switch (cmd) {
     case "hello":
       if (ignoreLifecycle) break;
-      reply(id, { protocol: 1, playwrightVersion: "0.0.0-fake" });
+      reply(id, { protocol: 2, playwrightVersion: "0.0.0-fake" });
       break;
     case "startFlow":
       if (ignoreLifecycle) break;
-      reply(id, {});
+      if (videoBlank !== null) videoPath = params.video.finalPath;
+      reply(id, videoSkipped === null && videoBlank === null ? {} : { videoFps: 60 });
       break;
     case "endFlow":
       if (ignoreLifecycle) break;
-      reply(id, { blockedHosts: ["a.example", "b.example"], videoPath: null });
+      reply(id, {
+        blockedHosts: ["a.example", "b.example"],
+        videoPath,
+        videoSkipped,
+        videoBlank,
+      });
       break;
     case "cancelFlow":
       if (ignoreCancel) break;
@@ -105,8 +118,8 @@ rl.on("line", (line) => {
     case "evalAction":
       handleStep(id, params);
       break;
-    case "capture":
-      reply(id, { value: "captured" });
+    case "read":
+      reply(id, { type: "value", value: "captured" });
       break;
     default:
       // Echo the params back so framing tests can inspect them.

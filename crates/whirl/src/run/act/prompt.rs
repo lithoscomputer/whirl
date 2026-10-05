@@ -1,11 +1,12 @@
 //! The `ACT` prompts (SPEC 7.4), ported from Stagehand's
 //! `packages/extension/prompt.ts` (`buildActSystemPrompt`,
-//! `buildActPrompt`, `buildStepTwoPrompt`, and `buildObserveUserMessage`).
+//! `buildActPrompt`, `buildStepTwoPrompt`, and `buildObserveUserMessage`),
+//! and the text-argument prompt of its Jev path (browserbase/stagehand#2953).
 //!
 //! Whirl's changes: element IDs are Playwright AI-snapshot refs rather than
-//! Stagehand's frame-and-node IDs, the method list is Whirl's subset, and
-//! the scroll, chunk, and right/middle-click rules are gone until Whirl has
-//! those actions.
+//! frame-and-node IDs, the method list is Whirl's, and rules are added for
+//! dragging, scrolling the whole page, scrolling into view, and scrolling
+//! sideways.
 //!
 //! Stagehand is distributed under this license:
 //!
@@ -56,9 +57,38 @@ pub(crate) fn system_prompt() -> String {
     )
 }
 
+/// The system prompt of the call that reads the text to type from an
+/// instruction, for the `--jev` planner.
+pub(crate) fn text_argument_system_prompt() -> String {
+    collapse_whitespace(
+        "You extract one argument from a browser-automation instruction: the literal text the \
+         user wants typed into a field. Copy it verbatim from the instruction; never paraphrase, \
+         translate, or invent. Do not return the name of the field. If a declared %placeholder% \
+         stands for the text, return it as written including the percent signs.",
+    )
+}
+
+/// The user message of that call: the instruction and its placeholders,
+/// never the page.
+pub(crate) fn text_argument_message(instruction: &str, placeholders: &[String]) -> String {
+    if placeholders.is_empty() {
+        format!("instruction: {instruction}")
+    } else {
+        format!(
+            "instruction: {instruction}\ndeclared placeholders: {}",
+            placeholders.join(", ")
+        )
+    }
+}
+
 /// The user message: the instruction prompt plus the page snapshot.
-pub(crate) fn user_message(instruction: &str, snapshot: &str) -> String {
-    format!("instruction: {instruction}\nAccessibility Tree: \n{snapshot}\n")
+pub(crate) fn user_message(instruction: &str, hint: Option<&str>, snapshot: &str) -> String {
+    match hint {
+        Some(hint) => {
+            format!("instruction: {instruction}\n{hint}\nAccessibility Tree: \n{snapshot}\n")
+        }
+        None => format!("instruction: {instruction}\nAccessibility Tree: \n{snapshot}\n"),
+    }
 }
 
 /// The first planning prompt for an `ACT` instruction.
@@ -74,9 +104,12 @@ pub(crate) fn act_prompt(action: &str, placeholders: &[String]) -> String {
   General Instructions:
     Provide an action for this element such as {methods}. Remember that to users, buttons and \
          links look the same in most cases.
+    When choosing non-left click actions, provide right or middle as the argument
+    {DRAG_RULE}
     If the action is completely unrelated to a potential action to be taken on the page, or \
          no matching element exists, set `action` to null. Do not fabricate or guess an element.
     ONLY return one action. If multiple actions are relevant, return the most relevant one.
+    {SCROLL_RULES}
     If the action implies a key press, e.g., 'press enter', 'press a', 'press space', etc., \
          always choose the press method with the appropriate key as argument — e.g. 'a', \
          'Enter', 'Space'. Do not choose a click action on an on-screen keyboard. Capitalize the \
@@ -129,6 +162,8 @@ pub(crate) fn step_two_prompt(
   If the action is completely unrelated to a potential action to be taken on the page, or no \
          matching element exists, set `action` to null. Do not fabricate or guess an element.
   ONLY return one action. If multiple actions are relevant, return the most relevant one.
+  {DRAG_RULE}
+  {SCROLL_RULES}
   If the action implies a key press, e.g., 'press enter', 'press a', 'press space', etc., \
          always choose the press method with the appropriate key as argument — e.g. 'a', \
          'Enter', 'Space'. Do not choose a click action on an on-screen keyboard. Capitalize the \
@@ -138,6 +173,22 @@ pub(crate) fn step_two_prompt(
     prompt.push_str(&variables_prompt(placeholders));
     prompt
 }
+
+/// How the model answers a drag, which names two elements.
+const DRAG_RULE: &str = "To drag an element onto another element, choose the dragAndDrop method on \
+                         the element to drag, and give the ref of the element to drop it on as \
+                         the argument, such as e12.";
+
+/// How the model answers a scroll.
+const SCROLL_RULES: &str = "If the user is asking to scroll to a position on the page, e.g., \
+                            'halfway' or 0.75, etc, you must return the argument formatted as \
+                            the correct percentage, e.g., '50%' or '75%', etc.
+    If the user is asking to scroll to the next chunk/previous chunk, choose the \
+                            nextChunk/prevChunk method. No arguments are required here.
+    To scroll the whole page, choose the root element of the tree. To scroll a list or \
+                            panel, choose it or an element inside it. To bring an element into \
+                            view, choose the scrollIntoView method on it. To scroll sideways by \
+                            one chunk, choose the scrollLeft or scrollRight method.";
 
 /// Tells the model which placeholders stand in for values it never sees.
 fn variables_prompt(placeholders: &[String]) -> String {
@@ -163,7 +214,8 @@ fn method_list(methods: &[ActMethod]) -> String {
         .join(", ")
 }
 
-/// Stagehand collapses its system prompt's whitespace to single spaces.
+/// The system prompts are sent with their whitespace collapsed to single
+/// spaces.
 fn collapse_whitespace(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -177,22 +229,28 @@ mod tests {
         let prompt = act_prompt("sign in", &["%env.PASSWORD%".to_owned()]);
         assert!(prompt.contains("given the following action: sign in."));
         assert!(prompt.contains(
-            "such as click, doubleClick, fill, type, press, hover, selectOptionFromDropdown."
+            "such as click, doubleClick, fill, type, press, hover, selectOptionFromDropdown, \
+             dragAndDrop, scrollIntoView, scrollTo, nextChunk, prevChunk, scrollLeft, scrollRight."
         ));
+        assert!(prompt.contains(DRAG_RULE));
+        assert!(prompt.contains(SCROLL_RULES));
         assert!(
             prompt.contains("the following variables to be used in the action: %env.PASSWORD%")
         );
-        assert!(
-            !prompt.contains("scroll"),
-            "no scroll rules until Whirl has scroll"
-        );
-        assert!(!prompt.contains("middle"), "no right or middle clicks yet");
+        assert!(prompt.contains(
+            "When choosing non-left click actions, provide right or middle as the argument"
+        ));
     }
 
     #[test]
     fn step_two_leaves_out_select_and_variables_when_there_are_none() {
         let prompt = step_two_prompt("choose Large", "method: click", &[]);
-        assert!(prompt.contains("such as click, doubleClick, fill, type, press, hover."));
+        assert!(prompt.contains(
+            "such as click, doubleClick, fill, type, press, hover, dragAndDrop, scrollIntoView, \
+             scrollTo, nextChunk, prevChunk, scrollLeft, scrollRight."
+        ));
+        assert!(prompt.contains(DRAG_RULE));
+        assert!(prompt.contains(SCROLL_RULES));
         assert!(!prompt.contains("variables"));
     }
 

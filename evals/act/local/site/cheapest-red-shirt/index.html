@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Shirts</title>
+</head>
+<body>
+<h1>Shirts</h1>
+<ul class="grid">
+  <li class="card"><h2>Crimson tee</h2><p>Color: red</p><p>$24.00</p><button data-item="Crimson tee">Add to cart</button></li>
+  <li class="card"><h2>Navy tee</h2><p>Color: blue</p><p>$12.00</p><button data-item="Navy tee">Add to cart</button></li>
+  <li class="card"><h2>Cherry polo</h2><p>Color: red</p><p>$19.00</p><button data-item="Cherry polo">Add to cart</button></li>
+  <li class="card"><h2>Ruby henley</h2><p>Color: red</p><p>$31.00</p><button data-item="Ruby henley">Add to cart</button></li>
+  <li class="card"><h2>Lime tee</h2><p>Color: green</p><p>$9.00</p><button data-item="Lime tee">Add to cart</button></li>
+  <li class="card"><h2>Scarlet tee</h2><p>Color: red</p><p>$21.00</p><button data-item="Scarlet tee">Add to cart</button></li>
+  <li class="card"><h2>Charcoal tee</h2><p>Color: gray</p><p>$15.00</p><button data-item="Charcoal tee">Add to cart</button></li>
+  <li class="card"><h2>Brick oxford</h2><p>Color: red</p><p>$45.00</p><button data-item="Brick oxford">Add to cart</button></li>
+</ul>
+<p>Cart: <span data-testid="cart">empty</span></p>
+<script>
+  for (const button of document.querySelectorAll("button[data-item]")) {
+    button.addEventListener("click", () => {
+      document.querySelector("[data-testid=cart]").textContent = button.dataset.item;
+    });
+  }
+</script>
+</body>
+</html>

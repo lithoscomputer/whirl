@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Inner board</title>
+    <style>
+      body { display: flex; gap: 24px; }
+      .column { width: 160px; min-height: 90px; padding: 8px; border: 1px solid #888; }
+    </style>
+  </head>
+  <body>
+    <div class="column" data-testid="frame-todo">
+      <div id="inner" draggable="true">Frame card</div>
+    </div>
+    <div class="column" data-testid="frame-done">Done</div>
+    <script>
+      const inner = document.getElementById("inner");
+      inner.addEventListener("dragstart", (event) => {
+        event.dataTransfer.setData("text/plain", "Frame card");
+      });
+      const done = document.querySelector("[data-testid=frame-done]");
+      done.addEventListener("dragover", (event) => event.preventDefault());
+      done.addEventListener("drop", (event) => {
+        event.preventDefault();
+        const text = event.dataTransfer.getData("text/plain");
+        if (text === "Frame card") {
+          done.append(inner);
+        } else {
+          const card = document.createElement("div");
+          card.textContent = text;
+          done.append(card);
+        }
+      });
+    </script>
+  </body>
+</html>

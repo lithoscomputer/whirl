@@ -7,9 +7,11 @@ import type {
 	BrowserEngine,
 	EndFlowParams,
 	HttpParams,
+	ScrollDirection,
+	ScrollMotion,
 	StartFlowParams,
 } from "./protocol.js";
-import { ShimError } from "./protocol.js";
+import { assertNever, ShimError } from "./protocol.js";
 
 export type Params = Record<string, unknown>;
 
@@ -136,6 +138,35 @@ export function fieldEnum<T extends string>(
 	return value as T;
 }
 
+const scrollDirections: readonly ScrollDirection[] = [
+	"down",
+	"up",
+	"left",
+	"right",
+];
+
+export function decodeScrollMotion(params: Params): ScrollMotion {
+	const motion = fieldObject(params, "motion");
+	const type = fieldEnum(motion, "type", [
+		"intoView",
+		"chunk",
+		"position",
+	] as const);
+	switch (type) {
+		case "intoView":
+			return { type };
+		case "chunk":
+			return {
+				type,
+				direction: fieldEnum(motion, "direction", scrollDirections),
+			};
+		case "position":
+			return { type, percent: fieldNumber(motion, "percent") };
+		default:
+			return assertNever(type);
+	}
+}
+
 const browserEngines: readonly BrowserEngine[] = [
 	"chromium",
 	"firefox",
@@ -180,6 +211,7 @@ export function decodeStartFlowParams(params: Params): StartFlowParams {
 					},
 		harPath: fieldStringOrNull(params, "harPath"),
 		trace: fieldBoolean(params, "trace"),
+		openShadowRoots: fieldBoolean(params, "openShadowRoots"),
 	};
 }
 

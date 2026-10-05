@@ -1,0 +1,9 @@
+[Options]
+base: {{env.EVAL_BASE}}
+model: {{model}}
+
+# Click a button in a same-site iframe inside a open shadow root.
+VISIT "/layers/?l=shadow-open,frame-same"
+ACT "click the Deep button" @60s
+[Asserts]
+testid:status text == clicked

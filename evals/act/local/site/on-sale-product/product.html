@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Product</title>
+</head>
+<body>
+<h1 id="name">Product</h1>
+<script>
+  document.getElementById("name").textContent = new URLSearchParams(location.search).get("name");
+</script>
+</body>
+</html>

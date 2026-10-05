@@ -6,13 +6,18 @@
 use std::error::Error as _;
 use std::time::{Duration, Instant};
 
-use lithos_llm::types::{ErrorKind, Usage};
+use lithos_llm::types::ErrorKind;
 use serde_json::Value as Json;
 
 use super::{EntryState, FlowExec, StepBudget, StepEnd, StepNode, entry_timeout_error};
-use crate::report::model::{ActActionReport, ActReport, ActUsage, StepError};
-use crate::run::act::{ActDecision, FollowUp, Instruction, PageSnapshot, prompts};
-use crate::run::shim::{AriaSnapshotResult, ShimClient, StepCommand, StepOutcome, StepRequest};
+use crate::report::model::{ActActionReport, ActJevUsage, ActReport, ActUsage, StepError};
+use crate::run::act::{
+    ActDecision, FollowUp, Instruction, PageSnapshot, PlanError, PlanRequest, PlanStep, PlanUsage,
+    PlannedBy,
+};
+use crate::run::shim::{
+    AriaSnapshotResult, ReadResult, ShimClient, StepCommand, StepOutcome, StepRequest,
+};
 
 /// The budget of one `ACT` line.
 #[derive(Clone, Copy, Debug)]
@@ -59,6 +64,21 @@ impl ActLine<'_> {
     }
 }
 
+/// A failed shim call inside an `ACT` line: its classified end, and the
+/// kind of the shim's error answer, if the shim answered.
+struct ShimFailure {
+    end:        StepEnd,
+    shim_error: Option<String>,
+}
+
+impl ShimFailure {
+    /// Whether the call failed only because the page replaced the snapshot
+    /// element.
+    fn stale_ref(&self) -> bool {
+        self.shim_error.as_deref() == Some("stale-ref")
+    }
+}
+
 fn act_failure(code: &str, message: &str) -> StepError {
     StepError {
         code: code.to_owned(),
@@ -68,9 +88,15 @@ fn act_failure(code: &str, message: &str) -> StepError {
 }
 
 /// Token usage for the report: cached prompt tokens count as input, and
-/// reasoning tokens as output.
-fn usage_report(model_calls: u32, usage: Usage) -> ActUsage {
-    let tokens = usage.tokens;
+/// reasoning tokens as output. Jev's usage appears only with `--jev`, and
+/// the step's cost includes Jev's.
+fn usage_report(usage: PlanUsage, jev_planner: bool) -> ActUsage {
+    let PlanUsage {
+        model_calls,
+        model,
+        jev,
+    } = usage;
+    let tokens = model.tokens;
     ActUsage {
         model_calls,
         input_tokens: tokens
@@ -78,8 +104,25 @@ fn usage_report(model_calls: u32, usage: Usage) -> ActUsage {
             .saturating_add(tokens.cache_read)
             .saturating_add(tokens.cache_write),
         output_tokens: tokens.output.saturating_add(tokens.reasoning),
-        cost_usd_micros: usage.cost.map(|cost| cost.usd_micros),
+        cost_usd_micros: step_cost(
+            model_calls,
+            model.cost.map(|cost| cost.usd_micros),
+            jev.cost(),
+        ),
+        jev: jev_planner.then_some(ActJevUsage {
+            requests:        jev.requests,
+            input_tokens:    jev.input_tokens,
+            output_tokens:   jev.output_tokens,
+            cost_usd_micros: jev.cost(),
+        }),
     }
+}
+
+/// A step's cost: the model calls' and Jev's, when both are known. A step
+/// Jev planned alone made no model call, so the model's part is 0.
+fn step_cost(model_calls: u32, model: Option<u64>, jev: Option<u64>) -> Option<u64> {
+    let model = if model_calls == 0 { Some(0) } else { model };
+    Some(model?.saturating_add(jev?))
 }
 
 impl FlowExec<'_> {
@@ -88,13 +131,14 @@ impl FlowExec<'_> {
         &mut self,
         node: StepNode<'_>,
         instruction: &Instruction,
+        scope: Option<Json>,
         title: &str,
         budget: ActBudget,
         client: &mut ShimClient,
         state: &mut EntryState,
     ) -> (StepEnd, Option<ActReport>) {
-        let (Some(model_client), Some(model)) = (self.run.model, self.options.model.clone()) else {
-            let error = act_failure("act-model", "ACT needs the model option and a model client");
+        let (Some(planner), Some(model)) = (self.run.planner, self.options.model.clone()) else {
+            let error = act_failure("act-model", "ACT needs the model option and a planner");
             return (StepEnd::Error(error), None);
         };
         let mut line = ActLine {
@@ -104,21 +148,31 @@ impl FlowExec<'_> {
             budget,
             entry_start: state.steps.is_empty(),
         };
-        let placeholders = instruction.bindings().placeholders();
-        let system = prompts::system_prompt();
         let mut actions = Vec::new();
-        let mut usage = Usage::default();
-        let mut model_calls = 0;
+        let mut usage = PlanUsage::default();
         // Step two's prompt describes the action step one ran.
         let mut first_action: Option<String> = None;
+        // A page can replace the chosen element while the model answers.
+        // Whirl then asks once more on a fresh snapshot (SPEC 7.4).
+        let mut stale_retry_left = true;
 
         let end = loop {
             let snapshot = match self
-                .act_shim_call(&mut line, StepCommand::AriaSnapshot, client, state)
+                .act_shim_call(
+                    &mut line,
+                    StepCommand::AriaSnapshot {
+                        locator: scope.clone(),
+                    },
+                    client,
+                    state,
+                )
                 .await
             {
                 Ok(result) => match serde_json::from_value::<AriaSnapshotResult>(result) {
-                    Ok(result) => PageSnapshot::parse(result.snapshot),
+                    Ok(result) if scope.is_none() => {
+                        PageSnapshot::parse(&result.snapshot).of_page()
+                    }
+                    Ok(result) => PageSnapshot::parse(&result.snapshot),
                     Err(_) => {
                         break StepEnd::Error(act_failure(
                             "internal",
@@ -126,30 +180,32 @@ impl FlowExec<'_> {
                         ));
                     }
                 },
-                Err(end) => break end,
+                Err(failure) => break failure.end,
             };
 
-            let prompt = match &first_action {
-                None => prompts::act_prompt(instruction.prompt(), &placeholders),
-                Some(first) => prompts::step_two_prompt(instruction.prompt(), first, &placeholders),
+            let step = match &first_action {
+                None => PlanStep::First,
+                Some(first) => PlanStep::Second {
+                    first_action: first,
+                },
             };
-            let user = prompts::user_message(&prompt, snapshot.text());
-            model_calls += 1;
-            let reply = match model_client
-                .plan(&model, &system, &user, line.deadline)
-                .await
-            {
-                Ok(reply) => reply,
-                Err(error) => break self.model_failure(&error, &line),
-            };
-            usage = usage.saturating_add(reply.usage);
-            let inference = match reply.answer {
+            let plan = planner
+                .plan(PlanRequest {
+                    instruction,
+                    snapshot: &snapshot,
+                    step,
+                    model: &model,
+                    deadline: line.deadline,
+                    hint: None,
+                })
+                .await;
+            usage = usage.saturating_add(plan.usage);
+            let planned_by = plan.planned_by;
+            let inference = match plan.answer {
                 Ok(inference) => inference,
-                Err(error) => {
-                    break StepEnd::Failed(act_failure(
-                        "act-invalid-decision",
-                        &format!("the model's answer does not match the ACT schema: {error}"),
-                    ));
+                Err(PlanError::Model(error)) => break self.model_failure(&error, &line),
+                Err(error @ PlanError::Answer(_)) => {
+                    break StepEnd::Failed(act_failure("act-invalid-decision", &error.to_string()));
                 }
             };
             let (action, description, then) = match snapshot.decide(inference, instruction) {
@@ -158,8 +214,8 @@ impl FlowExec<'_> {
                     description,
                     then,
                 }) => (action, description, then),
-                // Stagehand keeps the first action's result when step
-                // two finds nothing.
+                // When step two finds nothing, the line passes with the
+                // first action (SPEC 7.4).
                 Ok(ActDecision::NoMatch) if first_action.is_some() => break StepEnd::Passed,
                 Ok(ActDecision::NoMatch) => {
                     break StepEnd::Failed(act_failure(
@@ -178,16 +234,37 @@ impl FlowExec<'_> {
                 }
             };
 
-            if let Err(end) = self
+            match self
                 .act_shim_call(&mut line, action.command(instruction), client, state)
                 .await
             {
-                break end;
+                Ok(_) => {}
+                Err(failure) if failure.stale_ref() && stale_retry_left => {
+                    stale_retry_left = false;
+                    continue;
+                }
+                Err(failure) => break failure.end,
             }
             actions.push(ActActionReport {
                 line:        self.vars.mask(&action.line()),
                 description: self.vars.mask(&description),
+                planned_by:  planned_by.as_str().to_owned(),
             });
+            if let Some(read_back) = action.fill_read_back(instruction) {
+                match self
+                    .read_back_value(&mut line, read_back.command.clone(), client, state)
+                    .await
+                {
+                    Ok(Some(held)) if !read_back.matches(&held) => {
+                        break StepEnd::Failed(act_failure(
+                            "act-fill-mismatch",
+                            &self.vars.mask(&read_back.mismatch(&action, &held)),
+                        ));
+                    }
+                    Ok(_) => {}
+                    Err(failure) => break failure.end,
+                }
+            }
             match then {
                 FollowUp::Replan if first_action.is_none() => {
                     first_action = Some(action.describe_for_model(&description));
@@ -195,10 +272,12 @@ impl FlowExec<'_> {
                 FollowUp::Replan | FollowUp::Done => break StepEnd::Passed,
             }
         };
+        let jev_planner = planner.name() == PlannedBy::Jev.as_str();
         let report = ActReport {
             model,
+            planner: planner.name().to_owned(),
             actions,
-            usage: usage_report(model_calls, usage),
+            usage: usage_report(usage, jev_planner),
         };
         (end, Some(report))
     }
@@ -211,16 +290,19 @@ impl FlowExec<'_> {
         command: StepCommand,
         client: &mut ShimClient,
         state: &mut EntryState,
-    ) -> Result<Json, StepEnd> {
+    ) -> Result<Json, ShimFailure> {
         let timeout_ms = line.remaining_ms();
         if timeout_ms == 0 {
-            return Err(line.timed_out());
+            return Err(ShimFailure {
+                end:        line.timed_out(),
+                shim_error: None,
+            });
         }
         let request = StepRequest {
             entry_start: line.entry_start,
             command,
             timeout_ms,
-            title: line.title.to_owned(),
+            title: Some(line.title.to_owned()),
         };
         line.entry_start = false;
         let started = Instant::now();
@@ -233,8 +315,40 @@ impl FlowExec<'_> {
                     timeout_ms,
                     elapsed: started.elapsed(),
                 };
-                Err(self.apply_outcome(line.node, outcome, state, budget))
+                let shim_error = match &outcome {
+                    StepOutcome::ShimError(error) => Some(error.kind.clone()),
+                    _ => None,
+                };
+                Err(ShimFailure {
+                    end: self.apply_outcome(line.node, outcome, state, budget),
+                    shim_error,
+                })
             }
+        }
+    }
+
+    /// Reads the value a fill left in its field. `None` means Whirl cannot
+    /// tell: the budget is spent, the element is gone, or it has no value,
+    /// such as a `contenteditable` element.
+    async fn read_back_value(
+        &mut self,
+        line: &mut ActLine<'_>,
+        command: StepCommand,
+        client: &mut ShimClient,
+        state: &mut EntryState,
+    ) -> Result<Option<String>, ShimFailure> {
+        if line.remaining_ms() == 0 {
+            return Ok(None);
+        }
+        match self.act_shim_call(line, command, client, state).await {
+            Ok(result) => match serde_json::from_value::<ReadResult>(result) {
+                Ok(ReadResult::Value {
+                    value: Json::String(held),
+                }) => Ok(Some(held)),
+                _ => Ok(None),
+            },
+            Err(failure) if failure.shim_error.is_some() => Ok(None),
+            Err(failure) => Err(failure),
         }
     }
 

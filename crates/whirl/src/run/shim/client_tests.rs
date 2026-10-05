@@ -11,8 +11,8 @@ use serde_json::json;
 use tokio::time::sleep;
 
 use super::{
-    CaptureResult, EndFlowParams, ShimClient, ShimLaunch, StartFlowParams, StepCommand,
-    StepOutcome, StepRequest, ViewportParams,
+    EndFlowParams, ReadResult, ShimClient, ShimLaunch, StartFlowParams, StepCommand, StepOutcome,
+    StepRequest, ViewportParams,
 };
 
 /// Launch parameters for the fake shim: `node` from `PATH` and the
@@ -44,7 +44,7 @@ fn eval_step(script: &str, timeout_ms: u64) -> StepRequest {
             script: script.to_owned(),
         },
         timeout_ms,
-        title: format!("EVAL \"{script}\""),
+        title: Some(format!("EVAL \"{script}\"")),
     }
 }
 
@@ -52,7 +52,7 @@ fn eval_step(script: &str, timeout_ms: u64) -> StepRequest {
 async fn hello_start_flow_and_end_flow_round_trip() {
     let mut client = spawn_fake_shim();
     let hello = client.hello().await.expect("hello should succeed");
-    assert_eq!(hello.protocol, 1);
+    assert_eq!(hello.protocol, 2);
     assert_eq!(hello.playwright_version, "0.0.0-fake");
 
     let start = StartFlowParams {
@@ -71,6 +71,7 @@ async fn hello_start_flow_and_end_flow_round_trip() {
         video:              None,
         har_path:           None,
         trace:              false,
+        open_shadow_roots:  false,
     };
     client
         .start_flow(&start)
@@ -86,6 +87,8 @@ async fn hello_start_flow_and_end_flow_round_trip() {
         .expect("endFlow should succeed");
     assert_eq!(end.blocked_hosts, vec!["a.example", "b.example"]);
     assert_eq!(end.video_path, None);
+    assert_eq!(end.video_skipped, None);
+    assert_eq!(end.video_blank, None);
 
     client.shutdown().await.expect("shutdown should be clean");
 }
@@ -125,9 +128,10 @@ async fn step_params_carry_the_common_timeout_and_title() {
         entry_start: false,
         command:     StepCommand::Click {
             locator: locator.clone(),
+            button:  "left".to_owned(),
         },
         timeout_ms:  1_000,
-        title:       "CLICK text:\"Add to cart\"".to_owned(),
+        title:       Some("CLICK text:\"Add to cart\"".to_owned()),
     };
     let outcome = client.run_step(&step).await;
     let StepOutcome::Ok(result) = outcome else {
@@ -139,6 +143,7 @@ async fn step_params_carry_the_common_timeout_and_title() {
             "cmd": "click",
             "params": {
                 "locator": locator,
+                "button": "left",
                 "timeoutMs": 1_000,
                 "title": "CLICK text:\"Add to cart\"",
             },
@@ -239,23 +244,24 @@ async fn requests_after_a_death_fail_without_hanging() {
 }
 
 #[tokio::test]
-async fn a_capture_result_deserializes_to_its_typed_form() {
+async fn a_read_result_deserializes_to_its_typed_form() {
     let mut client = spawn_fake_shim();
     let step = StepRequest {
         entry_start: false,
-        command:     StepCommand::Capture {
-            source: json!({"type": "url"}),
-            filter: json!(null),
+        command:     StepCommand::Read {
+            subject: json!({"type": "url"}),
         },
         timeout_ms:  1_000,
-        title:       "cart_url: url".to_owned(),
+        title:       None,
     };
     let outcome = client.run_step(&step).await;
     let StepOutcome::Ok(result) = outcome else {
         panic!("expected Ok, got {outcome:?}");
     };
-    let capture: CaptureResult =
-        serde_json::from_value(result).expect("a capture result should deserialize");
-    assert_eq!(capture.value, "captured");
+    let read: ReadResult =
+        serde_json::from_value(result).expect("a read result should deserialize");
+    assert_eq!(read, ReadResult::Value {
+        value: json!("captured"),
+    });
     client.shutdown().await.expect("shutdown should be clean");
 }

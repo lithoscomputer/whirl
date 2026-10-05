@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Draft</title>
+</head>
+<body>
+<h1>Draft: Quarterly update</h1>
+<div role="toolbar" aria-label="Draft actions">
+  <button aria-label="Archive">&#128452;</button>
+  <button aria-label="Discard changes">&#8634;</button>
+  <button aria-label="Delete">&#128465;</button>
+  <button aria-label="Send">&#10148;</button>
+</div>
+<p>Result: <span data-testid="result">none</span></p>
+<script>
+  const setResult = (text) => { document.querySelector("[data-testid=result]").textContent = text; };
+  for (const button of document.querySelectorAll("[role=toolbar] button")) {
+    button.addEventListener("click", () => setResult(button.getAttribute("aria-label")));
+  }
+</script>
+</body>
+</html>

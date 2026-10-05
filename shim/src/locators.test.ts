@@ -114,17 +114,17 @@ test("describeLocator renders a snapshot ref", () => {
 	);
 });
 
-test("nth is 1-based and subtracts 1", () => {
+test("nth is 0-based and passes negative indexes through", () => {
 	const { page, calls } = recordingStub();
 	buildLocator(page, [
 		{ type: "testid", id: "result-card" },
-		{ type: "nth", index: 1 },
-		{ type: "nth", index: 3 },
+		{ type: "nth", index: 0 },
+		{ type: "nth", index: -1 },
 	]);
 	assert.deepEqual(calls, [
 		{ method: "getByTestId", args: ["result-card"] },
 		{ method: "nth", args: [0] },
-		{ method: "nth", args: [2] },
+		{ method: "nth", args: [-1] },
 	]);
 });
 
@@ -147,7 +147,7 @@ test("an empty locator is an internal error", () => {
 test("describeLocator renders the chain", () => {
 	const description = describeLocator([
 		{ type: "role", role: "button", name: "Sign in", exact: true },
-		{ type: "nth", index: 2 },
+		{ type: "nth", index: 1 },
 		{ type: "css", selector: "a[href]" },
 	]);
 	assert.equal(

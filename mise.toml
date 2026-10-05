@@ -6,6 +6,10 @@ zizmor = "1.29.0"
 [env]
 WHIRL_NODE = "node"
 WHIRL_SHIM_JS = "{{config_root}}/shim/dist/index.js"
+# Every build links the pinned libxml2 from `build:libxml2` statically
+# (ADR evaluate-checks-in-rust §1.5).
+PKG_CONFIG_PATH = "{{config_root}}/target/libxml2/prefix/lib/pkgconfig"
+LIBXML2_STATIC = "1"
 
 [tasks.setup]
 description = "Install toolchains, shim dependencies, and Playwright browsers"
@@ -31,18 +35,22 @@ sources = ["src/**/*", "package.json", "bun.lock", "tsconfig.json"]
 outputs = ["dist/index.js"]
 run = "{{config_root}}/scripts/quiet.sh bun run build"
 
+[tasks."build:libxml2"]
+description = "Build the pinned libxml2 from source as a static library"
+run = "{{config_root}}/scripts/build-libxml2.sh"
+
 [tasks.dev]
 description = "Build the shim and the whirl binary for local development"
-depends = ["build:shim"]
+depends = ["build:shim", "build:libxml2"]
 run = "cargo build --workspace"
 
 [tasks.test]
-description = "Run all tests (Rust unit, acceptance, and shim)"
-depends = ["test:rust", "test:shim"]
+description = "Run all tests (Rust unit, acceptance, shim, and eval tooling)"
+depends = ["test:rust", "test:shim", "test:evals"]
 
 [tasks."test:rust"]
 description = "Run Rust unit and acceptance tests with nextest"
-depends = ["build:shim"]
+depends = ["build:shim", "build:libxml2"]
 run = "{{config_root}}/scripts/quiet.sh cargo nextest run --workspace --all-targets --all-features"
 
 [tasks."test:shim"]
@@ -50,6 +58,19 @@ description = "Run the shim's own tests"
 depends = ["build:shim"]
 dir = "shim"
 run = "{{config_root}}/scripts/quiet.sh bun run test"
+
+[tasks."test:evals"]
+description = "Test the ACT eval script and check the eval flows; calls no model"
+depends = ["dev"]
+run = [
+  "{{config_root}}/scripts/quiet.sh python3 -m unittest discover -s scripts -p 'test_eval_act.py'",
+  "{{config_root}}/scripts/quiet.sh target/debug/whirl check evals/act/local/flows evals/act/live/flows",
+]
+
+[tasks."eval:act"]
+description = "Compare models on ACT (evals/act/README.md); calls real models and costs money"
+depends = ["dev"]
+run = "python3 scripts/eval_act.py"
 
 [tasks.check]
 description = "Run the routine checks for every pushed revision"
@@ -61,6 +82,7 @@ run = "{{config_root}}/scripts/quiet.sh cargo +nightly-2026-04-14 fmt --check --
 
 [tasks."check:clippy"]
 description = "Lint Rust code with Clippy, warnings denied"
+depends = ["build:libxml2"]
 env = { CARGO_TARGET_DIR = "{{config_root}}/target/clippy" }
 run = "{{config_root}}/scripts/quiet.sh cargo clippy --locked --workspace --all-targets --all-features -- -D warnings"
 
@@ -76,12 +98,12 @@ run = "{{config_root}}/scripts/quiet.sh zizmor .github/workflows"
 
 [tasks.release]
 description = "Build and package a release archive for the current platform"
-depends = ["build:shim"]
+depends = ["build:shim", "build:libxml2"]
 run = "{{config_root}}/scripts/package.sh"
 
 [tasks."check:nightly"]
 description = "Run the nightly checks: all browser engines plus the whirl install end-to-end test"
-depends = ["build:shim"]
+depends = ["build:shim", "build:libxml2"]
 run = [
   "cd shim && {{config_root}}/scripts/quiet.sh bun x playwright install chromium firefox webkit",
   "WHIRL_TEST_ALL_BROWSERS=1 {{config_root}}/scripts/quiet.sh cargo nextest run --workspace --all-targets --all-features --run-ignored all",

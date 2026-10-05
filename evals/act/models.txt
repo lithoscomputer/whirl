@@ -1,0 +1,4 @@
+# Default models for `mise run eval:act`. Add others to one session with -m.
+openai/gpt-5.6-terra
+openai/gpt-5.6-luna
+gemini/gemini-3.1-flash-lite

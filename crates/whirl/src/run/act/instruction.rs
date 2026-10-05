@@ -142,6 +142,124 @@ impl Instruction {
     pub(crate) fn bindings(&self) -> &SecretBindings {
         &self.bindings
     }
+
+    /// The instruction's own characters for text the model copied from one
+    /// of its quoted strings, or `text` itself when it matches none. A model
+    /// can change the case or spacing of what it copies; what Whirl types
+    /// must be what the author wrote. Only a match counts: a quoted string
+    /// can also name the field, not the text to type.
+    /// The instruction's own characters for `text`, which a model copied
+    /// from it, or `None` when the instruction does not contain it. Case
+    /// and runs of spaces may differ; words may not. A placeholder the
+    /// instruction binds is its own span.
+    pub(crate) fn span(&self, text: &str) -> Option<String> {
+        let text = text.trim();
+        if self
+            .bindings
+            .placeholders()
+            .iter()
+            .any(|placeholder| placeholder == text)
+        {
+            return Some(text.to_owned());
+        }
+        find_loosely(&self.prompt, text).map(str::to_owned)
+    }
+
+    pub(crate) fn ground<'a>(&'a self, text: &'a str) -> &'a str {
+        quoted_strings(&self.prompt)
+            .into_iter()
+            .find(|quoted| same_text(quoted, text))
+            .unwrap_or(text)
+    }
+}
+
+/// The first part of `haystack` that reads as `needle`, ignoring case and
+/// how much whitespace separates the words.
+fn find_loosely<'a>(haystack: &'a str, needle: &str) -> Option<&'a str> {
+    let words: Vec<&str> = needle.split_whitespace().collect();
+    if words.is_empty() {
+        return None;
+    }
+    let same = |left: char, right: char| left.to_lowercase().eq(right.to_lowercase());
+    'start: for (start, _) in haystack.char_indices() {
+        let mut position = start;
+        for (index, word) in words.iter().enumerate() {
+            if index > 0 {
+                let rest = &haystack[position..];
+                let spaces = rest.len() - rest.trim_start().len();
+                if spaces == 0 {
+                    continue 'start;
+                }
+                position += spaces;
+            }
+            let mut rest = haystack[position..].chars();
+            for expected in word.chars() {
+                match rest.next() {
+                    Some(actual) if same(actual, expected) => position += actual.len_utf8(),
+                    _ => continue 'start,
+                }
+            }
+        }
+        return Some(&haystack[start..position]);
+    }
+    None
+}
+
+/// Whether two texts have the same letters and digits, ignoring case,
+/// spaces, and punctuation. Text with no letters or digits matches only
+/// itself.
+pub(crate) fn same_text(left: &str, right: &str) -> bool {
+    fn significant(text: &str) -> impl Iterator<Item = char> + '_ {
+        text.chars()
+            .filter(|ch| ch.is_alphanumeric())
+            .flat_map(char::to_lowercase)
+    }
+    if significant(left).next().is_none() || significant(right).next().is_none() {
+        return left == right;
+    }
+    significant(left).eq(significant(right))
+}
+
+/// The strings quoted in `text`: in straight or curly double quotes, in
+/// curly single quotes, or in straight single quotes that stand at word
+/// boundaries, so the apostrophe in "user's" opens no quote. A quote does
+/// not cross a line.
+pub(crate) fn quoted_strings(text: &str) -> Vec<&str> {
+    let is_word = |ch: Option<char>| ch.is_some_and(|ch| ch.is_alphanumeric() || ch == '_');
+    let mut found = Vec::new();
+    let mut start = 0;
+    while let Some(offset) = text[start..].find(['"', '\'', '\u{201C}', '\u{2018}']) {
+        let open = start + offset;
+        let quote = text[open..]
+            .chars()
+            .next()
+            .expect("find returns a char boundary");
+        let close = match quote {
+            '\u{201C}' => '\u{201D}',
+            '\u{2018}' => '\u{2019}',
+            straight => straight,
+        };
+        let body_start = open + quote.len_utf8();
+        // Without a match here, the search goes on after the opening quote.
+        start = body_start;
+        if quote == '\'' && is_word(text[..open].chars().next_back()) {
+            continue;
+        }
+        let Some(length) = text[body_start..].find([close, '\n']) else {
+            continue;
+        };
+        let body_end = body_start + length;
+        if length == 0 || text[body_end..].starts_with('\n') {
+            continue;
+        }
+        let rest = body_end + close.len_utf8();
+        if quote == '\'' && is_word(text[rest..].chars().next()) {
+            continue;
+        }
+        found.push(&text[body_start..body_end]);
+        start = rest;
+    }
+    found
 }
 
 /// Appends `text` with every recorded secret replaced by a placeholder,
@@ -185,7 +303,7 @@ mod tests {
     #[test]
     fn plain_variables_reach_the_model_as_values() {
         let mut vars = VarStore::new();
-        vars.set("user", "ada");
+        vars.set_input("user", "ada");
         let instruction = Instruction::try_new(
             &value(vec![
                 ValueSegment::Literal("sign in as ".to_owned()),
@@ -202,7 +320,7 @@ mod tests {
     fn a_recorded_secret_inside_a_variable_becomes_a_placeholder() {
         let mut vars = VarStore::new();
         vars.record_secret("hunter2");
-        vars.set("login", "ada:hunter2");
+        vars.set_input("login", "ada:hunter2");
         let instruction = Instruction::try_new(
             &value(vec![
                 ValueSegment::Literal("log in with ".to_owned()),
@@ -234,6 +352,73 @@ mod tests {
                 name: "env.OTHER".to_owned(),
             })
         );
+    }
+
+    fn literal(text: &str) -> Instruction {
+        Instruction::try_new(
+            &value(vec![ValueSegment::Literal(text.to_owned())]),
+            &mut VarStore::new(),
+        )
+        .expect("resolves")
+    }
+
+    #[test]
+    fn quoted_strings_find_every_quote_style_but_not_apostrophes() {
+        assert_eq!(
+            quoted_strings(
+                "type \"Ada\" into 'Name', then \u{201C}x\u{201D} and \u{2018}y\u{2019}"
+            ),
+            vec!["Ada", "Name", "x", "y"]
+        );
+        assert_eq!(
+            quoted_strings("fill in the user's name with 'Grace'"),
+            vec!["Grace"]
+        );
+        assert_eq!(quoted_strings("an \"\" empty and a \"real\" one"), vec![
+            " empty and a "
+        ]);
+        assert!(quoted_strings("\"no\nclose\"").is_empty());
+    }
+
+    #[test]
+    fn grounding_restores_the_instructions_own_characters() {
+        let instruction = literal("type \"AbC 123.\" into the \"Search\" box");
+        assert_eq!(instruction.ground("abc  123"), "AbC 123.");
+        assert_eq!(instruction.ground("search"), "Search");
+        assert_eq!(instruction.ground("something else"), "something else");
+        assert_eq!(literal("type hello").ground("Hello"), "Hello");
+    }
+
+    #[test]
+    fn a_span_is_the_instructions_own_characters() {
+        let instruction = literal("type  AbC   123 into the Search box");
+        assert_eq!(instruction.span("abc 123"), Some("AbC   123".to_owned()));
+        assert_eq!(
+            instruction.span("  search box "),
+            Some("Search box".to_owned())
+        );
+        assert_eq!(instruction.span("abc 124"), None);
+        assert_eq!(instruction.span(""), None);
+        let mut vars = VarStore::new();
+        vars.record_secret("hunter2");
+        vars.set_input("pw", "hunter2");
+        let secret = Instruction::try_new(
+            &value(vec![
+                ValueSegment::Literal("type ".to_owned()),
+                ValueSegment::Var("pw".to_owned()),
+            ]),
+            &mut vars,
+        )
+        .expect("resolves");
+        assert_eq!(secret.span("%secret1%"), Some("%secret1%".to_owned()));
+    }
+
+    #[test]
+    fn text_without_letters_or_digits_matches_only_itself() {
+        assert!(same_text("(555) 123-4567", "5551234567"));
+        assert!(same_text("---", "---"));
+        assert!(!same_text("---", "..."));
+        assert!(!same_text("", "abc"));
     }
 
     #[test]

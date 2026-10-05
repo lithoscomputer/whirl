@@ -17,8 +17,10 @@ use lithos_llm::middleware::{CallContext, RetryMiddleware, RetryPolicy};
 use lithos_llm::resolver::{AvailableProviders, CatalogResolver, ModelResolver as _};
 use lithos_llm::types::{ErrorKind, Usage};
 use lithos_llm::{Client, Request};
+use serde_json::{Value as Json, json};
 
 use crate::run::act::decision::{ActInference, inference_schema};
+use crate::run::act::prompt;
 
 /// Sends every model call to one OpenAI-compatible server (SPEC 13).
 pub(crate) const ENDPOINT_ENV: &str = "WHIRL_LLM_ENDPOINT";
@@ -82,6 +84,13 @@ pub(crate) struct ModelReply {
     pub(crate) usage:  Usage,
 }
 
+/// The text an instruction wants typed, and what the call used.
+#[derive(Debug)]
+pub(crate) struct TextReply {
+    pub(crate) text:  Option<String>,
+    pub(crate) usage: Usage,
+}
+
 /// The run's model client, shared by every flow.
 #[derive(Debug)]
 pub(crate) struct ModelClient {
@@ -119,6 +128,60 @@ impl ModelClient {
         user: &str,
         deadline: Instant,
     ) -> Result<ModelReply, lithos_llm::Error> {
+        let (object, usage) = self
+            .structured(model, system, user, "Act", inference_schema(), deadline)
+            .await?;
+        Ok(ModelReply {
+            answer: serde_json::from_value(object),
+            usage,
+        })
+    }
+
+    /// Asks the model for the text an instruction wants typed, copied from
+    /// the instruction; the page is not sent. `None` when the instruction
+    /// does not say.
+    pub(crate) async fn text_argument(
+        &self,
+        model: &str,
+        instruction: &str,
+        placeholders: &[String],
+        deadline: Instant,
+    ) -> Result<TextReply, lithos_llm::Error> {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "text": {
+                    "anyOf": [{"type": "string"}, {"type": "null"}],
+                    "description": "The exact text the instruction wants typed, copied verbatim from the instruction, or the %placeholder% that stands for it. Null when the instruction does not say what to type."
+                }
+            },
+            "required": ["text"],
+            "additionalProperties": false
+        });
+        let (object, usage) = self
+            .structured(
+                model,
+                &prompt::text_argument_system_prompt(),
+                &prompt::text_argument_message(instruction, placeholders),
+                "ActTextArgument",
+                schema,
+                deadline,
+            )
+            .await?;
+        let text = object.get("text").and_then(Json::as_str).map(str::to_owned);
+        Ok(TextReply { text, usage })
+    }
+
+    /// One structured-output call, with its usage and cost.
+    async fn structured(
+        &self,
+        model: &str,
+        system: &str,
+        user: &str,
+        name: &str,
+        schema: Json,
+        deadline: Instant,
+    ) -> Result<(Json, Usage), lithos_llm::Error> {
         let selector = if self.endpoint {
             format!("{ENDPOINT_PROVIDER}/{model}")
         } else {
@@ -137,12 +200,9 @@ impl ModelClient {
         context.set_deadline(deadline);
         let completion = self
             .client
-            .complete_object_with_context(request, "Act", inference_schema(), context)
+            .complete_object_with_context(request, name, schema, context)
             .await?;
-        Ok(ModelReply {
-            answer: serde_json::from_value(completion.object),
-            usage:  completion.response.usage_with_cost(),
-        })
+        Ok((completion.object, completion.response.usage_with_cost()))
     }
 }
 

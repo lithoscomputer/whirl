@@ -1,25 +1,15 @@
 import type { BrowserContext, Page, Request, Response } from "@playwright/test";
 import { createHostAllowlist } from "./host-glob.js";
-import type { CountOp, HttpParams, StringOp } from "./protocol.js";
-import { assertNever, ShimError } from "./protocol.js";
+import type { HttpParams, ResponseRead } from "./protocol.js";
+import { ShimError } from "./protocol.js";
 import { Deadline, pollUntilPass, shortErrorMessage } from "./step-util.js";
 
-export type ResponseField =
-	| { readonly type: "status" }
-	| { readonly type: "header"; readonly name: string }
-	| { readonly type: "json"; readonly pointer: string };
-
-export type ResponseCheck =
-	| { readonly type: "status"; readonly op: CountOp; readonly value: number }
-	| {
-			readonly type: "value";
-			readonly field: ResponseField;
-			readonly op: StringOp;
-	  };
-
 const maxRequestsPerEntry = 10_000;
-const maxJsonBodyBytes = 1_048_576;
-type NamedResponse = Pick<Response, "status" | "headerValue" | "body">;
+const maxBodyBytes = 1_048_576;
+type NamedResponse = Pick<
+	Response,
+	"status" | "headerValue" | "body" | "url" | "headersArray"
+>;
 
 async function withinTimeout<T>(
 	operation: Promise<T>,
@@ -54,74 +44,13 @@ function belongsToPage(request: Request, page: Page): boolean {
 	}
 }
 
-function matchesNumber(actual: number, op: CountOp, expected: number): boolean {
-	switch (op) {
-		case "==":
-			return actual === expected;
-		case "!=":
-			return actual !== expected;
-		case "<":
-			return actual < expected;
-		case "<=":
-			return actual <= expected;
-		case ">":
-			return actual > expected;
-		case ">=":
-			return actual >= expected;
-		default:
-			return assertNever(op);
-	}
-}
-
-function matchesString(actual: string, op: StringOp): boolean {
-	switch (op.op) {
-		case "==":
-			return actual === op.value;
-		case "!=":
-			return actual !== op.value;
-		case "contains":
-			return actual.includes(op.value);
-		case "matches":
-			return new RegExp(op.source, op.flags).test(actual);
-		default:
-			return assertNever(op);
-	}
-}
-
-function jsonPointerValue(json: unknown, pointer: string): unknown {
-	if (
-		(pointer !== "" && !pointer.startsWith("/")) ||
-		/~(?![01])/.test(pointer)
-	) {
-		throw new Error("invalid JSON Pointer");
-	}
-	if (pointer === "") return json;
-	let value = json;
-	for (const segment of pointer.slice(1).split("/")) {
-		const key = segment.replace(/~1/g, "/").replace(/~0/g, "~");
-		if (Array.isArray(value)) {
-			if (!/^(0|[1-9]\d*)$/.test(key) || Number(key) >= value.length) {
-				throw new Error(`JSON Pointer ${pointer} does not exist`);
-			}
-			value = (value as readonly unknown[])[Number(key)];
-		} else if (
-			typeof value === "object" &&
-			value !== null &&
-			Object.hasOwn(value, key)
-		) {
-			value = (value as Record<string, unknown>)[key];
-		} else {
-			throw new Error(`JSON Pointer ${pointer} does not exist`);
-		}
-	}
-	return value;
-}
-
 /** Records requests at context level, including popup navigation before the page event. */
 export class FlowNetwork {
 	readonly #context: BrowserContext;
 	readonly #responses = new Map<string, NamedResponse>();
-	readonly #jsonBodies = new Map<NamedResponse, Promise<unknown>>();
+	/** Names whose response came from an `HTTP` entry, with exact bytes. */
+	readonly #httpNames = new Set<string>();
+	readonly #bodies = new Map<NamedResponse, Promise<Buffer>>();
 	private readonly httpRequests = new Set<AbortController>();
 	private readonly allowedHost: (hostname: string) => boolean;
 	private readonly blockedHosts: Set<string>;
@@ -144,7 +73,8 @@ export class FlowNetwork {
 			context.off("request", this.#onRequest);
 			this.#requests = [];
 			this.#responses.clear();
-			this.#jsonBodies.clear();
+			this.#httpNames.clear();
+			this.#bodies.clear();
 		});
 	}
 
@@ -210,7 +140,7 @@ export class FlowNetwork {
 			});
 			if (
 				response.body !== null &&
-				Number(response.headers.get("content-length")) > maxJsonBodyBytes
+				Number(response.headers.get("content-length")) > maxBodyBytes
 			) {
 				throw new ShimError(
 					"action",
@@ -222,7 +152,7 @@ export class FlowNetwork {
 			if (response.body !== null) {
 				for await (const chunk of response.body) {
 					length += chunk.length;
-					if (length > maxJsonBodyBytes)
+					if (length > maxBodyBytes)
 						throw new ShimError(
 							"action",
 							"HTTP response exceeds the 1 MiB body limit",
@@ -231,10 +161,17 @@ export class FlowNetwork {
 				}
 			}
 			const bytes = Buffer.concat(chunks, length);
+			const responseHeaders = [...response.headers].map(([header, value]) => ({
+				name: header,
+				value,
+			}));
+			this.#httpNames.add(name);
 			this.#responses.set(name, {
 				status: () => response.status,
 				headerValue: async (header) => response.headers.get(header),
 				body: async () => bytes,
+				url: () => target.href,
+				headersArray: async () => responseHeaders,
 			});
 		} catch (error) {
 			if (error instanceof ShimError) throw error;
@@ -331,102 +268,73 @@ export class FlowNetwork {
 		this.#responses.set(name, response);
 	}
 
-	#named(name: string): NamedResponse {
-		const response = this.#responses.get(name);
-		if (response === undefined)
-			throw new ShimError("action", `unknown response ${name}`);
-		return response;
-	}
-
-	async #json(response: NamedResponse): Promise<unknown> {
-		let body = this.#jsonBodies.get(response);
+	/** The body within the SPEC 1 MiB limit, read once per response. */
+	#body(response: NamedResponse): Promise<Buffer> {
+		let body = this.#bodies.get(response);
 		if (body === undefined) {
-			body = (async (): Promise<unknown> => {
+			body = (async (): Promise<Buffer> => {
 				const declaredLength = await response.headerValue("content-length");
-				if (
-					declaredLength !== null &&
-					Number(declaredLength) > maxJsonBodyBytes
-				)
-					throw new Error("JSON response exceeds the 1 MiB body limit");
+				if (declaredLength !== null && Number(declaredLength) > maxBodyBytes)
+					throw new Error("the response exceeds the 1 MiB body limit");
 				const buffer = await response.body();
-				if (buffer.length > maxJsonBodyBytes)
-					throw new Error("JSON response exceeds the 1 MiB body limit");
-				return JSON.parse(buffer.toString("utf8")) as unknown;
+				if (buffer.length > maxBodyBytes)
+					throw new Error("the response exceeds the 1 MiB body limit");
+				return buffer;
 			})();
-			this.#jsonBodies.set(response, body);
+			this.#bodies.set(response, body);
 		}
 		return body;
 	}
 
-	async #read(name: string, field: ResponseField): Promise<string> {
-		const response = this.#named(name);
-		switch (field.type) {
-			case "status":
-				return String(response.status());
-			case "header": {
-				if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(field.name))
-					throw new Error("invalid response header name");
-				const header = await response.headerValue(field.name);
-				if (header === null)
-					throw new Error(`response header ${field.name} is absent`);
-				return header;
-			}
-			case "json": {
-				const value = jsonPointerValue(
-					await this.#json(response),
-					field.pointer,
-				);
-				const text = typeof value === "string" ? value : JSON.stringify(value);
-				if (text === undefined)
-					throw new Error("JSON Pointer did not resolve to a JSON value");
-				return text;
-			}
-			default:
-				return assertNever(field);
-		}
+	/**
+	 * True when the browser may have handed the body back as decoded text,
+	 * re-encoded as UTF-8: Chromium and WebKit do this for some text types.
+	 * Firefox and `HTTP` entries give the exact bytes (protocol 4.5).
+	 */
+	#bodyMayBeDecoded(name: string): boolean {
+		if (this.#httpNames.has(name)) return false;
+		const engine = this.#context.browser()?.browserType().name();
+		return engine !== "firefox";
 	}
 
-	async read(
+	/**
+	 * Reads a named response for Rust's check engine (protocol 4.5). With
+	 * `withBody`, the body is read too; a body that cannot be read, such as
+	 * a redirect's or one over the limit, comes back as `bodyError`.
+	 */
+	async readResponse(
 		name: string,
-		field: ResponseField,
+		withBody: boolean,
 		timeoutMs: number,
-		kind: "assert" | "capture" = "capture",
-	): Promise<string> {
+	): Promise<ResponseRead> {
+		const response = this.#responses.get(name);
+		if (response === undefined)
+			throw new ShimError("internal", `unknown response ${name}`);
+		const deadline = new Deadline(timeoutMs);
+		const headers = await withinTimeout(
+			response.headersArray(),
+			deadline.remainingMs(),
+		);
+		const base = {
+			status: response.status(),
+			url: response.url(),
+			headers: headers.map(
+				({ name: header, value }) => [header, value] as const,
+			),
+			bodyMayBeDecoded: this.#bodyMayBeDecoded(name),
+		};
+		if (!withBody) {
+			return { ...base, bodyBase64: null, bodyError: null };
+		}
 		try {
-			return await withinTimeout(this.#read(name, field), timeoutMs);
+			const body = await withinTimeout(
+				this.#body(response),
+				deadline.remainingMs(),
+			);
+			return { ...base, bodyBase64: body.toString("base64"), bodyError: null };
 		} catch (error) {
 			if (error instanceof ShimError) throw error;
-			throw new ShimError(
-				kind,
-				`response ${name}: ${shortErrorMessage(error)}`,
-			);
-		}
-	}
-
-	async assert(
-		name: string,
-		check: ResponseCheck,
-		timeoutMs: number,
-	): Promise<void> {
-		if (check.type === "status") {
-			const actual = this.#named(name).status();
-			if (!matchesNumber(actual, check.op, check.value)) {
-				throw new ShimError("assert", `response ${name} status did not match`, {
-					expected: `${check.op} ${String(check.value)}`,
-					actual: String(actual),
-				});
-			}
-			return;
-		}
-		const actual = await this.read(name, check.field, timeoutMs, "assert");
-		if (!matchesString(actual, check.op)) {
-			throw new ShimError("assert", `response ${name} field did not match`, {
-				expected:
-					check.op.op === "matches"
-						? `matches /${check.op.source}/${check.op.flags}`
-						: `${check.op.op} ${JSON.stringify(check.op.value)}`,
-				actual,
-			});
+			return { ...base, bodyBase64: null, bodyError: shortErrorMessage(error) };
 		}
 	}
 }

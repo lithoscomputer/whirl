@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Framed drop zone</title>
+    <style>
+      .zone { width: 320px; padding: 16px; border: 2px dashed #888; }
+    </style>
+  </head>
+  <body>
+    <div class="zone" id="files-zone">Drop files here</div>
+    <ul id="dropped"></ul>
+    <script>
+      const zone = document.getElementById("files-zone");
+      const dropped = document.getElementById("dropped");
+      zone.addEventListener("dragover", (event) => event.preventDefault());
+      zone.addEventListener("drop", (event) => {
+        event.preventDefault();
+        for (const file of event.dataTransfer.files) {
+          const item = document.createElement("li");
+          item.textContent = `${file.name}, ${file.size} bytes, ${file.type || "no type"}`;
+          dropped.append(item);
+        }
+      });
+    </script>
+  </body>
+</html>

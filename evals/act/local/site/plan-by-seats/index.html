@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Pricing</title>
+</head>
+<body>
+<h1>Pricing</h1>
+<ul class="plans">
+  <li><h2>Starter</h2><p>Up to 3 users</p><p>$9 a month</p><button data-plan="Starter">Choose plan</button></li>
+  <li><h2>Team</h2><p>Up to 10 users</p><p>$29 a month</p><button data-plan="Team">Choose plan</button></li>
+  <li><h2>Business</h2><p>Up to 50 users</p><p>$99 a month</p><button data-plan="Business">Choose plan</button></li>
+</ul>
+<p>Result: <span data-testid="result">none</span></p>
+<script>
+  const setResult = (text) => { document.querySelector("[data-testid=result]").textContent = text; };
+  for (const button of document.querySelectorAll("button[data-plan]")) {
+    button.addEventListener("click", () => setResult(button.dataset.plan));
+  }
+</script>
+</body>
+</html>

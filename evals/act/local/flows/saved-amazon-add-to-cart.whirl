@@ -1,0 +1,10 @@
+[Options]
+base: {{env.EVAL_BASE}}
+model: {{model}}
+
+# Two actions on a saved Amazon product page.
+VISIT /saved/amazon/
+ACT "click the 'Add to Cart' button" @60s
+ACT "click the 'Proceed to checkout' button" @60s
+[Asserts]
+url contains /saved/amazon/sign-in.html

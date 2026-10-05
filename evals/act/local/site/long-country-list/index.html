@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Country</title>
+<style>
+  .list { height: 12rem; overflow-y: auto; border: 1px solid #888; padding: 0; list-style: none; }
+  [role=option] { cursor: pointer; padding: 0.1rem 0.5rem; }
+</style>
+</head>
+<body>
+<h1>Where do you live?</h1>
+<div id="label">Country</div>
+<ul role="listbox" aria-labelledby="label" class="list">
+    <li role="option" aria-selected="false">Afghanistan</li>
+    <li role="option" aria-selected="false">Albania</li>
+    <li role="option" aria-selected="false">Algeria</li>
+    <li role="option" aria-selected="false">Andorra</li>
+    <li role="option" aria-selected="false">Angola</li>
+    <li role="option" aria-selected="false">Argentina</li>
+    <li role="option" aria-selected="false">Armenia</li>
+    <li role="option" aria-selected="false">Australia</li>
+    <li role="option" aria-selected="false">Austria</li>
+    <li role="option" aria-selected="false">Azerbaijan</li>
+    <li role="option" aria-selected="false">Bahamas</li>
+    <li role="option" aria-selected="false">Bahrain</li>
+    <li role="option" aria-selected="false">Bangladesh</li>
+    <li role="option" aria-selected="false">Barbados</li>
+    <li role="option" aria-selected="false">Belarus</li>
+    <li role="option" aria-selected="false">Belgium</li>
+    <li role="option" aria-selected="false">Belize</li>
+    <li role="option" aria-selected="false">Benin</li>
+    <li role="option" aria-selected="false">Bhutan</li>
+    <li role="option" aria-selected="false">Bolivia</li>
+    <li role="option" aria-selected="false">Botswana</li>
+    <li role="option" aria-selected="false">Brazil</li>
+    <li role="option" aria-selected="false">Brunei</li>
+    <li role="option" aria-selected="false">Bulgaria</li>
+    <li role="option" aria-selected="false">Burundi</li>
+    <li role="option" aria-selected="false">Cambodia</li>
+    <li role="option" aria-selected="false">Cameroon</li>
+    <li role="option" aria-selected="false">Canada</li>
+    <li role="option" aria-selected="false">Chad</li>
+    <li role="option" aria-selected="false">Chile</li>
+    <li role="option" aria-selected="false">China</li>
+    <li role="option" aria-selected="false">Colombia</li>
+    <li role="option" aria-selected="false">Comoros</li>
+    <li role="option" aria-selected="false">Croatia</li>
+    <li role="option" aria-selected="false">Cuba</li>
+    <li role="option" aria-selected="false">Cyprus</li>
+    <li role="option" aria-selected="false">Czechia</li>
+    <li role="option" aria-selected="false">Denmark</li>
+    <li role="option" aria-selected="false">Djibouti</li>
+    <li role="option" aria-selected="false">Dominica</li>
+    <li role="option" aria-selected="false">Ecuador</li>
+    <li role="option" aria-selected="false">Egypt</li>
+    <li role="option" aria-selected="false">Eritrea</li>
+    <li role="option" aria-selected="false">Estonia</li>
+    <li role="option" aria-selected="false">Eswatini</li>
+    <li role="option" aria-selected="false">Ethiopia</li>
+    <li role="option" aria-selected="false">Fiji</li>
+    <li role="option" aria-selected="false">Finland</li>
+    <li role="option" aria-selected="false">France</li>
+    <li role="option" aria-selected="false">Gabon</li>
+    <li role="option" aria-selected="false">Gambia</li>
+    <li role="option" aria-selected="false">Georgia</li>
+    <li role="option" aria-selected="false">Germany</li>
+    <li role="option" aria-selected="false">Ghana</li>
+    <li role="option" aria-selected="false">Greece</li>
+    <li role="option" aria-selected="false">Grenada</li>
+    <li role="option" aria-selected="false">Guatemala</li>
+    <li role="option" aria-selected="false">Guinea</li>
+    <li role="option" aria-selected="false">Guyana</li>
+    <li role="option" aria-selected="false">Haiti</li>
+    <li role="option" aria-selected="false">Honduras</li>
+    <li role="option" aria-selected="false">Hungary</li>
+    <li role="option" aria-selected="false">Iceland</li>
+    <li role="option" aria-selected="false">India</li>
+    <li role="option" aria-selected="false">Indonesia</li>
+    <li role="option" aria-selected="false">Iran</li>
+    <li role="option" aria-selected="false">Iraq</li>
+    <li role="option" aria-selected="false">Ireland</li>
+    <li role="option" aria-selected="false">Israel</li>
+    <li role="option" aria-selected="false">Italy</li>
+    <li role="option" aria-selected="false">Jamaica</li>
+    <li role="option" aria-selected="false">Japan</li>
+    <li role="option" aria-selected="false">Jordan</li>
+    <li role="option" aria-selected="false">Kazakhstan</li>
+    <li role="option" aria-selected="false">Kenya</li>
+    <li role="option" aria-selected="false">Kiribati</li>
+    <li role="option" aria-selected="false">Kuwait</li>
+    <li role="option" aria-selected="false">Kyrgyzstan</li>
+    <li role="option" aria-selected="false">Laos</li>
+    <li role="option" aria-selected="false">Latvia</li>
+    <li role="option" aria-selected="false">Lebanon</li>
+    <li role="option" aria-selected="false">Lesotho</li>
+    <li role="option" aria-selected="false">Liberia</li>
+    <li role="option" aria-selected="false">Libya</li>
+    <li role="option" aria-selected="false">Liechtenstein</li>
+    <li role="option" aria-selected="false">Lithuania</li>
+    <li role="option" aria-selected="false">Luxembourg</li>
+    <li role="option" aria-selected="false">Madagascar</li>
+    <li role="option" aria-selected="false">Malawi</li>
+    <li role="option" aria-selected="false">Malaysia</li>
+    <li role="option" aria-selected="false">Maldives</li>
+    <li role="option" aria-selected="false">Mali</li>
+    <li role="option" aria-selected="false">Malta</li>
+    <li role="option" aria-selected="false">Mauritania</li>
+    <li role="option" aria-selected="false">Mauritius</li>
+    <li role="option" aria-selected="false">Mexico</li>
+    <li role="option" aria-selected="false">Micronesia</li>
+    <li role="option" aria-selected="false">Moldova</li>
+    <li role="option" aria-selected="false">Monaco</li>
+    <li role="option" aria-selected="false">Mongolia</li>
+    <li role="option" aria-selected="false">Montenegro</li>
+    <li role="option" aria-selected="false">Morocco</li>
+    <li role="option" aria-selected="false">Mozambique</li>
+    <li role="option" aria-selected="false">Myanmar</li>
+    <li role="option" aria-selected="false">Namibia</li>
+    <li role="option" aria-selected="false">Nauru</li>
+    <li role="option" aria-selected="false">Nepal</li>
+    <li role="option" aria-selected="false">Netherlands</li>
+    <li role="option" aria-selected="false">Nicaragua</li>
+    <li role="option" aria-selected="false">Niger</li>
+    <li role="option" aria-selected="false">Nigeria</li>
+    <li role="option" aria-selected="false">Norway</li>
+    <li role="option" aria-selected="false">Oman</li>
+    <li role="option" aria-selected="false">Pakistan</li>
+    <li role="option" aria-selected="false">Palau</li>
+    <li role="option" aria-selected="false">Panama</li>
+    <li role="option" aria-selected="false">Paraguay</li>
+    <li role="option" aria-selected="false">Peru</li>
+    <li role="option" aria-selected="false">Philippines</li>
+    <li role="option" aria-selected="false">Poland</li>
+    <li role="option" aria-selected="false">Portugal</li>
+    <li role="option" aria-selected="false">Qatar</li>
+    <li role="option" aria-selected="false">Romania</li>
+    <li role="option" aria-selected="false">Russia</li>
+    <li role="option" aria-selected="false">Rwanda</li>
+    <li role="option" aria-selected="false">Samoa</li>
+    <li role="option" aria-selected="false">Senegal</li>
+    <li role="option" aria-selected="false">Serbia</li>
+    <li role="option" aria-selected="false">Seychelles</li>
+    <li role="option" aria-selected="false">Singapore</li>
+    <li role="option" aria-selected="false">Slovakia</li>
+    <li role="option" aria-selected="false">Slovenia</li>
+    <li role="option" aria-selected="false">Somalia</li>
+    <li role="option" aria-selected="false">Spain</li>
+    <li role="option" aria-selected="false">Sudan</li>
+    <li role="option" aria-selected="false">Suriname</li>
+    <li role="option" aria-selected="false">Sweden</li>
+    <li role="option" aria-selected="false">Switzerland</li>
+    <li role="option" aria-selected="false">Syria</li>
+    <li role="option" aria-selected="false">Tajikistan</li>
+    <li role="option" aria-selected="false">Tanzania</li>
+    <li role="option" aria-selected="false">Thailand</li>
+    <li role="option" aria-selected="false">Togo</li>
+    <li role="option" aria-selected="false">Tonga</li>
+    <li role="option" aria-selected="false">Tunisia</li>
+    <li role="option" aria-selected="false">Turkey</li>
+    <li role="option" aria-selected="false">Turkmenistan</li>
+    <li role="option" aria-selected="false">Tuvalu</li>
+    <li role="option" aria-selected="false">Uganda</li>
+    <li role="option" aria-selected="false">Ukraine</li>
+    <li role="option" aria-selected="false">Uruguay</li>
+    <li role="option" aria-selected="false">Uzbekistan</li>
+    <li role="option" aria-selected="false">Vanuatu</li>
+    <li role="option" aria-selected="false">Venezuela</li>
+    <li role="option" aria-selected="false">Vietnam</li>
+    <li role="option" aria-selected="false">Yemen</li>
+    <li role="option" aria-selected="false">Zambia</li>
+    <li role="option" aria-selected="false">Zimbabwe</li>
+</ul>
+<p>Selected: <span data-testid="country">none</span></p>
+<script>
+  for (const option of document.querySelectorAll("[role=option]")) {
+    option.addEventListener("click", () => {
+      for (const other of document.querySelectorAll("[role=option]")) other.setAttribute("aria-selected", "false");
+      option.setAttribute("aria-selected", "true");
+      document.querySelector("[data-testid=country]").textContent = option.textContent;
+    });
+  }
+</script>
+</body>
+</html>

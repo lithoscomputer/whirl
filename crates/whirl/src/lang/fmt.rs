@@ -16,11 +16,12 @@
 
 use std::fmt::Write as _;
 
+use crate::check::{Number, is_bytes_literal_shape};
 use crate::lang::ast::{
-    Action, ActionKind, Assert, AssertBody, Capture, CaptureSource, Comment, DurationLit,
-    DurationUnit, Entry, Extractor, File, FileOption, HttpBodyKind, Locator, NumOp, OptionValue,
-    Page, PageCheck, Regex, ResponseField, SegmentKind, StateCheck, StrCheck, TextPrefix, Value,
-    ValueSegment, ValueSource, Viewport,
+    Action, ActionKind, Assert, AssertBody, Capture, CheckLine, Comment, DurationLit, DurationUnit,
+    Entry, Extractor, File, FileOption, FilterArg, FilterSpec, HttpBodyKind, Locator, Operand,
+    OptionValue, Page, PageCheck, PredicateSpec, Regex, ResponseField, ScrollDirection,
+    ScrollMotion, SegmentKind, StateCheck, Subject, TextPrefix, Value, ValueSegment, Viewport,
 };
 
 /// Where a rendered value sits in its line. The context decides which
@@ -37,6 +38,16 @@ enum ValueCtx {
     ActionDefault,
     /// A role's accessible name in an action locator.
     ActionRoleName,
+    /// An unprefixed default-engine segment in a `DRAG` locator, where a
+    /// bare `to` also separates the two locators.
+    DragDefault,
+    /// A role's accessible name in a `DRAG` locator.
+    DragRoleName,
+    /// An unprefixed default-engine segment in a `SCROLL` locator, where a
+    /// bare `to` or direction word would read as the motion.
+    ScrollDefault,
+    /// A role's accessible name in a `SCROLL` locator.
+    ScrollRoleName,
     /// A role's accessible name in an `[Asserts]` locator; a bare check
     /// keyword would end the locator instead (SPEC 3.1).
     AssertRoleName,
@@ -46,6 +57,8 @@ enum ValueCtx {
     /// A value attached to a segment or `file:` prefix; the prefix
     /// shields it from keyword and timeout readings.
     Prefixed,
+    /// A check's expected value; a bare `[` would start a JSON literal.
+    Operand,
 }
 
 /// Every locator-segment prefix spelling (SPEC 6.1).
@@ -86,6 +99,12 @@ fn is_assert_stop(text: &str) -> bool {
 
 fn is_extractor_stop(text: &str) -> bool {
     matches!(text, "text" | "value" | "count") || text.starts_with("attr:")
+}
+
+/// The words `SCROLL` reads as its motion. Quoting them in every segment
+/// is simpler than tracking which one ends the locator.
+fn is_scroll_keyword(text: &str) -> bool {
+    text == "to" || ScrollDirection::from_keyword(text).is_some()
 }
 
 fn is_prefix_shaped(text: &str) -> bool {
@@ -142,9 +161,16 @@ fn bare_changes_parse(text: &str, ctx: ValueCtx, is_final: bool) -> bool {
     }
     match ctx {
         ValueCtx::Plain | ValueCtx::Prefixed => false,
+        ValueCtx::Operand => text.starts_with('['),
         ValueCtx::Page => text == "matches",
         ValueCtx::ActionDefault => is_prefix_shaped(text) || text == ">>",
         ValueCtx::ActionRoleName => text == ">>",
+        ValueCtx::DragDefault => is_prefix_shaped(text) || text == ">>" || text == "to",
+        ValueCtx::DragRoleName => text == ">>" || text == "to",
+        ValueCtx::ScrollDefault => {
+            is_prefix_shaped(text) || text == ">>" || is_scroll_keyword(text)
+        }
+        ValueCtx::ScrollRoleName => text == ">>" || is_scroll_keyword(text),
         ValueCtx::AssertRoleName => text == ">>" || is_assert_stop(text),
         ValueCtx::CaptureRoleName => text == ">>" || is_extractor_stop(text),
     }
@@ -223,6 +249,10 @@ fn render_regex(regex: &Regex) -> String {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum LocatorCtx {
     Action,
+    /// A `DRAG` locator, where a bare `to` is the separator.
+    Drag,
+    /// A `SCROLL` locator, where a bare `to` or direction word is the motion.
+    Scroll,
     Assert,
     Capture,
 }
@@ -231,8 +261,18 @@ impl LocatorCtx {
     fn role_name_ctx(self) -> ValueCtx {
         match self {
             Self::Action => ValueCtx::ActionRoleName,
+            Self::Drag => ValueCtx::DragRoleName,
+            Self::Scroll => ValueCtx::ScrollRoleName,
             Self::Assert => ValueCtx::AssertRoleName,
             Self::Capture => ValueCtx::CaptureRoleName,
+        }
+    }
+
+    fn default_ctx(self) -> ValueCtx {
+        match self {
+            Self::Drag => ValueCtx::DragDefault,
+            Self::Scroll => ValueCtx::ScrollDefault,
+            Self::Action | Self::Assert | Self::Capture => ValueCtx::ActionDefault,
         }
     }
 }
@@ -282,7 +322,7 @@ fn render_segment(kind: &SegmentKind, ctx: LocatorCtx, is_final: bool) -> String
             format!("frame:{}", render_value(value, ValueCtx::Prefixed, false))
         }
         SegmentKind::Nth(index) => format!("nth:{index}"),
-        SegmentKind::Default(value) => render_value(value, ValueCtx::ActionDefault, is_final),
+        SegmentKind::Default(value) => render_value(value, ctx.default_ctx(), is_final),
     }
 }
 
@@ -328,12 +368,11 @@ fn render_action(action: &Action) -> String {
         ActionKind::Visit { url } => {
             format!("VISIT {}", render_value(url, ValueCtx::Plain, is_final))
         }
-        ActionKind::Click { target } => {
-            format!(
-                "CLICK {}",
-                render_locator(target, LocatorCtx::Action, is_final)
-            )
-        }
+        ActionKind::Click { target, button } => format!(
+            "{} {}",
+            button.keyword(),
+            render_locator(target, LocatorCtx::Action, is_final)
+        ),
         ActionKind::Dblclick { target } => format!(
             "DBLCLICK {}",
             render_locator(target, LocatorCtx::Action, is_final)
@@ -380,8 +419,35 @@ fn render_action(action: &Action) -> String {
                 render_locator(target, LocatorCtx::Action, is_final)
             )
         }
+        ActionKind::Drag { source, target } => format!(
+            "DRAG {} to {}",
+            render_locator(source, LocatorCtx::Drag, false),
+            render_locator(target, LocatorCtx::Drag, is_final)
+        ),
+        ActionKind::ScrollIntoView { target } => format!(
+            "SCROLL {}",
+            render_locator(target, LocatorCtx::Scroll, is_final)
+        ),
+        ActionKind::Scroll { target, motion } => {
+            let motion = match motion {
+                ScrollMotion::Chunk(direction) => direction.keyword().to_owned(),
+                ScrollMotion::To(percent) => format!("to {percent}"),
+            };
+            match target {
+                Some(target) => format!(
+                    "SCROLL {} {motion}",
+                    render_locator(target, LocatorCtx::Scroll, false)
+                ),
+                None => format!("SCROLL {motion}"),
+            }
+        }
         ActionKind::Upload { target, path } => format!(
             "UPLOAD {} file:{}",
+            render_locator(target, LocatorCtx::Action, false),
+            render_value(path, ValueCtx::Prefixed, false)
+        ),
+        ActionKind::Drop { target, path } => format!(
+            "DROP {} file:{}",
             render_locator(target, LocatorCtx::Action, false),
             render_value(path, ValueCtx::Prefixed, false)
         ),
@@ -390,12 +456,17 @@ fn render_action(action: &Action) -> String {
         ActionKind::Eval { script } => {
             format!("EVAL {}", render_value(script, ValueCtx::Plain, is_final))
         }
-        ActionKind::Act { instruction } => {
-            format!(
+        ActionKind::Act { scope, instruction } => match scope {
+            Some(scope) => format!(
+                "ACT {} {}",
+                render_locator(scope, LocatorCtx::Action, false),
+                render_value(instruction, ValueCtx::Plain, is_final)
+            ),
+            None => format!(
                 "ACT {}",
                 render_value(instruction, ValueCtx::Plain, is_final)
-            )
-        }
+            ),
+        },
         ActionKind::Store { scope, key, value } => format!(
             "STORE {} {} {}",
             scope.keyword(),
@@ -420,32 +491,6 @@ fn render_page(page: &Page) -> String {
     out
 }
 
-/// Renders a string check: `== v`, `!= v`, `contains v`, `matches /re/`.
-fn render_str_check(check: &StrCheck, is_final: bool) -> String {
-    match check {
-        StrCheck::Eq(value) => format!("== {}", render_value(value, ValueCtx::Plain, is_final)),
-        StrCheck::Ne(value) => format!("!= {}", render_value(value, ValueCtx::Plain, is_final)),
-        StrCheck::Contains(value) => {
-            format!(
-                "contains {}",
-                render_value(value, ValueCtx::Plain, is_final)
-            )
-        }
-        StrCheck::Matches(regex) => format!("matches {}", render_regex(regex)),
-    }
-}
-
-fn num_op_text(op: NumOp) -> &'static str {
-    match op {
-        NumOp::Eq => "==",
-        NumOp::Ne => "!=",
-        NumOp::Lt => "<",
-        NumOp::Le => "<=",
-        NumOp::Gt => ">",
-        NumOp::Ge => ">=",
-    }
-}
-
 fn state_check_text(state: StateCheck) -> &'static str {
     match state {
         StateCheck::Visible => "visible",
@@ -458,58 +503,144 @@ fn state_check_text(state: StateCheck) -> &'static str {
     }
 }
 
+/// True for a typed literal's spelling (SPEC 3.1): a JSON number,
+/// `true`, `false`, `null`, or the shape of a bytes literal, which is bytes
+/// or an error when bare.
+fn is_typed_literal(text: &str) -> bool {
+    Number::parse(text).is_some()
+        || matches!(text, "true" | "false" | "null")
+        || is_bytes_literal_shape(text)
+}
+
+/// Renders an expected value. Quotes stay on a value whose bare form is
+/// a typed literal, and a JSON literal stays as written (SPEC 13).
+fn render_operand(operand: &Operand, is_final: bool) -> String {
+    match operand {
+        Operand::Json(literal) => literal.text.clone(),
+        Operand::Value(value) => {
+            // Quotes make a typed expected value a string (SPEC 9.6), so
+            // they stay on a typed-literal lookalike such as `"42"` and on
+            // any value with a variable, which could resolve to one.
+            let keeps_quotes = value.quoted
+                && value
+                    .as_literal()
+                    .is_none_or(|literal| is_typed_literal(&literal));
+            if keeps_quotes {
+                render_quoted(value)
+            } else {
+                render_value(value, ValueCtx::Operand, is_final)
+            }
+        }
+    }
+}
+
+/// Renders `[not] predicate` (SPEC 9.4).
+fn render_predicate(negated: bool, predicate: &PredicateSpec, is_final: bool) -> String {
+    let body = match predicate {
+        PredicateSpec::Compare { kind, expected } => {
+            format!("{} {}", kind.name(), render_operand(expected, is_final))
+        }
+        PredicateSpec::Matches(regex) => format!("matches {}", render_regex(regex)),
+        PredicateSpec::Word(kind) => kind.name().to_owned(),
+    };
+    if negated { format!("not {body}") } else { body }
+}
+
+/// Renders one filter; `is_final` marks the line's last token.
+fn render_filter(filter: &FilterSpec, is_final: bool) -> String {
+    let mut out = filter.kind.name().to_owned();
+    let last = filter.args.len().saturating_sub(1);
+    for (index, arg) in filter.args.iter().enumerate() {
+        match arg {
+            FilterArg::Value(value) if out.ends_with(':') => {
+                out.push_str(&render_value(value, ValueCtx::Prefixed, false));
+            }
+            FilterArg::Value(value) => {
+                out.push(' ');
+                out.push_str(&render_value(
+                    value,
+                    ValueCtx::Plain,
+                    is_final && index == last,
+                ));
+            }
+            FilterArg::Regex(regex) => {
+                out.push(' ');
+                out.push_str(&render_regex(regex));
+            }
+            FilterArg::Index(value) => {
+                let _ = write!(out, " {value}");
+            }
+        }
+    }
+    out
+}
+
+fn render_extractor(extractor: &Extractor) -> String {
+    match extractor {
+        Extractor::Text => "text".to_owned(),
+        Extractor::Value => "value".to_owned(),
+        Extractor::Count => "count".to_owned(),
+        Extractor::Attr(name) => format!("attr:{name}"),
+    }
+}
+
+/// Renders a subject (SPEC 9.2); `is_final` marks it as the line's last
+/// token, which only an `eval` script can be.
+fn render_subject(subject: &Subject, ctx: LocatorCtx, is_final: bool) -> String {
+    match subject {
+        Subject::Element { locator, extractor } => format!(
+            "{} {}",
+            render_locator(locator, ctx, false),
+            render_extractor(extractor)
+        ),
+        Subject::Url => "url".to_owned(),
+        Subject::Title => "title".to_owned(),
+        Subject::Eval(script) => {
+            format!("eval {}", render_value(script, ValueCtx::Plain, is_final))
+        }
+        Subject::Response { name: None, field } => render_response_field(field),
+        Subject::Response {
+            name: Some(name),
+            field,
+        } => format!("response:{} {}", name.text, render_response_field(field)),
+    }
+}
+
+/// Renders `subject { filter }`; `is_final` marks the last token.
+fn render_chain(
+    subject: &Subject,
+    filters: &[FilterSpec],
+    ctx: LocatorCtx,
+    is_final: bool,
+) -> String {
+    let mut out = render_subject(subject, ctx, is_final && filters.is_empty());
+    let last = filters.len().saturating_sub(1);
+    for (index, filter) in filters.iter().enumerate() {
+        out.push(' ');
+        out.push_str(&render_filter(filter, is_final && index == last));
+    }
+    out
+}
+
+fn render_check(check: &CheckLine, is_final: bool) -> String {
+    format!(
+        "{} {}",
+        render_chain(&check.subject, &check.filters, LocatorCtx::Assert, false),
+        render_predicate(check.negated, &check.predicate, is_final)
+    )
+}
+
 /// Renders an `[Asserts]` line (SPEC 9).
 fn render_assert(assert: &Assert) -> String {
     let is_final = assert.timeout.is_none();
     let mut out = match &assert.body {
-        AssertBody::HttpStatus { op, status } => {
-            format!("status {} {status}", num_op_text(*op))
-        }
-        AssertBody::HttpValue { field, check } => format!(
-            "{} {}",
-            render_response_field(field),
-            render_str_check(check, is_final)
-        ),
-        AssertBody::ResponseStatus { name, op, status } => format!(
-            "response:{} status {} {status}",
-            name.text,
-            num_op_text(*op)
-        ),
-        AssertBody::ResponseValue { name, field, check } => format!(
-            "response:{} {} {}",
-            name.text,
-            render_response_field(field),
-            render_str_check(check, is_final)
-        ),
         AssertBody::TabClosed { name } => format!("tab:{} closed", name.text),
         AssertBody::ElementState { locator, state } => format!(
             "{} {}",
             render_locator(locator, LocatorCtx::Assert, false),
             state_check_text(*state)
         ),
-        AssertBody::ElementValue {
-            locator,
-            source,
-            check,
-        } => {
-            let subject = match source {
-                ValueSource::Text => "text".to_owned(),
-                ValueSource::Value => "value".to_owned(),
-                ValueSource::Attr(name) => format!("attr:{name}"),
-            };
-            format!(
-                "{} {subject} {}",
-                render_locator(locator, LocatorCtx::Assert, false),
-                render_str_check(check, is_final)
-            )
-        }
-        AssertBody::ElementCount { locator, op, count } => format!(
-            "{} count {} {count}",
-            render_locator(locator, LocatorCtx::Assert, false),
-            num_op_text(*op)
-        ),
-        AssertBody::Url(check) => format!("url {}", render_str_check(check, is_final)),
-        AssertBody::Title(check) => format!("title {}", render_str_check(check, is_final)),
+        AssertBody::Check(check) => render_check(check, is_final),
     };
     push_timeout(&mut out, assert.timeout);
     out
@@ -518,45 +649,31 @@ fn render_assert(assert: &Assert) -> String {
 fn render_response_field(field: &ResponseField) -> String {
     match field {
         ResponseField::Status => "status".to_owned(),
+        ResponseField::Location => "location".to_owned(),
+        ResponseField::Body => "body".to_owned(),
+        ResponseField::Bytes => "bytes".to_owned(),
         ResponseField::Header(value) => {
             format!("header:{}", render_value(value, ValueCtx::Prefixed, false))
         }
         ResponseField::Json(value) => {
             format!("json:{}", render_value(value, ValueCtx::Prefixed, false))
         }
+        ResponseField::Xpath(value) => {
+            format!("xpath:{}", render_value(value, ValueCtx::Prefixed, false))
+        }
     }
 }
 
 /// Renders a `[Captures]` line (SPEC 10).
 fn render_capture(capture: &Capture) -> String {
-    let is_final = capture.filter.is_none() && capture.timeout.is_none();
-    let source = match &capture.source {
-        CaptureSource::Http(field) => render_response_field(field),
-        CaptureSource::Response { name, field } => {
-            format!("response:{} {}", name.text, render_response_field(field))
-        }
-        CaptureSource::Element { locator, extractor } => {
-            let extractor = match extractor {
-                Extractor::Text => "text".to_owned(),
-                Extractor::Value => "value".to_owned(),
-                Extractor::Count => "count".to_owned(),
-                Extractor::Attr(name) => format!("attr:{name}"),
-            };
-            format!(
-                "{} {extractor}",
-                render_locator(locator, LocatorCtx::Capture, false)
-            )
-        }
-        CaptureSource::Url => "url".to_owned(),
-        CaptureSource::Title => "title".to_owned(),
-        CaptureSource::Eval(script) => {
-            format!("eval {}", render_value(script, ValueCtx::Plain, is_final))
-        }
-    };
-    let mut out = format!("{}: {source}", capture.name.text);
-    if let Some(regex) = &capture.filter {
-        let _ = write!(out, " regex {}", render_regex(regex));
-    }
+    let is_final = capture.timeout.is_none();
+    let chain = render_chain(
+        &capture.subject,
+        &capture.filters,
+        LocatorCtx::Capture,
+        is_final,
+    );
+    let mut out = format!("{}: {chain}", capture.name.text);
     push_timeout(&mut out, capture.timeout);
     out
 }
@@ -850,12 +967,41 @@ mod tests {
         }
     }
 
-    fn scrub_str_check(check: &mut StrCheck) {
-        match check {
-            StrCheck::Eq(value) | StrCheck::Ne(value) | StrCheck::Contains(value) => {
-                scrub_value(value);
+    fn scrub_subject(subject: &mut Subject) {
+        match subject {
+            Subject::Element { locator, .. } => scrub_locator(locator),
+            Subject::Eval(script) => scrub_value(script),
+            Subject::Response { name, field } => {
+                if let Some(name) = name {
+                    scrub_ident(name);
+                }
+                scrub_response_field(field);
             }
-            StrCheck::Matches(regex) => scrub_regex(regex),
+            Subject::Url | Subject::Title => {}
+        }
+    }
+
+    fn scrub_filters(filters: &mut [FilterSpec]) {
+        for filter in filters {
+            filter.span = ZERO;
+            for arg in &mut filter.args {
+                match arg {
+                    FilterArg::Value(value) => scrub_value(value),
+                    FilterArg::Regex(regex) => scrub_regex(regex),
+                    FilterArg::Index(_) => {}
+                }
+            }
+        }
+    }
+
+    fn scrub_predicate(predicate: &mut PredicateSpec) {
+        match predicate {
+            PredicateSpec::Compare { expected, .. } => match expected {
+                Operand::Value(value) => scrub_value(value),
+                Operand::Json(literal) => scrub_value(&mut literal.value),
+            },
+            PredicateSpec::Matches(regex) => scrub_regex(regex),
+            PredicateSpec::Word(_) => {}
         }
     }
 
@@ -920,11 +1066,12 @@ mod tests {
                 scrub_value(url);
             }
             ActionKind::Visit { url } => scrub_value(url),
-            ActionKind::Click { target }
+            ActionKind::Click { target, .. }
             | ActionKind::Dblclick { target }
             | ActionKind::Check { target }
             | ActionKind::Uncheck { target }
-            | ActionKind::Hover { target } => scrub_locator(target),
+            | ActionKind::Hover { target }
+            | ActionKind::ScrollIntoView { target } => scrub_locator(target),
             ActionKind::Fill { target, value }
             | ActionKind::Type {
                 target,
@@ -937,9 +1084,22 @@ mod tests {
             | ActionKind::Upload {
                 target,
                 path: value,
+            }
+            | ActionKind::Drop {
+                target,
+                path: value,
             } => {
                 scrub_locator(target);
                 scrub_value(value);
+            }
+            ActionKind::Drag { source, target } => {
+                scrub_locator(source);
+                scrub_locator(target);
+            }
+            ActionKind::Scroll { target, .. } => {
+                if let Some(target) = target {
+                    scrub_locator(target);
+                }
             }
             ActionKind::Press { target, key } => {
                 if let Some(target) = target {
@@ -953,7 +1113,12 @@ mod tests {
             | ActionKind::Screenshot { name }
             | ActionKind::Snapshot { name } => scrub_ident(name),
             ActionKind::Eval { script } => scrub_value(script),
-            ActionKind::Act { instruction } => scrub_value(instruction),
+            ActionKind::Act { scope, instruction } => {
+                if let Some(scope) = scope {
+                    scrub_locator(scope);
+                }
+                scrub_value(instruction);
+            }
             ActionKind::Store { key, value, .. } => {
                 scrub_value(key);
                 scrub_value(value);
@@ -963,8 +1128,13 @@ mod tests {
 
     fn scrub_response_field(field: &mut ResponseField) {
         match field {
-            ResponseField::Status => {}
-            ResponseField::Header(value) | ResponseField::Json(value) => scrub_value(value),
+            ResponseField::Status
+            | ResponseField::Location
+            | ResponseField::Body
+            | ResponseField::Bytes => {}
+            ResponseField::Header(value)
+            | ResponseField::Json(value)
+            | ResponseField::Xpath(value) => scrub_value(value),
         }
     }
 
@@ -988,26 +1158,13 @@ mod tests {
             assert.span = ZERO;
             assert.text = String::new();
             match &mut assert.body {
-                AssertBody::HttpStatus { .. } => {}
-                AssertBody::HttpValue { field, check } => {
-                    scrub_response_field(field);
-                    scrub_str_check(check);
+                AssertBody::TabClosed { name } => scrub_ident(name),
+                AssertBody::ElementState { locator, .. } => scrub_locator(locator),
+                AssertBody::Check(check) => {
+                    scrub_subject(&mut check.subject);
+                    scrub_filters(&mut check.filters);
+                    scrub_predicate(&mut check.predicate);
                 }
-                AssertBody::ResponseValue { name, field, check } => {
-                    scrub_ident(name);
-                    scrub_response_field(field);
-                    scrub_str_check(check);
-                }
-                AssertBody::ResponseStatus { name, .. } | AssertBody::TabClosed { name } => {
-                    scrub_ident(name);
-                }
-                AssertBody::ElementState { locator, .. }
-                | AssertBody::ElementCount { locator, .. } => scrub_locator(locator),
-                AssertBody::ElementValue { locator, check, .. } => {
-                    scrub_locator(locator);
-                    scrub_str_check(check);
-                }
-                AssertBody::Url(check) | AssertBody::Title(check) => scrub_str_check(check),
             }
         }
         for capture in &mut entry.captures {
@@ -1015,19 +1172,8 @@ mod tests {
             capture.span = ZERO;
             capture.text = String::new();
             scrub_ident(&mut capture.name);
-            match &mut capture.source {
-                CaptureSource::Http(field) => scrub_response_field(field),
-                CaptureSource::Response { name, field } => {
-                    scrub_ident(name);
-                    scrub_response_field(field);
-                }
-                CaptureSource::Element { locator, .. } => scrub_locator(locator),
-                CaptureSource::Eval(script) => scrub_value(script),
-                CaptureSource::Url | CaptureSource::Title => {}
-            }
-            if let Some(regex) = &mut capture.filter {
-                scrub_regex(regex);
-            }
+            scrub_subject(&mut capture.subject);
+            scrub_filters(&mut capture.filters);
         }
     }
 
@@ -1075,6 +1221,16 @@ mod tests {
         );
     }
 
+    #[test]
+    fn act_round_trips_with_and_without_a_scope() {
+        assert_round_trip("VISIT /\nACT \"add the first product to the cart\" @60s\n");
+        assert_round_trip("VISIT /\nACT css:form >> role:group \"click Buy\"\n");
+        assert_eq!(
+            fmt("VISIT /\nACT   css:form   \"click Buy\"\n"),
+            "VISIT /\nACT css:form \"click Buy\"\n"
+        );
+    }
+
     // ---- Fixtures --------------------------------------------------
 
     /// Valid sources covering every construct; each must round-trip.
@@ -1085,7 +1241,7 @@ mod tests {
         "[Options]\nbase: https://example.com\nbrowser: webkit\nviewport: 800x600\nstep-timeout: 5s\nentry-timeout: 90s\nnav-timeout: 45s\nallow-hosts: example.com *.example.com\ndialogs: accept\nreduced-motion: reduce\nstorage: auth/state.json\nuser-agent: \"Mozilla/5.0 (Whirl)\"\nsetup: sign-in.whirl\nVISIT /\n",
         "[Options]\nbrowser: {{engine}}\nviewport: {{size}}\nstep-timeout: {{t}}\nVISIT /\n",
         // Every action form.
-        "VISIT /a\nCLICK \"Add to cart\"\nDBLCLICK text~:\"added\"\nFILL \"Email\" alice@example.com\nTYPE \"Code\" 424242\nPRESS Enter\nPRESS label:Search \"Control+A\"\nCHECK \"Remember me\"\nUNCHECK role:checkbox \"Spam\"\nSELECT \"Country\" \"United States\"\nHOVER testid:menu\nUPLOAD \"Avatar\" file:images/cat.png\nSCREENSHOT overview\nSNAPSHOT header\nEVAL \"window.scrollTo(0, 0)\"\nSTORE local onboarding:done yes\nSTORE local \"welcome seen\" {{env.SEEN}}\nSTORE session draft hi\nSTORE cookie chat_version v1\nVISIT /u/{{setup.user_id}}\n",
+        "VISIT /a\nCLICK \"Add to cart\"\nRIGHTCLICK \"report.pdf\"\nMIDDLECLICK role:link Docs\nDBLCLICK text~:\"added\"\nFILL \"Email\" alice@example.com\nTYPE \"Code\" 424242\nPRESS Enter\nPRESS label:Search \"Control+A\"\nCHECK \"Remember me\"\nUNCHECK role:checkbox \"Spam\"\nSELECT \"Country\" \"United States\"\nHOVER testid:menu\nDRAG \"Write spec\" to testid:done\nDRAG \"to\" to role:listitem \"to\"\nSCROLL testid:feed\nSCROLL down\nSCROLL role:dialog Filters up\nSCROLL to 50%\nSCROLL testid:board to 33.5%\nSCROLL \"down\"\nSCROLL \"to\" left\nUPLOAD \"Avatar\" file:images/cat.png\nDROP \"Drop files here\" file:reports/q3.csv\nDROP testid:dropzone file:{{report}}\nSCREENSHOT overview\nSNAPSHOT header\nEVAL \"window.scrollTo(0, 0)\"\nSTORE local onboarding:done yes\nSTORE local \"welcome seen\" {{env.SEEN}}\nSTORE session draft hi\nSTORE cookie chat_version v1\nVISIT /u/{{setup.user_id}}\n",
         // Timeout suffixes on every step kind.
         "VISIT / @45s\nCLICK go @60s\nPAGE /done @2s\n[Asserts]\ntestid:x visible @2500ms\nurl == / @1s\n[Captures]\nn: testid:x text @3s\nm: testid:x text regex /x(y)?/ @3s\n",
         // Every assert form and operator.
@@ -1113,9 +1269,9 @@ mod tests {
         // PRESS one-argument vs two-argument forms.
         "VISIT /\nPRESS Enter\nPRESS \"Control+A\"\nPRESS label:Search Enter\nPRESS role:textbox \"Query\" Enter\n",
         // Default-engine values that stay bare.
-        "VISIT /\nCLICK Save\nFILL Email alice\nUPLOAD Avatar file:cat.png\nSELECT Country France\n",
+        "VISIT /\nCLICK Save\nFILL Email alice\nUPLOAD Avatar file:cat.png\nDROP Dropzone file:cat.png\nDROP file:zone file:cat.png\nSELECT Country France\n",
         // Attached prefix values that need quotes.
-        "VISIT /\nCLICK css:\".a .b\" >> text:\"Add to cart\"\nCLICK label:\"First name\"\nUPLOAD \"Avatar\" file:\"my cat.png\"\n",
+        "VISIT /\nCLICK css:\".a .b\" >> text:\"Add to cart\"\nCLICK label:\"First name\"\nUPLOAD \"Avatar\" file:\"my cat.png\"\nDROP \"Drop files here\" file:\"my cat.png\"\nDROP \"css:.zone\" file:\"@5s\"\n",
         // Capture names and eval edge spellings.
         "VISIT /\n[Captures]\na_1: eval \"1 + 1\"\nb: eval regex\nc: eval \"@5s\"\nd: eval x regex /y/\n",
     ];
@@ -1161,10 +1317,63 @@ HTTP GET "@10s"
     }
 
     #[test]
+    fn keeps_quotes_on_typed_literal_spellings() {
+        assert_eq!(
+            fmt(
+                "VISIT /\n[Asserts]\ntestid:x text == \"1\"\nurl == \"true\"\nurl != \"paid\"\neval \"1\" == 1\neval \"1\" == \"[a]\"\n"
+            ),
+            "VISIT /\n[Asserts]\ntestid:x text == \"1\"\nurl == \"true\"\nurl != paid\neval 1 == 1\neval 1 == \"[a]\"\n"
+        );
+    }
+
+    #[test]
+    fn keeps_quotes_on_interpolated_expected_values() {
+        let source = "HTTP GET /x\n[Asserts]\nstatus == 200\njson:$.id == \"{{order_id}}\"\njson:$.n == \"{{a}}1\"\njson:$.id == {{order_id}}\n";
+        assert_eq!(fmt(source), source);
+    }
+
+    #[test]
+    fn keeps_json_literals_as_written() {
+        let source =
+            "VISIT /\nRESPONSE r GET /x\n[Asserts]\nresponse:r json:$.a == {\"b\":  [1,2]}\n";
+        assert_eq!(fmt(source), source);
+    }
+
+    #[test]
     fn quotes_values_that_require_them() {
         assert_eq!(
             fmt("VISIT /\nCLICK \"Add   to cart\"\nFILL Email \"a\\\"b\"\n"),
             "VISIT /\nCLICK \"Add   to cart\"\nFILL Email \"a\\\"b\"\n"
+        );
+    }
+
+    #[test]
+    fn scroll_keeps_quotes_on_words_it_reads_as_its_motion() {
+        assert_eq!(
+            fmt(
+                "VISIT /\nSCROLL \"feed\" down\nSCROLL \"right\"\nSCROLL role:region \"up\" to 100%\n"
+            ),
+            "VISIT /\nSCROLL feed down\nSCROLL \"right\"\nSCROLL role:region \"up\" to 100%\n"
+        );
+    }
+
+    #[test]
+    fn drag_keeps_quotes_on_a_to_that_is_text() {
+        assert_eq!(
+            fmt(
+                "VISIT /\nDRAG \"Card\" to \"Done\"\nDRAG \"to\" to role:region \"to\"\nCLICK \"to\"\n"
+            ),
+            "VISIT /\nDRAG Card to Done\nDRAG \"to\" to role:region \"to\"\nCLICK to\n"
+        );
+    }
+
+    #[test]
+    fn drop_renders_like_upload() {
+        assert_eq!(
+            fmt(
+                "VISIT /\nDROP   \"Drop files here\"   file:\"q3.csv\"   @5s\nDROP \"css:.zone\" file:\"my q3.csv\"\n"
+            ),
+            "VISIT /\nDROP \"Drop files here\" file:q3.csv @5s\nDROP \"css:.zone\" file:\"my q3.csv\"\n"
         );
     }
 
@@ -1177,11 +1386,21 @@ RESPONSE order POST /api/orders @30s
 [Asserts]
 response:order status >= 200
 response:order header:Content-Type contains application/json
-response:order json:"/key with space" == true
-response:order json:{{pointer}} matches /paid/i
+response:order json:"$['key with space']" == true
+response:order json:{{path}} matches /paid/i
+response:order json:$.total toFloat >= 1e3
+response:order json:$.tags == ["a", "{{tag}}"]
+response:order json:$.id == "42"
+response:order json:$.items[*].sku not contains ABC-1
+response:order bytes startsWith hex,7b;
+response:order location urlQueryParam next == /cart
+response:order xpath:"count(//li[@class='row'])" == 3
+response:order xpath://_:entry count >= 1
+response:order body xpath:"string(//h1)" == Checks
+response:order xpath:{{expr}} exists
 [Captures]
-body: response:order json:""
-id: response:order json:/id regex /order-(\d+)/ @2s
+body: response:order json:$
+id: response:order json:$.id toString regex /order-(\d+)/ @2s
 status: response:order status
 header: response:order header:{{header_name}}
 "#,

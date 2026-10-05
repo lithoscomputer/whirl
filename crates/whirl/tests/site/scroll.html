@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Long page</title>
+    <style>
+      html { scroll-behavior: smooth; }
+      body { margin: 0; font-family: sans-serif; }
+      .tall { height: 1600px; }
+      #back-to-top { position: fixed; right: 16px; bottom: 16px; }
+      #filters-body { height: 120px; overflow: auto; }
+      #terms { height: 100px; overflow: auto; }
+      [data-testid="board"] { width: 400px; overflow-x: auto; white-space: nowrap; }
+      [data-testid="board"] > div { display: inline-block; width: 300px; height: 60px; }
+    </style>
+  </head>
+  <body>
+    <h1>Long page</h1>
+    <div role="dialog" aria-label="Filters">
+      <h2>Filters</h2>
+      <div id="filters-body">
+        <p>Filter 1</p><p>Filter 2</p><p>Filter 3</p><p>Filter 4</p><p>Filter 5</p>
+        <p>Filter 6</p><p>Filter 7</p><p>Filter 8</p><p>Filter 9</p><p>Filter 10</p>
+      </div>
+    </div>
+    <div id="terms" role="region" aria-label="Terms" tabindex="0">
+      <p>Term 1</p><p>Term 2</p><p>Term 3</p><p>Term 4</p><p>Term 5</p><p>Term 6</p><p>Term 7</p>
+    </div>
+    <button id="agree" disabled>I agree</button>
+    <div data-testid="board">
+      <div>Column A</div><div>Column B</div><div>Column C</div><div>Column D</div>
+    </div>
+    <div class="tall">Middle</div>
+    <p id="word-down">down</p>
+    <div class="tall">Lower</div>
+    <ul id="feed"><li>Item 1</li></ul>
+    <div data-testid="load-more">Loading more</div>
+    <button id="back-to-top" hidden>Back to top</button>
+    <script>
+      const terms = document.getElementById("terms");
+      terms.addEventListener("scroll", () => {
+        if (terms.scrollTop + terms.clientHeight >= terms.scrollHeight - 1) {
+          document.getElementById("agree").disabled = false;
+        }
+      });
+      const back = document.getElementById("back-to-top");
+      window.addEventListener("scroll", () => {
+        back.hidden = window.scrollY < 400;
+      });
+      const feed = document.getElementById("feed");
+      new IntersectionObserver((entries) => {
+        if (!entries.some((entry) => entry.isIntersecting) || feed.children.length > 1) return;
+        for (let n = 2; n <= 25; n += 1) {
+          const item = document.createElement("li");
+          item.textContent = `Item ${n}`;
+          feed.append(item);
+        }
+      }).observe(document.querySelector("[data-testid=load-more]"));
+    </script>
+  </body>
+</html>

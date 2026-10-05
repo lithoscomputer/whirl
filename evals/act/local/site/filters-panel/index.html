@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Apartments</title>
+<style>
+  body { min-height: 2000px; }
+  [role=dialog] { position: fixed; top: 40px; left: 40px; width: 320px; border: 1px solid #999; background: #fff; }
+  #filter-list { height: 200px; overflow-y: auto; }
+  fieldset { margin: 8px; }
+</style>
+</head>
+<body>
+<h1>Apartments for rent</h1>
+<div role="dialog" aria-label="All filters">
+  <h2>All filters</h2>
+  <div id="filter-list">
+    <fieldset><legend>Price</legend><label><input type="checkbox"> Under $2,000</label></fieldset>
+    <fieldset><legend>Bedrooms</legend><label><input type="checkbox"> Studio</label></fieldset>
+    <fieldset><legend>Bathrooms</legend><label><input type="checkbox"> 2 or more</label></fieldset>
+    <fieldset><legend>Pets</legend><label><input type="checkbox"> Dogs allowed</label></fieldset>
+    <fieldset><legend>Parking</legend><label><input type="checkbox"> Garage</label></fieldset>
+    <fieldset><legend>Laundry</legend><label><input type="checkbox"> In unit</label></fieldset>
+    <fieldset><legend>Amenities</legend><label><input type="checkbox"> Pool</label></fieldset>
+    <fieldset><legend>Lease</legend><label><input type="checkbox"> Short term</label></fieldset>
+  </div>
+  <button>Show results</button>
+</div>
+</body>
+</html>
