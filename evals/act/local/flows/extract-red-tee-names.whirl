@@ -1,0 +1,12 @@
+[Options]
+app-url: {{env.EVAL_BASE}}
+model: {{model}}
+
+# EXTRACT: a list, which must hold every match.
+VISIT /cheapest-red-shirt/
+ASSERT heading:Shirts visible
+EXTRACT names "the names of all red tees, not polos, henleys, or oxfords" @60s
+{ "type": "array", "items": { "type": "string" } }
+ASSERT extract:names count == 2
+ASSERT extract:names contains "Crimson tee"
+ASSERT extract:names contains "Scarlet tee"

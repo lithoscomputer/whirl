@@ -1,0 +1,6 @@
+./count.whirl:4:8: error: `ai:` names one element and cannot be counted; count a locator without `ai:`
+  ASSERT ai:"the result rows" count == 2
+         ^^^^^^^^^^^^^^^^^^^^
+./nomodel.whirl:2:7: error: `ai:` needs a `model` option naming the language model to ask
+  CLICK ai:"the buy button"
+        ^^^^^^^^^^^^^^^^^^^

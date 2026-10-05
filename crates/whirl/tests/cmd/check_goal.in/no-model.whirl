@@ -1,0 +1,3 @@
+VISIT /
+GOAL "add two mugs to the cart"
+ASSERT testid:cart text == 2

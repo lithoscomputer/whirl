@@ -1,0 +1,5 @@
+error: the argument '--out <DIR>' cannot be used with '--artifacts <DIR>'
+
+Usage: whirl run --out <DIR> <PATH>...
+
+For more information, try '--help'.

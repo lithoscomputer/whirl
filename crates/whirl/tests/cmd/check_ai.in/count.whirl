@@ -1,0 +1,4 @@
+[Options]
+model: anthropic/claude-sonnet-5
+VISIT /
+ASSERT ai:"the result rows" count == 2

@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "kind": "goal",
+      "line": "GOAL \"buy one red mug with standard shipping for Grace Hopper\"",
+      "occurrence": 1,
+      "model": "anthropic/claude-sonnet-5",
+      "actions": [
+        {
+          "line": "FILL spinbutton:\"Quantity of Red mug\" \"1\"",
+          "fingerprints": [
+            {
+              "role": "spinbutton",
+              "name": "Quantity of Red mug"
+            }
+          ]
+        },
+        {
+          "line": "CLICK button:\"Proceed to checkout\"",
+          "fingerprints": [
+            {
+              "role": "button",
+              "name": "Proceed to checkout"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

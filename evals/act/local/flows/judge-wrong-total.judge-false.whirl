@@ -1,0 +1,8 @@
+[Options]
+app-url: {{env.EVAL_BASE}}
+model: {{model}}
+
+# JUDGE: a false claim; the task passes when JUDGE fails with judge-false.
+VISIT /judge-dashboard/
+ASSERT testid:refund visible
+JUDGE testid:refund "the total equals the sum of the line items" @60s

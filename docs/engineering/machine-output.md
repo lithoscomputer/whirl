@@ -1,6 +1,6 @@
 # Machine-readable output
 
-`whirl check --json flows/` writes diagnostics to stdout. `whirl --report-json
+`whirl check --json flows/` writes diagnostics to stdout. `whirl run --report-json
 report.json flows/` writes the run report. The check document uses `version: 1`,
 and the run report uses `version: 2`. Consumers must ignore unknown fields.
 Breaking shape changes require a new version.
@@ -12,8 +12,8 @@ Schemas: [check](check.schema.json), [run report](report.schema.json).
 | Code | Meaning |
 | --- | --- |
 | `parse-error` | Invalid flow syntax; `expected` lists alternatives when available |
-| `mixed-check-syntax` | A file uses both `[Asserts]` or `[Captures]` sections and `ASSERT` or `CAPTURE` lines |
 | `input-selection` | Missing input path or no selected flow files |
+| `invalid-option` | A `-O` argument has an unknown key, an invalid value, or the wrong form; exit 4 |
 | `input-io` | An input could not be read |
 | `setup-io` | A setup flow could not be found or read |
 | `nested-setup` | A setup flow names another setup |
@@ -23,20 +23,31 @@ Schemas: [check](check.schema.json), [run report](report.schema.json).
 | `conflicting-storage` | Both setup and storage are specified |
 | `duplicate-artifact` | An artifact name is repeated |
 | `duplicate-response` | A response name is used twice in one file |
-| `unknown-response` | A check reads a response name that no earlier line defines |
-| `duplicate-tab` | A tab name is used twice in one file |
-| `unknown-tab` | A line names a tab that no earlier line opens |
+| `unknown-response` | A check reads a response or request name that no earlier line defines |
+| `duplicate-window` | A window name is used twice in one file |
+| `unknown-window` | A line names a window that no earlier line opens |
 | `unused-capture` | A capture is never read; warning |
 | `redundant-presence` | The following assertion requires presence; warning |
 | `unasserted-http-status` | An independent HTTP entry has no status assertion; warning |
-| `act-without-model` | A file uses `ACT` without a `model` option |
+| `act-without-model` | A file uses `ACT`, `GOAL`, `ai:`, `EXTRACT`, or `JUDGE` without a `model` option |
 | `unknown-model` | The `model` option names a model the catalog cannot route |
-| `sections-deprecated` | A deprecated `[Asserts]` or `[Captures]` section; `whirl fmt` rewrites it; warning |
+| `ai-count` | An `ai:` target is counted; it names one element |
+| `cache-invalid` | A flow's AI cache is not a valid version 1 file; path is the cache file |
+| `cache-stale-entry` | An AI cache entry matches no line of its flow; path is the cache file; warning |
+| `duplicate-extract` | An `EXTRACT` name is used twice in one file |
+| `unknown-extract` | A check reads an `EXTRACT` name that no earlier line defines |
+| `extract-schema-unsupported` | An `EXTRACT` schema uses a keyword or format outside the supported subset |
+| `extract-unsettled` | `EXTRACT` directly follows an interaction with no check between them; warning |
+| `judge-without-images` | A file uses `JUDGE`, and the catalog says its model does not accept images |
+| `judge-images-unknown` | A file uses `JUDGE`, and the catalog does not say whether its model accepts images; warning |
+| `judge-alone` | An entry has `JUDGE` and no `ASSERT` that waits for the state it judges; warning |
+| `goal-unchecked` | A `GOAL` is not the last action of its entry, or its entry has no `ASSERT` |
 | `filter-type` | A check's subject, filters, predicate, and literal expected value cannot work together, such as `text toHex` or `status == "200"` |
 
 Locations use 1-based Unicode character positions, not bytes or UTF-16 units.
 `length` is the source span length on that line. Input and I/O diagnostics may
-have null locations. `expected` is an array, empty when there are no alternatives.
+have null locations, and so does a lint about an option set with `-O`, which
+is not on a line of the file. `expected` is an array, empty when there are no alternatives.
 Warnings do not change exit status. Successful checks emit an empty diagnostics
 array. Argument syntax errors, such as an unknown flag, still use CLI usage text.
 
@@ -56,7 +67,53 @@ that chose it; and `usage`, with `modelCalls`, `inputTokens`, `outputTokens`,
 of `requests`, `inputTokens`, `outputTokens`, and `costUsdMicros` when every
 answered request was priced. The step's `costUsdMicros` is the model's cost
 plus Jev's; a step with no model call costs only what Jev did. Arguments keep their `%name%` placeholders.
-`internal` covers an invalid shim result. Codes are stable; message text may
+`internal` covers an invalid shim result.
+
+A step can have `warnings`, each with a stable `code` and a `message`. The
+step's status does not change. `unused-mock` marks a `MOCK` line whose mock
+served no request in a file that passed (SPEC 7.5). The AI cache (SPEC 12.1)
+adds `cache-miss` for a line with no entry, `healed` for a stale entry that
+the model replaced, `uncached` for an absence check that passed with no
+element, `cache-unstable` for an element without a strict locator, and
+`cache-secret` for a line whose masked value no reference names.
+
+A step with `ai:` targets has an `ai` object: `model`, `targets`, and `usage`
+in the shape of the `act` usage. Each target has the authored `target`, the
+`locator` it resolved to, the model's `description`, its `cache` status
+(`hit`, `miss`, `healed`, or `uncached`), and for a heal the `cached`
+locator. An `ACT` step's `act` object adds `cache` (`hit`, `miss`, or
+`healed`) and, for a heal, the `cached` lines; an action replayed from the
+cache has `plannedBy` `cache`. In `--cache=only`, a miss fails the step with
+the code `cache-miss`.
+
+An `EXTRACT` step (SPEC 7.6) fails with `extract-schema` when the answer does
+not match its schema, `extract-ref` when a link field names no link, and
+`extract-model` for a model error. It has an `extract` object: `model`, the
+`value` as `{type, value}` like a capture, absent when the model found no
+value, and `usage` in the shape of the `act` usage.
+
+A `JUDGE` step (SPEC 9.8) has the kind `judge`. It fails with `judge-false`
+when the model answers `no`: `expected` is the claim and `actual` the model's
+reason. It passes with the warning `judge-unsure` when the model answers
+`unsure`. A model error is `judge-model`. It has a `judge` object: `model`,
+the `verdict` (`yes`, `no`, or `unsure`) and the masked `reason`, both absent
+when the step ended before the model answered, and `usage` in the shape of
+the `act` usage. Consecutive `JUDGE` lines with the same scope and timeout
+share one call: the first line's `usage` holds it, and the later lines have
+`modelCalls` 0.
+
+A `GOAL` step (SPEC 7.7) fails with `goal-impossible` when the model answers
+`impossible` (`actual` is the model's reason), `goal-limit` when the answer
+after 20 actions is not `done`, and `timeout` when its time runs out. A model
+error is `goal-model`, and an answer that `ACT` would reject is
+`act-invalid-decision`. It has a `goal` object in the shape of the `act`
+object without `planner`: `model`; `actions`, each with its `line`,
+`description`, `plannedBy` (`llm` or `cache`), and `error` for an action that
+failed and that the model planned past; `end` (`done` or `impossible`) and
+the masked `reason` when the model ended the goal; `cache`; `cached` for a
+heal; and `usage`. A file that ran `MOCK`
+lines has `mocks`: each with its `line`, `method`, resolved `url`, and
+`hits`, the number of requests it served. Codes are stable; message text may
 change and must not be parsed. Secret masking covers diagnostic action logs in
 run reports. `check` reports source text without resolving environment variables.
 
@@ -70,6 +127,18 @@ when an older shim omits them. With `--video`, `runtime` also has `videoFps`,
 the recording's frames per second (60 or the `--video-fps` value on Chromium,
 25 elsewhere); it is absent without a recording and in older reports. A failure
 before context startup has no runtime object.
+
+Each file whose options resolved has `settings`: one object for every option
+key, in the order of SPEC section 5, with the `value` the file ran with (text,
+a list, or null when unset), its `source` (`default`, `file`, or
+`command-line`), and `active`, which is false for a `browsersim-*` setting that
+ordinary runs validate but do not apply. Values use the text form and are
+masked like other output (SPEC 11); `allow-hosts` lists the configured hosts
+without the implicit `app-url` host. `blockedHosts` lists each blocked hostname,
+and `blockedHostRules` gives the rule behind each one: its `option`
+(`allow-hosts` or `block-hosts`) and the `block-hosts` `glob` that matched, or
+null when no `allow-hosts` glob matched. Both new fields are absent in older
+reports.
 
 ## Saved reports and run records
 
@@ -120,13 +189,13 @@ version 1 capture as a string.
 ## Rerunning failures
 
 ```sh
-whirl --report-json report.json flows/
-whirl --rerun-failed report.json --trace
+whirl run --report-json report.json flows/
+whirl run --rerun-failed report.json --trace
 ```
 
 Reruns select failed and errored files, resolve relative paths using the report's
 working directory, and execute each whole file plus its setup. Reports do not
-store executable configuration or secret values. Supply the original `--base`,
+store executable configuration or secret values. Supply the original `-O` options,
 `--browser`, variable flags, and environment again when needed. Move a report
 freely, but update file paths if the project itself has moved.
 

@@ -1,5 +1,5 @@
-"""Compare language models on Whirl's ACT: run each model against each eval
-task, then write a dated summary. See evals/act/README.md.
+"""Compare language models on Whirl's ACT, GOAL, ai: targets, EXTRACT, and JUDGE: run each model
+against each eval task, then write a dated summary. See evals/act/README.md.
 
 Each task is a .whirl flow. Runs are kept under evals/act/runs/ and never
 changed; the summary reads them all, so a session can stop and resume.
@@ -16,6 +16,8 @@ import statistics
 import subprocess
 import sys
 import threading
+import time
+import urllib.parse
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -26,6 +28,26 @@ DEFAULT_N = {"local": 10, "live": 1}
 # A task whose file name ends with this passes only when ACT finds no
 # element (evals/act/README.md).
 NO_MATCH_SUFFIX = ".no-match.whirl"
+# A task whose file name ends with this passes only when an ai: target
+# matches several elements and fails with strictness (SPEC 6.3).
+AMBIGUOUS_SUFFIX = ".ambiguous.whirl"
+# A task whose file name ends with this passes only when JUDGE answers no
+# (SPEC 9.8).
+JUDGE_FALSE_SUFFIX = ".judge-false.whirl"
+# A task whose file name ends with this passes only when GOAL answers
+# impossible (SPEC 7.7).
+IMPOSSIBLE_SUFFIX = ".impossible.whirl"
+# Each special suffix and the error code that makes its task pass.
+EXPECTED_FAILURES = {
+    NO_MATCH_SUFFIX: "act-no-match",
+    AMBIGUOUS_SUFFIX: "strictness",
+    JUDGE_FALSE_SUFFIX: "judge-false",
+    IMPOSSIBLE_SUFFIX: "goal-impossible",
+}
+# A task whose file name ends with this passes only when the flow passes with
+# the step warning: JUDGE answers unsure.
+UNSURE_SUFFIX = ".unsure.whirl"
+EXPECTED_WARNINGS = {UNSURE_SUFFIX: "judge-unsure"}
 # The value the login task fills through {{env.EVAL_PASSWORD}}. It is not a
 # secret; it only has to reach the page without reaching the model.
 EVAL_PASSWORD = "eval-password-5d1c"
@@ -39,18 +61,33 @@ class Task:
     set: str
     name: str
     path: Path
-    expects_no_match: bool
+    # The error code the task expects, when it passes only by failing.
+    expected_failure: str | None
+
+
+def expected_failure(file_name):
+    """The error code a task file expects, from its suffix."""
+    for suffix, code in EXPECTED_FAILURES.items():
+        if file_name.endswith(suffix):
+            return code
+    return None
+
+
+def expected_warning(file_name):
+    """The step warning a task file expects, from its suffix."""
+    for suffix, code in EXPECTED_WARNINGS.items():
+        if file_name.endswith(suffix):
+            return code
+    return None
 
 
 def load_tasks(set_name, only=()):
     """The tasks of one set, sorted by name, limited to `only` when given."""
     tasks = []
     for path in sorted((EVALS / set_name / "flows").glob("*.whirl")):
-        expects_no_match = path.name.endswith(NO_MATCH_SUFFIX)
-        suffix = NO_MATCH_SUFFIX if expects_no_match else ".whirl"
-        name = path.name[: -len(suffix)]
+        name = task_name(path)
         if not only or name in only:
-            tasks.append(Task(set_name, name, path, expects_no_match))
+            tasks.append(Task(set_name, name, path, expected_failure(path.name)))
     return tasks
 
 
@@ -99,7 +136,7 @@ class Result:
 
 def task_name(file_path):
     name = Path(file_path).name
-    for suffix in (NO_MATCH_SUFFIX, ".whirl"):
+    for suffix in (*EXPECTED_FAILURES, *EXPECTED_WARNINGS, ".whirl"):
         if name.endswith(suffix):
             return name[: -len(suffix)]
     return name
@@ -108,13 +145,23 @@ def task_name(file_path):
 def classify(file_report, model):
     """Classifies one flow's result from a Whirl JSON report."""
     name = task_name(file_report["path"])
-    expects_no_match = Path(file_report["path"]).name.endswith(NO_MATCH_SUFFIX)
+    expects = expected_failure(Path(file_report["path"]).name)
     steps = [step for entry in file_report["entries"] for step in entry["steps"]]
-    # A task can have several ACT lines; its measurements are their sums.
+    # A task can have several ACT lines and ai: targets; its measurements
+    # are their sums.
     act_steps = [step for step in steps if step.get("act") is not None]
+    ai_steps = [step for step in steps if step.get("ai") is not None]
+    ai_steps += [step for step in steps if step.get("extract") is not None]
+    ai_steps += [step for step in steps if step.get("judge") is not None]
+    ai_steps += [step for step in steps if step.get("goal") is not None]
     result = Result(name, model, "fail")
-    if act_steps:
+    if act_steps or ai_steps:
         usages = [step["act"]["usage"] for step in act_steps]
+        usages += [
+            (step.get("ai") or step.get("extract") or step.get("judge") or step["goal"])["usage"]
+            for step in ai_steps
+        ]
+        act_steps = act_steps + ai_steps
         result.duration_ms = sum(step["durationMs"] for step in act_steps)
         result.model_calls = sum(usage["modelCalls"] for usage in usages)
         result.input_tokens = sum(usage["inputTokens"] for usage in usages)
@@ -124,7 +171,7 @@ def classify(file_report, model):
         costs = [usage.get("costUsdMicros", 0 if usage["modelCalls"] == 0 else None) for usage in usages]
         result.priced = all(cost is not None for cost in costs)
         result.cost_usd_micros = sum(costs) if result.priced else None
-        actions = [action for step in act_steps for action in step["act"]["actions"]]
+        actions = [action for step in act_steps for action in (step.get("act") or {}).get("actions", [])]
         result.actions = len(actions)
         result.jev_actions = len([action for action in actions if action.get("plannedBy") == "jev"])
 
@@ -136,8 +183,11 @@ def classify(file_report, model):
         result.outcome = "error"
     elif entries and entries[0]["name"].startswith("precheck") and entries[0]["status"] != "passed":
         result.outcome = "drift"
-    elif expects_no_match:
-        result.outcome = "pass" if result.code == "act-no-match" else "fail"
+    elif expects:
+        result.outcome = "pass" if result.code == expects else "fail"
+    elif warns := expected_warning(Path(file_report["path"]).name):
+        warned = any(warning["code"] == warns for step in steps for warning in step.get("warnings", []))
+        result.outcome = "pass" if file_report["status"] == "passed" and warned else "fail"
     else:
         result.outcome = "pass" if file_report["status"] == "passed" else "fail"
     return result
@@ -177,6 +227,16 @@ def shortfalls(tasks, models, results, n):
 
 
 class QuietHandler(http.server.SimpleHTTPRequestHandler):
+    """Serves the site. A `delay=MS` query parameter holds the response
+    that long, like a slow API on a real site."""
+
+    def do_GET(self):
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        delay = query.get("delay", ["0"])[0]
+        if delay.isdigit():
+            time.sleep(min(int(delay), 10_000) / 1000)
+        super().do_GET()
+
     def log_message(self, *args):
         pass
 
@@ -209,10 +269,11 @@ def run_pass(set_name, model, tasks, env):
     option, flags = whirl_model(model)
     command = [
         whirl_binary(),
+        "run",
         *flags,
         "--var", f"model={option}",
         "--report-json", str(run_dir / "report.json"),
-        "--artifacts", str(run_dir / "artifacts"),
+        "--out", str(run_dir / "artifacts"),
         *[str(task.path) for task in tasks],
     ]
     with (run_dir / "stdout.txt").open("w") as stdout:

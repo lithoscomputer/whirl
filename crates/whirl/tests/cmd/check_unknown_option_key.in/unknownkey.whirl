@@ -1,5 +1,5 @@
 [Options]
-base: https://shop.example.com
+app-url: https://shop.example.com
 frobs: 3
 
 VISIT /

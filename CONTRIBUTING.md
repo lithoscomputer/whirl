@@ -24,8 +24,25 @@ the Mise environment (`mise exec -- cargo …` or an activated shell).
 
 ## Layout
 
-- `crates/whirl` — the Rust binary: parser, formatter, lints, runner,
-  reporters, `whirl install`.
+The Rust code is a workspace of nine crates under `crates/`. ADR
+`crate-layout` records what each owns and the rule that dependencies point
+down only.
+
+- `crates/whirl` — the binary: CLI, exit codes, telemetry, `whirl install`,
+  `whirl doctor`, and every acceptance test.
+- `crates/whirl-run` — the runner: flows, steps, variables, the AI cache,
+  and artifacts.
+- `crates/whirl-ai` — language model calls for `ACT`, `GOAL`, `ai:`,
+  `EXTRACT`, and `JUDGE`.
+- `crates/whirl-check` — the check engine: filters, predicates, and literal
+  validation.
+- `crates/whirl-report` — the run report model and its renderers.
+- `crates/whirl-shim` — the browser shim client, wire format, launch
+  resolution, and bundle layout.
+- `crates/whirl-lang` — the `.whirl` language: AST, parser, formatter, lints,
+  and option resolver.
+- `crates/whirl-types` — the values and static types that `whirl-lang` and
+  `whirl-check` share.
 - `crates/whirl-xpath` — XPath 1.0 through libxml2, the one crate allowed
   `unsafe` code (ADR `evaluate-checks-in-rust` §1.6).
 - `shim/` — the TypeScript browser shim on the Playwright library. It runs
@@ -55,8 +72,9 @@ Per the [CLI acceptance tests
 ADR](docs/engineering/decisions/cli-acceptance-tests.md): acceptance tests
 invoke the `whirl` binary as a process. Pure stdout/stderr/exit-code cases
 are `trycmd` cases in `crates/whirl/tests/cmd/`; browser behavior is tested
-against the local site in `crates/whirl/tests/site/`. Unit tests cover
-parsing, formatting, lints, and the shim protocol.
+against the local site in `crates/whirl/tests/site/`. Unit tests live in
+the crate that owns the code they test, such as parsing, formatting, and
+lints in `crates/whirl-lang` and the shim protocol in `crates/whirl-shim`.
 
 Regenerate trycmd snapshots after intentional CLI output changes:
 

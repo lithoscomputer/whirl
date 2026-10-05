@@ -50,9 +50,18 @@ Error object:
 ### `hello`
 
 Sent once after spawn. Params: `{}`. Result:
-`{"protocol": 4, "playwrightVersion": "1.62.1", "ffmpegPath": "abs path" | null}`.
+`{"protocol": 10, "playwrightVersion": "1.62.1", "ffmpegPath": "abs path" | null}`.
 `ffmpegPath` is Playwright's bundled ffmpeg, which every video recording
 needs; `null` means it is not installed. `whirl doctor` reports it.
+Protocol 10 adds `connect` to `startFlow`: a browser to attach to over
+CDP instead of launching one.
+Protocol 9 adds `blockHosts` to `startFlow` and gives each `blockedHosts`
+entry of `endFlow` its rule.
+Protocol 8 adds `settle` to `ariaSnapshot`.
+Protocol 7 adds `judgeScreenshot` (section 4.9) for `JUDGE`.
+Protocol 6 adds `generateLocator` (section 4.8) for the AI cache.
+Protocol 5 adds `mock` and `readRequest` (sections 4.6 and 4.7) and the
+`mocks` fields of `startFlow` and `endFlow`.
 Protocol 4 requires the snapshot `target`, so an older shim cannot silently
 take a full-page snapshot of an element snapshot.
 Protocol 3 requires effective snapshot masks and comparison settings. Older shims
@@ -68,26 +77,37 @@ Creates the browser context and page for one flow. Params:
 {
   "browser": "chromium" | "firefox" | "webkit",
   "headed": false,
+  "connect": {"cdpEndpoint": "wss://..."} | null,
   "viewport": {"width": 1280, "height": 720},
   "storageStatePath": "abs path" | null,
   "dialogs": "dismiss" | "accept",
   "allowHosts": ["example.com", "*.example.com"] | null,
+  "blockHosts": ["*.analytics.example.com"] | null,
   "navTimeoutMs": 30000,
   "userAgent": "chrome" | "firefox" | "safari" | "literal string" | null,
   "reducedMotion": "reduce" | "no-preference" | null,
   "video": {"tempDir": "abs path", "finalPath": "abs path", "fps": 60 | null} | null,
   "harPath": "abs path" | null,
   "trace": false,
-  "openShadowRoots": false
+  "openShadowRoots": false,
+  "mocks": false
 }
 ```
 
 Result: `{"browserVersion": "...", "nodeVersion": "...", "playwrightVersion": "...", "userAgent": "...", "videoFps": 60 | null}`. These are the active browser, Node process, and Playwright library versions, plus the context's actual `navigator.userAgent`, plus the frame rate of the flow's recording (`null` without `video`). Older protocol 1 shims may omit these additive fields; reports then use null values. Rust applies secret masking to the user agent before reporting it.
 
+- `connect: null` launches `browser` beside the shim. A `connect` object
+  attaches to a running Chromium at `cdpEndpoint` with Playwright's
+  `connectOverCDP`; `browser` MUST then be `chromium`. The shim keys its one
+  browser by the endpoint, so a new endpoint attaches again. The runner gets
+  the endpoint from the worker slot's browser lease.
 - `allowHosts: null` means all hosts are allowed. When it is a list, Rust has
-  already appended the `base` host; the shim routes all requests and aborts
-  any whose hostname matches no glob, records the blocked hostname, blocks
-  WebSockets to non-matching hosts the same way, and disables service workers.
+  already appended the `app-url` host. `blockHosts: null` blocks no host. When
+  either is a list, the shim routes all requests and disables service
+  workers. It aborts a request whose hostname matches a `blockHosts` glob,
+  even one that `allowHosts` allows, and then a request whose hostname
+  matches no `allowHosts` glob. It records the blocked hostname with that
+  rule, and blocks WebSockets and independent `HTTP` requests the same way.
   Globs match the hostname only. `*.` prefixes do not match the apex.
   `data:` and `blob:` URLs are always allowed.
 - `dialogs` installs an auto-dismiss or auto-accept handler for alert,
@@ -100,6 +120,10 @@ Result: `{"browserVersion": "...", "nodeVersion": "...", "playwrightVersion": ".
 - `reducedMotion` emulates the `prefers-reduced-motion` media feature for
   the context; `null` keeps the engine default.
 - `trace: true` starts Playwright tracing (screenshots and snapshots on).
+- `mocks: true` routes every request of the context through the flow's
+  mocks (section 4.6) and blocks service workers. The shim registers this
+  route after host filtering, so it runs first: a mocked request never
+  reaches host filtering. Rust sets it when the file uses `MOCK` (SPEC 7.5).
 - `openShadowRoots: true` adds an init script to the context that makes every
   `attachShadow` call create an open root, so the AI snapshot and locators see
   inside roots a page asks to close. Rust sets it when the file uses `ACT`
@@ -135,9 +159,13 @@ Ends the flow and closes the context. Params:
 - `saveStoragePath` writes the context storage state before close.
 - `tracePath` exports the trace there; `null` discards a running trace.
 
-Result: `{"blockedHosts": ["host", ...], "videoPath": "abs path" | null, "videoSkipped": "reason" | null, "videoBlank": "reason" | null}`.
-`blockedHosts` is the sorted, de-duplicated set of hostnames blocked by
-`allowHosts` during the flow. `videoSkipped` says why the shim skipped a
+Result: `{"blockedHosts": [{"host": "a.example.com", "option": "block-hosts" | "allow-hosts", "glob": "*.example.com" | null}, ...], "videoPath": "abs path" | null, "videoSkipped": "reason" | null, "videoBlank": "reason" | null, "mocks": [{"id": 5, "hits": 2}, ...]}`.
+`mocks` lists every mock the flow registered, replaced ones included, in
+registration order, with the number of requests each served.
+`blockedHosts` lists each hostname that a host rule blocked during the flow,
+once, sorted by hostname, with the first rule that blocked it: the
+`blockHosts` glob that matched, or `allow-hosts` with a null `glob` when no
+`allowHosts` glob matched. `videoSkipped` says why the shim skipped a
 requested recording, such as an ffmpeg failure. `videoBlank` says why a
 saved recording holds only a white frame, such as a failed capture of a
 crashed page; `videoPath` still names the recording. Rust reports each
@@ -174,8 +202,9 @@ Commands and their extra params (result `{}` unless noted):
 
 | cmd | params |
 | --- | --- |
-| `visit` | `url` (absolute; Rust resolved `base`); resolves at the new document's `DOMContentLoaded`, not `load` |
+| `visit` | `url` (absolute; Rust resolved `app-url`); resolves at the new document's `DOMContentLoaded`, not `load` |
 | `response` | `name`, `method`, `url` (absolute) — select the first matching request from the selected tab in the current entry and await its response headers |
+| `mock` | `id`, `method`, `pattern`, `response` (section 4.6) — register a mock at once |
 | `http` | `name`, `method`, `url` (absolute), `headers` (array of `[name, value]` pairs), `body` (string or null) — send a request without browser cookies and name its completed response |
 | `popup` | `name` — name an unnamed popup from the selected tab in the current entry, without selecting it |
 | `tab` | `name` — select a named open tab |
@@ -196,11 +225,14 @@ Commands and their extra params (result `{}` unless noted):
 | `snapshot` | `baselinePath`, `actualPath`, `diffPath`, `update` (bool), `target` (locator array, or `null` for the full page), `masks` (array of locator arrays), `pixelThreshold` (number 0–1), `maxDiff` (`{"type":"pixels","value":count}` or `{"type":"percent","value":percent}`) |
 | `evalAction` | `script` |
 | `store` | `scope` (`"local"` \| `"session"` \| `"cookie"`), `key`, `value` — writes one `localStorage` or `sessionStorage` entry on the current origin, or one cookie for the current page's URL (host, path `/`, no attributes); `cookie` on a non-http(s) page is an `action` error |
-| `ariaSnapshot` | `locator` (or `null`); result `{"snapshot": "..."}`, the selected tab's `page.ariaSnapshot({ mode: "ai" })`, or that one element's `locator.ariaSnapshot({ mode: "ai" })` with the usual waiting and strictness, for `ACT` (SPEC 7.4) |
+| `ariaSnapshot` | `locator` (or `null`), `settle` (bool); result `{"snapshot": "..."}`, the selected tab's `page.ariaSnapshot({ mode: "ai" })`, or that one element's `locator.ariaSnapshot({ mode: "ai" })` with the usual waiting and strictness, for `ACT` (SPEC 7.4). With `settle`, the shim first waits until the network has been quiet for 500 ms (streams and requests open for 2 s do not count), for at least 100 ms and at most 5 s or half of `timeoutMs` |
 | `page` | `expect` (section 4.2) |
 | `assert` | `spec` (section 4.3) — state checks and tab closure only |
 | `read` | `subject` (section 4.4); result `{"type": "value", "value": ...}` or `{"type": "missing", "reason": "no-element" \| "absent-attribute"}` |
 | `readResponse` | `name`, `body` (bool) (section 4.5); result `{"status": 201, "url": "...", "headers": [[name, value], ...], "bodyBase64": "..." \| null, "bodyError": "..." \| null, "bodyMayBeDecoded": false}` |
+| `generateLocator` | `ref`, `role`, `name` (or `null`) (section 4.8); result `{"type": "locator", "locator": [...]}` or `{"type": "unstable", "reason": "..."}` |
+| `judgeScreenshot` | `locator` (or `null`) (section 4.9); result `{"pngBase64": "..."}` |
+| `readRequest` | `name` (section 4.7); result `{"method": "POST", "url": "...", "headers": [[name, value], ...], "bodyBase64": "..." \| null, "bodyError": "..." \| null}` |
 | `traceGroup` | none; opens one trace group named by `title` for the reads of one check |
 | `traceGroupEnd` | none; closes the group that `traceGroup` opened |
 
@@ -284,9 +316,11 @@ The mapping to Playwright calls is SPEC section 6.1.
 
 `ref` names an element from an `ariaSnapshot` result, such as `e12`, or `f1e3`
 inside an iframe. The shim resolves it with `page.locator("aria-ref=e12")`.
-Only Rust creates `ref` segments, as the only segment of an `ACT` action's
-locator, and only for refs in the latest snapshot. `.whirl` files have no
-syntax for them. For `click`, `dblclick`, `hover`, and both locators of `drag`
+Only Rust creates `ref` segments, as the only segment of a locator, and only
+for refs in the latest snapshot: for an `ACT` action, and in place of an
+`ai:` target (SPEC 6.3). `.whirl` files have no syntax for them. Rust resolves
+every `ai:` target before it sends a locator; a segment of type `ai` is error
+kind `"internal"`. For `click`, `dblclick`, `hover`, and both locators of `drag`
 on a `ref` locator, the shim points at the deepest descendant that shows the
 element's text, when one exists, instead of the element's center (SPEC 7.4).
 
@@ -406,6 +440,76 @@ encodes it as UTF-8. Rust undoes that decoding when the `Content-Type` names a
 charset other than UTF-8 that can encode the text (SPEC section 9.2). It is
 false for an `http` step and in Firefox, which give the exact bytes.
 
+### 4.6 Mocks
+
+```json
+{"id": 5, "method": "GET", "pattern": "^https:\\/\\/shop\\.test\\/api\\/.*$",
+ "response": {"type": "fulfill", "status": 200, "headers": [["Content-Type", "application/json"]], "body": "{}"}}
+{"id": 9, "method": "GET", "pattern": "^https:\\/\\/cdn\\.test\\/.*$", "response": {"type": "failed"}}
+```
+
+`id` is the `MOCK` line; `endFlow` reports hits by it. Rust resolves the URL
+against `app-url`, normalizes it, drops the fragment, escapes the ECMAScript
+syntax characters, and turns each `*` into `.*`. `pattern` is anchored and
+has no flags. The shim tests it against the request URL without its
+fragment. `body` is the complete response body as text, or `null` for an
+empty body; Rust has already added `Content-Type: application/json` for a
+JSON body without one.
+
+The shim keeps one list of mocks per flow. A new mock with the same `method`
+and `pattern` as an active one replaces it: the old one stops serving and
+keeps its hit count. For each request, the active mock registered last with
+the same method and a matching pattern serves it and counts a hit: `fulfill`
+through `route.fulfill` with the status, headers, and body, and `failed`
+through `route.abort("failed")`. A request that no mock matches falls back to
+the earlier routes, such as host filtering. `mock` fails only with kind
+`"internal"`, for a malformed request.
+
+### 4.7 Read request
+
+`readRequest` takes a name from `response` and replies with the request that
+it selected: `method`, `url` without its fragment, `headers` as the browser
+sent them (`request.headersArray()`), and the body from `postDataBuffer()` as
+`bodyBase64`, which is empty for a request without a body. A body over the
+SPEC 1 MiB limit comes back as `bodyError` with `bodyBase64: null`. An unknown
+name is error kind `"internal"`.
+
+### 4.8 Generate a locator
+
+`generateLocator` turns the element behind a ref of the latest AI snapshot
+into a strict locator for the AI cache (SPEC 12.1). `role` and `name` are the
+element's, from that snapshot. The shim does not wait: a ref that no longer
+matches is `unstable`. It builds candidates in the order of SPEC 12.1:
+`testid` from `data-testid`, `role` with the name, `label` for each label of
+the element (its `<label>` elements, `aria-label`, or `aria-labelledby`),
+`placeholder`, and `text` for normalized text of at most 80 characters. A
+candidate counts only when one of its matches is the element itself. The first
+candidate with exactly one match wins. Otherwise the shim scopes each
+candidate with the nearest ancestor whose role is a landmark, `dialog`,
+`alertdialog`, `region`, or `article` and that has an `aria-label` or
+`aria-labelledby` name. Otherwise it adds `nth` to the first candidate that
+matched the element among others. An element inside an iframe gets one
+`frame` segment per iframe, each `iframe[title='...']`, `iframe[name='...']`,
+or `iframe[id='...']`, whichever matches one iframe in its parent. When no
+candidate works, or no attribute names an iframe alone, the result is
+`unstable` with the reason.
+
+Rust reads the fingerprint that it caches beside the locator, the element's
+role and accessible name, from the first line of the snapshot. To check a
+cached locator, it sends `ariaSnapshot` with that locator and reads the
+first line of the result the same way.
+
+### 4.9 Judge screenshot
+
+`judgeScreenshot` takes the screenshot that `JUDGE` shows the model (SPEC
+9.8). With a `null` locator it captures the selected tab's viewport. With a
+locator it captures that element, with the usual waiting and strictness. It
+captures frames, as `snapshot` does, until two in a row are identical, and
+returns the last frame when `timeoutMs` runs out first. Rust sends it half of
+the time left in the step, so the model call keeps the rest. The result is the
+PNG as base64. A locator that matches nothing is a `timeout` error, and one
+that matches more than one element is a `strict` error.
+
 ## 5. Timeouts
 
 The shim bounds every step with `timeoutMs` through Playwright options,
@@ -461,3 +565,7 @@ Rust resolves the shim in this order:
 
 Missing both is a runtime error (exit 3) with a remedy naming
 `whirl install`.
+
+`whirl doctor` requires the bundle's exact pinned Node. A development
+runtime from `WHIRL_NODE` may be any Node from the pinned major version
+up.

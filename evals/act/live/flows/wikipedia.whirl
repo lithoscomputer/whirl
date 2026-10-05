@@ -4,8 +4,8 @@ user-agent: chrome
 
 # precheck: the article and its link are present.
 VISIT https://en.wikipedia.org/wiki/Baseball
-ASSERT role:heading "Baseball" visible
-ASSERT role:link "hit and run" count >= 1
+ASSERT heading:"Baseball" visible
+ASSERT link:"hit and run" count >= 1
 
 # Follow a link inside an article.
 ACT "click the \"hit and run\" link in this article" @60s

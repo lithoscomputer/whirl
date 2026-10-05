@@ -63,6 +63,11 @@ interface PageCapture {
 	readonly type: "page";
 }
 
+/** The visible part of the page, for JUDGE (SPEC 9.8). */
+interface ViewportCapture {
+	readonly type: "viewport";
+}
+
 interface ElementCapture {
 	readonly type: "element";
 	/** Lazy, so every capture finds a replaced element again. */
@@ -73,6 +78,9 @@ interface ElementCapture {
 
 /** What one SNAPSHOT captures: the full page or one element (SPEC 7). */
 export type SnapshotCapture = PageCapture | ElementCapture;
+
+/** What JUDGE shows the model: the viewport or one element (SPEC 9.8). */
+export type JudgeCapture = ViewportCapture | ElementCapture;
 
 export interface SnapshotParams extends SnapshotComparison {
 	readonly capture: SnapshotCapture;
@@ -96,6 +104,12 @@ async function failOnAmbiguousFrames(
 }
 
 /**
+ * Chromium sometimes refuses a capture for a moment, as when the page has
+ * no frame ready on a busy machine. It is not about the page's content.
+ */
+const unableToCapture = "Unable to capture screenshot";
+
+/**
  * Playwright 1.62.1 resolves the element once per `locator.screenshot()`
  * and then captures that handle. These errors mean the element changed
  * during the capture, so resolving it again can succeed.
@@ -105,7 +119,31 @@ const transientCaptureErrors = [
 	"Node has 0 width",
 	"Node has 0 height",
 	"Node is either not visible or not an HTMLElement",
+	unableToCapture,
 ] as const;
+
+/**
+ * Runs a capture, and runs it again after a short pause while Chromium
+ * reports that it is unable to capture, until the deadline.
+ */
+export async function retryUnableToCapture<T>(
+	capture: () => Promise<T>,
+	deadline: Deadline,
+): Promise<T> {
+	for (;;) {
+		try {
+			return await capture();
+		} catch (error) {
+			if (
+				!(error instanceof Error && error.message.includes(unableToCapture)) ||
+				deadline.expired()
+			) {
+				throw error;
+			}
+			await sleep(Math.min(interFrameDelayMs, deadline.remainingMs()));
+		}
+	}
+}
 
 function isTransientCaptureError(error: unknown): boolean {
 	return (
@@ -151,7 +189,7 @@ async function captureElement(
 
 async function captureFrame(
 	page: Page,
-	capture: SnapshotCapture,
+	capture: SnapshotCapture | JudgeCapture,
 	deadline: Deadline,
 	masks: readonly SnapshotMask[],
 ): Promise<Buffer> {
@@ -163,11 +201,20 @@ async function captureFrame(
 	const maskLocators = masks.map((mask) => mask.locator);
 	switch (capture.type) {
 		case "page":
-			return page.screenshot({
-				fullPage: true,
-				mask: maskLocators,
-				timeout: deadline.remainingMs(),
-			});
+			return retryUnableToCapture(
+				() =>
+					page.screenshot({
+						fullPage: true,
+						mask: maskLocators,
+						timeout: deadline.remainingMs(),
+					}),
+				deadline,
+			);
+		case "viewport":
+			return retryUnableToCapture(
+				() => page.screenshot({ timeout: deadline.remainingMs() }),
+				deadline,
+			);
 		case "element":
 			return captureElement(capture, deadline, maskLocators);
 		default:
@@ -213,7 +260,7 @@ interface SettledFrame {
 /** Captures until two consecutive frames are byte-identical. */
 async function settleFrame(
 	page: Page,
-	capture: SnapshotCapture,
+	capture: SnapshotCapture | JudgeCapture,
 	deadline: Deadline,
 	masks: readonly SnapshotMask[],
 ): Promise<SettledFrame> {
@@ -263,6 +310,19 @@ export function compareSnapshot(
 			? { maxDiffPixels: settings.maxDiff.value }
 			: { maxDiffPixelRatio: settings.maxDiff.value / 100 }),
 	});
+}
+
+/**
+ * A PNG for JUDGE (SPEC 9.8): frames until two in a row are identical,
+ * or the last frame when `timeoutMs` runs out first.
+ */
+export async function settledScreenshot(
+	page: Page,
+	capture: JudgeCapture,
+	timeoutMs: number,
+): Promise<Buffer> {
+	const settled = await settleFrame(page, capture, new Deadline(timeoutMs), []);
+	return settled.frame;
 }
 
 export async function runSnapshot(

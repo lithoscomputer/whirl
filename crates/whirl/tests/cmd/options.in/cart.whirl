@@ -1,0 +1,3 @@
+VISIT /products
+ACT "add the first product to the cart"
+ASSERT testid:cart-badge text == 1

@@ -1,0 +1,29 @@
+[package]
+name = "whirl-run"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Whirl's runner: flow execution and its steps, the worker pool, variables and secret masking, the AI cache, and artifact directories"
+
+[dependencies]
+base64.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+url.workspace = true
+whirl-ai = { path = "../whirl-ai" }
+whirl-check = { path = "../whirl-check" }
+whirl-lang = { path = "../whirl-lang" }
+whirl-report = { path = "../whirl-report" }
+whirl-shim = { path = "../whirl-shim" }
+whirl-types = { path = "../whirl-types" }
+
+[lints]
+workspace = true

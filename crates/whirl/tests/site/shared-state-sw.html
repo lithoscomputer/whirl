@@ -1,0 +1,6 @@
+<!doctype html><title>State capture with a worker</title><p id="status">Starting</p>
+<script>
+  const show = () => { if (navigator.serviceWorker.controller) document.querySelector('#status').textContent = 'Controlled'; };
+  navigator.serviceWorker.addEventListener('controllerchange', show);
+  navigator.serviceWorker.register('/shared-state-sw.js').then(() => navigator.serviceWorker.ready).then(show);
+</script>

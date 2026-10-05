@@ -5,12 +5,14 @@ import unittest
 import eval_act
 
 
-def step(status="passed", code=None, act=None, duration_ms=1200):
+def step(status="passed", code=None, act=None, duration_ms=1200, ai=None):
     step = {"line": 5, "kind": "action", "text": "ACT", "status": status, "durationMs": duration_ms}
     if code is not None:
         step["error"] = {"code": code, "message": f"{code}: detail"}
     if act is not None:
         step["act"] = act
+    if ai is not None:
+        step["ai"] = ai
     return step
 
 
@@ -18,7 +20,7 @@ def act_report(calls=1, input_tokens=3000, output_tokens=150, cost=7500, planned
     usage = {"modelCalls": calls, "inputTokens": input_tokens, "outputTokens": output_tokens}
     if cost is not None:
         usage["costUsdMicros"] = cost
-    actions = [{"line": "CLICK role:button", "description": "", "plannedBy": planner} for planner in planned_by]
+    actions = [{"line": "CLICK button:*", "description": "", "plannedBy": planner} for planner in planned_by]
     return {"model": "m", "actions": actions, "usage": usage}
 
 
@@ -108,9 +110,38 @@ class ClassifyTest(unittest.TestCase):
         self.assertEqual(eval_act.classify(chose, "m").outcome, "fail")
 
 
+    def test_ai_steps_count_toward_the_measurements(self):
+        ai = {"model": "m", "targets": [], "usage": {"modelCalls": 1, "inputTokens": 100, "outputTokens": 10, "costUsdMicros": 5}}
+        report = file_report(
+            "x/ai-target-blue-mug.whirl",
+            "passed",
+            [entry("Buy.", "passed", [step(act=act_report(calls=1)), step(ai=ai, duration_ms=300)])],
+        )
+        result = eval_act.classify(report, "m")
+        self.assertEqual(result.model_calls, 2)
+        self.assertEqual(result.duration_ms, 1500)
+        self.assertEqual(result.cost_usd_micros, 7505)
+
+    def test_extract_steps_count_toward_the_measurements(self):
+        extract = {"model": "m", "usage": {"modelCalls": 1, "inputTokens": 10, "outputTokens": 5, "costUsdMicros": 3}}
+        step_with_extract = step(duration_ms=200)
+        step_with_extract["extract"] = extract
+        report = file_report("x/extract-price.whirl", "passed", [entry("Read.", "passed", [step_with_extract])])
+        result = eval_act.classify(report, "m")
+        self.assertEqual((result.model_calls, result.duration_ms, result.cost_usd_micros), (1, 200, 3))
+
+    def test_an_ambiguous_task_passes_only_on_strictness(self):
+        path = "x/any-button.ambiguous.whirl"
+        strict = file_report(path, "failed", [entry("Buy.", "failed", [step("failed", "strictness")])])
+        chose = file_report(path, "passed", [entry("Buy.", "passed", [step()])])
+        self.assertEqual(eval_act.classify(strict, "m").task, "any-button")
+        self.assertEqual(eval_act.classify(strict, "m").outcome, "pass")
+        self.assertEqual(eval_act.classify(chose, "m").outcome, "fail")
+
+
 class PlanTest(unittest.TestCase):
     def test_drift_and_errors_do_not_count_toward_n(self):
-        tasks = [eval_act.Task("local", "a", None, False), eval_act.Task("local", "b", None, False)]
+        tasks = [eval_act.Task("local", "a", None, None), eval_act.Task("local", "b", None, None)]
         results = [
             eval_act.Result("a", "m", "pass"),
             eval_act.Result("a", "m", "fail"),
@@ -168,3 +199,33 @@ class SummaryTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_judge_steps_count_and_the_verdict_tasks_grade_their_answer(self):
+        judge = {"model": "m", "verdict": "no", "reason": "r", "usage": {"modelCalls": 1, "inputTokens": 900, "outputTokens": 20, "costUsdMicros": 4}}
+        said_no = step("failed", "judge-false", duration_ms=800)
+        said_no["judge"] = judge
+        path = "x/judge-wrong-total.judge-false.whirl"
+        report = file_report(path, "failed", [entry("Judge.", "failed", [said_no])])
+        result = eval_act.classify(report, "m")
+        self.assertEqual(result.task, "judge-wrong-total")
+        self.assertEqual(result.outcome, "pass")
+        self.assertEqual((result.model_calls, result.duration_ms, result.cost_usd_micros), (1, 800, 4))
+        said_yes = file_report(path, "passed", [entry("Judge.", "passed", [step()])])
+        self.assertEqual(eval_act.classify(said_yes, "m").outcome, "fail")
+
+        path = "x/judge-address.unsure.whirl"
+        unsure = step()
+        unsure["warnings"] = [{"code": "judge-unsure", "message": "m"}]
+        self.assertEqual(eval_act.classify(file_report(path, "passed", [entry("J.", "passed", [unsure])]), "m").task, "judge-address")
+        self.assertEqual(eval_act.classify(file_report(path, "passed", [entry("J.", "passed", [unsure])]), "m").outcome, "pass")
+        self.assertEqual(eval_act.classify(file_report(path, "passed", [entry("J.", "passed", [step()])]), "m").outcome, "fail")
+
+    def test_goal_steps_count_and_an_impossible_task_passes_on_goal_impossible(self):
+        goal = {"model": "m", "actions": [], "cache": "miss", "usage": {"modelCalls": 4, "inputTokens": 4000, "outputTokens": 80, "costUsdMicros": 9}}
+        gave_up = step("failed", "goal-impossible", duration_ms=5000)
+        gave_up["goal"] = goal
+        path = "x/goal-gift-card.impossible.whirl"
+        result = eval_act.classify(file_report(path, "failed", [entry("Buy.", "failed", [gave_up])]), "m")
+        self.assertEqual(result.task, "goal-gift-card")
+        self.assertEqual(result.outcome, "pass")
+        self.assertEqual((result.model_calls, result.duration_ms, result.cost_usd_micros), (4, 5000, 9))

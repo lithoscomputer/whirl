@@ -1,0 +1,3 @@
+VISIT /
+ASSERT testid:summary visible
+JUDGE "the page shows no error message"

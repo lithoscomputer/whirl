@@ -1,0 +1,9 @@
+[Options]
+app-url: {{env.EVAL_BASE}}
+model: {{model}}
+
+# ai: read a value that only its neighbors identify.
+VISIT /cheapest-red-shirt/
+ASSERT ai:"the price of the Scarlet tee" text == "$21.00" @60s
+CAPTURE color: ai:"the color line of the Navy tee" text @60s
+ASSERT css:body text contains {{color}}

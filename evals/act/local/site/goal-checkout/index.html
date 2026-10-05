@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Mug shop</title>
+</head>
+<body>
+<h1>Mug shop</h1>
+<section id="products">
+  <table>
+    <thead><tr><th>Mug</th><th>Price</th><th>Quantity</th><th></th></tr></thead>
+    <tbody>
+      <tr><td>Red mug</td><td>$10.00</td><td><input type="number" min="1" value="1" aria-label="Quantity of Red mug"></td><td><button type="button" data-item="Red mug">Add to cart</button></td></tr>
+      <tr><td>Blue mug</td><td>$12.00</td><td><input type="number" min="1" value="1" aria-label="Quantity of Blue mug"></td><td><button type="button" data-item="Blue mug">Add to cart</button></td></tr>
+      <tr><td>Green mug</td><td>$11.00</td><td><input type="number" min="1" value="1" aria-label="Quantity of Green mug"></td><td><button type="button" data-item="Green mug">Add to cart</button></td></tr>
+    </tbody>
+  </table>
+  <p>Cart: <span data-testid="cart">empty</span></p>
+  <button type="button" id="checkout" disabled>Checkout</button>
+</section>
+<section id="details" hidden>
+  <h2>Checkout</h2>
+  <p><label>Full name <input id="name"></label></p>
+  <p><label>Shipping <select id="shipping"><option>Standard</option><option>Express</option></select></label></p>
+  <p>Payment: card on file</p>
+  <button type="button" id="place">Place order</button>
+</section>
+<p data-testid="confirmation" hidden></p>
+<script>
+  const cart = new Map();
+  const describe = () => [...cart].map(([item, count]) => `${count} × ${item}`).join(", ");
+  for (const button of document.querySelectorAll("button[data-item]")) {
+    button.addEventListener("click", () => {
+      const quantity = Number(button.closest("tr").querySelector("input").value) || 1;
+      cart.set(button.dataset.item, quantity);
+      document.querySelector("[data-testid=cart]").textContent = describe();
+      document.getElementById("checkout").disabled = false;
+    });
+  }
+  document.getElementById("checkout").addEventListener("click", () => {
+    document.getElementById("products").hidden = true;
+    document.getElementById("details").hidden = false;
+  });
+  document.getElementById("place").addEventListener("click", () => {
+    const name = document.getElementById("name").value.trim();
+    if (!name) return;
+    const shipping = document.getElementById("shipping").value.toLowerCase();
+    const confirmation = document.querySelector("[data-testid=confirmation]");
+    confirmation.textContent = `Order placed: ${describe()}, ${shipping} shipping, for ${name}`;
+    confirmation.hidden = false;
+    document.getElementById("details").hidden = true;
+  });
+</script>
+</body>
+</html>

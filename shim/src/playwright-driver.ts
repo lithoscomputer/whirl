@@ -17,14 +17,19 @@ import { chromium, devices, expect, firefox, webkit } from "@playwright/test";
 import { runAssert, runPage } from "./assertions.js";
 import type { ShimDriver } from "./driver.js";
 import { buildEvalExpression } from "./eval-support.js";
+import { FlowMocks } from "./flow-mocks.js";
 import { FlowNetwork } from "./flow-network.js";
 import { FlowTabs } from "./flow-tabs.js";
-import { createHostAllowlist } from "./host-glob.js";
+import type { BlockedHost } from "./host-glob.js";
+import { BlockedHostLog, createHostPolicy } from "./host-glob.js";
 import { nameIframes } from "./iframe-names.js";
+import { generateLocator } from "./locator-generator.js";
 import { buildLocator, describeLocator, frameOwners } from "./locators.js";
+import { PageActivity } from "./page-settle.js";
 import type { Params } from "./params.js";
 import {
 	decodeHttpParams,
+	decodeMockParams,
 	decodeScrollMotion,
 	decodeSnapshotComparison,
 	fieldArray,
@@ -39,6 +44,7 @@ import {
 import type {
 	AssertSpec,
 	BrowserEngine,
+	ConnectConfig,
 	EndFlowParams,
 	EndFlowResult,
 	ErrorKind,
@@ -52,7 +58,18 @@ import type {
 } from "./protocol.js";
 import { assertNever, ShimError } from "./protocol.js";
 import { runRead } from "./reads.js";
-import { runSnapshot } from "./snapshots.js";
+import {
+	captureState,
+	readState,
+	restoreState,
+	writeState,
+} from "./shared-state/adapter.js";
+import type { SharedState } from "./shared-state/format.js";
+import {
+	retryUnableToCapture,
+	runSnapshot,
+	settledScreenshot,
+} from "./snapshots.js";
 import {
 	actionErrorMessage,
 	Deadline,
@@ -80,6 +97,8 @@ const playwrightCoreVersion = (
 
 /** Bound for force-closing a wedged context or browser (protocol 6). */
 const closeWatchdogMs = 3000;
+/** How long `connectOverCDP` waits for a hosted browser to answer. */
+const connectTimeoutMs = 30_000;
 
 function resolveUserAgent(value: string | null) {
 	let deviceName: string;
@@ -104,11 +123,18 @@ function resolveUserAgent(value: string | null) {
 }
 
 interface FlowState {
+	readonly state: SharedState | undefined;
+	readonly stateInput: string | null;
+	readonly stateOrigins: Set<string>;
+	readonly stateStorageOrigins: Set<string>;
 	readonly context: BrowserContext;
 	readonly page: Page;
 	readonly tabs: FlowTabs;
 	readonly network: FlowNetwork;
-	readonly blockedHosts: Set<string>;
+	/** Open requests, for the settle before a model's snapshot. */
+	readonly activity: PageActivity;
+	readonly mocks: FlowMocks;
+	readonly blockedHosts: BlockedHostLog;
 	readonly traceActive: boolean;
 	readonly video: {
 		readonly tempDir: string;
@@ -221,10 +247,9 @@ function streamsIndefinitely(request: {
 
 async function installHostFiltering(
 	context: BrowserContext,
-	allowHosts: readonly string[],
-	blockedHosts: Set<string>,
+	hostPolicy: (hostname: string) => BlockedHost | null,
+	blockedHosts: BlockedHostLog,
 ): Promise<void> {
-	const isAllowed = createHostAllowlist(allowHosts);
 	await context.route("**/*", async (route) => {
 		try {
 			const request = route.request();
@@ -234,8 +259,9 @@ async function installHostFiltering(
 				await route.continue();
 				return;
 			}
-			if (!isAllowed(url.hostname)) {
-				blockedHosts.add(url.hostname.toLowerCase());
+			const blocked = hostPolicy(url.hostname);
+			if (blocked !== null) {
+				blockedHosts.record(blocked);
 				await route.abort("blockedbyclient");
 				return;
 			}
@@ -266,8 +292,9 @@ async function installHostFiltering(
 				) {
 					break;
 				}
-				if (!isAllowed(target.hostname)) {
-					blockedHosts.add(target.hostname.toLowerCase());
+				const blockedHop = hostPolicy(target.hostname);
+				if (blockedHop !== null) {
+					blockedHosts.record(blockedHop);
 					await route.abort("blockedbyclient");
 					return;
 				}
@@ -303,11 +330,12 @@ async function installHostFiltering(
 		(_url) => true,
 		(webSocketRoute) => {
 			const url = new URL(webSocketRoute.url());
-			if (isAllowed(url.hostname)) {
+			const blocked = hostPolicy(url.hostname);
+			if (blocked === null) {
 				// Connect through; unhandled messages forward automatically.
 				webSocketRoute.connectToServer();
 			} else {
-				blockedHosts.add(url.hostname.toLowerCase());
+				blockedHosts.record(blocked);
 				webSocketRoute.close();
 			}
 		},
@@ -628,8 +656,15 @@ export class PlaywrightDriver implements ShimDriver {
 	async #ensureBrowser(
 		engine: BrowserEngine,
 		headed: boolean,
+		connect: ConnectConfig | null,
 	): Promise<Browser> {
-		const key = `${engine}:${headed ? "headed" : "headless"}`;
+		// A connected browser is keyed by its endpoint, so a new lease
+		// (after a replacement) attaches again instead of reusing a stale
+		// connection.
+		const key =
+			connect === null
+				? `${engine}:${headed ? "headed" : "headless"}`
+				: `connect:${connect.cdpEndpoint}`;
 		if (
 			this.#browser !== null &&
 			this.#browserKey === key &&
@@ -642,7 +677,18 @@ export class PlaywrightDriver implements ShimDriver {
 			this.#browser = null;
 			this.#browserKey = null;
 		}
-		const browser = await browserType(engine).launch({ headless: !headed });
+		if (connect !== null && engine !== "chromium") {
+			throw new ShimError(
+				"internal",
+				`a CDP endpoint needs chromium; ${engine} cannot attach over CDP`,
+			);
+		}
+		const browser =
+			connect === null
+				? await browserType(engine).launch({ headless: !headed })
+				: await chromium.connectOverCDP(connect.cdpEndpoint, {
+						timeout: connectTimeoutMs,
+					});
 		this.#browser = browser;
 		this.#browserKey = key;
 		return browser;
@@ -677,16 +723,21 @@ export class PlaywrightDriver implements ShimDriver {
 				"video recording needs Playwright's ffmpeg, which is missing; run `whirl install chromium`",
 			);
 		}
-		const browser = await this.#ensureBrowser(params.browser, params.headed);
+		const state =
+			params.storageStatePath === null
+				? undefined
+				: await readState(params.storageStatePath);
+		const browser = await this.#ensureBrowser(
+			params.browser,
+			params.headed,
+			params.connect,
+		);
 		const userAgent = resolveUserAgent(params.userAgent);
 		const contextOptions: BrowserContextOptions = {
 			viewport: {
 				width: params.viewport.width,
 				height: params.viewport.height,
 			},
-			...(params.storageStatePath === null
-				? {}
-				: { storageState: params.storageStatePath }),
 			...(userAgent === undefined ? {} : { userAgent }),
 			...(params.reducedMotion === null
 				? {}
@@ -697,8 +748,11 @@ export class PlaywrightDriver implements ShimDriver {
 			...(params.harPath === null
 				? {}
 				: { recordHar: { path: params.harPath } }),
-			// Service workers can bypass request routing (SPEC section 5).
-			...(params.allowHosts === null
+			// Service workers can bypass request routing (SPEC sections 5
+			// and 7.5).
+			...(params.allowHosts === null &&
+			params.blockHosts === null &&
+			!params.mocks
 				? {}
 				: { serviceWorkers: "block" as const }),
 		};
@@ -716,15 +770,52 @@ export class PlaywrightDriver implements ShimDriver {
 				receipt.received = token;
 			}
 		});
-		const blockedHosts = new Set<string>();
-		if (params.allowHosts !== null) {
-			await installHostFiltering(context, params.allowHosts, blockedHosts);
+		const page = await context.newPage();
+		const stateOrigins = new Set<string>();
+		const stateStorageOrigins = new Set<string>();
+		const watchStateOrigin = (target: Page): void => {
+			target.on("framenavigated", (frame) => {
+				if (frame === target.mainFrame() && /^https?:/.test(frame.url()))
+					stateStorageOrigins.add(new URL(frame.url()).origin);
+			});
+		};
+		watchStateOrigin(page);
+		context.on("page", watchStateOrigin);
+		let stateExpiredCookies = 0;
+		try {
+			if (state !== undefined)
+				stateExpiredCookies = await restoreState(context, page, state);
+		} catch {
+			await context.close();
+			throw new ShimError(
+				"internal",
+				"Cannot restore saved state: browser rejected its cookies or IndexedDB data",
+			);
+		}
+		for (const scope of state?.pages?.find((item) => item.id === "main")
+			?.origins ?? [])
+			stateOrigins.add(scope.origin);
+		page.on("framenavigated", (frame) => {
+			if (frame === page.mainFrame() && /^https?:/.test(frame.url()))
+				stateOrigins.add(new URL(frame.url()).origin);
+		});
+		const blockedHosts = new BlockedHostLog();
+		const hostPolicy = createHostPolicy(params.allowHosts, params.blockHosts);
+		if (params.allowHosts !== null || params.blockHosts !== null) {
+			await installHostFiltering(context, hostPolicy, blockedHosts);
+		}
+		// After host filtering: the route registered last runs first, so a
+		// mock serves a request that allow-hosts would block (SPEC 7.5).
+		const mocks = new FlowMocks();
+		if (params.mocks) {
+			await mocks.install(context);
 		}
 		if (params.trace) {
 			await context.tracing.start({ screenshots: true, snapshots: true });
 		}
-		const network = new FlowNetwork(context, params.allowHosts, blockedHosts);
-		const page = await context.newPage();
+		const network = new FlowNetwork(context, hostPolicy, blockedHosts);
+		const activity = new PageActivity();
+		activity.watch(context);
 		const tabs = new FlowTabs(context, page, params.dialogs);
 		let recorder: ScreencastRecorder | null = null;
 		if (
@@ -750,10 +841,16 @@ export class PlaywrightDriver implements ShimDriver {
 			}
 		}
 		this.#flow = {
+			state,
+			stateInput: params.storageStatePath,
+			stateOrigins,
+			stateStorageOrigins,
 			context,
 			page,
 			tabs,
 			network,
+			activity,
+			mocks,
 			blockedHosts,
 			traceActive: params.trace,
 			video: params.video,
@@ -770,12 +867,15 @@ export class PlaywrightDriver implements ShimDriver {
 			playwrightVersion: this.playwrightVersion,
 			userAgent: await page.evaluate(() => navigator.userAgent),
 			videoFps,
+			stateExpiredCookies,
+			stateRedacted: state?.redacted ?? false,
 		};
 	}
 
 	async endFlow(params: EndFlowParams): Promise<EndFlowResult> {
 		const flow = this.#requireFlow();
 		this.#flow = null;
+		flow.network.stopCollecting();
 		if (flow.traceActive) {
 			// A null tracePath discards the running trace.
 			if (params.tracePath === null) {
@@ -786,8 +886,23 @@ export class PlaywrightDriver implements ShimDriver {
 			}
 		}
 		if (params.saveStoragePath !== null) {
-			await mkdir(dirname(params.saveStoragePath), { recursive: true });
-			await flow.context.storageState({ path: params.saveStoragePath });
+			try {
+				const state = await captureState(
+					flow.context,
+					flow.page,
+					flow.stateOrigins,
+					flow.state,
+					flow.stateStorageOrigins,
+				);
+				await writeState(
+					params.saveStoragePath,
+					state,
+					flow.stateInput === null ? [] : [flow.stateInput],
+				);
+			} catch (error) {
+				await flow.context.close();
+				throw error;
+			}
 		}
 		// The screencast recorder finalizes while the page is still alive; a
 		// failure surfaces after the context is closed so nothing leaks.
@@ -836,10 +951,11 @@ export class PlaywrightDriver implements ShimDriver {
 			videoPath = flow.video.finalPath;
 		}
 		return {
-			blockedHosts: [...flow.blockedHosts].sort(),
+			blockedHosts: flow.blockedHosts.list(),
 			videoPath,
 			videoSkipped,
 			videoBlank,
+			mocks: flow.mocks.hits(),
 		};
 	}
 
@@ -920,6 +1036,28 @@ export class PlaywrightDriver implements ShimDriver {
 		if (cmd === "popup") {
 			await flow.tabs.capture(fieldString(params, "name"), timeoutMs);
 			return {};
+		}
+		if (cmd === "mock") {
+			flow.mocks.register(decodeMockParams(params));
+			return {};
+		}
+		if (cmd === "readRequest") {
+			return {
+				...(await flow.network.readRequest(
+					fieldString(params, "name"),
+					timeoutMs,
+				)),
+			};
+		}
+		if (cmd === "generateLocator") {
+			return {
+				...(await generateLocator(
+					flow.tabs.current(),
+					fieldString(params, "ref"),
+					fieldString(params, "role"),
+					fieldStringOrNull(params, "name"),
+				)),
+			};
 		}
 		if (cmd === "readResponse") {
 			return {
@@ -1134,8 +1272,35 @@ export class PlaywrightDriver implements ShimDriver {
 			case "screenshot": {
 				const path = fieldString(params, "path");
 				await mkdir(dirname(path), { recursive: true });
-				await page.screenshot({ path, fullPage: true, timeout: timeoutMs });
+				const deadline = new Deadline(timeoutMs);
+				await retryUnableToCapture(
+					() =>
+						page.screenshot({
+							path,
+							fullPage: true,
+							timeout: deadline.remainingMs(),
+						}),
+					deadline,
+				);
 				return {};
+			}
+			case "judgeScreenshot": {
+				const target = fieldArrayOrNull(params, "locator") as
+					| readonly LocatorSegment[]
+					| null;
+				const png = await settledScreenshot(
+					page,
+					target === null
+						? { type: "viewport" }
+						: {
+								type: "element",
+								locator: buildLocator(page, target),
+								description: describeLocator(target),
+								frames: frameOwners(page, target),
+							},
+					timeoutMs,
+				);
+				return { pngBase64: png.toString("base64") };
 			}
 			case "snapshot": {
 				const target = fieldArrayOrNull(params, "target") as
@@ -1224,11 +1389,16 @@ export class PlaywrightDriver implements ShimDriver {
 				// ACT's view of the page (SPEC 7.4): element refs such as
 				// [ref=e12] that a later `ref` locator segment resolves.
 				const deadline = new Deadline(timeoutMs);
+				// A model's view waits for the page's data first, with at
+				// most half of the step's time (SPEC 7.4).
+				if (params["settle"] === true) {
+					await flow.activity.settle(page, timeoutMs / 2);
+				}
 				let snapshot = "";
 				if (fieldArrayOrNull(params, "locator") === null) {
 					snapshot = await page.ariaSnapshot({
 						mode: "ai",
-						timeout: timeoutMs,
+						timeout: deadline.remainingMs(),
 					});
 				} else {
 					// ACT limited to one element (SPEC 7.4): the scope waits
@@ -1236,7 +1406,7 @@ export class PlaywrightDriver implements ShimDriver {
 					await this.#locatorAction(page, params, async (locator) => {
 						snapshot = await locator.ariaSnapshot({
 							mode: "ai",
-							timeout: timeoutMs,
+							timeout: deadline.remainingMs(),
 						});
 					});
 				}
@@ -1562,6 +1732,7 @@ function defaultErrorKind(cmd: StepCommand): ErrorKind {
 	switch (cmd) {
 		case "http":
 		case "response":
+		case "readRequest":
 		case "popup":
 		case "tab":
 		case "close":
@@ -1585,8 +1756,11 @@ function defaultErrorKind(cmd: StepCommand): ErrorKind {
 		case "store":
 			return "action";
 		case "ariaSnapshot":
+		case "mock":
+		case "generateLocator":
 			return "internal";
 		case "snapshot":
+		case "judgeScreenshot":
 		case "page":
 		case "assert":
 		case "traceGroup":

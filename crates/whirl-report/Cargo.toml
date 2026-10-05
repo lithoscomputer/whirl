@@ -1,0 +1,20 @@
+[package]
+name = "whirl-report"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The Whirl run report model and its console, JSON, JUnit, and HTML renderers"
+
+[dependencies]
+anyhow.workspace = true
+base64.workspace = true
+chrono.workspace = true
+quick-junit = "0.7.0"
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,4 @@
+[Options]
+setup: login.whirl
+
+VISIT /account

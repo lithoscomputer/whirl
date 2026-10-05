@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { test } from "node:test";
-import { compareSnapshot } from "./snapshots.js";
+import { compareSnapshot, retryUnableToCapture } from "./snapshots.js";
+import { Deadline } from "./step-util.js";
 
 interface Png {
 	readonly data: Buffer;
@@ -63,5 +64,36 @@ test("threshold controls color sensitivity, but never relaxes dimensions", () =>
 			maxDiff: { type: "percent", value: 100 },
 		}),
 		null,
+	);
+});
+
+test("a capture that Chromium refuses for a moment runs again until the deadline", async () => {
+	let calls = 0;
+	const flaky = async (): Promise<string> => {
+		calls++;
+		if (calls < 3)
+			throw new Error(
+				"Protocol error (Page.captureScreenshot): Unable to capture screenshot",
+			);
+		return "png";
+	};
+	assert.equal(await retryUnableToCapture(flaky, new Deadline(5_000)), "png");
+	assert.equal(calls, 3);
+
+	let other = 0;
+	await assert.rejects(
+		retryUnableToCapture(async () => {
+			other++;
+			throw new Error("Timeout 10ms exceeded");
+		}, new Deadline(5_000)),
+		/Timeout 10ms exceeded/,
+	);
+	assert.equal(other, 1, "any other error fails at once");
+
+	await assert.rejects(
+		retryUnableToCapture(async () => {
+			throw new Error("Unable to capture screenshot");
+		}, new Deadline(0)),
+		/Unable to capture screenshot/,
 	);
 });

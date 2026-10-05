@@ -1,0 +1,7 @@
+[Options]
+app-url: {{env.EVAL_BASE}}
+model: {{model}}
+
+# ai: a description that fits three buttons must fail with strictness.
+VISIT /similar-buttons/
+CLICK ai:"an add to cart button" @60s

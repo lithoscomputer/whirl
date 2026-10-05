@@ -1,0 +1,9 @@
+[Options]
+app-url: {{env.EVAL_BASE}}
+model: {{model}}
+
+# GOAL: the committed cache replays its first line, then misses on a button
+# that the page renamed; the model plans the rest from the current page.
+VISIT /goal-checkout/
+GOAL "buy one red mug with standard shipping for Grace Hopper"
+ASSERT testid:confirmation text == "Order placed: 1 × Red mug, standard shipping, for Grace Hopper"

@@ -1,10 +1,10 @@
 [Options]
-base: {{env.EVAL_BASE}}
+app-url: {{env.EVAL_BASE}}
 model: {{model}}
 
 # Click a button that opens a new tab.
 VISIT /new-tab/
 ACT "click the button to open the other page" @60s
 POPUP other
-TAB other
-ASSERT role:heading "Other page" visible
+WINDOW other
+ASSERT heading:"Other page" visible

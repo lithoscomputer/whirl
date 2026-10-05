@@ -1,0 +1,15 @@
+extract.whirl:4:16: error: unknown EXTRACT `total`; name it with EXTRACT first
+  ASSERT extract:total > 0
+                 ^^^^^
+extract.whirl:6:1: warning: EXTRACT runs once, right after an interaction; add an ASSERT that waits for the page first
+  EXTRACT total "the total"
+  ^^^^^^^^^^^^^^^^^^^^^^^^^
+extract.whirl:7:1: error: the EXTRACT schema is outside the supported subset: the keyword `minimum` is not supported
+  { "type": "number", "minimum": 0 }
+  ^
+extract.whirl:8:9: error: EXTRACT `total` is already named
+  EXTRACT total "the total again"
+          ^^^^^
+extract.whirl:9:1: error: `>` cannot test a string
+  ASSERT extract:total > 0
+  ^^^^^^^^^^^^^^^^^^^^^^^^

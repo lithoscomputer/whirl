@@ -9,14 +9,14 @@ Playwright.
 ```whirl
 # checkout.whirl — buy a widget as a signed-in user.
 [Options]
-base: https://shop.example.com
+app-url: https://shop.example.com
 
 VISIT /login
 FILL "Email" alice@example.com
 FILL "Password" {{env.TEST_PASSWORD}}
-CLICK role:button "Sign in"
+CLICK button:"Sign in"
 PAGE /dashboard
-ASSERT role:heading "Welcome back" visible
+ASSERT heading:"Welcome back" visible
 ASSERT testid:user-menu text == Alice
 
 # Find a product.
@@ -24,18 +24,18 @@ FILL placeholder:"Search products" widget
 PRESS Enter
 ASSERT url contains "q=widget"
 ASSERT testid:result-card count >= 1
-CAPTURE first_product: testid:result-card >> nth:0 >> role:link attr:href
+CAPTURE first_product: testid:result-card >> nth:0 >> link:* attr:href
 
 # Add it to the cart.
 VISIT {{first_product}}
 CLICK "Add to cart"
 ASSERT testid:cart-badge text == 1
-ASSERT role:alert text contains "Added to cart"
+ASSERT alert:* text contains "Added to cart"
 ```
 
 ```console
-$ whirl flows/checkout.whirl
-$ whirl --report-junit report.xml flows/
+$ whirl run flows/checkout.whirl
+$ whirl run --report-junit report.xml flows/
 ```
 
 ## Why
@@ -45,8 +45,8 @@ $ whirl --report-junit report.xml flows/
   branching is two files.
 - **No waits in the language.** Actions auto-wait for their target and
   assertions retry until they pass or time out. There is no `SLEEP`.
-- **Semantic locators first.** `role:button "Sign in"` and `label:"Email"`
-  up front; raw CSS is the visually distinct escape hatch.
+- **Semantic locators first.** `button:"Sign in"` and `label:"Email"` up
+  front; raw CSS is the visually distinct escape hatch.
 - **Plain text.** Flows review well in a diff and are easy for people and
   machines to write.
 
@@ -93,14 +93,14 @@ Write a flow:
 ```whirl
 # example.whirl
 VISIT https://example.com
-ASSERT role:heading "Example Domain" visible
+ASSERT heading:"Example Domain" visible
 ASSERT title contains "Example"
 ```
 
 Run it:
 
 ```console
-$ whirl example.whirl
+$ whirl run example.whirl
 example.whirl passed (0.4s)
 ```
 
@@ -108,7 +108,7 @@ Use an HTTP entry to create fixture data before the browser starts its flow:
 
 ```whirl
 [Options]
-base: https://shop.example.com
+app-url: https://shop.example.com
 
 HTTP POST /api/test-fixtures/users
 Authorization: "Bearer {{env.E2E_SETUP_TOKEN}}"
@@ -119,7 +119,7 @@ ASSERT status == 201
 CAPTURE user_id: json:$.id
 
 VISIT /users/{{user_id}}
-ASSERT role:heading Ada visible
+ASSERT heading:Ada visible
 ```
 
 The status check is explicit. Whirl does not treat 2xx as implicit success.
@@ -140,6 +140,24 @@ ASSERT eval "window.dataLayer" json:$[?@.event=='purchase'] count == 1
 Page checks retry until they pass or time out. See
 [SPEC section 9](SPEC.md#9-asserts) for every subject, filter, and predicate.
 
+Use `MOCK` to give the page a fixed answer, and `request:NAME` to check what
+the page sent:
+
+```whirl
+MOCK GET /api/flags 200
+{ "checkout_v2": true }
+MOCK GET https://fonts.example.com/* failed
+
+VISIT /checkout
+MOCK POST /api/cart 201
+CLICK "Add to cart"
+RESPONSE cart POST /api/cart
+ASSERT request:cart json:$.qty == 1
+```
+
+A mock serves every matching browser request until the file ends. `*`
+matches any run of characters. See [MOCK](SPEC.md#75-mock).
+
 Use `ACT` when a step is easier to describe than to locate. A language model
 reads a snapshot of the page and chooses one action, which Whirl runs like
 any other action:
@@ -157,17 +175,80 @@ Set the provider's key, such as `ANTHROPIC_API_KEY`. The model's choice can
 change between runs, so assert the result. `{{env.NAME}}` values in an
 instruction reach the model only as placeholders. See [ACT](SPEC.md#74-act).
 
+`GOAL` lets the model run several actions, one at a time, until it says the
+goal is done. Follow it with an `ASSERT` that checks the result:
+
+```whirl
+GOAL "add two blue mugs to the cart and open the cart"
+ASSERT testid:cart-badge text == 2
+```
+
+A `GOAL` runs at most 20 actions within 2 minutes. `@duration` changes the
+time. See [GOAL](SPEC.md#77-goal).
+
+An `ai:` segment names one element in words, wherever a locator goes:
+
+```whirl
+CLICK ai:"the Add to cart button for the first product"
+ASSERT dialog:* >> ai:"the order total" text == "$42.00"
+```
+
+Whirl writes what each `ai:` target, `ACT` line, and `GOAL` line resolved to
+in `<flow>.whirl-cache.json`, next to the flow. Commit it. Later runs replay
+it without a model call, and a step whose page changed heals with a warning:
+
+```console
+$ whirl run --cache=update flows/  # resolve with the model and write the cache
+$ whirl run flows/                 # replay; heal a miss with a warning
+$ whirl run --cache=only flows/    # fail a miss instead of asking the model
+```
+
+See [AI targets](SPEC.md#63-ai-targets) and [the AI cache](SPEC.md#121-the-ai-cache).
+
+`EXTRACT` reads a value from the page into a typed variable, shaped by an
+optional JSON Schema, for later checks:
+
+```whirl
+EXTRACT order testid:summary "the order total and line items"
+{
+    "type": "object",
+    "properties": {
+        "total": { "type": "number" },
+        "items": { "type": "array", "items": { "type": "string" } }
+    },
+    "required": ["total", "items"]
+}
+ASSERT extract:order json:$.total > 0
+```
+
+See [EXTRACT](SPEC.md#76-extract).
+
+`JUDGE` asks the model whether a claim about the page holds. The model sees a
+screenshot and the page outline. Put an `ASSERT` first that waits for the
+state the claim describes, because `JUDGE` does not retry:
+
+```whirl
+ASSERT testid:summary visible
+JUDGE testid:summary "the total matches the sum of the line items"
+JUDGE "the page shows no error message"
+```
+
+`yes` passes, `no` fails with the model's reason, and `unsure` passes with a
+warning. The model must accept images. See [JUDGE](SPEC.md#98-judge).
+
 More commands:
 
 ```console
 $ whirl check flows/        # parse and lint only; nothing runs
 $ whirl check --json flows/ # diagnostics for editors and agents
-$ whirl --rerun-failed report.json --trace
+$ whirl run --rerun-failed report.json --trace
 $ whirl fmt flows/          # rewrite files to the canonical form
-$ whirl --headed flow.whirl # watch the browser
-$ whirl --trace flow.whirl  # save a trace when the flow fails
-$ whirl --video --report-html evidence.html flows/
-$ whirl --video --video-fps 30 flows/  # lighter recordings; Chromium records at 60 by default
+$ whirl run --headed flow.whirl  # watch the browser
+$ whirl run --trace flow.whirl   # save a trace when the flow fails
+$ whirl run -O browser=firefox -O step-timeout=15s flows/  # override options
+$ whirl run --out results flows/  # write evidence to results/, not whirl-artifacts/
+$ whirl run --video --report-html evidence.html flows/
+$ whirl run --video --video-fps 30 flows/  # lighter recordings; Chromium records at 60 by default
 $ whirl show-trace whirl-artifacts/flow/trace.zip
 ```
 
@@ -199,7 +280,7 @@ snapshot-max-diff: 0.5%
 ```
 
 A locator after the name captures only that element. It must match exactly one
-element, and every segment needs a prefix, such as `testid:` or `role:`. An
+element, and every segment needs a prefix, such as `testid:` or `region:`. An
 element snapshot checks what the element looks like and its size. It does not
 check where the element is on the page; use a full-page snapshot for that.
 
@@ -218,8 +299,8 @@ must always match. Masks do not redact other screenshots, traces, or video.
 Create a portable browser test report with recordings and screenshots:
 
 ```console
-$ whirl --video --report-html evidence.html flows/
-$ whirl --video --report-html evidence.html --report-metadata context.json flows/
+$ whirl run --video --report-html evidence.html flows/
+$ whirl run --video --report-html evidence.html --report-metadata context.json flows/
 ```
 
 The HTML opens offline. It shows results, execution checkpoints, failure details,
@@ -230,7 +311,7 @@ and flow descriptions. Metadata paths resolve relative to the metadata file.
 Save JSON and artifacts once, then regenerate HTML without repeating browser actions:
 
 ```console
-$ whirl --video --report-json report.json --artifacts run-artifacts flows/
+$ whirl run --video --report-json report.json --out run-artifacts flows/
 $ whirl report report.json --html evidence.html
 $ whirl report report.json --html evidence.html --metadata revised-context.json
 ```
@@ -258,7 +339,7 @@ in its console output, reports, and trace step titles. `ACT` sends such values
 to its model only as placeholders, but the page snapshot it sends includes any
 text the page shows. Browser-recorded
 artifacts — screenshots, video, HAR files, and saved storage state — can
-still contain secrets the flow typed or received. Treat the artifacts
+still contain secrets the flow typed or received. Treat the output
 directory and HTML reports containing embedded media as sensitive, and prefer
 dedicated test credentials.
 

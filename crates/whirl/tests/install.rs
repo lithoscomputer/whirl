@@ -104,11 +104,12 @@ fn installs_the_bundle_and_runs_a_flow_from_it() {
     fs::write(
         &flow,
         "VISIT \"data:text/html,<h1>Bundled</h1>\"\n\
-         ASSERT role:heading \"Bundled\" visible\n",
+         ASSERT heading:\"Bundled\" visible\n",
     )
     .expect("the flow file should be writable");
     let run = run_whirl_with_bundle(&data_dir, &work_dir, &[
-        "--artifacts",
+        "run",
+        "--out",
         "artifacts",
         flow.to_str().expect("utf-8 path"),
     ]);
@@ -198,7 +199,7 @@ fn install_records_the_binary_version_and_doctor_rejects_another_versions_bundle
     assert!(text.contains("whirl install"), "{text}");
     let flow = cwd.path.join("flow.whirl");
     fs::write(&flow, "VISIT \"data:text/html,<h1>Hi</h1>\"\n").expect("flow fixture");
-    let run = run_whirl_with_bundle(&data, &cwd, &["flow.whirl"]);
+    let run = run_whirl_with_bundle(&data, &cwd, &["run", "flow.whirl"]);
     assert_eq!(exit_code(&run), 3, "{}", output_text(&run));
     assert!(output_text(&run).contains("whirl install"));
 }
