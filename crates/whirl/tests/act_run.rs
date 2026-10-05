@@ -1029,6 +1029,207 @@ const TWO_BUTTONS: &str = "<h1>Shop</h1>\
     <button onclick=\"document.querySelector('h1').textContent='Saved'\">Save</button>\
     <button onclick=\"document.querySelector('h1').textContent='Shared'\">Share</button>";
 
+/// A page whose second button has a name that Playwright's snapshot wraps
+/// in YAML single quotes: `- 'button "Status: live" [ref=e4]'`.
+const LIVE_STATUS: &str = "<h1>Status</h1>\
+    <button onclick=\"document.querySelector('h1').textContent='Saved'\">Save</button>\
+    <button onclick=\"document.querySelector('h1').textContent='Live'\">Status: live</button>";
+
+#[test]
+fn act_clicks_a_button_whose_name_playwright_quotes() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.answer(&[click("e4", false)]);
+    let flow = dir.file(
+        "quoted-name.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{}ACT \"set the status to live\"\n\
+             [Asserts]\nrole:heading \"Live\" visible\n",
+            visit_html(LIVE_STATUS)
+        ),
+    );
+    let output = twin.run(&dir, &flow, &[]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+    assert_eq!(
+        act_step(&dir)["act"]["actions"][0]["line"],
+        "CLICK role:button \"Status: live\""
+    );
+    let log = twin.request_log();
+    assert!(
+        log.contains(r#"- button \"Status: live\" [ref=e4]"#),
+        "the model reads the line without its quotes; log:\n{log}"
+    );
+    assert!(!log.contains("'button"), "log:\n{log}");
+}
+
+#[test]
+fn jev_picks_a_button_whose_name_playwright_quotes() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.jev(&[jev_intent("click", 0.95), jev_pick("e4", &["e3"], 0.95)]);
+    let flow = dir.file(
+        "jev-quoted-name.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{}ACT \"set the status to live\"\n\
+             [Asserts]\nrole:heading \"Live\" visible\n",
+            visit_html(LIVE_STATUS)
+        ),
+    );
+    let output = twin.run_jev(&dir, &flow, &[]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+    let step = act_step(&dir);
+    assert_eq!(
+        step["act"]["actions"][0]["line"],
+        "CLICK role:button \"Status: live\""
+    );
+    assert_eq!(step["act"]["actions"][0]["plannedBy"], "jev");
+    assert_eq!(step["act"]["usage"]["modelCalls"], 0);
+    let log = twin.request_log();
+    assert!(
+        log.contains(r#"\"e4\":{\"role\":\"button\",\"name\":\"Status: live\""#),
+        "Jev sees the button among the buttons; log:\n{log}"
+    );
+}
+
+/// A page whose second button has a name that holds the first button's
+/// ref: `- button "Delete [ref=e3]" [ref=e4]`.
+const REF_IN_NAME: &str = "<h1>Files</h1>\
+    <button onclick=\"document.querySelector('h1').textContent='Kept'\">Keep</button>\
+    <button onclick=\"document.querySelector('h1').textContent='Deleted'\">Delete [ref=e3]</button>";
+
+#[test]
+fn a_ref_in_a_name_cannot_redirect_jevs_pick() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.jev(&[jev_intent("click", 0.95), jev_pick("e4", &["e3"], 0.95)]);
+    let flow = dir.file(
+        "jev-ref-in-name.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{}ACT \"delete the file\"\n\
+             [Asserts]\nrole:heading \"Deleted\" visible\n",
+            visit_html(REF_IN_NAME)
+        ),
+    );
+    let output = twin.run_jev(&dir, &flow, &[]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+    let step = act_step(&dir);
+    assert_eq!(
+        step["act"]["actions"][0]["line"],
+        "CLICK role:button \"Delete [ref=e3]\""
+    );
+    assert_eq!(step["act"]["actions"][0]["plannedBy"], "jev");
+    assert_eq!(step["act"]["usage"]["modelCalls"], 0);
+    let log = twin.request_log();
+    assert!(
+        log.contains(r#"\"e3\":{\"role\":\"button\",\"name\":\"Keep\""#),
+        "log:\n{log}"
+    );
+    assert!(
+        log.contains(r#"\"e4\":{\"role\":\"button\",\"name\":\"Delete [ref=e3]\""#),
+        "Jev sees the button with its own ref; log:\n{log}"
+    );
+}
+
+/// A page whose second button has a name that Playwright writes without
+/// quotes, because it starts and ends with `/`: `- button /api/ [ref=e4]`.
+const SLASH_NAME: &str = "<h1>Endpoints</h1>\
+    <button onclick=\"document.querySelector('h1').textContent='Docs'\">Docs</button>\
+    <button onclick=\"document.querySelector('h1').textContent='Called'\">/api/</button>";
+
+#[test]
+fn jev_picks_a_button_whose_name_starts_and_ends_with_a_slash() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.jev(&[jev_intent("click", 0.95), jev_pick("e4", &["e3"], 0.95)]);
+    let flow = dir.file(
+        "jev-slash-name.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{}ACT \"call the api\"\n\
+             [Asserts]\nrole:heading \"Called\" visible\n",
+            visit_html(SLASH_NAME)
+        ),
+    );
+    let output = twin.run_jev(&dir, &flow, &[]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+    let step = act_step(&dir);
+    assert_eq!(
+        step["act"]["actions"][0]["line"],
+        "CLICK role:button \"/api/\""
+    );
+    assert_eq!(step["act"]["actions"][0]["plannedBy"], "jev");
+    assert_eq!(step["act"]["usage"]["modelCalls"], 0);
+    let log = twin.request_log();
+    assert!(
+        log.contains(r#"\"e4\":{\"role\":\"button\",\"name\":\"/api/\""#),
+        "Jev sees the button among the buttons; log:\n{log}"
+    );
+}
+
+/// Two days, each a region that its own heading names through
+/// `aria-labelledby`, so the snapshot shows them as `- region [ref=e3]:`
+/// and `- region [ref=e6]:`. The tram ride in Saturday drags natively.
+const DAYS: &str = "<h1>Trip</h1>\
+    <section aria-labelledby=sat><h2 id=sat>Saturday</h2>\
+    <button id=tram draggable=true>Tram ride</button></section>\
+    <section aria-labelledby=sun><h2 id=sun>Sunday</h2><p>Nothing yet</p></section>\
+    <script>\
+    tram.ondragstart = (e) => e.dataTransfer.setData('text/plain', 'tram');\
+    for (const day of document.querySelectorAll('section')) {\
+      day.ondragover = (e) => e.preventDefault();\
+      day.ondrop = (e) => {\
+        e.preventDefault();\
+        day.append(tram);\
+        document.querySelector('h1').textContent = 'Moved to ' + day.querySelector('h2').textContent;\
+      };\
+    }\
+    </script>";
+
+#[test]
+fn jev_reads_a_region_that_its_own_heading_names_by_that_heading() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.jev(&[
+        jev_intent("drag", 0.95),
+        jev_pick("e5", &["e2", "e4", "e7", "e8"], 0.95),
+        jev_pick("e6", &["e3"], 0.95),
+    ]);
+    let flow = dir.file(
+        "jev-heading-region.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{}ACT \"move the tram ride to Sunday\"\n\
+             [Asserts]\nrole:heading \"Moved to Sunday\" visible\n",
+            visit_html(DAYS)
+        ),
+    );
+    let output = twin.run_jev(&dir, &flow, &[]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+    let step = act_step(&dir);
+    assert_eq!(
+        step["act"]["actions"][0]["line"],
+        "DRAG role:button \"Tram ride\" to role:region"
+    );
+    assert_eq!(step["act"]["actions"][0]["plannedBy"], "jev");
+    assert_eq!(step["act"]["usage"]["modelCalls"], 0);
+    let log = twin.request_log();
+    assert!(
+        log.contains(
+            r#"\"e6\":{\"role\":\"region\",\"label\":\"Sunday\",\"heading\":\"Sunday\",\"position\":\"2 of 2\"}"#
+        ),
+        "Jev reads the Sunday region by its own heading, not Saturday's; log:\n{log}"
+    );
+    assert!(
+        log.contains(
+            r#"\"e3\":{\"role\":\"region\",\"label\":\"Saturday\",\"heading\":\"Saturday\",\"position\":\"1 of 2\"}"#
+        ),
+        "log:\n{log}"
+    );
+}
+
 #[test]
 fn jev_acts_without_a_model_call_when_it_is_sure() {
     let dir = TestDir::new();

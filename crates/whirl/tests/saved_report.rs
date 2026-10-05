@@ -587,3 +587,55 @@ fn live_json_can_store_author_provenance_without_rendering_html() {
         "Recorded title"
     );
 }
+
+#[test]
+fn saved_snapshot_settings_keep_units_and_escape_locator_text() {
+    let dir = TempDir::new().expect("temp directory");
+    let mut report = legacy_report(dir.path());
+    let step = &mut report["files"][0]["entries"][0]["steps"][0];
+    step["kind"] = json!("action");
+    step["text"] = json!("SNAPSHOT cart\nsnapshot-max-diff: 0.1%");
+    step["snapshot"] =
+        json!({"masks": ["text:<script>***</script>"], "maxDiff": "0.1%", "pixelThreshold": "0.2"});
+    save(dir.path(), &report);
+    let output = render(dir.path(), &["report.json", "--html", "snapshot.html"]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let html = fs::read_to_string(dir.path().join("snapshot.html")).expect("HTML");
+    for expected in [
+        "Snapshot settings",
+        "snapshot-max-diff",
+        "0.1%",
+        "snapshot-pixel-threshold",
+        "0.2",
+        "text:&lt;script&gt;***&lt;/script&gt;",
+    ] {
+        assert!(html.contains(expected), "missing {expected}");
+    }
+    assert!(!html.contains("text:<script>"));
+    // Reports from before element snapshots describe full-page captures.
+    assert!(html.contains("<dd>Full page</dd>"));
+}
+
+#[test]
+fn saved_snapshot_targets_render_escaped_as_element_captures() {
+    let dir = TempDir::new().expect("temp directory");
+    let mut report = legacy_report(dir.path());
+    let step = &mut report["files"][0]["entries"][0]["steps"][0];
+    step["kind"] = json!("action");
+    step["text"] = json!("SNAPSHOT cart css:\"<b>\"");
+    step["snapshot"] = json!({
+        "target": "css:\"<b>\"",
+        "masks": [],
+        "maxDiff": "0",
+        "pixelThreshold": "0.2"
+    });
+    save(dir.path(), &report);
+    let output = render(dir.path(), &["report.json", "--html", "snapshot.html"]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let html = fs::read_to_string(dir.path().join("snapshot.html")).expect("HTML");
+    assert!(
+        html.contains("<dd>Element <code>css:&quot;&lt;b&gt;&quot;</code></dd>"),
+        "{html}"
+    );
+    assert!(!html.contains("Full page"));
+}

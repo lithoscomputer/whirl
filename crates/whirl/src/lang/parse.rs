@@ -14,6 +14,7 @@ use crate::check::{
     COMPARE_KEYWORDS, Charset, DateFormat, FILTER_KEYWORDS, FilterKind, JsonQuery, Pattern,
     PatternFlags, WORD_PREDICATES, XpathQuery, bytes_literal, is_bytes_literal_shape, quote_json,
 };
+use crate::lang::ast::snapshot::{MaxDiff, PixelThreshold, SnapshotOption, SnapshotOptionLine};
 use crate::lang::ast::{
     Action, ActionKind, Assert, AssertBody, BrowserKind, Capture, CheckLine, Comment, DialogPolicy,
     DurationLit, Entry, Extractor, File, FileOption, FilterArg, FilterSpec, HttpBody, HttpBodyKind,
@@ -1247,9 +1248,7 @@ fn parse_action_body(
         "SCREENSHOT" => ActionKind::Screenshot {
             name: parse_name(tokens, keyword_span)?,
         },
-        "SNAPSHOT" => ActionKind::Snapshot {
-            name: parse_name(tokens, keyword_span)?,
-        },
+        "SNAPSHOT" => parse_snapshot(tokens, keyword_span)?,
         "STORE" => parse_store(tokens, keyword_span)?,
         "EVAL" => ActionKind::Eval {
             script: one_value(tokens, keyword_span)?,
@@ -1279,6 +1278,27 @@ fn parse_act(tokens: Vec<RawToken>, keyword_span: Span) -> Result<ActionKind, Li
     Ok(ActionKind::Act {
         scope: Some(scope),
         instruction,
+    })
+}
+
+/// `SNAPSHOT name` or `SNAPSHOT name locator` (SPEC 7). The name comes
+/// first; the target takes prefixed segments only, like an `ACT` scope.
+fn parse_snapshot(mut tokens: Vec<RawToken>, keyword_span: Span) -> Result<ActionKind, LineError> {
+    let rest = if tokens.len() > 1 {
+        tokens.split_off(1)
+    } else {
+        Vec::new()
+    };
+    let name = parse_name(tokens, keyword_span)?;
+    let target = if rest.is_empty() {
+        None
+    } else {
+        Some(build_locator(rest, false, name.span)?)
+    };
+    Ok(ActionKind::Snapshot {
+        name,
+        target,
+        options: Vec::new(),
     })
 }
 
@@ -2020,7 +2040,82 @@ fn parse_capture_body(
     })
 }
 
-const OPTION_KEYS: [&str; 13] = [
+fn parse_snapshot_option(
+    first: RawToken,
+    cursor: &mut Cursor,
+) -> Result<SnapshotOption, LineError> {
+    let span = first.span;
+    let head = match first.parts.first() {
+        Some(RawPart::Bare { text, .. }) => text.as_str(),
+        _ => "",
+    };
+    let key = head.split(':').next().unwrap_or_default().to_owned();
+    let Some(colon) = head.find(':') else {
+        return Err(LineError::new(span, "expected a snapshot option"));
+    };
+    let mut tokens = Vec::new();
+    if let Some(rest) = strip_prefix_token(first, colon + 1) {
+        tokens.push(rest);
+    }
+    while let Some(token) = cursor.next_token()? {
+        tokens.push(token);
+    }
+    if split_timeout(&mut tokens).is_some() {
+        return Err(LineError::new(
+            span,
+            "put the timeout on the SNAPSHOT headline",
+        ));
+    }
+    match key.as_str() {
+        "snapshot-mask" => {
+            if tokens.len() == 1 && tokens[0].bare_single() == Some("none") {
+                Ok(SnapshotOption::Mask(None))
+            } else {
+                build_locator(tokens, false, after_span(span))
+                    .map(|locator| SnapshotOption::Mask(Some(locator)))
+            }
+        }
+        "snapshot-max-diff" => Ok(SnapshotOption::MaxDiff(option_shape(
+            one_value(tokens, span)?,
+            |text| text.parse::<MaxDiff>().ok(),
+            &["a pixel count or percentage from 0% to 100%"],
+        )?)),
+        "snapshot-pixel-threshold" => Ok(SnapshotOption::PixelThreshold(option_shape(
+            one_value(tokens, span)?,
+            |text| text.parse::<PixelThreshold>().ok(),
+            &["a JSON number from 0 to 1"],
+        )?)),
+        _ => Err(
+            LineError::new(span, format!("unknown snapshot option `{key}`")).expecting([
+                "snapshot-mask",
+                "snapshot-max-diff",
+                "snapshot-pixel-threshold",
+            ]),
+        ),
+    }
+}
+
+fn validate_snapshot_option<'a>(
+    existing: impl Iterator<Item = &'a SnapshotOption>,
+    new: &SnapshotOption,
+    span: Span,
+) -> Result<(), LineError> {
+    for old in existing.filter(|old| old.key() == new.key()) {
+        if matches!(
+            (old, new),
+            (SnapshotOption::Mask(Some(_)), SnapshotOption::Mask(Some(_)))
+        ) {
+            continue;
+        }
+        return Err(LineError::new(
+            span,
+            format!("duplicate or conflicting {} option", new.key()),
+        ));
+    }
+    Ok(())
+}
+
+const OPTION_KEYS: [&str; 16] = [
     "base",
     "browser",
     "viewport",
@@ -2034,6 +2129,9 @@ const OPTION_KEYS: [&str; 13] = [
     "user-agent",
     "setup",
     "model",
+    "snapshot-mask",
+    "snapshot-max-diff",
+    "snapshot-pixel-threshold",
 ];
 
 /// Shape-validates a literal option value at parse time; a value with
@@ -2075,6 +2173,9 @@ fn parse_option_line(first: RawToken, cursor: &mut Cursor) -> Result<FileOption,
         return Err(
             LineError::new(key_span, format!("unknown option key `{key}`")).expecting(OPTION_KEYS),
         );
+    }
+    if key.starts_with("snapshot-") {
+        return parse_snapshot_option(first, cursor).map(FileOption::Snapshot);
     }
     let mut values = Vec::new();
     if let Some(rest) = strip_prefix_token(first, colon + 1) {
@@ -2793,7 +2894,19 @@ impl Parser {
                 let first_span = first.span;
                 let option = parse_option_line(first, cursor)?;
                 let (_, span) = cursor.content(content_start);
-                let _ = first_span;
+                if let FileOption::Snapshot(snapshot) = &option {
+                    validate_snapshot_option(
+                        self.options.iter().filter_map(|line| {
+                            if let FileOption::Snapshot(option) = &line.option {
+                                Some(option)
+                            } else {
+                                None
+                            }
+                        }),
+                        snapshot,
+                        first_span,
+                    )?;
+                }
                 self.options.push(OptionLine {
                     option,
                     line: line_no,
@@ -2825,6 +2938,39 @@ impl Parser {
                     text,
                 });
                 self.state = State::AfterPage;
+                Ok(())
+            }
+            State::Actions
+                if self.current.as_ref().is_some_and(|entry| {
+                    matches!(
+                        entry.actions.last().map(|action| &action.kind),
+                        Some(ActionKind::Snapshot { .. })
+                    )
+                }) =>
+            {
+                let first_span = first.span;
+                let option = parse_snapshot_option(first, cursor)?;
+                let (text, span) = cursor.content(content_start);
+                let action = self
+                    .current
+                    .as_mut()
+                    .and_then(|entry| entry.actions.last_mut())
+                    .expect("snapshot action");
+                let ActionKind::Snapshot { options, .. } = &mut action.kind else {
+                    unreachable!("snapshot action")
+                };
+                validate_snapshot_option(
+                    options.iter().map(|line| &line.option),
+                    &option,
+                    first_span,
+                )?;
+                options.push(SnapshotOptionLine {
+                    option,
+                    line: line_no,
+                    span,
+                });
+                action.text.push('\n');
+                action.text.push_str(&text);
                 Ok(())
             }
             State::Actions => Err(
@@ -3353,7 +3499,7 @@ mod tests {
             panic!("expected SCREENSHOT");
         };
         assert_eq!(name.text, "after-verification-code");
-        let ActionKind::Snapshot { name } = action_kind("SNAPSHOT top-bar_v2") else {
+        let ActionKind::Snapshot { name, .. } = action_kind("SNAPSHOT top-bar_v2") else {
             panic!("expected SNAPSHOT");
         };
         assert_eq!(name.text, "top-bar_v2");
@@ -4539,15 +4685,151 @@ status == 202
     }
 
     #[test]
+    fn snapshot_options_have_separate_scopes_and_keep_lines() {
+        let file = parse(
+            "[Options]\nsnapshot-mask: testid:clock\nsnapshot-mask: frame:iframe >> css:.price\nsnapshot-max-diff: 0.1%\nsnapshot-pixel-threshold: 2e-1\nVISIT /\nSNAPSHOT one @2s\n# keep this\nsnapshot-mask: none\nsnapshot-max-diff: 0\nSNAPSHOT two\nPAGE /\n",
+        );
+        assert_eq!(file.options.len(), 4);
+        let actions = &file.entries[0].actions;
+        let ActionKind::Snapshot { options, .. } = &actions[1].kind else {
+            panic!("snapshot");
+        };
+        assert_eq!(options.len(), 2);
+        assert_eq!(options[0].line, 9);
+        assert!(matches!(options[0].option, SnapshotOption::Mask(None)));
+        assert!(actions[1].text.contains("\nsnapshot-max-diff: 0"));
+        assert!(
+            matches!(&actions[2].kind, ActionKind::Snapshot { options, .. } if options.is_empty())
+        );
+    }
+
+    #[test]
+    fn snapshot_options_validate_both_scopes() {
+        for invalid in [
+            "snapshot-unknown: 1",
+            "snapshot-mask: bare",
+            "snapshot-mask: \"none\"",
+            "snapshot-mask: {{mask}}",
+            "snapshot-mask: css:x @1s",
+            "snapshot-mask: none\nsnapshot-mask: css:x",
+            "snapshot-mask: css:x\nsnapshot-mask: none",
+            "snapshot-mask: none\nsnapshot-mask: none",
+            "snapshot-max-diff: 1\nsnapshot-max-diff: 2",
+            "snapshot-pixel-threshold: 0\nsnapshot-pixel-threshold: 1",
+            "snapshot-max-diff: -1",
+            "snapshot-max-diff: +1",
+            "snapshot-max-diff: 1.5",
+            "snapshot-max-diff: 1e2",
+            "snapshot-max-diff: 9007199254740992",
+            "snapshot-max-diff: 100.1%",
+            "snapshot-max-diff: .1%",
+            "snapshot-pixel-threshold: NaN",
+            "snapshot-pixel-threshold: 1e999",
+            "snapshot-pixel-threshold: 1.1",
+            "snapshot-pixel-threshold: -0.1",
+            "snapshot-pixel-threshold: 20%",
+        ] {
+            for prefix in ["[Options]\n", "VISIT /\nSNAPSHOT x\n"] {
+                parse_err(&format!("{prefix}{invalid}\n"));
+            }
+        }
+        for valid in [
+            "snapshot-max-diff: 9007199254740991",
+            "snapshot-max-diff: 0",
+            "snapshot-max-diff: 100%",
+            "snapshot-max-diff: 0.125%",
+            "snapshot-pixel-threshold: 0",
+            "snapshot-pixel-threshold: 1",
+            "snapshot-mask: text:none",
+            "snapshot-mask: role~:button \"Buy now\" >> nth:0",
+            "snapshot-max-diff: {{limit}}",
+            "snapshot-pixel-threshold: {{threshold}}",
+            "snapshot-mask: testid:{{id}}",
+        ] {
+            parse(&format!(
+                "[Options]\n{valid}\nVISIT /\nSNAPSHOT x\n{valid}\n"
+            ));
+        }
+        for prefix in [
+            "VISIT /\nSCREENSHOT x",
+            "VISIT /\nSNAPSHOT x\n[Asserts]",
+            "VISIT /\nSNAPSHOT x\nPAGE /",
+        ] {
+            parse_err(&format!("{prefix}\nsnapshot-max-diff: 1\n"));
+        }
+    }
+
+    #[test]
     fn screenshot_and_snapshot_take_names() {
         let ActionKind::Screenshot { name } = action_kind("SCREENSHOT overview") else {
             panic!("expected SCREENSHOT");
         };
         assert_eq!(name.text, "overview");
-        let ActionKind::Snapshot { name } = action_kind("SNAPSHOT cart_page") else {
+        let ActionKind::Snapshot { name, .. } = action_kind("SNAPSHOT cart_page") else {
             panic!("expected SNAPSHOT");
         };
         assert_eq!(name.text, "cart_page");
+    }
+
+    #[test]
+    fn snapshot_takes_an_optional_explicit_target_after_its_name() {
+        let file = parse(
+            "VISIT /\nSNAPSHOT page\nSNAPSHOT cart testid:cart @10s\nsnapshot-max-diff: 1\nSNAPSHOT pay frame:\"#pay iframe\" >> role:button \"Pay now\" >> nth:0\nSNAPSHOT row testid:{{row}}\n",
+        );
+        let actions = &file.entries[0].actions;
+        let ActionKind::Snapshot { name, target, .. } = &actions[1].kind else {
+            panic!("snapshot");
+        };
+        assert_eq!(name.text, "page");
+        assert!(target.is_none());
+        let ActionKind::Snapshot {
+            name,
+            target: Some(target),
+            options,
+        } = &actions[2].kind
+        else {
+            panic!("element snapshot");
+        };
+        assert_eq!(name.text, "cart");
+        assert_eq!(target.segments.len(), 1);
+        assert!(
+            matches!(&target.segments[0].kind, SegmentKind::TestId(value) if lit(value) == "cart")
+        );
+        assert_eq!(actions[2].timeout.map(DurationLit::millis), Some(10_000));
+        assert_eq!(options.len(), 1);
+        let ActionKind::Snapshot {
+            target: Some(target),
+            ..
+        } = &actions[3].kind
+        else {
+            panic!("frame snapshot");
+        };
+        assert_eq!(target.segments.len(), 3);
+        assert!(matches!(target.segments[0].kind, SegmentKind::Frame(_)));
+        assert!(matches!(target.segments[2].kind, SegmentKind::Nth(0)));
+        assert!(matches!(&actions[4].kind, ActionKind::Snapshot {
+            target: Some(_),
+            ..
+        }));
+    }
+
+    #[test]
+    fn snapshot_targets_need_a_name_and_explicit_segments() {
+        for invalid in [
+            "SNAPSHOT",
+            "SNAPSHOT testid:cart",
+            "SNAPSHOT \"cart\" testid:cart",
+            "SNAPSHOT cart cart",
+            "SNAPSHOT cart \"Add to cart\"",
+            "SNAPSHOT cart {{target}}",
+            "SNAPSHOT cart nth:0",
+            "SNAPSHOT cart testid:cart >>",
+            "SNAPSHOT cart testid:cart testid:total",
+            "SNAPSHOT cart frame:iframe",
+            "SNAPSHOT cart testid:cart >> total",
+        ] {
+            parse_err(&format!("VISIT /\n{invalid}\n"));
+        }
     }
 
     #[test]

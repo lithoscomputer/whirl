@@ -1,0 +1,4 @@
+VISIT /
+SNAPSHOT cart
+snapshot-max-diff: 0
+snapshot-max-diff: 1%

@@ -24,10 +24,12 @@ use tokio::task::JoinHandle;
 use tokio::time::{Instant, timeout, timeout_at};
 use tracing::{Instrument as _, debug, debug_span, warn};
 
+use crate::report::model::SnapshotReport;
+
 pub(super) mod wire;
 
 /// The protocol version this Whirl speaks (protocol section 3).
-pub(crate) const PROTOCOL: u64 = 2;
+pub(crate) const PROTOCOL: u64 = 4;
 
 /// Environment variable naming the built shim entry (protocol section 8).
 pub(crate) const SHIM_JS_ENV: &str = "WHIRL_SHIM_JS";
@@ -340,10 +342,17 @@ pub(crate) enum StepCommand {
     },
     #[serde(rename_all = "camelCase")]
     Snapshot {
-        baseline_path: String,
-        actual_path:   String,
-        diff_path:     String,
-        update:        bool,
+        /// The element to capture, or `None` for the full page.
+        target:          Option<Json>,
+        masks:           Vec<Json>,
+        pixel_threshold: f64,
+        max_diff:        Json,
+        #[serde(skip)]
+        report:          Box<SnapshotReport>,
+        baseline_path:   String,
+        actual_path:     String,
+        diff_path:       String,
+        update:          bool,
     },
     EvalAction {
         script: String,
@@ -1125,10 +1134,20 @@ mod tests {
             ),
             (
                 StepCommand::Snapshot {
-                    baseline_path: "/abs/base.png".to_owned(),
-                    actual_path:   "/abs/actual.png".to_owned(),
-                    diff_path:     "/abs/diff.png".to_owned(),
-                    update:        false,
+                    baseline_path:   "/abs/base.png".to_owned(),
+                    actual_path:     "/abs/actual.png".to_owned(),
+                    diff_path:       "/abs/diff.png".to_owned(),
+                    update:          false,
+                    target:          None,
+                    masks:           vec![],
+                    pixel_threshold: 0.2,
+                    max_diff:        serde_json::json!({"type": "pixels", "value": 0}),
+                    report:          Box::new(SnapshotReport {
+                        target:          None,
+                        masks:           vec![],
+                        max_diff:        "0".to_owned(),
+                        pixel_threshold: "0.2".to_owned(),
+                    }),
                 },
                 "snapshot",
                 serde_json::json!({
@@ -1136,6 +1155,10 @@ mod tests {
                     "actualPath": "/abs/actual.png",
                     "diffPath": "/abs/diff.png",
                     "update": false,
+                    "target": null,
+                    "masks": [],
+                    "pixelThreshold": 0.2,
+                    "maxDiff": {"type": "pixels", "value": 0},
                 }),
             ),
             (

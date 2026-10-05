@@ -1,0 +1,9 @@
+[Options]
+base: {{env.EVAL_BASE}}
+model: {{model}}
+
+# A planner with its own pointer-event drag, which starts after a 300ms press.
+VISIT /trip-planner/
+ACT "move the tram ride to Sunday" @60s
+[Asserts]
+role:region "Sunday, May 11" >> text:"Tram 28 ride" visible

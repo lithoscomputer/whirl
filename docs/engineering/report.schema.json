@@ -273,6 +273,36 @@
                             }
                           }
                         }
+                      },
+                      "snapshot": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "masks",
+                          "maxDiff",
+                          "pixelThreshold"
+                        ],
+                        "properties": {
+                          "target": {
+                            "type": "string",
+                            "description": "Explicit locator text of the element an element snapshot captured; absent for a full-page snapshot. Secret values are masked."
+                          },
+                          "masks": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "Effective explicit mask locator text; secret values are masked."
+                          },
+                          "maxDiff": {
+                            "type": "string",
+                            "description": "Pixel count or percentage, including its unit; may contain secret masking."
+                          },
+                          "pixelThreshold": {
+                            "type": "string",
+                            "description": "Effective threshold; may contain secret masking."
+                          }
+                        }
                       }
                     }
                   }

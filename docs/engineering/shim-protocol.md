@@ -50,9 +50,13 @@ Error object:
 ### `hello`
 
 Sent once after spawn. Params: `{}`. Result:
-`{"protocol": 2, "playwrightVersion": "1.62.1", "ffmpegPath": "abs path" | null}`.
+`{"protocol": 4, "playwrightVersion": "1.62.1", "ffmpegPath": "abs path" | null}`.
 `ffmpegPath` is Playwright's bundled ffmpeg, which every video recording
 needs; `null` means it is not installed. `whirl doctor` reports it.
+Protocol 4 requires the snapshot `target`, so an older shim cannot silently
+take a full-page snapshot of an element snapshot.
+Protocol 3 requires effective snapshot masks and comparison settings. Older shims
+cannot silently ignore requested visual tolerances or masks.
 Protocol 2 replaces value checks and captures with the `read` and
 `readResponse` commands (sections 4.4 and 4.5).
 
@@ -189,7 +193,7 @@ Commands and their extra params (result `{}` unless noted):
 | `upload` | `locator`, `path` (absolute; Rust resolved it) |
 | `drop` | `locator`, `path` (absolute; Rust resolved it) — `locator.drop({ files: path })`; an `action` error when the file does not exist or the element's `dragover` does not call `preventDefault()` (SPEC 7) |
 | `screenshot` | `path` (absolute .png; full page) |
-| `snapshot` | `baselinePath`, `actualPath`, `diffPath`, `update` (bool) |
+| `snapshot` | `baselinePath`, `actualPath`, `diffPath`, `update` (bool), `target` (locator array, or `null` for the full page), `masks` (array of locator arrays), `pixelThreshold` (number 0–1), `maxDiff` (`{"type":"pixels","value":count}` or `{"type":"percent","value":percent}`) |
 | `evalAction` | `script` |
 | `store` | `scope` (`"local"` \| `"session"` \| `"cookie"`), `key`, `value` — writes one `localStorage` or `sessionStorage` entry on the current origin, or one cookie for the current page's URL (host, path `/`, no attributes); `cookie` on a non-http(s) page is an `action` error |
 | `ariaSnapshot` | `locator` (or `null`); result `{"snapshot": "..."}`, the selected tab's `page.ariaSnapshot({ mode: "ai" })`, or that one element's `locator.ariaSnapshot({ mode: "ai" })` with the usual waiting and strictness, for `ACT` (SPEC 7.4) |
@@ -206,25 +210,41 @@ Semantics the shim owns (per SPEC sections 7, 9, 15):
   resolves to more than one element is a strictness failure reported with
   error kind `"strictness"` and the candidate list.
 - `screenshot` reports errors normally; Rust downgrades them to warnings.
+- Snapshot settings are resolved by Rust before the request. `masks` contains
+  explicit locator chains; zero and multiple element matches are allowed.
+  Every frame uses Playwright's pink screenshot masks, including update and
+  stabilization frames. `maxDiff.type` preserves the requested unit. Counts
+  are safe nonnegative JavaScript integers; percentages range from 0 to 100.
+  The shim passes only `maxDiffPixels` or `maxDiffPixelRatio` (percent / 100)
+  to the comparator. `pixelThreshold` is finite and between 0 and 1.
 - `snapshot` is a shim-owned poll loop: capture frames until two consecutive
   frames are byte-identical, compare with Playwright's image comparator
-  (identical dimensions; per-pixel color-distance threshold 0.2, no other
-  tolerance), recapture on mismatch until `timeoutMs` expires. On final
+  (identical dimensions; effective `pixelThreshold` and `maxDiff`), recapture
+  on mismatch until `timeoutMs` expires. On final
   mismatch write `actualPath` and `diffPath` and reply with error kind
   `"snapshot-mismatch"`. A missing baseline is error kind
   `"snapshot-missing-baseline"` (Rust reports it as a runtime error). With
   `update: true`, write the settled frame to `baselinePath` and reply
   `{"updated": true}`.
+- A `snapshot` with a `target` captures only that element with
+  `locator.screenshot()`, with the same masks and poll loop. The target
+  follows the strictness rule above; its frame owners must be unambiguous. It
+  resolves again for every frame. A capture that fails because the element
+  was detached, had zero width or height, or was not visible during the
+  capture is retried within `timeoutMs`; other errors end the step. When a
+  capture times out after a matching frame, the shim checks the target once
+  without waiting: a missing or hidden target fails with `"timeout"`, and a
+  visible target keeps the earlier result.
 - `ariaSnapshot` names each iframe, which Playwright writes without a name.
   Right after the snapshot, the shim resolves each iframe line's ref with
   `aria-ref=`, in any frame and across origins, and puts the iframe's
   `aria-label`, or else its `title`, after the role in double quotes with
   JSON escapes: `- iframe "Incident history" [ref=e4]:`. The shim does not
   wrap such a line in YAML single quotes, as Playwright does for a name that
-  holds `: `, because Rust's line parsers read the role from the start of
-  the line. An iframe without a name, a ref that no longer resolves, a failed
-  read, or a spent `timeoutMs` leaves the line as it was; the names never
-  fail the step.
+  holds `: `. Rust reads both forms the same, and it removes the quotes
+  before the model reads the snapshot. An iframe without a name, a ref that
+  no longer resolves, a failed read, or a spent `timeoutMs` leaves the line
+  as it was; the names never fail the step.
 - `evalAction` and an `eval` read: run the script as the body of an
   async function in the page main world via `page.evaluate`. If the script
   parses as a single expression, run `return (script);`; otherwise run it as

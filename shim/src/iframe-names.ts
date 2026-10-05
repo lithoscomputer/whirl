@@ -50,8 +50,9 @@ export function iframeName(
  * `- iframe "Incident history" [ref=e4]:`. Other lines stay as they are.
  *
  * Playwright also wraps a whole line in YAML single quotes when its name
- * holds text such as `: ` or ` #`. These lines stay unwrapped, because
- * Rust's snapshot parsers read the role from the start of the line.
+ * holds text such as `: ` or ` #`. These lines stay unwrapped: Rust reads
+ * both forms the same, and it removes the quotes before the model reads the
+ * snapshot, so the quotes would change nothing.
  */
 export function withIframeNames(
 	snapshot: string,

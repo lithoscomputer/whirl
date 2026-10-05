@@ -1,17 +1,27 @@
 // SNAPSHOT execution (protocol section 4, SPEC section 7).
 //
-// A shim-owned poll loop captures full-page frames until two consecutive
-// captures are byte-identical, compares the settled frame against the
+// A shim-owned poll loop captures full-page or element frames until two
+// consecutive captures are byte-identical, compares the settled frame against the
 // baseline with Playwright's image comparator (identical dimensions;
-// per-pixel color distance threshold 0.2 on a 0-1 scale), and keeps
+// configurable pixel threshold and difference allowance), and keeps
 // recapturing and recomparing on mismatch until the deadline.
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname } from "node:path";
-import type { Page } from "@playwright/test";
-import { ShimError } from "./protocol.js";
-import { Deadline, isTimeoutError, sleep } from "./step-util.js";
+import type { Locator, Page } from "@playwright/test";
+import { describeLocator, type FrameOwner } from "./locators.js";
+import type { SnapshotComparison } from "./protocol.js";
+import { assertNever, ShimError } from "./protocol.js";
+import {
+	Deadline,
+	failOnMultipleMatches,
+	isStrictModeViolation,
+	isTimeoutError,
+	shortErrorMessage,
+	sleep,
+	strictnessError,
+} from "./step-util.js";
 
 interface ComparatorResult {
 	readonly errorMessage: string;
@@ -21,7 +31,11 @@ interface ComparatorResult {
 type Comparator = (
 	actual: Buffer,
 	expected: Buffer,
-	options?: { readonly threshold?: number },
+	options?: {
+		readonly threshold?: number;
+		readonly maxDiffPixels?: number;
+		readonly maxDiffPixelRatio?: number;
+	},
 ) => ComparatorResult | null;
 
 interface CoreBundle {
@@ -38,25 +52,157 @@ const require = createRequire(import.meta.url);
 const coreBundle = require("playwright-core/lib/coreBundle") as CoreBundle;
 const comparePng: Comparator = coreBundle.utils.getComparator("image/png");
 
-const defaultThreshold = 0.2;
 const interFrameDelayMs = 100;
 
-export interface SnapshotParams {
+export interface SnapshotMask {
+	readonly locator: Locator;
+	readonly frames: readonly FrameOwner[];
+}
+
+interface PageCapture {
+	readonly type: "page";
+}
+
+interface ElementCapture {
+	readonly type: "element";
+	/** Lazy, so every capture finds a replaced element again. */
+	readonly locator: Locator;
+	readonly description: string;
+	readonly frames: readonly FrameOwner[];
+}
+
+/** What one SNAPSHOT captures: the full page or one element (SPEC 7). */
+export type SnapshotCapture = PageCapture | ElementCapture;
+
+export interface SnapshotParams extends SnapshotComparison {
+	readonly capture: SnapshotCapture;
 	readonly baselinePath: string;
 	readonly actualPath: string;
 	readonly diffPath: string;
 	readonly update: boolean;
+	readonly masks: readonly SnapshotMask[];
 }
 
 export interface SnapshotResult {
 	readonly updated?: boolean;
 }
 
-async function captureFrame(page: Page, deadline: Deadline): Promise<Buffer> {
-	return page.screenshot({
-		fullPage: true,
-		timeout: deadline.remainingMs(),
-	});
+async function failOnAmbiguousFrames(
+	frames: readonly FrameOwner[],
+): Promise<void> {
+	for (const frame of frames) {
+		await failOnMultipleMatches(frame.locator, describeLocator(frame.segments));
+	}
+}
+
+/**
+ * Playwright 1.62.1 resolves the element once per `locator.screenshot()`
+ * and then captures that handle. These errors mean the element changed
+ * during the capture, so resolving it again can succeed.
+ */
+const transientCaptureErrors = [
+	"Element is not attached to the DOM",
+	"Node has 0 width",
+	"Node has 0 height",
+	"Node is either not visible or not an HTMLElement",
+] as const;
+
+function isTransientCaptureError(error: unknown): boolean {
+	return (
+		error instanceof Error &&
+		transientCaptureErrors.some((text) => error.message.includes(text))
+	);
+}
+
+async function captureElement(
+	target: ElementCapture,
+	deadline: Deadline,
+	mask: Locator[],
+): Promise<Buffer> {
+	for (;;) {
+		await failOnAmbiguousFrames(target.frames);
+		await failOnMultipleMatches(target.locator, target.description);
+		try {
+			return await target.locator.screenshot({
+				mask,
+				timeout: deadline.remainingMs(),
+			});
+		} catch (error) {
+			if (isStrictModeViolation(error)) {
+				throw await strictnessError(
+					target.locator,
+					target.description,
+					await target.locator.count(),
+				);
+			}
+			if (!isTransientCaptureError(error)) {
+				throw error;
+			}
+			if (deadline.expired()) {
+				throw new ShimError(
+					"timeout",
+					`snapshot target ${target.description} could not be captured: ${shortErrorMessage(error)}`,
+				);
+			}
+			await sleep(Math.min(interFrameDelayMs, deadline.remainingMs()));
+		}
+	}
+}
+
+async function captureFrame(
+	page: Page,
+	capture: SnapshotCapture,
+	deadline: Deadline,
+	masks: readonly SnapshotMask[],
+): Promise<Buffer> {
+	// Screenshot masks allow many element matches, but frame owners must
+	// remain unambiguous. Check each capture because the DOM can change.
+	for (const mask of masks) {
+		await failOnAmbiguousFrames(mask.frames);
+	}
+	const maskLocators = masks.map((mask) => mask.locator);
+	switch (capture.type) {
+		case "page":
+			return page.screenshot({
+				fullPage: true,
+				mask: maskLocators,
+				timeout: deadline.remainingMs(),
+			});
+		case "element":
+			return captureElement(capture, deadline, maskLocators);
+		default:
+			return assertNever(capture);
+	}
+}
+
+function isCaptureTimeout(error: unknown): boolean {
+	return (
+		isTimeoutError(error) ||
+		(error instanceof ShimError && error.kind === "timeout")
+	);
+}
+
+/**
+ * A capture timeout cannot tell a target that is gone from a deadline that
+ * ran out while capturing a present one. Check once without waiting.
+ */
+async function isTargetStillVisible(target: ElementCapture): Promise<boolean> {
+	try {
+		await failOnAmbiguousFrames(target.frames);
+		return await target.locator.isVisible();
+	} catch (error) {
+		if (error instanceof ShimError) {
+			throw error;
+		}
+		if (isStrictModeViolation(error)) {
+			throw await strictnessError(
+				target.locator,
+				target.description,
+				await target.locator.count(),
+			);
+		}
+		return false;
+	}
 }
 
 interface SettledFrame {
@@ -67,15 +213,17 @@ interface SettledFrame {
 /** Captures until two consecutive frames are byte-identical. */
 async function settleFrame(
 	page: Page,
+	capture: SnapshotCapture,
 	deadline: Deadline,
+	masks: readonly SnapshotMask[],
 ): Promise<SettledFrame> {
-	let previous = await captureFrame(page, deadline);
+	let previous = await captureFrame(page, capture, deadline, masks);
 	for (;;) {
 		if (deadline.expired()) {
 			return { frame: previous, settled: false };
 		}
 		await sleep(Math.min(interFrameDelayMs, deadline.remainingMs()));
-		const current = await captureFrame(page, deadline);
+		const current = await captureFrame(page, capture, deadline, masks);
 		if (current.equals(previous)) {
 			return { frame: current, settled: true };
 		}
@@ -103,6 +251,20 @@ async function readBaseline(path: string): Promise<Buffer | null> {
 	}
 }
 
+/** The pinned comparator enforces equal dimensions even at a 100% allowance. */
+export function compareSnapshot(
+	actual: Buffer,
+	expected: Buffer,
+	settings: SnapshotComparison,
+): ComparatorResult | null {
+	return comparePng(actual, expected, {
+		threshold: settings.pixelThreshold,
+		...(settings.maxDiff.type === "pixels"
+			? { maxDiffPixels: settings.maxDiff.value }
+			: { maxDiffPixelRatio: settings.maxDiff.value / 100 }),
+	});
+}
+
 export async function runSnapshot(
 	page: Page,
 	params: SnapshotParams,
@@ -111,11 +273,20 @@ export async function runSnapshot(
 	const deadline = new Deadline(timeoutMs);
 
 	if (params.update) {
-		const settled = await settleFrame(page, deadline);
+		const settled = await settleFrame(
+			page,
+			params.capture,
+			deadline,
+			params.masks,
+		);
 		if (!settled.settled) {
+			const subject =
+				params.capture.type === "element"
+					? `snapshot target ${params.capture.description}`
+					: "page";
 			throw new ShimError(
 				"timeout",
-				`page did not produce a stable frame within ${String(timeoutMs)}ms`,
+				`${subject} did not produce a stable frame within ${String(timeoutMs)}ms`,
 			);
 		}
 		await writeImage(params.baselinePath, settled.frame);
@@ -133,22 +304,31 @@ export async function runSnapshot(
 	let lastFrame: Buffer | null = null;
 	let lastMismatch: ComparatorResult | null = null;
 	for (;;) {
-		let capture: SettledFrame;
+		let attempt: SettledFrame;
 		try {
-			capture = await settleFrame(page, deadline);
+			attempt = await settleFrame(page, params.capture, deadline, params.masks);
 		} catch (error) {
 			// A capture near the deadline can outlive its sliver of budget
 			// and throw Playwright's timeout. The comparison already has a
 			// frame to report; failing on it keeps the mismatch artifacts.
-			if (isTimeoutError(error) && lastFrame !== null) {
-				break;
+			if (!isCaptureTimeout(error) || lastFrame === null) {
+				throw error;
 			}
-			throw error;
+			// An element that is gone must not pass, or fail as a mismatch,
+			// on pixels from before it disappeared.
+			if (
+				params.capture.type === "element" &&
+				!(await isTargetStillVisible(params.capture))
+			) {
+				throw new ShimError(
+					"timeout",
+					`snapshot target ${params.capture.description} was missing or hidden when the step timed out`,
+				);
+			}
+			break;
 		}
-		const { frame, settled } = capture;
-		const mismatch = comparePng(frame, baseline, {
-			threshold: defaultThreshold,
-		});
+		const { frame, settled } = attempt;
+		const mismatch = compareSnapshot(frame, baseline, params);
 		if (mismatch === null && settled) {
 			return {};
 		}
