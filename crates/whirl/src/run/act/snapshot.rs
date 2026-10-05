@@ -1,6 +1,7 @@
 //! The page as `ACT` sees it (SPEC 7.4): a Playwright AI snapshot of the
 //! selected tab, and the element refs it names.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use serde_json::{Value as Json, json};
@@ -133,10 +134,12 @@ impl PageSnapshot {
 /// The snapshot without the parts the model does not need: the `/url:` line
 /// under every link and the `[cursor=pointer]` mark on every clickable element.
 /// On a link-heavy page such as a Wikipedia article they are about a third of
-/// the snapshot.
+/// the snapshot. The model also reads each line without its YAML quotes (see
+/// [`unquote_line`]), so every element line has one form.
 fn condense(snapshot: &str) -> String {
     let mut text = String::with_capacity(snapshot.len());
     for line in snapshot.lines() {
+        let line = unquote_line(line);
         if line.trim_start().starts_with("- /url:") {
             continue;
         }
@@ -146,8 +149,45 @@ fn condense(snapshot: &str) -> String {
     text
 }
 
-/// Parses one snapshot line such as `  - button "Sign in" [ref=e5]`.
+/// A snapshot line without the YAML single quotes that Playwright puts
+/// around an element's role, name, and marks when they hold `: `, ` #`, a
+/// brace, a backtick, or a control character. Inside the quotes, `''`
+/// stands for `'`. So `  - 'button "It''s: here" [ref=e7]': Go` reads as
+/// `  - button "It's: here" [ref=e7]: Go`. The indent and the text after
+/// the closing quote stay as they are, and so does every other line: text,
+/// values, and properties such as `/url:` get double quotes, not single.
+pub(crate) fn unquote_line(line: &str) -> Cow<'_, str> {
+    let entry = line.trim_start();
+    let Some(quoted) = entry.strip_prefix("- '") else {
+        return Cow::Borrowed(line);
+    };
+    let Some(end) = closing_quote(quoted) else {
+        return Cow::Borrowed(line);
+    };
+    let indent = &line[..line.len() - entry.len()];
+    let key = quoted[..end].replace("''", "'");
+    Cow::Owned(format!("{indent}- {key}{}", &quoted[end + 1..]))
+}
+
+/// Where a YAML single-quoted text ends, after its opening quote: the first
+/// quote that is not one of a doubled pair.
+fn closing_quote(quoted: &str) -> Option<usize> {
+    let mut quotes = quoted
+        .match_indices('\'')
+        .map(|(index, _)| index)
+        .peekable();
+    while let Some(index) = quotes.next() {
+        if quotes.next_if_eq(&(index + 1)).is_none() {
+            return Some(index);
+        }
+    }
+    None
+}
+
+/// Parses one snapshot line such as `  - button "Sign in" [ref=e5]`, with or
+/// without Playwright's YAML quotes.
 fn parse_line(line: &str) -> Option<(ElementRef, SnapshotNode)> {
+    let line = unquote_line(line);
     let rest = line.trim_start().strip_prefix("- ")?;
     let ref_start = rest.find("[ref=")? + "[ref=".len();
     let ref_len = rest[ref_start..].find(']')?;
@@ -273,6 +313,93 @@ mod tests {
         assert_eq!(
             snapshot.target("e3").map(|target| target.locator_text()),
             Some(r#"role:link "Docs""#.to_owned())
+        );
+    }
+
+    /// Lines as Playwright 1.62.1 writes them for names that hold `: `,
+    /// ` #`, a brace, or a backtick.
+    const QUOTED: &str = r##"- generic [active] [ref=e1]:
+  - 'button "Status: live" [ref=e2]'
+  - 'button "It''s: here" [ref=e3]': Go
+  - 'button "Both \"a\" and ''b'': x" [ref=e4]'
+  - 'region "Q3: plan" [ref=e5]':
+    - 'link "x #y" [ref=e6] [cursor=pointer]':
+      - /url: "#top"
+  - 'textbox "Note: x" [active] [ref=e7]': "Status: live"
+  - 'button "{it''s}" [ref=e8]': x
+  - 'button "tick `x`" [ref=e9]'
+  - iframe [ref=e10]:
+    - 'button "In: frame" [ref=f1e2]'"##;
+
+    /// The same lines without the quotes.
+    const UNQUOTED: &str = r##"- generic [active] [ref=e1]:
+  - button "Status: live" [ref=e2]
+  - button "It's: here" [ref=e3]: Go
+  - button "Both \"a\" and 'b': x" [ref=e4]
+  - region "Q3: plan" [ref=e5]:
+    - link "x #y" [ref=e6] [cursor=pointer]:
+      - /url: "#top"
+  - textbox "Note: x" [active] [ref=e7]: "Status: live"
+  - button "{it's}" [ref=e8]: x
+  - button "tick `x`" [ref=e9]
+  - iframe [ref=e10]:
+    - button "In: frame" [ref=f1e2]"##;
+
+    #[test]
+    fn a_quoted_line_names_its_element_as_the_unquoted_line_does() {
+        let snapshot = PageSnapshot::parse(QUOTED);
+        for (element, locator) in [
+            ("e2", r#"role:button "Status: live""#),
+            ("e3", r#"role:button "It's: here""#),
+            ("e4", r#"role:button "Both \"a\" and 'b': x""#),
+            ("e5", r#"role:region "Q3: plan""#),
+            ("e6", r#"role:link "x #y""#),
+            ("e7", r#"role:textbox "Note: x""#),
+            ("e8", r#"role:button "{it's}""#),
+            ("e9", r#"role:button "tick `x`""#),
+            ("f1e2", r#"role:button "In: frame""#),
+        ] {
+            let target = snapshot
+                .target(element)
+                .expect("the ref is in the snapshot");
+            assert_eq!(target.locator_text(), locator, "{element}");
+        }
+        assert_eq!(snapshot.nodes, PageSnapshot::parse(UNQUOTED).nodes);
+    }
+
+    #[test]
+    fn the_model_reads_quoted_lines_without_their_quotes() {
+        let snapshot = PageSnapshot::parse(QUOTED);
+        assert_eq!(snapshot.text(), PageSnapshot::parse(UNQUOTED).text());
+        assert!(
+            snapshot.text().contains(
+                "\n  - region \"Q3: plan\" [ref=e5]:\n    - link \"x #y\" [ref=e6]:\n  - textbox"
+            ),
+            "{}",
+            snapshot.text()
+        );
+        assert_eq!(snapshot.raw(), QUOTED);
+    }
+
+    #[test]
+    fn only_a_single_quoted_entry_loses_its_quotes() {
+        for line in [
+            r#"  - button "It's" [ref=e6]: b4"#,
+            r#"  - button "'Lead" [ref=e9]: b7"#,
+            r#"    - listitem [ref=e47]: "'q'""#,
+            r#"    - text: "Note: x""#,
+            r##"      - /url: "#top""##,
+            "  - 'button \"no closing quote\" [ref=e2]",
+        ] {
+            assert_eq!(unquote_line(line), line);
+        }
+        assert_eq!(
+            unquote_line("    - 'option \"It''s: x\" [selected]'"),
+            "    - option \"It's: x\" [selected]"
+        );
+        assert_eq!(
+            unquote_line("  - 'textbox \"Say ''hi'': now\" [ref=e2]': \"'b'\""),
+            "  - textbox \"Say 'hi': now\" [ref=e2]: \"'b'\""
         );
     }
 
