@@ -1,6 +1,8 @@
 // Wire contract between the Rust binary and this shim.
 // Shapes follow docs/engineering/shim-protocol.md exactly.
 
+import type { BlockedHost } from "./host-glob.js";
+
 export type ErrorKind =
 	| "timeout"
 	| "strictness"
@@ -166,7 +168,7 @@ export interface LocatorSubject {
 	readonly locator: readonly LocatorSegment[];
 }
 
-/** A state check; `tab:NAME closed` is dispatched before this shape. */
+/** A state check; `window:NAME closed` is dispatched before this shape. */
 export interface AssertSpec {
 	readonly subject: LocatorSubject;
 	readonly check: StateCheck;
@@ -240,6 +242,15 @@ export interface ResponseRead {
 	readonly bodyMayBeDecoded: boolean;
 }
 
+/** The request that a `RESPONSE` name selected (protocol 4.7). */
+export interface RequestRead {
+	readonly method: string;
+	readonly url: string;
+	readonly headers: readonly (readonly [string, string])[];
+	readonly bodyBase64: string | null;
+	readonly bodyError: string | null;
+}
+
 // --- Lifecycle params (protocol 3) ---
 
 export type BrowserEngine = "chromium" | "firefox" | "webkit";
@@ -262,13 +273,25 @@ export interface VideoConfig {
 	readonly fps: number | null;
 }
 
+/**
+ * A browser the shim attaches to instead of launching: the CDP
+ * websocket endpoint of a running Chromium, such as a hosted browser.
+ */
+export interface ConnectConfig {
+	readonly cdpEndpoint: string;
+}
+
 export interface StartFlowParams {
 	readonly browser: BrowserEngine;
 	readonly headed: boolean;
+	/** Attach over CDP when set; launch a local browser when null. */
+	readonly connect: ConnectConfig | null;
 	readonly viewport: ViewportSize;
 	readonly storageStatePath: string | null;
 	readonly dialogs: "dismiss" | "accept";
 	readonly allowHosts: readonly string[] | null;
+	/** Hosts to block even when `allowHosts` allows them (SPEC 5). */
+	readonly blockHosts: readonly string[] | null;
 	readonly navTimeoutMs: number;
 	readonly userAgent: string | null;
 	readonly reducedMotion: "reduce" | "no-preference" | null;
@@ -277,6 +300,8 @@ export interface StartFlowParams {
 	readonly trace: boolean;
 	/** Open every shadow root that page scripts attach (SPEC 7.4). */
 	readonly openShadowRoots: boolean;
+	/** Route requests through the flow's mocks and block service workers (SPEC 7.5). */
+	readonly mocks: boolean;
 }
 
 export interface EndFlowParams {
@@ -285,15 +310,50 @@ export interface EndFlowParams {
 }
 
 export interface EndFlowResult {
-	readonly blockedHosts: readonly string[];
+	/** Every blocked host with the rule that blocked it, sorted by host. */
+	readonly blockedHosts: readonly BlockedHost[];
 	readonly videoPath: string | null;
 	/** Why the shim skipped a requested recording, or null. */
 	readonly videoSkipped: string | null;
 	/** Why a saved recording holds only a white frame, or null. */
 	readonly videoBlank: string | null;
+	/** How many requests each mock served, in registration order. */
+	readonly mocks: readonly MockHits[];
+}
+
+export interface MockHits {
+	readonly id: number;
+	readonly hits: number;
+}
+
+/** What a `MOCK` serves (SPEC 7.5). */
+export type MockResponse =
+	| {
+			readonly type: "fulfill";
+			readonly status: number;
+			readonly headers: readonly (readonly [string, string])[];
+			readonly body: string | null;
+	  }
+	| { readonly type: "failed" };
+
+/** `mock` params (protocol 4.6). */
+export interface MockParams {
+	readonly id: number;
+	readonly method: string;
+	/** An anchored regular expression for the URL without its fragment. */
+	readonly pattern: string;
+	readonly response: MockResponse;
 }
 
 // --- Step commands (protocol 4) ---
+
+export interface SnapshotComparison {
+	readonly pixelThreshold: number;
+	readonly maxDiff: {
+		readonly type: "pixels" | "percent";
+		readonly value: number;
+	};
+}
 
 export interface HttpParams {
 	readonly name: string;
@@ -314,6 +374,7 @@ export type ScrollMotion =
 export type StepCommand =
 	| "http"
 	| "response"
+	| "mock"
 	| "popup"
 	| "tab"
 	| "close"
@@ -339,12 +400,16 @@ export type StepCommand =
 	| "assert"
 	| "read"
 	| "readResponse"
+	| "readRequest"
+	| "generateLocator"
+	| "judgeScreenshot"
 	| "traceGroup"
 	| "traceGroupEnd";
 
 const stepCommandList: readonly StepCommand[] = [
 	"http",
 	"response",
+	"mock",
 	"popup",
 	"tab",
 	"close",
@@ -370,6 +435,9 @@ const stepCommandList: readonly StepCommand[] = [
 	"assert",
 	"read",
 	"readResponse",
+	"readRequest",
+	"generateLocator",
+	"judgeScreenshot",
 	"traceGroup",
 	"traceGroupEnd",
 ];

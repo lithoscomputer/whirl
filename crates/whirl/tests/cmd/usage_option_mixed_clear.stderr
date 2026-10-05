@@ -1,0 +1,1 @@
+whirl: error: -O allow-hosts: an empty value clears the list, so it cannot be combined with other values

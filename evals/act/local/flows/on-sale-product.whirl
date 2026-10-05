@@ -1,9 +1,8 @@
 [Options]
-base: {{env.EVAL_BASE}}
+app-url: {{env.EVAL_BASE}}
 model: {{model}}
 
 # Only a badge beside the link marks the product on sale.
 VISIT /on-sale-product/
 ACT "open the product that is on sale" @60s
-[Asserts]
-css:h1 text == "Office chair"
+ASSERT css:h1 text == "Office chair"

@@ -1,10 +1,9 @@
 VISIT /
-[Asserts]
-testid:spinner count >= 1
-testid:spinner hidden
-testid:spinner count >= 1
-testid:spinner count == 0
-testid:spinner count >= 1
-testid:spinner count <= 1
-testid:spinner count >= 1
-testid:spinner count != 1
+ASSERT testid:spinner count >= 1
+ASSERT testid:spinner hidden
+ASSERT testid:spinner count >= 1
+ASSERT testid:spinner count == 0
+ASSERT testid:spinner count >= 1
+ASSERT testid:spinner count <= 1
+ASSERT testid:spinner count >= 1
+ASSERT testid:spinner count != 1

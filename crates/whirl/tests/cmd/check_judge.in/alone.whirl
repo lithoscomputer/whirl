@@ -1,0 +1,4 @@
+[Options]
+model: anthropic/claude-sonnet-5
+VISIT /
+JUDGE "the page shows no error message"

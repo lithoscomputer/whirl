@@ -1,0 +1,21 @@
+[package]
+name = "whirl-ai"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Whirl's language model calls: the ACT, GOAL, ai: target, EXTRACT, and JUDGE planner, prompts, AI snapshots, and the model and Jev clients"
+
+[dependencies]
+base64.workspace = true
+lithos-llm = { git = "https://github.com/lithoscomputer/lithos-llm", rev = "fd42e6b2805be8c5cf6764c6039cea88703df6bc" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+whirl-lang = { path = "../whirl-lang" }
+whirl-shim = { path = "../whirl-shim" }
+
+[lints]
+workspace = true

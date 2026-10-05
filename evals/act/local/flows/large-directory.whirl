@@ -1,9 +1,8 @@
 [Options]
-base: {{env.EVAL_BASE}}
+app-url: {{env.EVAL_BASE}}
 model: {{model}}
 
 # A 60-row table after an 800-link sidebar: a large snapshot.
 VISIT /large-directory/
 ACT "edit Grace Hopper's row" @60s
-[Asserts]
-testid:result text == "editing Grace Hopper"
+ASSERT testid:result text == "editing Grace Hopper"

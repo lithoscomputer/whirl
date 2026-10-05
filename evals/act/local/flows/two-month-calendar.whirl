@@ -1,9 +1,8 @@
 [Options]
-base: {{env.EVAL_BASE}}
+app-url: {{env.EVAL_BASE}}
 model: {{model}}
 
 # Two months show a 14; pick the one in March.
 VISIT /two-month-calendar/
 ACT "pick March 14 as the check-in date" @60s
-[Asserts]
-testid:check-in text == "March 14"
+ASSERT testid:check-in text == "March 14"

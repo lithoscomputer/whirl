@@ -1,13 +1,10 @@
 # Visit example.com and check the landing page. Runs as-is:
-#   whirl examples/example-com.whirl
+#   whirl run examples/example-com.whirl
 VISIT https://example.com
-[Asserts]
-role:heading "Example Domain" visible
-title contains Example
-[Captures]
-heading: css:h1 text regex /Example (\w+)/
+ASSERT heading:"Example Domain" visible
+ASSERT title contains Example
+CAPTURE heading: css:h1 text regex /Example (\w+)/
 
 # Reuse the capture in a later entry.
 VISIT https://example.com/?from={{heading}}
-[Asserts]
-url contains from=Domain
+ASSERT url contains from=Domain

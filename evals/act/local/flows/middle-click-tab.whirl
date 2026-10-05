@@ -1,0 +1,9 @@
+[Options]
+app-url: {{env.EVAL_BASE}}
+model: {{model}}
+
+# A tab strip where a middle click closes a tab; a left click only selects it.
+VISIT /support-console/
+ACT "middle-click the Reports tab to close it" @60s
+ASSERT tab:Reports hidden
+ASSERT tab:* count == 3

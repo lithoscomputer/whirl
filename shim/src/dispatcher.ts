@@ -16,7 +16,7 @@ import {
 import type { ProtocolError } from "./protocol.js";
 import { isStepCommand, toProtocolError } from "./protocol.js";
 
-const protocolVersion = 2;
+const protocolVersion = 10;
 
 /** One-response-per-request guard. */
 interface ResponseSlot {
@@ -180,6 +180,7 @@ export class Dispatcher {
 					videoPath: result.videoPath,
 					videoSkipped: result.videoSkipped,
 					videoBlank: result.videoBlank,
+					mocks: [...result.mocks],
 				});
 				return;
 			}

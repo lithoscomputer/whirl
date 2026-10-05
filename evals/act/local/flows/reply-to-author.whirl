@@ -1,9 +1,8 @@
 [Options]
-base: {{env.EVAL_BASE}}
+app-url: {{env.EVAL_BASE}}
 model: {{model}}
 
 # Five Reply buttons; reply to one author.
 VISIT /reply-to-author/
 ACT "reply to Grace Hopper's comment" @60s
-[Asserts]
-testid:result text == "replying to Grace Hopper"
+ASSERT testid:result text == "replying to Grace Hopper"

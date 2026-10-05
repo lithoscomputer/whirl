@@ -1,0 +1,4 @@
+MOCK POST /api/cart 201
+VISIT /
+CLICK Buy
+ASSERT request:cart json:$.qty == 1

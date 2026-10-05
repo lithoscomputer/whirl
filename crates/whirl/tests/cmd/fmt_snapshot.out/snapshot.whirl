@@ -1,0 +1,10 @@
+[Options]
+snapshot-mask: testid:clock
+snapshot-max-diff: 0.1%
+
+VISIT /
+SNAPSHOT cart @2s
+# Ignore timestamps
+snapshot-mask: none
+snapshot-max-diff: 0
+snapshot-pixel-threshold: 0.1

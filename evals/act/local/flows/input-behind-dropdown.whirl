@@ -1,10 +1,9 @@
 [Options]
-base: {{env.EVAL_BASE}}
+app-url: {{env.EVAL_BASE}}
 model: {{model}}
 
 # Type into an input under an open dropdown.
 VISIT /input-behind-dropdown/
 CLICK "Sort options"
 ACT "type 'test fill' into the search field" @60s
-[Asserts]
-label:Search value == "test fill"
+ASSERT label:Search value == "test fill"

@@ -1,0 +1,4 @@
+[Options]
+model: anthropic/claude-sonnet-5
+VISIT /
+CLICK ai:"the buy button"

@@ -1,0 +1,33 @@
+<!doctype html><html lang="en"><head><title>Mocks</title></head><body>
+<h1>Mocks</h1>
+<p id="flags">loading</p>
+<p id="items">loading</p>
+<p id="font">loading</p>
+<button id="add" type="button">Add to cart</button>
+<p id="cart"></p>
+<script>
+const show = (id, text) => { document.getElementById(id).textContent = text; };
+fetch('/api/flags')
+  .then((response) => response.json())
+  .then((flags) => show('flags', flags.checkout_v2 ? 'v2' : 'v1'))
+  .catch(() => show('flags', 'flags failed'));
+fetch('/api/items?page=2')
+  .then((response) => show('items', `${response.status} ${response.headers.get('x-source')}`))
+  .catch(() => show('items', 'items failed'));
+fetch('http://blocked.test/font.txt')
+  .then((response) => response.text())
+  .then((text) => show('font', text))
+  .catch(() => show('font', 'font failed'));
+document.getElementById('add').onclick = async () => {
+  try {
+    const response = await fetch('/api/cart?source=page#top', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Cart': 'c1' },
+      body: JSON.stringify({ qty: 1, sku: 'A-1' }),
+    });
+    show('cart', `cart ${response.status}`);
+  } catch {
+    show('cart', 'cart failed');
+  }
+};
+</script></body></html>

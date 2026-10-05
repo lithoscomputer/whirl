@@ -1,0 +1,21 @@
+[package]
+name = "whirl-shim"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The Whirl browser shim boundary: the Node process client, the wire protocol, shim launch resolution, and the installed bundle layout"
+
+[dependencies]
+dirs = "6"
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+url.workspace = true
+whirl-lang = { path = "../whirl-lang" }
+
+[lints]
+workspace = true

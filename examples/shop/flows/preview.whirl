@@ -1,12 +1,11 @@
 [Options]
-base: http://127.0.0.1:4173
+app-url: http://127.0.0.1:4173
 setup: login.whirl
 viewport: 400x320
 reduced-motion: reduce
 
 # This text-free preview makes the sample baseline portable across systems.
 VISIT /preview
-[Asserts]
-testid:widget visible
+ASSERT testid:widget visible
 
 SNAPSHOT widget

@@ -1,9 +1,8 @@
 [Options]
-base: {{env.EVAL_BASE}}
+app-url: {{env.EVAL_BASE}}
 model: {{model}}
 
 # Click a button inside a closed shadow root.
 VISIT "/layers/?l=shadow-closed"
 ACT "click the Deep button" @60s
-[Asserts]
-testid:status text == clicked
+ASSERT testid:status text == clicked

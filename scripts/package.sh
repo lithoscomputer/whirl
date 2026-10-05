@@ -43,9 +43,9 @@ fi
 # `whirl check` validates a literal XPath expression through libxml2.
 mkdir -p dist-release
 xpath_probe=dist-release/xpath-probe.whirl
-printf 'HTTP GET /feed\n[Asserts]\nstatus == 200\nxpath:"count(//_:entry)" >= 1\n' >"$xpath_probe"
+printf 'HTTP GET /feed\nASSERT status == 200\nASSERT xpath:"count(//_:entry)" >= 1\n' >"$xpath_probe"
 "$bin" check "$xpath_probe"
-printf 'HTTP GET /feed\n[Asserts]\nstatus == 200\nxpath:"//entry[" exists\n' >"$xpath_probe"
+printf 'HTTP GET /feed\nASSERT status == 200\nASSERT xpath:"//entry[" exists\n' >"$xpath_probe"
 if "$bin" check "$xpath_probe" >/dev/null 2>&1; then
   echo "release binary accepted an invalid XPath expression" >&2
   exit 1

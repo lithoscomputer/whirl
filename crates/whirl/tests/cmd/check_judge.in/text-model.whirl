@@ -1,0 +1,5 @@
+[Options]
+model: deepseek/deepseek-v4-flash
+VISIT /
+ASSERT testid:summary visible
+JUDGE testid:summary "the total matches the line items"

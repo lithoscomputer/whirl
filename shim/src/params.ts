@@ -7,8 +7,10 @@ import type {
 	BrowserEngine,
 	EndFlowParams,
 	HttpParams,
+	MockParams,
 	ScrollDirection,
 	ScrollMotion,
+	SnapshotComparison,
 	StartFlowParams,
 } from "./protocol.js";
 import { assertNever, ShimError } from "./protocol.js";
@@ -102,18 +104,28 @@ export function fieldArrayOrNull(
 	return fieldArray(params, key);
 }
 
+export function decodeSnapshotComparison(params: Params): SnapshotComparison {
+	const pixelThreshold = fieldNumber(params, "pixelThreshold");
+	if (pixelThreshold < 0 || pixelThreshold > 1) {
+		throw malformed("pixelThreshold", "a number from 0 to 1");
+	}
+	const maxDiff = fieldObject(params, "maxDiff");
+	const type = fieldEnum(maxDiff, "type", ["pixels", "percent"] as const);
+	const value = fieldNumber(maxDiff, "value");
+	if (
+		value < 0 ||
+		(type === "pixels" ? !Number.isSafeInteger(value) : value > 100)
+	) {
+		throw malformed(
+			"maxDiff",
+			"a safe nonnegative pixel count or a percentage from 0 to 100",
+		);
+	}
+	return { pixelThreshold, maxDiff: { type, value } };
+}
+
 export function decodeHttpParams(params: Params): HttpParams {
-	const headers = fieldArray(params, "headers").map((pair) => {
-		if (
-			!Array.isArray(pair) ||
-			pair.length !== 2 ||
-			typeof pair[0] !== "string" ||
-			typeof pair[1] !== "string"
-		) {
-			throw malformed("headers", "an array of string pairs");
-		}
-		return [pair[0], pair[1]] as const;
-	});
+	const headers = stringPairs(params, "headers");
 	return {
 		name: fieldString(params, "name"),
 		method: fieldString(params, "method"),
@@ -178,9 +190,15 @@ export function decodeStartFlowParams(params: Params): StartFlowParams {
 	const viewport = fieldObject(params, "viewport");
 	const video = fieldObjectOrNull(params, "video");
 	const allowHosts = fieldArrayOrNull(params, "allowHosts");
+	const blockHosts = fieldArrayOrNull(params, "blockHosts");
+	const connect = fieldObjectOrNull(params, "connect");
 	return {
 		browser: fieldEnum(params, "browser", browserEngines),
 		headed: fieldBoolean(params, "headed"),
+		connect:
+			connect === null
+				? null
+				: { cdpEndpoint: fieldString(connect, "cdpEndpoint") },
 		viewport: {
 			width: fieldNumber(viewport, "width"),
 			height: fieldNumber(viewport, "height"),
@@ -189,6 +207,8 @@ export function decodeStartFlowParams(params: Params): StartFlowParams {
 		dialogs: fieldEnum(params, "dialogs", ["dismiss", "accept"]),
 		allowHosts:
 			allowHosts === null ? null : allowHosts.map((host) => String(host)),
+		blockHosts:
+			blockHosts === null ? null : blockHosts.map((host) => String(host)),
 		navTimeoutMs: fieldNumber(params, "navTimeoutMs"),
 		userAgent: fieldStringOrNull(params, "userAgent"),
 		reducedMotion:
@@ -212,6 +232,44 @@ export function decodeStartFlowParams(params: Params): StartFlowParams {
 		harPath: fieldStringOrNull(params, "harPath"),
 		trace: fieldBoolean(params, "trace"),
 		openShadowRoots: fieldBoolean(params, "openShadowRoots"),
+		mocks: fieldBoolean(params, "mocks"),
+	};
+}
+
+function stringPairs(
+	params: Params,
+	key: string,
+): readonly (readonly [string, string])[] {
+	return fieldArray(params, key).map((pair) => {
+		if (
+			!Array.isArray(pair) ||
+			pair.length !== 2 ||
+			typeof pair[0] !== "string" ||
+			typeof pair[1] !== "string"
+		) {
+			throw malformed(key, "an array of string pairs");
+		}
+		return [pair[0], pair[1]] as const;
+	});
+}
+
+/** Decodes `mock` params (protocol 4.6). */
+export function decodeMockParams(params: Params): MockParams {
+	const response = fieldObject(params, "response");
+	const type = fieldEnum(response, "type", ["fulfill", "failed"] as const);
+	return {
+		id: fieldNumber(params, "id"),
+		method: fieldString(params, "method"),
+		pattern: fieldString(params, "pattern"),
+		response:
+			type === "failed"
+				? { type }
+				: {
+						type,
+						status: fieldNumber(response, "status"),
+						headers: stringPairs(response, "headers"),
+						body: fieldStringOrNull(response, "body"),
+					},
 	};
 }
 

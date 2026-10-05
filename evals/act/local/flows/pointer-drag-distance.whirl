@@ -1,0 +1,8 @@
+[Options]
+app-url: {{env.EVAL_BASE}}
+model: {{model}}
+
+# A board with its own pointer-event drag, which starts after an 8px move.
+VISIT /hiring-pipeline/
+ACT "move Priya Patel to the Onsite column" @60s
+ASSERT region:Onsite >> text:"Priya Patel" visible

@@ -1,0 +1,12 @@
+unchecked.whirl:4:1: error: an ASSERT must follow GOAL, before any other action, to check that the goal was reached
+  GOAL "add two mugs to the cart"
+  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+unchecked.whirl:9:1: error: an ASSERT must follow GOAL, before any other action, to check that the goal was reached
+  GOAL "sign in"
+  ^^^^^^^^^^^^^^
+unchecked.whirl:10:9: warning: capture `u` is never used
+  CAPTURE u: url
+          ^
+no-model.whirl:2:1: error: GOAL needs a `model` option naming the language model to ask
+  GOAL "add two mugs to the cart"
+  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

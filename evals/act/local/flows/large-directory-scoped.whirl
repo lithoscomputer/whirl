@@ -1,9 +1,8 @@
 [Options]
-base: {{env.EVAL_BASE}}
+app-url: {{env.EVAL_BASE}}
 model: {{model}}
 
 # The same large page, with ACT scoped to the table.
 VISIT /large-directory/
 ACT css:table "edit Grace Hopper's row" @60s
-[Asserts]
-testid:result text == "editing Grace Hopper"
+ASSERT testid:result text == "editing Grace Hopper"

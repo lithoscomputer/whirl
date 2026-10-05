@@ -1,9 +1,8 @@
 [Options]
-base: {{env.EVAL_BASE}}
+app-url: {{env.EVAL_BASE}}
 model: {{model}}
 
 # Scroll the page to a position given as a fraction.
 VISIT /long-article/
 ACT "scroll 50% down the page" @60s
-[Asserts]
-eval "Math.abs(window.scrollY + innerHeight / 2 - document.documentElement.scrollHeight / 2) <= 50" == true
+ASSERT eval "Math.abs(window.scrollY + innerHeight / 2 - document.documentElement.scrollHeight / 2) <= 50" == true

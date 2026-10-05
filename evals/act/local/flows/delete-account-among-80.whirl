@@ -1,10 +1,9 @@
 [Options]
-base: {{env.EVAL_BASE}}
+app-url: {{env.EVAL_BASE}}
 model: {{model}}
 
 # 80 identical Delete buttons; the 60 rows before the target all say "Account".
 VISIT /delete-account-among-80/
 ACT "delete the Acme account" @60s
-[Asserts]
-testid:result text == "deleted Acme"
-css:"tbody tr" count == 79
+ASSERT testid:result text == "deleted Acme"
+ASSERT css:"tbody tr" count == 79

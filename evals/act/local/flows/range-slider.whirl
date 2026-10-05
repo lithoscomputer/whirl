@@ -1,10 +1,9 @@
 [Options]
-base: {{env.EVAL_BASE}}
+app-url: {{env.EVAL_BASE}}
 model: {{model}}
 
 # Set a range input; a second slider must not change.
 VISIT /range-slider/
 ACT "set the volume to 75" @60s
-[Asserts]
-label:Volume value == "75"
-label:Bass value == "50"
+ASSERT label:Volume value == "75"
+ASSERT label:Bass value == "50"

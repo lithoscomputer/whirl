@@ -83,9 +83,15 @@ impl SiteServer {
         Self { port }
     }
 
-    /// The site's base URL under the IPv4 loopback hostname.
-    fn base(&self) -> String {
+    /// The site's URL under the IPv4 loopback hostname: the `app-url` of
+    /// its flows.
+    fn app_url(&self) -> String {
         format!("http://127.0.0.1:{}", self.port)
+    }
+
+    /// The `-O` value that sets `app-url` to [`SiteServer::app_url`].
+    fn app_url_option(&self) -> String {
+        format!("app-url={}", self.app_url())
     }
 }
 
@@ -251,6 +257,11 @@ fn respond(mut request: tiny_http::Request) {
         .is_some_and(|extension| extension.eq_ignore_ascii_case("html"))
     {
         "text/html; charset=utf-8"
+    } else if Path::new(path)
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("js"))
+    {
+        "text/javascript; charset=utf-8"
     } else {
         "text/plain; charset=utf-8"
     };
@@ -287,7 +298,8 @@ fn run_whirl_env(dir: &TestDir, args: &[&str], env: &[(&str, &str)]) -> Output {
         .env("WHIRL_SHIM_JS", shim_js)
         .envs(env.iter().copied())
         .current_dir(&dir.path)
-        .arg("--artifacts")
+        .arg("run")
+        .arg("--out")
         .arg(&artifacts)
         .args(args)
         .output()
@@ -320,26 +332,29 @@ fn user_agent_aliases_set_headers_and_navigator_without_changing_browser_or_view
         ("chorme", None, "chorme"),
         ("Chrome", None, "Chrome"),
         ("\"Whirl/1 (custom)\"", None, "Whirl/1 (custom)"),
-        ("\"Whirl/1 (custom)\"", Some("chrome"), chrome),
-        ("chrome", Some("firefox"), firefox),
-        ("chrome", Some("safari"), safari),
-        ("chrome", Some("Whirl/1 (override)"), "Whirl/1 (override)"),
+        ("\"Whirl/1 (custom)\"", Some("user-agent=chrome"), chrome),
+        ("chrome", Some("user-agent=firefox"), firefox),
+        ("chrome", Some("user-agent=safari"), safari),
+        (
+            "chrome",
+            Some("user-agent=Whirl/1 (override)"),
+            "Whirl/1 (override)",
+        ),
     ] {
         dir.file(
             "agent.whirl",
             &format!(
-                "[Options]\nbase: {}\nviewport: 960x540\nuser-agent: {value}\n\
+                "[Options]\napp-url: {}\nviewport: 960x540\nuser-agent: {value}\n\
                  VISIT /user-agent\n\
-                 [Captures]\n\
-                 header: css:body text\n\
-                 navigator: eval \"navigator.userAgent\"\n\
-                 viewport: eval \"innerWidth + 'x' + innerHeight\"\n",
-                server.base(),
+                 CAPTURE header: css:body text\n\
+                 CAPTURE navigator: eval \"navigator.userAgent\"\n\
+                 CAPTURE viewport: eval \"innerWidth + 'x' + innerHeight\"\n",
+                server.app_url(),
             ),
         );
         let mut args = vec!["--report-json", "report.json", "--var", "agent=firefox"];
         if let Some(flag) = flag {
-            args.extend(["--user-agent", flag]);
+            args.extend(["-O", flag]);
         }
         args.push("agent.whirl");
         let output = run_whirl(&dir, &args);
@@ -381,8 +396,8 @@ fn user_agent_runtime_metadata_masks_environment_values() {
     let output = run_whirl_env(
         &dir,
         &[
-            "--base",
-            &server.base(),
+            "-O",
+            &server.app_url_option(),
             "--report-json",
             "report.json",
             "agent.whirl",
@@ -411,7 +426,7 @@ fn platform_tag() -> &'static str {
 }
 
 /// The happy-path flow body; the `[Options]` header with the site's
-/// base URL is prepended per run.
+/// `app-url` is prepended per run.
 const HAPPY_FLOW_BODY: &str = r##"# Fill the form.
 VISIT /form.html
 FILL "Email" alice@example.com
@@ -421,44 +436,40 @@ FILL placeholder:"Search things" widget
 CLICK testid:save-button
 PRESS placeholder:"Search things" "Enter"
 SCREENSHOT overview
-[Asserts]
-role:heading "Form page" visible
-label:Email value == alice@example.com
-label:Code value == 4242
-css:"#typed-keys" text == 4242
-label:Notifications checked
-placeholder:"Search things" value == widget
-placeholder:"Search things" focused
-css:"#press-result" text == enter-pressed
-css:"#saved" text == saved
-css:"li.item" count >= 3
-css:"li.item" >> nth:1 text == Two
-text~:"rder #ABC" visible
-testid:order text matches /Order #\w+/
-css:"#spaced" text matches /^spaced text$/
-testid:state attr:data-state == open
-css:"#ghost" hidden
-role:button "Disabled btn" disabled
-role:button Save enabled
-label:Terms checked
-label:Subscribe unchecked
-url contains form.html
-title == "Form Page"
-[Captures]
-order_id: testid:order text regex /Order #(\w+)/
-next_path: css:"#next-link" attr:href
+ASSERT heading:"Form page" visible
+ASSERT label:Email value == alice@example.com
+ASSERT label:Code value == 4242
+ASSERT css:"#typed-keys" text == 4242
+ASSERT label:Notifications checked
+ASSERT placeholder:"Search things" value == widget
+ASSERT placeholder:"Search things" focused
+ASSERT css:"#press-result" text == enter-pressed
+ASSERT css:"#saved" text == saved
+ASSERT css:"li.item" count >= 3
+ASSERT css:"li.item" >> nth:1 text == Two
+ASSERT text:~"rder #ABC" visible
+ASSERT testid:order text matches /Order #\w+/
+ASSERT css:"#spaced" text matches /^spaced text$/
+ASSERT testid:state attr:data-state == open
+ASSERT css:"#ghost" hidden
+ASSERT button:"Disabled btn" disabled
+ASSERT button:Save enabled
+ASSERT label:Terms checked
+ASSERT label:Subscribe unchecked
+ASSERT url contains form.html
+ASSERT title == "Form Page"
+CAPTURE order_id: testid:order text regex /Order #(\w+)/
+CAPTURE next_path: css:"#next-link" attr:href
 
 # Follow the captured link.
 VISIT {{next_path}}
 PAGE /second.html
-[Asserts]
-role:heading "Second page" visible
+ASSERT heading:"Second page" visible
 
 # Revisit with the captured query value.
 VISIT /second.html?q={{order_id}}
 PAGE /second.html?q=ABC123
-[Asserts]
-url contains q=ABC123
+ASSERT url contains q=ABC123
 "##;
 
 #[test]
@@ -468,8 +479,8 @@ fn a_full_flow_passes_against_the_site() {
     dir.file(
         "happy.whirl",
         &format!(
-            "[Options]\nbase: {base}\n\n{HAPPY_FLOW_BODY}",
-            base = server.base()
+            "[Options]\napp-url: {app_url}\n\n{HAPPY_FLOW_BODY}",
+            app_url = server.app_url()
         ),
     );
     let output = run_whirl(&dir, &["happy.whirl"]);
@@ -493,19 +504,15 @@ fn check_and_uncheck_handle_hidden_inputs_and_role_switches() {
         "VISIT /form.html\n\
          CHECK \"Notifications\"\n\
          CHECK \"Notifications\"\n\
-         [Asserts]\n\
-         label:Notifications checked\n\
+         ASSERT label:Notifications checked\n\
          UNCHECK \"Notifications\"\n\
-         [Asserts]\n\
-         label:Notifications unchecked\n\
-         CHECK role:switch \"Dark mode\"\n\
-         [Asserts]\n\
-         role:switch \"Dark mode\" checked\n\
-         UNCHECK role:switch \"Dark mode\"\n\
-         [Asserts]\n\
-         role:switch \"Dark mode\" unchecked\n",
+         ASSERT label:Notifications unchecked\n\
+         CHECK switch:\"Dark mode\"\n\
+         ASSERT switch:\"Dark mode\" checked\n\
+         UNCHECK switch:\"Dark mode\"\n\
+         ASSERT switch:\"Dark mode\" unchecked\n",
     );
-    let output = run_whirl(&dir, &["--base", &server.base(), "switch.whirl"]);
+    let output = run_whirl(&dir, &["-O", &server.app_url_option(), "switch.whirl"]);
     let stdout = stdout_text(&output);
     assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
 }
@@ -515,7 +522,7 @@ fn check_on_a_display_none_input_fails_with_a_focus_message() {
     let server = SiteServer::start();
     let dir = TestDir::new();
     dir.file("gone.whirl", "VISIT /form.html\nCHECK \"Gone\"\n");
-    let output = run_whirl(&dir, &["--base", &server.base(), "gone.whirl"]);
+    let output = run_whirl(&dir, &["-O", &server.app_url_option(), "gone.whirl"]);
     let stdout = stdout_text(&output);
     assert_eq!(exit_code(&output), 1, "stdout:\n{stdout}");
     assert!(stdout.contains("cannot take focus"), "stdout:\n{stdout}");
@@ -530,17 +537,15 @@ fn store_session_and_cookie_reach_the_page_after_the_next_visit() {
     dir.file(
         "store.whirl",
         "VISIT /form.html\n\
-         [Asserts]\n\
-         css:\"#session-flag\" text == unset\n\
-         css:\"#cookie-flag\" text == unset\n\
+         ASSERT css:\"#session-flag\" text == unset\n\
+         ASSERT css:\"#cookie-flag\" text == unset\n\
          STORE session flag \"from session\"\n\
          STORE cookie flag v1\n\
          VISIT /form.html\n\
-         [Asserts]\n\
-         css:\"#session-flag\" text == \"from session\"\n\
-         css:\"#cookie-flag\" text == v1\n",
+         ASSERT css:\"#session-flag\" text == \"from session\"\n\
+         ASSERT css:\"#cookie-flag\" text == v1\n",
     );
-    let output = run_whirl(&dir, &["--base", &server.base(), "store.whirl"]);
+    let output = run_whirl(&dir, &["-O", &server.app_url_option(), "store.whirl"]);
     let stdout = stdout_text(&output);
     assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
 }
@@ -554,9 +559,9 @@ fn visit_completes_at_domcontentloaded_while_a_subresource_stalls_load() {
     dir.file(
         "slow.whirl",
         &format!(
-            "[Options]\nbase: {base}\nnav-timeout: 3s\n\n\
-             VISIT /slow-load.html\n[Asserts]\nrole:heading \"Parsed\" visible\n",
-            base = server.base()
+            "[Options]\napp-url: {app_url}\nnav-timeout: 3s\n\n\
+             VISIT /slow-load.html\nASSERT heading:\"Parsed\" visible\n",
+            app_url = server.app_url()
         ),
     );
     let output = run_whirl(&dir, &["slow.whirl"]);
@@ -572,9 +577,9 @@ fn asserts_retry_until_delayed_text_appears() {
     // this assert passes only because it retries.
     dir.file(
         "waits.whirl",
-        "VISIT /form.html\n[Asserts]\ncss:\"#late\" text == ready\n",
+        "VISIT /form.html\nASSERT css:\"#late\" text == ready\n",
     );
-    let output = run_whirl(&dir, &["--base", &server.base(), "waits.whirl"]);
+    let output = run_whirl(&dir, &["-O", &server.app_url_option(), "waits.whirl"]);
     let stdout = stdout_text(&output);
     assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
 }
@@ -588,14 +593,12 @@ fn store_local_is_visible_to_the_page_after_the_next_visit() {
     dir.file(
         "store.whirl",
         "VISIT /form.html\n\
-         [Asserts]\n\
-         css:\"#stored-flag\" text == unset\n\
+         ASSERT css:\"#stored-flag\" text == unset\n\
          STORE local flag \"seen it\"\n\
          VISIT /form.html\n\
-         [Asserts]\n\
-         css:\"#stored-flag\" text == \"seen it\"\n",
+         ASSERT css:\"#stored-flag\" text == \"seen it\"\n",
     );
-    let output = run_whirl(&dir, &["--base", &server.base(), "store.whirl"]);
+    let output = run_whirl(&dir, &["-O", &server.app_url_option(), "store.whirl"]);
     let stdout = stdout_text(&output);
     assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
 }
@@ -608,13 +611,13 @@ fn a_wrong_assert_times_out_with_expected_and_actual() {
     // expected versus actual.
     dir.file(
         "wrong.whirl",
-        "VISIT /form.html\n[Asserts]\ncss:\"#late\" text == never\n",
+        "VISIT /form.html\nASSERT css:\"#late\" text == never\n",
     );
     let output = run_whirl(&dir, &[
-        "--base",
-        &server.base(),
-        "--step-timeout",
-        "900ms",
+        "-O",
+        &server.app_url_option(),
+        "-O",
+        "step-timeout=900ms",
         "wrong.whirl",
     ]);
     let stdout = stdout_text(&output);
@@ -643,18 +646,17 @@ CHECK "Small"
 HOVER css:"#hover-me"
 DBLCLICK css:"#dbl"
 UPLOAD "Avatar" file:avatar.txt
-[Asserts]
-css:"#color-result" text == green
-label:Color value == green
-label:Subscribe checked
-label:Terms unchecked
-label:Small checked
-css:"#hover-me" text == hovered
-css:"#dbl" text == dblclicked
-css:"#upload-name" text == avatar.txt
+ASSERT css:"#color-result" text == green
+ASSERT label:Color value == green
+ASSERT label:Subscribe checked
+ASSERT label:Terms unchecked
+ASSERT label:Small checked
+ASSERT css:"#hover-me" text == hovered
+ASSERT css:"#dbl" text == dblclicked
+ASSERT css:"#upload-name" text == avatar.txt
 "##,
     );
-    let output = run_whirl(&dir, &["--base", &server.base(), "controls.whirl"]);
+    let output = run_whirl(&dir, &["-O", &server.app_url_option(), "controls.whirl"]);
     let stdout = stdout_text(&output);
     assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
 }
@@ -669,26 +671,23 @@ fn rightclick_and_middleclick_press_their_buttons() {
         "buttons.whirl",
         r##"VISIT /buttons.html
 RIGHTCLICK "report.pdf"
-[Asserts]
-role:menu "File actions" visible
-role:menuitem Rename visible
+ASSERT menu:"File actions" visible
+ASSERT menuitem:Rename visible
 
 MIDDLECLICK css:"#counter"
-[Asserts]
-css:"#counter" text == "click 0, auxclick 1, contextmenu 0"
-css:"#counter" attr:data-button == 1
+ASSERT css:"#counter" text == "click 0, auxclick 1, contextmenu 0"
+ASSERT css:"#counter" attr:data-button == 1
 
 RIGHTCLICK css:"#counter"
-[Asserts]
-css:"#counter" text startsWith "click 0,"
-css:"#counter" text endsWith "contextmenu 1"
-css:"#counter" attr:data-button == 2
+ASSERT css:"#counter" text startsWith "click 0,"
+ASSERT css:"#counter" text endsWith "contextmenu 1"
+ASSERT css:"#counter" attr:data-button == 2
 "##,
     );
     for engine in engines() {
         let output = run_whirl(&dir, &[
-            "--base",
-            &server.base(),
+            "-O",
+            &server.app_url_option(),
             "--browser",
             engine,
             "buttons.whirl",
@@ -709,27 +708,23 @@ fn drag_moves_cards_on_native_and_pointer_event_boards() {
         "boards.whirl",
         r##"VISIT /drag.html
 DRAG "Pointer card" to testid:distance-done
-[Asserts]
-testid:distance-done >> text:"Pointer card" visible
+ASSERT testid:distance-done >> text:"Pointer card" visible
 
 DRAG "Held card" to testid:delay-done
-[Asserts]
-css:"#pointer-log" text == dropped
-testid:delay-done >> text:"Held card" visible
+ASSERT css:"#pointer-log" text == dropped
+ASSERT testid:delay-done >> text:"Held card" visible
 
 DRAG "Write spec" to testid:native-done
-[Asserts]
-testid:native-done >> text:"Write spec" visible
+ASSERT testid:native-done >> text:"Write spec" visible
 
 DRAG "to" to testid:native-done
-[Asserts]
-testid:native-done >> text:to visible
+ASSERT testid:native-done >> text:to visible
 "##,
     );
     for engine in engines() {
         let output = run_whirl(&dir, &[
-            "--base",
-            &server.base(),
+            "-O",
+            &server.app_url_option(),
             "--browser",
             engine,
             "boards.whirl",
@@ -747,19 +742,17 @@ fn drag_reaches_into_a_frame_and_across_frames() {
         "frames.whirl",
         r##"VISIT /drag-frame.html
 DRAG frame:"#board" >> text:"Frame card" to frame:"#board" >> testid:frame-done
-[Asserts]
-frame:"#board" >> testid:frame-done >> text:"Frame card" visible
+ASSERT frame:"#board" >> testid:frame-done >> text:"Frame card" visible
 
 VISIT /drag-frame.html
 DRAG "Outside card" to frame:"#board" >> testid:frame-done
-[Asserts]
-frame:"#board" >> testid:frame-done >> text:"Outside card" visible
+ASSERT frame:"#board" >> testid:frame-done >> text:"Outside card" visible
 "##,
     );
     for engine in engines() {
         let output = run_whirl(&dir, &[
-            "--base",
-            &server.base(),
+            "-O",
+            &server.app_url_option(),
             "--browser",
             engine,
             "frames.whirl",
@@ -777,7 +770,7 @@ fn an_ambiguous_drop_target_fails_with_its_candidates() {
         "ambiguous.whirl",
         "VISIT /drag.html\nDRAG \"Write spec\" to css:.column\n",
     );
-    let output = run_whirl(&dir, &["--base", &server.base(), "ambiguous.whirl"]);
+    let output = run_whirl(&dir, &["-O", &server.app_url_option(), "ambiguous.whirl"]);
     let stdout = stdout_text(&output);
     assert_eq!(exit_code(&output), 1, "stdout:\n{stdout}");
     assert!(stdout.contains("strictness"), "stdout:\n{stdout}");
@@ -794,75 +787,62 @@ fn scroll_moves_the_page_its_boxes_and_frames() {
         "scroll.whirl",
         r##"VISIT /scroll.html
 SCROLL down
-[Captures]
-y: eval "window.scrollY"
+CAPTURE y: eval "window.scrollY"
 
 VISIT /scroll.html
-[Asserts]
-eval "{{y}} === document.documentElement.clientHeight" == true
+ASSERT eval "{{y}} === document.documentElement.clientHeight" == true
 
 SCROLL to 100%
-[Asserts]
-role:button "Back to top" visible
-css:"#feed li" count == 25
+ASSERT button:"Back to top" visible
+ASSERT css:"#feed li" count == 25
 
 SCROLL down
 SCROLL to 0%
-[Asserts]
-eval "window.scrollY" == 0
-role:button "Back to top" hidden
+ASSERT eval "window.scrollY" == 0
+ASSERT button:"Back to top" hidden
 
 VISIT /scroll.html
 SCROLL testid:load-more
-[Asserts]
-css:"#feed li" count == 25
+ASSERT css:"#feed li" count == 25
 
 SCROLL text:"Filter 3" down
-[Asserts]
-eval "document.querySelector('#filters-body').scrollTop === document.querySelector('#filters-body').clientHeight" == true
+ASSERT eval "document.querySelector('#filters-body').scrollTop === document.querySelector('#filters-body').clientHeight" == true
 
 # A dialog cannot scroll, so the list inside it does.
-SCROLL role:dialog Filters to 0%
-[Asserts]
-eval "document.querySelector('#filters-body').scrollTop" == 0
+SCROLL dialog:Filters to 0%
+ASSERT eval "document.querySelector('#filters-body').scrollTop" == 0
 
-SCROLL role:region Terms to 100%
-[Asserts]
-role:button "I agree" enabled
+SCROLL region:Terms to 100%
+ASSERT button:"I agree" enabled
 
 # Already at the end: the step passes and nothing moves.
-SCROLL role:region Terms down
+SCROLL region:Terms down
 
 SCROLL testid:board right
-[Asserts]
-eval "document.querySelector('[data-testid=board]').scrollLeft" == 400
+ASSERT eval "document.querySelector('[data-testid=board]').scrollLeft" == 400
 SCROLL testid:board left
-[Asserts]
-eval "document.querySelector('[data-testid=board]').scrollLeft" == 0
+ASSERT eval "document.querySelector('[data-testid=board]').scrollLeft" == 0
 
 SCROLL "down"
-[Asserts]
-eval "(() => { const r = document.getElementById('word-down').getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight; })()" == true
+ASSERT eval "(() => { const r = document.getElementById('word-down').getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight; })()" == true
 
 VISIT /scroll-frame.html
 SCROLL frame:"#feed" >> css:body down
-[Asserts]
-eval "(() => { const doc = document.querySelector('#feed').contentDocument; return doc.defaultView.scrollY === doc.documentElement.clientHeight; })()" == true
-eval "window.scrollY" == 0
+ASSERT eval "(() => { const doc = document.querySelector('#feed').contentDocument; return doc.defaultView.scrollY === doc.documentElement.clientHeight; })()" == true
+ASSERT eval "window.scrollY" == 0
 
 # An iframe element scrolls the page inside it, across origins too.
 SCROLL css:"#feed" to 0%
 SCROLL css:"#remote" to 100%
-[Asserts]
-eval "document.querySelector('#feed').contentWindow.scrollY" == 0
-eval "Number(document.body.dataset.remoteScroll) > 0" == true
-eval "window.scrollY" == 0
+ASSERT eval "document.querySelector('#feed').contentWindow.scrollY" == 0
+ASSERT eval "Number(document.body.dataset.remoteScroll) > 0" == true
+ASSERT eval "window.scrollY" == 0
 "##,
     );
     for engine in engines() {
         let output = run_whirl(&dir, &[
-            "--base",
-            &server.base(),
+            "-O",
+            &server.app_url_option(),
             "--browser",
             engine,
             "scroll.whirl",
@@ -886,28 +866,24 @@ fn drop_hands_files_to_zones_on_the_page_and_in_frames() {
         "drop.whirl",
         r##"VISIT /drop.html
 DROP "Drop files here" file:report.csv
-[Asserts]
-css:"#dropped li" text == "report.csv, 18 bytes, text/csv"
+ASSERT css:"#dropped li" text == "report.csv, 18 bytes, text/csv"
 
 # Each line drops one file. An extension with no known type falls back.
 DROP "Drop files here" file:scan.whirlblob
-[Asserts]
-css:"#dropped li" count == 2
-css:"#dropped li" >> nth:1 text == "scan.whirlblob, 1 bytes, application/octet-stream"
+ASSERT css:"#dropped li" count == 2
+ASSERT css:"#dropped li" >> nth:1 text == "scan.whirlblob, 1 bytes, application/octet-stream"
 
 DROP frame:"#inner" >> text:"Drop files here" file:notes.txt
-[Asserts]
-frame:"#inner" >> css:"#dropped li" text == "notes.txt, 6 bytes, text/plain"
+ASSERT frame:"#inner" >> css:"#dropped li" text == "notes.txt, 6 bytes, text/plain"
 
 DROP frame:"#remote" >> text:"Drop files here" file:report.csv
-[Asserts]
-frame:"#remote" >> css:"#dropped li" text == "report.csv, 18 bytes, text/csv"
+ASSERT frame:"#remote" >> css:"#dropped li" text == "report.csv, 18 bytes, text/csv"
 "##,
     );
     for engine in engines() {
         let output = run_whirl(&dir, &[
-            "--base",
-            &server.base(),
+            "-O",
+            &server.app_url_option(),
             "--browser",
             engine,
             "drop.whirl",
@@ -930,8 +906,8 @@ fn a_drop_zone_that_rejects_the_drop_fails_the_step() {
     );
     for engine in engines() {
         let output = run_whirl(&dir, &[
-            "--base",
-            &server.base(),
+            "-O",
+            &server.app_url_option(),
             "--browser",
             engine,
             "closed.whirl",
@@ -963,8 +939,8 @@ fn a_drop_of_a_missing_file_fails_with_its_path() {
         .with_file_name("missing.csv");
     for engine in engines() {
         let output = run_whirl(&dir, &[
-            "--base",
-            &server.base(),
+            "-O",
+            &server.app_url_option(),
             "--browser",
             engine,
             "missing.whirl",
@@ -992,8 +968,8 @@ fn an_ambiguous_drop_zone_fails_with_its_candidates() {
     );
     for engine in engines() {
         let output = run_whirl(&dir, &[
-            "--base",
-            &server.base(),
+            "-O",
+            &server.app_url_option(),
             "--browser",
             engine,
             "ambiguous.whirl",
@@ -1015,8 +991,8 @@ fn a_middle_click_on_a_link_follows_each_engines_own_rule() {
     // SPEC 7: Firefox opens a popup, Chromium opens a tab without an
     // opener that POPUP cannot name, and WebKit follows the link.
     let flows = [
-        ("chromium", "[Asserts]\nurl endsWith /buttons.html\n"),
-        ("firefox", "POPUP docs\nTAB docs\nPAGE /second.html\n"),
+        ("chromium", "ASSERT url endsWith /buttons.html\n"),
+        ("firefox", "POPUP docs\nWINDOW docs\nPAGE /second.html\n"),
         ("webkit", "PAGE /second.html\n"),
     ];
     for (engine, rest) in flows {
@@ -1025,11 +1001,11 @@ fn a_middle_click_on_a_link_follows_each_engines_own_rule() {
         }
         dir.file(
             "middle.whirl",
-            &format!("VISIT /buttons.html\nMIDDLECLICK role:link Docs\n{rest}"),
+            &format!("VISIT /buttons.html\nMIDDLECLICK link:Docs\n{rest}"),
         );
         let output = run_whirl(&dir, &[
-            "--base",
-            &server.base(),
+            "-O",
+            &server.app_url_option(),
             "--browser",
             engine,
             "middle.whirl",
@@ -1056,7 +1032,7 @@ fn an_ambiguous_locator_fails_with_the_candidate_list() {
     // Two buttons carry the exact text "Dup": strict mode fails
     // immediately and lists the candidates (SPEC 6.2).
     dir.file("dup.whirl", "VISIT /form.html\nCLICK \"Dup\"\n");
-    let output = run_whirl(&dir, &["--base", &server.base(), "dup.whirl"]);
+    let output = run_whirl(&dir, &["-O", &server.app_url_option(), "dup.whirl"]);
     let stdout = stdout_text(&output);
     assert_eq!(exit_code(&output), 1, "stdout:\n{stdout}");
     assert!(stdout.contains("dup.whirl FAILED"), "stdout:\n{stdout}");
@@ -1073,9 +1049,9 @@ fn allow_hosts_blocks_a_cross_host_fetch_and_reports_the_host() {
     dir.file(
         "cross.whirl",
         &format!(
-            "[Options]\nbase: {base}\nallow-hosts: 127.0.0.1\n\n\
-             VISIT /cross.html\n[Asserts]\ncss:\"#fetch-result\" text == blocked\n",
-            base = server.base()
+            "[Options]\napp-url: {app_url}\nallow-hosts: 127.0.0.1\n\n\
+             VISIT /cross.html\nASSERT css:\"#fetch-result\" text == blocked\n",
+            app_url = server.app_url()
         ),
     );
     let output = run_whirl(&dir, &[
@@ -1117,8 +1093,8 @@ fn allow_hosts_blocks_a_server_side_redirect_to_a_cross_host_target() {
     dir.file(
         "redir.whirl",
         &format!(
-            "[Options]\nbase: {base}\nallow-hosts: 127.0.0.1\n\nVISIT /redirect-cross\n",
-            base = server.base()
+            "[Options]\napp-url: {app_url}\nallow-hosts: 127.0.0.1\n\nVISIT /redirect-cross\n",
+            app_url = server.app_url()
         ),
     );
     let output = run_whirl(&dir, &["--report-json", "report.json", "redir.whirl"]);
@@ -1136,15 +1112,268 @@ fn allow_hosts_blocks_a_server_side_redirect_to_a_cross_host_target() {
     );
 }
 
+/// Each blocked host of a file in a JSON report, with its rule as
+/// `option glob`.
+fn blocked_host_rules(report: &serde_json::Value, file: usize) -> Vec<String> {
+    report["files"][file]["blockedHostRules"]
+        .as_array()
+        .map(|rules| {
+            rules
+                .iter()
+                .map(|rule| {
+                    format!(
+                        "{} {} {}",
+                        rule["host"].as_str().expect("a host"),
+                        rule["option"].as_str().expect("an option"),
+                        rule["glob"].as_str().unwrap_or("-")
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[test]
+fn block_hosts_blocks_its_matches_and_wins_over_allow_hosts() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    let app_url = server.app_url();
+    // cross.html fetches from localhost; the page itself is on 127.0.0.1.
+    let flow = |options: &str, expected: &str| {
+        format!(
+            "[Options]\napp-url: {app_url}\n{options}\n\n\
+             VISIT /cross.html\nASSERT css:\"#fetch-result\" text == {expected}\n"
+        )
+    };
+    // Without allow-hosts, block-hosts blocks only its matches.
+    dir.file(
+        "block-only.whirl",
+        &flow("block-hosts: localhost", "blocked"),
+    );
+    dir.file(
+        "no-match.whirl",
+        &flow("block-hosts: *.localhost", "fetched"),
+    );
+    // A block wins over an allowance.
+    dir.file(
+        "both.whirl",
+        &flow("allow-hosts: localhost\nblock-hosts: local*", "blocked"),
+    );
+    let output = run_whirl(&dir, &[
+        "--report-json",
+        "report.json",
+        "block-only.whirl",
+        "no-match.whirl",
+        "both.whirl",
+    ]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+    let report: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(dir.path.join("report.json")).expect("report exists"),
+    )
+    .expect("valid JSON report");
+    assert_eq!(blocked_host_rules(&report, 0), [
+        "localhost block-hosts localhost"
+    ]);
+    assert!(blocked_host_rules(&report, 1).is_empty());
+    assert_eq!(blocked_host_rules(&report, 2), [
+        "localhost block-hosts local*"
+    ]);
+    assert!(
+        stdout.contains("blocked host: localhost (block-hosts local*)"),
+        "stdout:\n{stdout}"
+    );
+
+    // A block wins over the app-url host's implicit allowance too: the page
+    // itself cannot load, and neither can an HTTP entry to its host.
+    dir.file(
+        "app-url.whirl",
+        &format!("[Options]\napp-url: {app_url}\nallow-hosts: localhost\nblock-hosts: 127.0.0.1\n\nVISIT /cross.html\n"),
+    );
+    dir.file(
+        "http.whirl",
+        &format!(
+            "[Options]\napp-url: {app_url}\nblock-hosts: 127.0.0.1\n\n\
+             HTTP GET /ping.txt\nASSERT status == 200\n"
+        ),
+    );
+    let output = run_whirl(&dir, &[
+        "--report-json",
+        "blocked.json",
+        "app-url.whirl",
+        "http.whirl",
+    ]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 1, "stdout:\n{stdout}");
+    let report: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(dir.path.join("blocked.json")).expect("report exists"),
+    )
+    .expect("valid JSON report");
+    for file in 0..2 {
+        assert_eq!(report["files"][file]["status"], "failed");
+        assert_eq!(blocked_host_rules(&report, file), [
+            "127.0.0.1 block-hosts 127.0.0.1"
+        ]);
+    }
+    assert!(
+        stdout.contains("HTTP host 127.0.0.1 is blocked by block-hosts 127.0.0.1"),
+        "stdout:\n{stdout}"
+    );
+}
+
+#[test]
+fn browsersim_settings_are_inactive_and_settings_mask_secrets() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    let secret = "agent-secret-5d1e";
+    dir.file(
+        "flow.whirl",
+        &format!(
+            "[Options]\napp-url: {app_url}\nbrowsersim-origin: recorded\n\
+             user-agent: {{{{env.WHIRL_TEST_AGENT}}}}\n\n\
+             VISIT /cross.html\nASSERT eval \"navigator.userAgent\" == {{{{env.WHIRL_TEST_AGENT}}}}\n",
+            app_url = server.app_url()
+        ),
+    );
+    let output = run_whirl_env(
+        &dir,
+        &[
+            "-O",
+            "step-timeout=7s",
+            "--report-json",
+            "report.json",
+            "--report-html",
+            "report.html",
+            "flow.whirl",
+        ],
+        &[("WHIRL_TEST_AGENT", secret)],
+    );
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
+    assert!(
+        stdout.contains("inactive setting: browsersim-origin: recorded (BrowserSim only)"),
+        "stdout:\n{stdout}"
+    );
+    let json = fs::read_to_string(dir.path.join("report.json")).expect("report exists");
+    let html = fs::read_to_string(dir.path.join("report.html")).expect("HTML exists");
+    for (name, text) in [("stdout", &stdout), ("JSON", &json), ("HTML", &html)] {
+        assert!(
+            !text.contains(secret),
+            "the {name} output exposes the secret"
+        );
+    }
+    let report: serde_json::Value = serde_json::from_str(&json).expect("valid JSON report");
+    let settings = report["files"][0]["settings"]
+        .as_array()
+        .expect("settings is an array");
+    let setting = |key: &str| {
+        settings
+            .iter()
+            .find(|setting| setting["key"] == key)
+            .unwrap_or_else(|| panic!("no {key} setting in {settings:?}"))
+    };
+    assert_eq!(setting("browsersim-origin")["value"], "recorded");
+    assert_eq!(setting("browsersim-origin")["source"], "file");
+    assert_eq!(setting("browsersim-origin")["active"], false);
+    assert_eq!(setting("step-timeout")["value"], "7s");
+    assert_eq!(setting("step-timeout")["source"], "command-line");
+    assert_eq!(setting("browser")["value"], "chromium");
+    assert_eq!(setting("browser")["source"], "default");
+    assert_eq!(setting("user-agent")["source"], "file");
+    assert_eq!(setting("user-agent")["active"], true);
+    assert!(html.contains("Inactive setting: browsersim-origin: recorded"));
+}
+
+#[test]
+fn command_line_options_apply_to_every_flow_and_replace_or_clear_lists() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    // cross.html fetches from localhost. The first file allows it and sets
+    // its own user agent; the second file's list blocks it. The flows
+    // check the user agent that `--var ua` names.
+    let body = "VISIT /cross.html\nASSERT css:\"#fetch-result\" text != waiting\n\
+                ASSERT eval \"navigator.userAgent\" == {{ua}}\n";
+    let app_url = server.app_url();
+    dir.file(
+        "first.whirl",
+        &format!(
+            "[Options]\napp-url: {app_url}\nallow-hosts: localhost\nuser-agent: from-file\n\n{body}"
+        ),
+    );
+    dir.file(
+        "second.whirl",
+        &format!("[Options]\napp-url: {app_url}\nallow-hosts: example.invalid\n\n{body}"),
+    );
+    let blocked = |report: &serde_json::Value| -> Vec<Vec<String>> {
+        let files = report["files"].as_array().expect("files is an array");
+        files
+            .iter()
+            .map(|file| {
+                file["blockedHosts"]
+                    .as_array()
+                    .expect("blockedHosts is an array")
+                    .iter()
+                    .map(|host| host.as_str().expect("a host").to_owned())
+                    .collect()
+            })
+            .collect()
+    };
+
+    // The last user agent wins over the file's in both flows, and the
+    // `-O` host list replaces the files' lists: localhost is blocked in
+    // the first flow too.
+    let output = run_whirl(&dir, &[
+        "--var",
+        "ua=from-cli",
+        "-O",
+        "user-agent=overridden",
+        "-O",
+        "user-agent=from-cli",
+        "-O",
+        "allow-hosts=example.invalid",
+        "--report-json",
+        "replaced.json",
+        "first.whirl",
+        "second.whirl",
+    ]);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{}", stdout_text(&output));
+    let report: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(dir.path.join("replaced.json")).expect("report exists"),
+    )
+    .expect("valid JSON report");
+    assert_eq!(blocked(&report), [["localhost"], ["localhost"]]);
+
+    // An empty value clears the lists: localhost is allowed in the second
+    // flow too.
+    let output = run_whirl(&dir, &[
+        "--var",
+        "ua=again",
+        "-O",
+        "user-agent=again",
+        "-O",
+        "allow-hosts=",
+        "--report-json",
+        "cleared.json",
+        "first.whirl",
+        "second.whirl",
+    ]);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{}", stdout_text(&output));
+    let report: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(dir.path.join("cleared.json")).expect("report exists"),
+    )
+    .expect("valid JSON report");
+    assert_eq!(blocked(&report), [Vec::<String>::new(), Vec::new()]);
+}
+
 #[test]
 fn cross_host_requests_pass_without_allow_hosts() {
     let server = SiteServer::start();
     let dir = TestDir::new();
     dir.file(
         "open.whirl",
-        "VISIT /cross.html\n[Asserts]\ncss:\"#fetch-result\" text == fetched\n",
+        "VISIT /cross.html\nASSERT css:\"#fetch-result\" text == fetched\n",
     );
-    let output = run_whirl(&dir, &["--base", &server.base(), "open.whirl"]);
+    let output = run_whirl(&dir, &["-O", &server.app_url_option(), "open.whirl"]);
     let stdout = stdout_text(&output);
     assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
 }
@@ -1159,22 +1388,21 @@ fn dialogs_are_dismissed_by_default_and_accepted_on_request() {
         "dismiss.whirl",
         r##"VISIT /form.html
 CLICK "Confirm thing"
-[Asserts]
-css:"#dialog-result" text == dismissed
+ASSERT css:"#dialog-result" text == dismissed
 "##,
     );
     dir.file(
         "accept.whirl",
         &format!(
-            "[Options]\nbase: {base}\ndialogs: accept\n\n\
+            "[Options]\napp-url: {app_url}\ndialogs: accept\n\n\
              VISIT /form.html\nCLICK \"Confirm thing\"\n\
-             [Asserts]\ncss:\"#dialog-result\" text == accepted\n",
-            base = server.base()
+             ASSERT css:\"#dialog-result\" text == accepted\n",
+            app_url = server.app_url()
         ),
     );
     let output = run_whirl(&dir, &[
-        "--base",
-        &server.base(),
+        "-O",
+        &server.app_url_option(),
         "dismiss.whirl",
         "accept.whirl",
     ]);
@@ -1191,26 +1419,25 @@ fn saved_storage_state_logs_the_second_flow_in() {
     let state = dir.path.join("nested/state.json");
     let state_arg = "nested/state.json";
 
-    // A login flow sets localStorage and a cookie, and --save-storage
+    // A login flow sets localStorage and a cookie, and --save-state
     // writes the final context state.
     dir.file(
         "login.whirl",
         r##"VISIT /login.html
 CLICK "Log in"
-[Asserts]
-css:"#status" text == "logged in"
+ASSERT css:"#status" text == "logged in"
 "##,
     );
     let output = run_whirl(&dir, &[
-        "--base",
-        &server.base(),
-        "--save-storage",
+        "-O",
+        &server.app_url_option(),
+        "--save-state",
         state_arg,
         "login.whirl",
     ]);
     let stdout = stdout_text(&output);
     assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
-    assert!(state.is_file(), "--save-storage should write {state:?}");
+    assert!(state.is_file(), "--save-state should write {state:?}");
 
     // A second flow starts from that state (the `storage` option
     // resolves relative to the .whirl file) and is already logged in
@@ -1218,17 +1445,29 @@ css:"#status" text == "logged in"
     dir.file(
         "reuse.whirl",
         &format!(
-            "[Options]\nbase: {base}\nstorage: nested/state.json\n\n\
-             VISIT /login.html\n[Asserts]\ncss:\"#status\" text == \"already logged in\"\n",
-            base = server.base()
+            "[Options]\napp-url: {app_url}\nstorage: nested/state.json\n\n\
+             VISIT /login.html\nASSERT css:\"#status\" text == \"already logged in\"\n",
+            app_url = server.app_url()
         ),
     );
     let output = run_whirl(&dir, &["reuse.whirl"]);
     let stdout = stdout_text(&output);
     assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
-    // CLI storage paths also resolve against the process working directory.
-    let output = run_whirl(&dir, &["--storage", state_arg, "reuse.whirl"]);
+    // --load-state starts a flow without a `storage` option from the same
+    // state; its path resolves against the process working directory.
+    dir.file(
+        "loaded.whirl",
+        &format!(
+            "[Options]\napp-url: {app_url}\n\n\
+             VISIT /login.html\nASSERT css:\"#status\" text == \"already logged in\"\n",
+            app_url = server.app_url()
+        ),
+    );
+    let output = run_whirl(&dir, &["--load-state", state_arg, "loaded.whirl"]);
     assert_eq!(exit_code(&output), 0, "stdout:\n{}", stdout_text(&output));
+    // A file whose `storage` option already chooses its state rejects it.
+    let output = run_whirl(&dir, &["--load-state", state_arg, "reuse.whirl"]);
+    assert_eq!(exit_code(&output), 4, "stdout:\n{}", stdout_text(&output));
 }
 
 #[test]
@@ -1241,25 +1480,24 @@ fn a_setup_flow_runs_once_and_hands_state_and_captures_to_its_dependents() {
     dir.file(
         "login.whirl",
         &format!(
-            "[Options]\nbase: {base}\n\n\
+            "[Options]\napp-url: {app_url}\n\n\
              VISIT /login.html\nCLICK \"Log in\"\n\
-             [Asserts]\ncss:\"#status\" text == \"logged in\"\n\
-             [Captures]\ntoken: css:\"#token\" text\n",
-            base = server.base()
+             ASSERT css:\"#status\" text == \"logged in\"\n\
+             CAPTURE token: css:\"#token\" text\n",
+            app_url = server.app_url()
         ),
     );
     for name in ["a", "b"] {
         dir.file(
             &format!("{name}.whirl"),
             &format!(
-                "[Options]\nbase: {base}\nsetup: login.whirl\n\n\
+                "[Options]\napp-url: {app_url}\nsetup: login.whirl\n\n\
                  VISIT /login.html\n\
                  EVAL \"document.title = 'token={{{{setup.token}}}}'\"\n\
-                 [Asserts]\n\
-                 css:\"#status\" text == \"already logged in\"\n\
-                 css:\"#logins\" text == 1\n\
-                 title == token=t123\n",
-                base = server.base()
+                 ASSERT css:\"#status\" text == \"already logged in\"\n\
+                 ASSERT css:\"#logins\" text == 1\n\
+                 ASSERT title == token=t123\n",
+                app_url = server.app_url()
             ),
         );
     }
@@ -1328,17 +1566,17 @@ fn a_failing_setup_flow_fails_its_dependents_without_running_them() {
     dir.file(
         "bad-login.whirl",
         &format!(
-            "[Options]\nbase: {base}\nstep-timeout: 500ms\n\n\
-             VISIT /login.html\n[Asserts]\ncss:\"#status\" text == \"never\"\n",
-            base = server.base()
+            "[Options]\napp-url: {app_url}\nstep-timeout: 500ms\n\n\
+             VISIT /login.html\nASSERT css:\"#status\" text == \"never\"\n",
+            app_url = server.app_url()
         ),
     );
     dir.file(
         "dependent.whirl",
         &format!(
-            "[Options]\nbase: {base}\nsetup: bad-login.whirl\n\n\
-             VISIT /login.html\n[Asserts]\ncss:\"#status\" text == \"already logged in\"\n",
-            base = server.base()
+            "[Options]\napp-url: {app_url}\nsetup: bad-login.whirl\n\n\
+             VISIT /login.html\nASSERT css:\"#status\" text == \"already logged in\"\n",
+            app_url = server.app_url()
         ),
     );
     let output = run_whirl(&dir, &["--report-json", "report.json", "dependent.whirl"]);
@@ -1392,8 +1630,8 @@ fn update_snapshots_writes_a_baseline_that_a_second_run_matches() {
     // --update-snapshots writes the baseline next to the flow file,
     // keyed by browser and platform.
     let output = run_whirl(&dir, &[
-        "--base",
-        &server.base(),
+        "-O",
+        &server.app_url_option(),
         "--update-snapshots",
         "snap.whirl",
     ]);
@@ -1402,7 +1640,7 @@ fn update_snapshots_writes_a_baseline_that_a_second_run_matches() {
     assert!(baseline.is_file(), "baseline should exist at {baseline:?}");
 
     // A second run compares against the baseline and passes.
-    let output = run_whirl(&dir, &["--base", &server.base(), "snap.whirl"]);
+    let output = run_whirl(&dir, &["-O", &server.app_url_option(), "snap.whirl"]);
     let stdout = stdout_text(&output);
     assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
 }
@@ -1415,8 +1653,8 @@ fn a_snapshot_mismatch_fails_and_writes_actual_and_diff() {
 
     // Write the baseline from the stable page.
     let output = run_whirl(&dir, &[
-        "--base",
-        &server.base(),
+        "-O",
+        &server.app_url_option(),
         "--update-snapshots",
         "snap.whirl",
     ]);
@@ -1430,10 +1668,10 @@ fn a_snapshot_mismatch_fails_and_writes_actual_and_diff() {
         "VISIT /stable.html?variant=1\nSNAPSHOT hero\n",
     );
     let output = run_whirl(&dir, &[
-        "--base",
-        &server.base(),
-        "--step-timeout",
-        "1s",
+        "-O",
+        &server.app_url_option(),
+        "-O",
+        "step-timeout=1s",
         "snap.whirl",
     ]);
     let stdout = stdout_text(&output);
@@ -1457,7 +1695,7 @@ fn a_snapshot_without_a_baseline_is_a_runtime_error() {
     // A snapshot with no baseline is a runtime error without
     // --update-snapshots.
     dir.file("fresh.whirl", "VISIT /stable.html\nSNAPSHOT fresh\n");
-    let output = run_whirl(&dir, &["--base", &server.base(), "fresh.whirl"]);
+    let output = run_whirl(&dir, &["-O", &server.app_url_option(), "fresh.whirl"]);
     let stdout = stdout_text(&output);
     assert_eq!(exit_code(&output), 3, "stdout:\n{stdout}");
 }
@@ -1471,9 +1709,14 @@ fn trace_video_and_har_artifacts_follow_their_flags() {
     // failure.
     dir.file(
         "fail.whirl",
-        "VISIT /second.html\n[Asserts]\ncss:\"#missing\" visible @500ms\n",
+        "VISIT /second.html\nASSERT css:\"#missing\" visible @500ms\n",
     );
-    let output = run_whirl(&dir, &["--base", &server.base(), "--trace", "fail.whirl"]);
+    let output = run_whirl(&dir, &[
+        "-O",
+        &server.app_url_option(),
+        "--trace",
+        "fail.whirl",
+    ]);
     let stdout = stdout_text(&output);
     assert_eq!(exit_code(&output), 1, "stdout:\n{stdout}");
     assert!(
@@ -1485,11 +1728,11 @@ fn trace_video_and_har_artifacts_follow_their_flags() {
     // the video and network log exist.
     dir.file(
         "pass.whirl",
-        "VISIT /second.html\n[Asserts]\nrole:heading \"Second page\" visible\n",
+        "VISIT /second.html\nASSERT heading:\"Second page\" visible\n",
     );
     let output = run_whirl(&dir, &[
-        "--base",
-        &server.base(),
+        "-O",
+        &server.app_url_option(),
         "--trace",
         "--video",
         "--har",
@@ -1521,12 +1764,12 @@ fn the_viewport_option_sizes_the_page() {
     dir.file(
         "viewport.whirl",
         &format!(
-            "[Options]\nbase: {base}\nviewport: 777x444\n\n\
+            "[Options]\napp-url: {app_url}\nviewport: 777x444\n\n\
              VISIT /second.html\n\
              EVAL \"document.title = window.innerWidth + 'x' + window.innerHeight\"\n\
-             [Asserts]\ntitle == 777x444\n\
-             [Captures]\nwidth: eval \"window.innerWidth\"\n",
-            base = server.base()
+             ASSERT title == 777x444\n\
+             CAPTURE width: eval \"window.innerWidth\"\n",
+            app_url = server.app_url()
         ),
     );
     let output = run_whirl(&dir, &["--report-json", "report.json", "viewport.whirl"]);
@@ -1547,21 +1790,21 @@ fn fail_fast_stops_scheduling_after_the_first_failure() {
     let dir = TestDir::new();
     dir.file(
         "a_fails.whirl",
-        "VISIT /second.html\n[Asserts]\ncss:\"#missing\" visible @500ms\n",
+        "VISIT /second.html\nASSERT css:\"#missing\" visible @500ms\n",
     );
     dir.file(
         "b_later.whirl",
-        "VISIT /second.html\n[Asserts]\nrole:heading \"Second page\" visible\n",
+        "VISIT /second.html\nASSERT heading:\"Second page\" visible\n",
     );
     dir.file(
         "c_later.whirl",
-        "VISIT /second.html\n[Asserts]\nrole:heading \"Second page\" visible\n",
+        "VISIT /second.html\nASSERT heading:\"Second page\" visible\n",
     );
     // One worker runs the files in order: the first fails, so the later
     // files are never scheduled and never appear in the report.
     let output = run_whirl(&dir, &[
-        "--base",
-        &server.base(),
+        "-O",
+        &server.app_url_option(),
         "--fail-fast",
         "--jobs",
         "1",
@@ -1589,8 +1832,8 @@ fn all_engines_run_the_site_flow_when_requested() {
         dir.file(
             "happy.whirl",
             &format!(
-                "[Options]\nbase: {base}\n\n{HAPPY_FLOW_BODY}",
-                base = server.base()
+                "[Options]\napp-url: {app_url}\n\n{HAPPY_FLOW_BODY}",
+                app_url = server.app_url()
             ),
         );
         let output = run_whirl(&dir, &["--browser", engine, "happy.whirl"]);
@@ -1611,24 +1854,21 @@ fn frame_locators_fill_assert_and_capture_across_origins_and_nested_frames() {
         "frames.whirl",
         &format!(
             r##"[Options]
-base: {}
+app-url: {}
 VISIT /frames.html
 FILL css:"#payments" >> frame:iframe >> label:Email alice@example.com
 TYPE frame:"#payment" >> label:Code 4242
 CHECK frame:"#payment" >> label:Notifications
 FILL frame:"#nested" >> frame:iframe >> label:Email nested@example.com
-[Asserts]
-frame:"#payment" >> label:Email value == alice@example.com
-frame:"#payment" >> label:Notifications checked
-frame:"#payment" >> css:"#typed-keys" text == 4242
-frame:"#nested" >> frame:iframe >> label:Email value == nested@example.com
-[Captures]
-email: frame:"#payment" >> label:Email value
+ASSERT frame:"#payment" >> label:Email value == alice@example.com
+ASSERT frame:"#payment" >> label:Notifications checked
+ASSERT frame:"#payment" >> css:"#typed-keys" text == 4242
+ASSERT frame:"#nested" >> frame:iframe >> label:Email value == nested@example.com
+CAPTURE email: frame:"#payment" >> label:Email value
 FILL frame:iframe >> nth:0 >> label:Email {{{{email}}}}
-[Asserts]
-frame:iframe >> nth:0 >> label:Email value == alice@example.com
+ASSERT frame:iframe >> nth:0 >> label:Email value == alice@example.com
 "##,
-            site.base()
+            site.app_url()
         ),
     );
     let output = run_whirl(&dir, &["frames.whirl"]);
@@ -1643,14 +1883,13 @@ fn frame_locators_wait_for_a_frame_created_after_the_action() {
         "delayed.whirl",
         &format!(
             r##"[Options]
-base: {}
+app-url: {}
 VISIT /frames.html
-CLICK role:button "Load frame"
+CLICK button:"Load frame"
 FILL frame:"#delayed" >> label:Email late@example.com
-[Asserts]
-frame:"#delayed" >> label:Email value == late@example.com
+ASSERT frame:"#delayed" >> label:Email value == late@example.com
 "##,
-            site.base()
+            site.app_url()
         ),
     );
     let output = run_whirl(&dir, &["delayed.whirl"]);
@@ -1665,11 +1904,11 @@ fn frame_locators_reject_multiple_matching_frames() {
         "ambiguous.whirl",
         &format!(
             r"[Options]
-base: {}
+app-url: {}
 VISIT /frames.html
 FILL frame:iframe >> label:Email wrong@example.com @1s
 ",
-            site.base()
+            site.app_url()
         ),
     );
     let output = run_whirl(&dir, &["ambiguous.whirl"]);
@@ -1689,32 +1928,25 @@ fn popups_are_named_without_switching_and_return_after_self_closure() {
         "popup.whirl",
         &format!(
             r#"[Options]
-base: {}
+app-url: {}
 VISIT /popups.html
-CLICK role:button "Pay with provider"
+CLICK button:"Pay with provider"
 POPUP payment
-[Asserts]
-role:heading Checkout visible
-TAB payment
+ASSERT heading:Checkout visible
+WINDOW payment
 FILL label:Name Alice
-[Asserts]
-role:heading "Confirm payment" visible
-[Captures]
-name: label:Name value
-CLICK role:button Alert
-[Asserts]
-role:button Dismissed visible
-CLICK role:button Confirm
-[Asserts]
-tab:payment closed @5s
-TAB main
-[Asserts]
-text:"Payment complete" visible
+ASSERT heading:"Confirm payment" visible
+CAPTURE name: label:Name value
+CLICK button:Alert
+ASSERT button:Dismissed visible
+CLICK button:Confirm
+ASSERT window:payment closed @5s
+WINDOW main
+ASSERT text:"Payment complete" visible
 FILL label:Customer {{{{name}}}}
-[Asserts]
-label:Customer value == Alice
+ASSERT label:Customer value == Alice
 "#,
-            site.base()
+            site.app_url()
         ),
     );
     let output = run_whirl(&dir, &["--trace", "popup.whirl"]);
@@ -1729,21 +1961,21 @@ fn popup_closure_before_click_delivery_fails_the_action() {
         "early-close.whirl",
         &format!(
             r#"[Options]
-base: {}
+app-url: {}
 VISIT /popups.html
-CLICK role:button "Pay with provider"
+CLICK button:"Pay with provider"
 POPUP payment
-TAB payment
+WINDOW payment
 EVAL "setTimeout(() => window.close(), 50)"
-CLICK role:button Unavailable
+CLICK button:Unavailable
 "#,
-            site.base()
+            site.app_url()
         ),
     );
     let output = run_whirl(&dir, &["early-close.whirl"]);
     assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
     assert!(
-        stdout_text(&output).contains("step: CLICK role:button Unavailable"),
+        stdout_text(&output).contains("step: CLICK button:Unavailable"),
         "{}",
         stdout_text(&output)
     );
@@ -1762,25 +1994,23 @@ fn named_tabs_support_nested_popups_and_explicit_close() {
         "nested.whirl",
         &format!(
             r#"[Options]
-base: {}
+app-url: {}
 VISIT /popups.html
-CLICK role:button "Pay with provider"
+CLICK button:"Pay with provider"
 POPUP payment
-TAB payment
-CLICK role:button Receipt
+WINDOW payment
+CLICK button:Receipt
 POPUP receipt
-TAB receipt
+WINDOW receipt
 PAGE /second.html
 CLOSE receipt
-[Asserts]
-tab:receipt closed
-TAB payment
+ASSERT window:receipt closed
+WINDOW payment
 CLOSE payment
-TAB main
-[Asserts]
-role:heading Checkout visible
+WINDOW main
+ASSERT heading:Checkout visible
 "#,
-            site.base()
+            site.app_url()
         ),
     );
     let output = run_whirl(&dir, &["nested.whirl"]);
@@ -1795,14 +2025,13 @@ fn a_popup_from_an_earlier_entry_does_not_satisfy_popup() {
         "stale.whirl",
         &format!(
             r#"[Options]
-base: {}
+app-url: {}
 VISIT /popups.html
-CLICK role:button "Pay with provider"
-[Asserts]
-text:"Provider ready" visible
+CLICK button:"Pay with provider"
+ASSERT text:"Provider ready" visible
 POPUP stale @300ms
 "#,
-            site.base()
+            site.app_url()
         ),
     );
     let output = run_whirl(&dir, &["stale.whirl"]);
@@ -1822,20 +2051,20 @@ fn selecting_a_closed_tab_fails_without_switching_implicitly() {
         "closed.whirl",
         &format!(
             r#"[Options]
-base: {}
+app-url: {}
 VISIT /popups.html
-CLICK role:button "Pay with provider"
+CLICK button:"Pay with provider"
 POPUP payment
 CLOSE payment
-TAB payment
+WINDOW payment
 "#,
-            site.base()
+            site.app_url()
         ),
     );
     let output = run_whirl(&dir, &["closed.whirl"]);
     assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
     assert!(
-        stdout_text(&output).contains("tab payment is closed"),
+        stdout_text(&output).contains("window payment is closed"),
         "{}",
         stdout_text(&output)
     );
@@ -1846,12 +2075,12 @@ fn multiple_unnamed_popups_fail_strictly() {
     let site = SiteServer::start();
     let dir = TestDir::new();
     dir.file("multiple.whirl", &format!(r#"[Options]
-base: {}
+app-url: {}
 VISIT /popups.html
-CLICK role:button "Open two"
+CLICK button:"Open two"
 EVAL "await new Promise(resolve => {{ const observer = new MutationObserver(() => {{ if (document.body.dataset.popups === '2') {{ observer.disconnect(); resolve(); }} }}); if (document.body.dataset.popups === '2') resolve(); else observer.observe(document.body, {{attributes: true}}); }})"
 POPUP payment @1s
-"#, site.base()));
+"#, site.app_url()));
     let output = run_whirl(&dir, &["multiple.whirl"]);
     assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
     assert!(
@@ -1869,41 +2098,38 @@ fn response_assertions_and_captures_observe_the_request_before_click_returns() {
         "response.whirl",
         &format!(
             r#"[Options]
-base: {}
+app-url: {}
 VISIT /network.html
 EVAL "await fetch('/api/orders')"
-CLICK role:button "Place order"
+CLICK button:"Place order"
 EVAL "await window.orderRequest"
 RESPONSE order POST /api/orders
-[Asserts]
-response:order status == 201
-response:order status >= 200
-response:order status < 300
-response:order header:Content-Type contains application/json
-response:order json:$.status == paid
-response:order json:$.active == true
-response:order json:$.none == null
-response:order json:$['a/b']['~key'] == escaped
-response:order json:$.items[0].id matches /^item-/
-response:order json:$.items count == 1
-response:order json:$.items[*].id contains item-1
-response:order json:$.items == [{{"id": "item-1"}}]
-response:order json:$ isObject
-response:order json:$.none not isString
-response:order json:$.missing not exists
-response:order body contains order-42
-response:order bytes startsWith hex,7b;
-response:order json:$.id == "order-42"
-text:"Order confirmed" visible
-[Captures]
-order_id: response:order json:$.id
-item_number: response:order json:$.items[0].id regex /item-(\d+)/
+ASSERT response:order status == 201
+ASSERT response:order status >= 200
+ASSERT response:order status < 300
+ASSERT response:order header:Content-Type contains application/json
+ASSERT response:order json:$.status == paid
+ASSERT response:order json:$.active == true
+ASSERT response:order json:$.none == null
+ASSERT response:order json:$['a/b']['~key'] == escaped
+ASSERT response:order json:$.items[0].id matches /^item-/
+ASSERT response:order json:$.items count == 1
+ASSERT response:order json:$.items[*].id contains item-1
+ASSERT response:order json:$.items == [{{"id": "item-1"}}]
+ASSERT response:order json:$ isObject
+ASSERT response:order json:$.none not isString
+ASSERT response:order json:$.missing not exists
+ASSERT response:order body contains order-42
+ASSERT response:order bytes startsWith hex,7b;
+ASSERT response:order json:$.id == "order-42"
+ASSERT text:"Order confirmed" visible
+CAPTURE order_id: response:order json:$.id
+CAPTURE item_number: response:order json:$.items[0].id regex /item-(\d+)/
 VISIT /network.html?id={{{{order_id}}}}&item={{{{item_number}}}}
 PAGE /network.html?id=order-42&item=1
-[Asserts]
-response:order json:$.status == paid
+ASSERT response:order json:$.status == paid
 "#,
-            site.base()
+            site.app_url()
         ),
     );
     let output = run_whirl(&dir, &["--report-json", "report.json", "response.whirl"]);
@@ -1920,15 +2146,14 @@ fn response_selection_does_not_replace_a_failed_request_with_a_successful_retry(
         "retry.whirl",
         &format!(
             r#"[Options]
-base: {}
+app-url: {}
 VISIT /network.html
-CLICK role:button "Retry order"
+CLICK button:"Retry order"
 EVAL "await window.orderRequest"
 RESPONSE order POST /api/orders
-[Asserts]
-response:order status == 201
+ASSERT response:order status == 201
 "#,
-            site.base()
+            site.app_url()
         ),
     );
     let output = run_whirl(&dir, &["retry.whirl"]);
@@ -1948,14 +2173,13 @@ fn response_selection_excludes_requests_from_previous_entries() {
         "stale-response.whirl",
         &format!(
             r#"[Options]
-base: {}
+app-url: {}
 VISIT /network.html
-CLICK role:button "Place order"
-[Asserts]
-text:"Order confirmed" visible
+CLICK button:"Place order"
+ASSERT text:"Order confirmed" visible
 RESPONSE stale POST /api/orders @300ms
 "#,
-            site.base()
+            site.app_url()
         ),
     );
     let output = run_whirl(&dir, &["stale-response.whirl"]);
@@ -1971,34 +2195,30 @@ RESPONSE stale POST /api/orders @300ms
 fn responses_from_cross_origin_frames_and_popup_navigation_are_observed() {
     let site = SiteServer::start();
     let dir = TestDir::new();
-    let cross = site.base().replace("127.0.0.1", "localhost");
+    let cross = site.app_url().replace("127.0.0.1", "localhost");
     dir.file(
         "contexts.whirl",
         &format!(
             r##"[Options]
-base: {}
+app-url: {}
 VISIT /network.html
-CLICK frame:"#checkout" >> role:button "Place order"
+CLICK frame:"#checkout" >> button:"Place order"
 RESPONSE embedded POST {cross}/api/orders
-[Asserts]
-response:embedded status == 201
-CLICK role:button "Open checkout"
+ASSERT response:embedded status == 201
+CLICK button:"Open checkout"
 POPUP checkout
-TAB checkout
+WINDOW checkout
 RESPONSE navigation GET /network.html?embedded=1
-[Asserts]
-response:navigation status == 200
-CLICK role:button "Place order"
+ASSERT response:navigation status == 200
+CLICK button:"Place order"
 RESPONSE order POST /api/orders
-[Asserts]
-response:order json:$.id == order-42
+ASSERT response:order json:$.id == order-42
 CLOSE checkout
-[Asserts]
-tab:checkout closed
-response:order json:$.status == paid
-TAB main
+ASSERT window:checkout closed
+ASSERT response:order json:$.status == paid
+WINDOW main
 "##,
-            site.base()
+            site.app_url()
         ),
     );
     let engines: &[&str] = if env::var_os("WHIRL_TEST_ALL_BROWSERS").is_some() {
@@ -2020,16 +2240,16 @@ fn response_selection_does_not_use_another_tabs_requests() {
         "wrong-tab.whirl",
         &format!(
             r#"[Options]
-base: {}
+app-url: {}
 VISIT /network.html
-CLICK role:button "Place order"
+CLICK button:"Place order"
 EVAL "await window.orderRequest"
-CLICK role:button "Open checkout"
+CLICK button:"Open checkout"
 POPUP checkout
-TAB checkout
+WINDOW checkout
 RESPONSE wrong POST /api/orders @300ms
 "#,
-            site.base()
+            site.app_url()
         ),
     );
     let output = run_whirl(&dir, &["wrong-tab.whirl"]);
@@ -2049,14 +2269,13 @@ fn missing_json_fields_do_not_pass_inequality_assertions() {
         "missing.whirl",
         &format!(
             r#"[Options]
-base: {}
+app-url: {}
 VISIT /network.html
-CLICK role:button "Place order"
+CLICK button:"Place order"
 RESPONSE order POST /api/orders
-[Asserts]
-response:order json:$.missing != paid
+ASSERT response:order json:$.missing != paid
 "#,
-            site.base()
+            site.app_url()
         ),
     );
     let output = run_whirl(&dir, &["missing.whirl"]);
@@ -2080,14 +2299,13 @@ fn absent_headers_and_malformed_json_fail_response_assertions() {
             "invalid-response.whirl",
             &format!(
                 r#"[Options]
-base: {}
+app-url: {}
 VISIT /network.html
 EVAL "await fetch('/api/malformed')"
 RESPONSE invalid GET /api/malformed
-[Asserts]
-response:invalid {check}
+ASSERT response:invalid {check}
 "#,
-                site.base()
+                site.app_url()
             ),
         );
         let output = run_whirl(&dir, &["invalid-response.whirl"]);
@@ -2108,13 +2326,13 @@ fn failed_network_requests_report_failure_instead_of_waiting_for_a_retry() {
         "failed-request.whirl",
         &format!(
             r#"[Options]
-base: {}
+app-url: {}
 allow-hosts: 127.0.0.1
 VISIT /network.html
 EVAL "void fetch('https://blocked.invalid/fail').catch(() => {{}})"
 RESPONSE rejected GET https://blocked.invalid/fail @2s
 "#,
-            site.base()
+            site.app_url()
         ),
     );
     let output = run_whirl(&dir, &["failed-request.whirl"]);
@@ -2134,12 +2352,12 @@ fn waiting_for_response_headers_obeys_the_step_timeout() {
         "slow-response.whirl",
         &format!(
             r#"[Options]
-base: {}
+app-url: {}
 VISIT /network.html
 EVAL "void fetch('/stall').catch(() => {{}})"
 RESPONSE stalled GET /stall @200ms
 "#,
-            site.base()
+            site.app_url()
         ),
     );
     let output = run_whirl(&dir, &["slow-response.whirl"]);
@@ -2162,26 +2380,23 @@ STORE cookie session browser
 HTTP POST /api/http-check
 Authorization: "Bearer whirl-test-key"
 {"message":"hello"}
-[Asserts]
-status == 200
-json:$.authenticated == true
-json:$.cookie == ""
-json:$.body == "{\"message\":\"hello\"}"
-json:$.contentType == application/json
-[Captures]
-authenticated: json:$.authenticated
+ASSERT status == 200
+ASSERT json:$.authenticated == true
+ASSERT json:$.cookie == ""
+ASSERT json:$.body == "{\"message\":\"hello\"}"
+ASSERT json:$.contentType == application/json
+CAPTURE authenticated: json:$.authenticated
 HTTP GET /api/http-check
 Content-Type: text/custom
-[Asserts]
-status == 401
-json:$.cookie == ""
-json:$.contentType == text/custom
+ASSERT status == 401
+ASSERT json:$.cookie == ""
+ASSERT json:$.contentType == text/custom
 EVAL "if (document.cookie !== 'session=browser') throw new Error('HTTP changed browser cookies')"
 VISIT /network.html?authenticated={{authenticated}}
 PAGE /network.html?authenticated=true
 "#,
     );
-    let output = run_whirl(&dir, &["--base", &site.base(), "http.whirl"]);
+    let output = run_whirl(&dir, &["-O", &site.app_url_option(), "http.whirl"]);
     assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
 }
 
@@ -2193,17 +2408,15 @@ fn http_can_create_and_capture_data_before_the_first_visit() {
         "setup.whirl",
         r#"HTTP POST /api/http-check
 Authorization: "Bearer whirl-test-key"
-[Asserts]
-status == 200
-[Captures]
-authenticated: json:$.authenticated
+ASSERT status == 200
+CAPTURE authenticated: json:$.authenticated
 
 VISIT /network.html?authenticated={{authenticated}}
 PAGE /network.html?authenticated=true
 "#,
     );
 
-    let output = run_whirl(&dir, &["--base", &site.base(), "setup.whirl"]);
+    let output = run_whirl(&dir, &["-O", &site.app_url_option(), "setup.whirl"]);
 
     assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
 }
@@ -2221,13 +2434,12 @@ Content-Type: text/plain
 first # literal
 second\line
 ```
-[Asserts]
-status == 200
-json:$.body == "first # literal\nsecond\\line"
+ASSERT status == 200
+ASSERT json:$.body == "first # literal\nsecond\\line"
 "#,
     );
 
-    let output = run_whirl(&dir, &["--base", &site.base(), "text.whirl"]);
+    let output = run_whirl(&dir, &["-O", &site.app_url_option(), "text.whirl"]);
 
     assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
 }
@@ -2238,9 +2450,9 @@ fn http_returns_redirects_without_following_them() {
     let dir = TestDir::new();
     dir.file(
         "redirect.whirl",
-        "HTTP GET /redirect-cross\n[Asserts]\nstatus == 302\nheader:location contains localhost\n",
+        "HTTP GET /redirect-cross\nASSERT status == 302\nASSERT header:location contains localhost\n",
     );
-    let output = run_whirl(&dir, &["--base", &site.base(), "redirect.whirl"]);
+    let output = run_whirl(&dir, &["-O", &site.app_url_option(), "redirect.whirl"]);
     assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
 }
 
@@ -2252,7 +2464,7 @@ fn http_enforces_host_allowlists_before_sending_a_request() {
         "blocked.whirl",
         "[Options]\nallow-hosts: 127.0.0.1\nHTTP GET https://blocked.invalid/\n",
     );
-    let output = run_whirl(&dir, &["--base", &site.base(), "blocked.whirl"]);
+    let output = run_whirl(&dir, &["-O", &site.app_url_option(), "blocked.whirl"]);
     assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
     assert!(
         stdout_text(&output).contains("HTTP host blocked.invalid is blocked"),
@@ -2266,7 +2478,7 @@ fn http_enforces_its_step_timeout() {
     let site = SiteServer::start();
     let dir = TestDir::new();
     dir.file("timeout.whirl", "HTTP GET /stall @200ms\n");
-    let output = run_whirl(&dir, &["--base", &site.base(), "timeout.whirl"]);
+    let output = run_whirl(&dir, &["-O", &site.app_url_option(), "timeout.whirl"]);
     assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
     assert!(
         stdout_text(&output).contains("timeout"),
@@ -2281,7 +2493,7 @@ fn http_limits_declared_and_streamed_response_bodies() {
     let dir = TestDir::new();
     for path in ["/api/large", "/api/large?chunked"] {
         dir.file("large.whirl", &format!("HTTP GET {path}\n"));
-        let output = run_whirl(&dir, &["--base", &site.base(), "large.whirl"]);
+        let output = run_whirl(&dir, &["-O", &site.app_url_option(), "large.whirl"]);
         assert_eq!(exit_code(&output), 1, "{path}: {}", stdout_text(&output));
         assert!(
             stdout_text(&output).contains("HTTP response exceeds the 1 MiB body limit"),
@@ -2297,10 +2509,10 @@ fn http_head_allows_a_large_content_length_without_a_response_body() {
     let dir = TestDir::new();
     dir.file(
         "head.whirl",
-        "HTTP HEAD /api/large\n[Asserts]\n\
-         status == 200\nheader:content-length == 1048577\n",
+        "HTTP HEAD /api/large\n\
+         ASSERT status == 200\nASSERT header:content-length == 1048577\n",
     );
-    let output = run_whirl(&dir, &["--base", &site.base(), "head.whirl"]);
+    let output = run_whirl(&dir, &["-O", &site.app_url_option(), "head.whirl"]);
     assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
 }
 
@@ -2310,7 +2522,7 @@ fn http_rejects_non_http_urls_and_embedded_credentials() {
     let dir = TestDir::new();
     for url in ["data:text/plain,example", "http://user:password@127.0.0.1/"] {
         dir.file("url.whirl", &format!("HTTP GET {url}\n"));
-        let output = run_whirl(&dir, &["--base", &site.base(), "url.whirl"]);
+        let output = run_whirl(&dir, &["-O", &site.app_url_option(), "url.whirl"]);
         assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
         assert!(
             stdout_text(&output).contains("HTTP or HTTPS URL without embedded credentials"),
@@ -2330,19 +2542,19 @@ fn http_interpolates_headers_and_bodies_without_leaking_secrets() {
          HTTP POST {{endpoint}}\n\
          Authorization: \"Bearer {{env.HTTP_TOKEN}}\"\n\
          ```\n{{env.HTTP_BODY}}\n```\n\
-         [Asserts]\nstatus == 200\n\
-         json:$.body == {{env.HTTP_BODY}}\n\
-         [Captures]\nbody: json:$.body\n\
+         ASSERT status == 200\n\
+         ASSERT json:$.body == {{env.HTTP_BODY}}\n\
+         CAPTURE body: json:$.body\n\
          HTTP POST https://blocked.invalid/\n\
          Authorization: \"Bearer {{env.HTTP_TOKEN}}\"\n\
          ```\n{{env.HTTP_BODY}}\n```\n\
-         [Asserts]\nstatus == 200\n",
+         ASSERT status == 200\n",
     );
     let output = run_whirl_env(
         &dir,
         &[
-            "--base",
-            &site.base(),
+            "-O",
+            &site.app_url_option(),
             "--var",
             "endpoint=/api/http-check",
             "--report-json",
@@ -2405,8 +2617,8 @@ fn http_interpolates_headers_and_bodies_without_leaking_secrets() {
 fn html_report_is_portable_and_preserves_results_and_author_context() {
     let dir = TestDir::new();
     let server = SiteServer::start();
-    dir.file("pass.whirl", "# Inspect the page.\nVISIT /stable.html\nSCREENSHOT page\n[Asserts]\ntitle == \"Stable Page\"\n");
-    dir.file("fail.whirl", "# A failed check.\nVISIT /stable.html\n[Asserts]\ntitle == Wrong @100ms\n# Never executed.\nVISIT /form.html\n");
+    dir.file("pass.whirl", "# Inspect the page.\nVISIT /stable.html\nSCREENSHOT page\nASSERT title == \"Stable Page\"\n");
+    dir.file("fail.whirl", "# A failed check.\nVISIT /stable.html\nASSERT title == Wrong @100ms\n# Never executed.\nVISIT /form.html\n");
     fs::create_dir(dir.path.join("context")).expect("metadata directory");
     dir.file("context/report.json", r#"{
         "title": "Critical browser evidence",
@@ -2414,8 +2626,8 @@ fn html_report_is_portable_and_preserves_results_and_author_context() {
         "files": {"../pass.whirl": {"title": "Page access", "description": "Open the page and verify its title."}}
     }"#);
     let output = run_whirl(&dir, &[
-        "--base",
-        &server.base(),
+        "-O",
+        &server.app_url_option(),
         "--video",
         "--report-html",
         "report.html",
@@ -2487,13 +2699,12 @@ fn html_report_is_portable_and_preserves_results_and_author_context() {
     fs::remove_dir_all(dir.artifacts()).expect("remove source media");
     let url = reqwest::Url::from_file_path(&moved).expect("file URL");
     dir.file("verify.whirl", &format!(r#"VISIT "{url}"
-[Asserts]
-role:heading "Critical browser evidence" visible
-role:heading "Page access" visible
-css:article count == 2
-css:article[data-status=passed] count == 1
-css:article[data-status=failed] count == 1
-css:.entry[data-status=skipped] count == 1
+ASSERT heading:"Critical browser evidence" visible
+ASSERT heading:"Page access" visible
+ASSERT css:article count == 2
+ASSERT css:article[data-status=passed] count == 1
+ASSERT css:article[data-status=failed] count == 1
+ASSERT css:.entry[data-status=skipped] count == 1
 EVAL "const v = document.querySelector('video'); await v.play(); await new Promise((resolve, reject) => {{ if (v.videoWidth > 0) resolve(); else {{ v.addEventListener('loadeddata', resolve, {{once:true}}); v.addEventListener('error', () => reject(new Error('Video failed')), {{once:true}}); }} }}); if (!v.videoWidth) throw new Error('No video pixels'); v.pause();"
 EVAL "for (const d of document.querySelectorAll('details')) d.open = true; for (const img of document.images) {{ img.loading = 'eager'; await img.decode(); if (!img.naturalWidth) throw new Error('No screenshot pixels'); }}"
 EVAL "if (document.documentElement.scrollWidth > innerWidth) throw new Error('Report overflows viewport')"
@@ -2515,12 +2726,12 @@ fn html_report_escapes_hostile_text_and_keeps_environment_values_masked() {
     let server = SiteServer::start();
     let hostile = "</title><script>document.body.dataset.injected='yes'</script><img src=x onerror=alert(1)> & \"quoted\"";
     dir.file("context.json", &serde_json::json!({"title": hostile, "description": hostile, "files": {"flow.whirl": {"title": hostile, "description": hostile}}}).to_string());
-    dir.file("flow.whirl", &format!("# {hostile}\nVISIT /form.html\nEVAL \"document.title = 'safe'\"\n[Asserts]\ntitle == {{{{env.WHIRL_TEST_SECRET}}}} @100ms\n"));
+    dir.file("flow.whirl", &format!("# {hostile}\nVISIT /form.html\nEVAL \"document.title = 'safe'\"\nASSERT title == {{{{env.WHIRL_TEST_SECRET}}}} @100ms\n"));
     let output = run_whirl_env(
         &dir,
         &[
-            "--base",
-            &server.base(),
+            "-O",
+            &server.app_url_option(),
             "--report-html",
             "report.html",
             "--report-metadata",
@@ -2538,7 +2749,7 @@ fn html_report_escapes_hostile_text_and_keeps_environment_values_masked() {
     assert!(html.contains("&amp; &quot;quoted&quot;"));
     assert!(html.contains("Recording not requested."));
     let url = reqwest::Url::from_file_path(dir.path.join("report.html")).expect("file URL");
-    dir.file("verify.whirl", &format!("VISIT \"{url}\"\n[Asserts]\ncss:script count == 0\ncss:body attr:data-injected != yes\ncss:article[data-status=failed] count == 1\n"));
+    dir.file("verify.whirl", &format!("VISIT \"{url}\"\nASSERT css:script count == 0\nASSERT css:body attr:data-injected != yes\nASSERT css:article[data-status=failed] count == 1\n"));
     let verify = run_whirl(&dir, &["verify.whirl"]);
     assert_eq!(exit_code(&verify), 0, "{}", stdout_text(&verify));
 }
@@ -2550,8 +2761,8 @@ fn html_output_errors_preserve_other_reports_and_do_not_replace_inputs() {
     let flow = "VISIT /stable.html\n";
     dir.file("flow.whirl", flow);
     let conflict = run_whirl(&dir, &[
-        "--base",
-        &server.base(),
+        "-O",
+        &server.app_url_option(),
         "--report-html",
         "flow.whirl",
         "flow.whirl",
@@ -2570,8 +2781,8 @@ fn html_output_errors_preserve_other_reports_and_do_not_replace_inputs() {
     ]);
     assert_eq!(exit_code(&collision), 4);
     let output = run_whirl(&dir, &[
-        "--base",
-        &server.base(),
+        "-O",
+        &server.app_url_option(),
         "--report-html",
         "missing/report.html",
         "--report-json",
@@ -2585,8 +2796,8 @@ fn html_output_errors_preserve_other_reports_and_do_not_replace_inputs() {
     fs::create_dir(dir.path.join("existing.html")).expect("destination directory");
     dir.file("existing.html/keep", "untouched");
     let output = run_whirl(&dir, &[
-        "--base",
-        &server.base(),
+        "-O",
+        &server.app_url_option(),
         "--report-html",
         "existing.html",
         "flow.whirl",
@@ -2666,7 +2877,9 @@ fn html_missing_screenshot_does_not_turn_a_pass_into_a_failure() {
     assert!(html.contains("data-status=\"passed\""));
     assert!(html.contains("Screenshot unavailable:"));
     assert!(html.contains("Recording unavailable."));
-    assert!(html.contains("Blocked hosts: a.example, b.example"));
+    assert!(html.contains(
+        "Blocked hosts: a.example (not in allow-hosts), b.example (block-hosts *.example)"
+    ));
 }
 
 #[test]
@@ -2722,8 +2935,8 @@ fn html_metadata_matches_symlinked_flows_and_ignores_unselected_flows() {
     symlink("flow.whirl", dir.path.join("alias.whirl")).expect("flow alias");
     dir.file("metadata.json", r#"{"files":{"flow.whirl":{"title":"Canonical title"},"unused.whirl":{"title":"Must not appear"}}}"#);
     let output = run_whirl(&dir, &[
-        "--base",
-        &server.base(),
+        "-O",
+        &server.app_url_option(),
         "--report-html",
         "report.html",
         "--report-json",
@@ -2759,8 +2972,8 @@ fn html_report_does_not_replace_a_recorded_artifact() {
     let server = SiteServer::start();
     dir.file("flow.whirl", "VISIT /stable.html\nSCREENSHOT image\n");
     let output = run_whirl(&dir, &[
-        "--base",
-        &server.base(),
+        "-O",
+        &server.app_url_option(),
         "--report-html",
         "artifacts/flow/image.png",
         "flow.whirl",
@@ -2801,8 +3014,8 @@ fn combined_report_keeps_embedded_media_and_missing_scenarios_offline() {
     dir.file("second.whirl", "VISIT /stable.html\nSCREENSHOT second\n");
     for name in ["first", "second"] {
         let output = run_whirl(&dir, &[
-            "--base",
-            &server.base(),
+            "-O",
+            &server.app_url_option(),
             "--video",
             "--report-json",
             &format!("{name}.json"),
@@ -2832,12 +3045,11 @@ fn combined_report_keeps_embedded_media_and_missing_scenarios_offline() {
     let url = reqwest::Url::from_file_path(dir.path.join("combined.html")).expect("file URL");
     let source = format!(
         r#"VISIT "{url}"
-[Asserts]
-css:article count == 3
-css:article[data-status=not-run] count == 1
-css:article[data-status=passed] count == 2
-css:video count == 2
-css:img count == 2
+ASSERT css:article count == 3
+ASSERT css:article[data-status=not-run] count == 1
+ASSERT css:article[data-status=passed] count == 2
+ASSERT css:video count == 2
+ASSERT css:img count == 2
 EVAL "for (const video of document.querySelectorAll('video')) {{ await video.play(); if (!video.videoWidth) throw new Error('No video pixels'); video.pause(); }}"
 EVAL "for (const details of document.querySelectorAll('details')) details.open = true; for (const img of document.images) {{ img.loading = 'eager'; await img.decode(); }}"
 EVAL "for (const link of document.querySelectorAll('a')) if (!document.getElementById(link.hash.slice(1))) throw new Error('Broken report link'); if (document.documentElement.scrollWidth > innerWidth) throw new Error('Report overflows viewport')"
@@ -2941,7 +3153,7 @@ fn inspect_recording(dir: &TestDir, video: &Path, label: &str) -> (usize, usize,
 /// A flow that shows the animated page for about two seconds.
 const ANIMATED_FLOW: &str = "VISIT /animate.html\n\
     EVAL \"await new Promise((resolve) => setTimeout(resolve, 2000))\"\n\
-    [Asserts]\ntitle == \"Animated Page\"\n";
+    ASSERT title == \"Animated Page\"\n";
 
 #[test]
 fn chromium_video_records_at_60_fps_by_default_and_at_the_requested_rate() {
@@ -2953,8 +3165,8 @@ fn chromium_video_records_at_60_fps_by_default_and_at_the_requested_rate() {
     // The default rate, with tracing on as well: both screencasts share
     // the page.
     let output = run_whirl(&dir, &[
-        "--base",
-        &server.base(),
+        "-O",
+        &server.app_url_option(),
         "--video",
         "--trace",
         "--report-json",
@@ -2972,8 +3184,11 @@ fn chromium_video_records_at_60_fps_by_default_and_at_the_requested_rate() {
         (54.0..=66.0).contains(&rate),
         "expected about 60 fps, got {frames} frames over {duration:.2}s = {rate:.1} fps"
     );
+    // Chrome supplies fewer distinct frames on a busy machine, and the
+    // recorder repeats the last one to keep 60 fps; a still page gives one
+    // or two. A quarter shows that the animation was recorded.
     assert!(
-        distinct * 2 >= frames,
+        distinct * 4 >= frames,
         "an animating page should record distinct frames, got {distinct} of {frames}"
     );
     let report: serde_json::Value = serde_json::from_str(
@@ -2989,8 +3204,8 @@ fn chromium_video_records_at_60_fps_by_default_and_at_the_requested_rate() {
 
     // An explicit rate.
     let output = run_whirl(&dir, &[
-        "--base",
-        &server.base(),
+        "-O",
+        &server.app_url_option(),
         "--video",
         "--video-fps",
         "30",
@@ -3007,7 +3222,7 @@ fn chromium_video_records_at_60_fps_by_default_and_at_the_requested_rate() {
         "expected about 30 fps, got {frames} frames over {duration:.2}s = {rate:.1} fps"
     );
     assert!(
-        distinct * 2 >= frames,
+        distinct * 4 >= frames,
         "got {distinct} distinct of {frames}"
     );
     let report: serde_json::Value = serde_json::from_str(
@@ -3031,7 +3246,12 @@ fn a_cancelled_flow_with_video_leaves_no_recorder_behind() {
         "hang.whirl",
         "[Options]\nentry-timeout: 1s\n\nVISIT /animate.html\nEVAL \"new Promise(()=>{})\" @30s\n",
     );
-    let output = run_whirl(&dir, &["--base", &server.base(), "--video", "hang.whirl"]);
+    let output = run_whirl(&dir, &[
+        "-O",
+        &server.app_url_option(),
+        "--video",
+        "hang.whirl",
+    ]);
     let stdout = stdout_text(&output);
     assert_eq!(exit_code(&output), 1, "stdout:\n{stdout}");
     assert!(stdout.contains("entry timeout"), "stdout:\n{stdout}");
@@ -3057,14 +3277,8 @@ fn short_video_flows_on_still_pages_pass_with_a_recording() {
     let server = SiteServer::start();
     let dir = TestDir::new();
     let flows = [
-        (
-            "http-1",
-            "HTTP GET /stable.html\n[Asserts]\nstatus == 200\n",
-        ),
-        (
-            "http-2",
-            "HTTP GET /stable.html\n[Asserts]\nstatus == 200\n",
-        ),
+        ("http-1", "HTTP GET /stable.html\nASSERT status == 200\n"),
+        ("http-2", "HTTP GET /stable.html\nASSERT status == 200\n"),
         ("visit-1", "VISIT /stable.html\n"),
         ("visit-2", "VISIT /stable.html\n"),
     ];
@@ -3073,8 +3287,8 @@ fn short_video_flows_on_still_pages_pass_with_a_recording() {
     }
     // One job runs every flow in one warm browser.
     let output = run_whirl(&dir, &[
-        "--base",
-        &server.base(),
+        "-O",
+        &server.app_url_option(),
         "--video",
         "--jobs",
         "1",
@@ -3224,8 +3438,8 @@ fn an_explicit_video_fps_on_firefox_warns_and_records_at_the_engine_rate() {
     let dir = TestDir::new();
     dir.file("firefox.whirl", ANIMATED_FLOW);
     let output = run_whirl(&dir, &[
-        "--base",
-        &server.base(),
+        "-O",
+        &server.app_url_option(),
         "--browser",
         "firefox",
         "--video",
@@ -3260,30 +3474,28 @@ fn page_checks_filter_retry_and_read_typed_values() {
     dir.file(
         "checks.whirl",
         r#"VISIT /checks.html?page=2
-[Asserts]
-url urlQueryParam page == 2
-title == Checks
-css:.row count == 3
-css:.row >> nth:0 text == One
-css:.row >> nth:-1 text == Three
-testid:price text replaceRegex /[^0-9.]/ "" toFloat > 1000
-testid:late text regex /Order #(\w+)/ == A42
-eval "window.dataLayer" json:$[?@.event=='purchase'] count == 1
-eval "window.dataLayer.length" >= 1
-testid:home attr:aria-current != page
-testid:current attr:aria-current == page
-testid:current attr:href urlQueryParam q == café
-testid:missing text not exists
-testid:styled text == "Total 5"
-testid:shadow text == "Inside shadow"
-[Captures]
-order: testid:late text regex /Order #(\w+)/
-rows: css:.row count
+ASSERT url urlQueryParam page == 2
+ASSERT title == Checks
+ASSERT css:.row count == 3
+ASSERT css:.row >> nth:0 text == One
+ASSERT css:.row >> nth:-1 text == Three
+ASSERT testid:price text replaceRegex /[^0-9.]/ "" toFloat > 1000
+ASSERT testid:late text regex /Order #(\w+)/ == A42
+ASSERT eval "window.dataLayer" json:$[?@.event=='purchase'] count == 1
+ASSERT eval "window.dataLayer.length" >= 1
+ASSERT testid:home attr:aria-current != page
+ASSERT testid:current attr:aria-current == page
+ASSERT testid:current attr:href urlQueryParam q == café
+ASSERT testid:missing text not exists
+ASSERT testid:styled text == "Total 5"
+ASSERT testid:shadow text == "Inside shadow"
+CAPTURE order: testid:late text regex /Order #(\w+)/
+CAPTURE rows: css:.row count
 VISIT /checks.html?order={{order}}&rows={{rows}}
 PAGE /checks.html?order=A42&rows=3
 "#,
     );
-    let output = run_whirl(&dir, &["--base", &site.base(), "checks.whirl"]);
+    let output = run_whirl(&dir, &["-O", &site.app_url_option(), "checks.whirl"]);
     assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
 }
 
@@ -3302,13 +3514,13 @@ fn check_failures_report_their_codes() {
         let dir = TestDir::new();
         dir.file(
             "fail.whirl",
-            &format!("VISIT /checks.html\n[Asserts]\n{check}\n"),
+            &format!("VISIT /checks.html\nASSERT {check}\n"),
         );
         let output = run_whirl(&dir, &[
-            "--base",
-            &site.base(),
-            "--step-timeout",
-            "600ms",
+            "-O",
+            &site.app_url_option(),
+            "-O",
+            "step-timeout=600ms",
             "--report-json",
             "report.json",
             "fail.whirl",
@@ -3336,33 +3548,30 @@ fn http_checks_read_exact_numbers_locations_and_bodies() {
     dir.file(
         "http.whirl",
         r#"HTTP GET /api/big
-[Asserts]
-status == 200
-json:$.id == 1234567890123456789
-json:$.id != 1234567890123456788
-json:$.id isInteger
-json:$.price isFloat
-json:$.price == 1
-json:$.tags == ["a", "b"]
-json:$.tags contains b
-json:$.when toDate "%+" dateFormat %Y == 2026
-body contains 1234567890123456789
-header:content-type startsWith application/json
-[Captures]
-id: json:$.id
+ASSERT status == 200
+ASSERT json:$.id == 1234567890123456789
+ASSERT json:$.id != 1234567890123456788
+ASSERT json:$.id isInteger
+ASSERT json:$.price isFloat
+ASSERT json:$.price == 1
+ASSERT json:$.tags == ["a", "b"]
+ASSERT json:$.tags contains b
+ASSERT json:$.when toDate "%+" dateFormat %Y == 2026
+ASSERT body contains 1234567890123456789
+ASSERT header:content-type startsWith application/json
+CAPTURE id: json:$.id
 HTTP GET /api/redirect
-[Asserts]
-status == 302
-location endsWith /checks.html?from=redirect
-location startsWith http
-location urlQueryParam from == redirect
+ASSERT status == 302
+ASSERT location endsWith /checks.html?from=redirect
+ASSERT location startsWith http
+ASSERT location urlQueryParam from == redirect
 VISIT /checks.html?id={{id}}
 PAGE /checks.html?id=1234567890123456789
 "#,
     );
     let output = run_whirl(&dir, &[
-        "--base",
-        &site.base(),
+        "-O",
+        &site.app_url_option(),
         "--report-json",
         "report.json",
         "http.whirl",
@@ -3379,37 +3588,33 @@ fn xpath_checks_read_xml_and_html() {
     dir.file(
         "xpath.whirl",
         r#"HTTP GET /api/feed
-[Asserts]
-status == 200
-xpath:"string(//_:feed/_:title)" == "Café news"
-xpath://_:entry count == 2
-xpath:"count(//_:entry)" == 2
-xpath:"count(//_:entry)" isInteger
-xpath://_:entry exists
-xpath://_:missing not exists
-xpath:"boolean(//media:thumbnail)" == true
-bytes xpath:"string(//_:entry[2]/_:title)" == Two
-body xpath:"//media:thumbnail/@url" count == 1
-[Captures]
-first: xpath:"string(//_:entry[1]/_:title)"
-entries: xpath:"count(//_:entry)"
+ASSERT status == 200
+ASSERT xpath:"string(//_:feed/_:title)" == "Café news"
+ASSERT xpath://_:entry count == 2
+ASSERT xpath:"count(//_:entry)" == 2
+ASSERT xpath:"count(//_:entry)" isInteger
+ASSERT xpath://_:entry exists
+ASSERT xpath://_:missing not exists
+ASSERT xpath:"boolean(//media:thumbnail)" == true
+ASSERT bytes xpath:"string(//_:entry[2]/_:title)" == Two
+ASSERT body xpath:"//media:thumbnail/@url" count == 1
+CAPTURE first: xpath:"string(//_:entry[1]/_:title)"
+CAPTURE entries: xpath:"count(//_:entry)"
 HTTP GET /checks.html
-[Asserts]
-status == 200
-xpath:"string(//h1)" == Checks
-xpath://li count == 3
-xpath:"normalize-space(//p[@data-testid='price'])" == "Total: $1,299.00"
-xpath:"string(//li[last()])" == {{last}}
+ASSERT status == 200
+ASSERT xpath:"string(//h1)" == Checks
+ASSERT xpath://li count == 3
+ASSERT xpath:"normalize-space(//p[@data-testid='price'])" == "Total: $1,299.00"
+ASSERT xpath:"string(//li[last()])" == {{last}}
 VISIT /checks.html
 PAGE /checks.html
-[Asserts]
-eval "document.querySelector('ul').outerHTML" xpath:"count(//li[@class='row'])" == 3
-testid:current attr:href xpath:"count(//a)" == 0
+ASSERT eval "document.querySelector('ul').outerHTML" xpath:"count(//li[@class='row'])" == 3
+ASSERT testid:current attr:href xpath:"count(//a)" == 0
 "#,
     );
     let output = run_whirl(&dir, &[
-        "--base",
-        &site.base(),
+        "-O",
+        &site.app_url_option(),
         "--var",
         "last=Three",
         "--report-json",
@@ -3437,19 +3642,17 @@ fn response_bodies_keep_their_bytes_after_the_browser_decodes_them() {
     dir.file(
         "latin.whirl",
         r#"HTTP GET /api/latin
-[Asserts]
-status == 200
-bytes toHex == 636166e9
-body == café
+ASSERT status == 200
+ASSERT bytes toHex == 636166e9
+ASSERT body == café
 VISIT /checks.html
 EVAL "await fetch('/api/latin').then(r => r.arrayBuffer())"
 RESPONSE latin GET /api/latin
-[Asserts]
-response:latin bytes toHex == 636166e9
-response:latin body == café
+ASSERT response:latin bytes toHex == 636166e9
+ASSERT response:latin body == café
 "#,
     );
-    let output = run_whirl(&dir, &["--base", &site.base(), "latin.whirl"]);
+    let output = run_whirl(&dir, &["-O", &site.app_url_option(), "latin.whirl"]);
     assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
 }
 
@@ -3469,11 +3672,11 @@ fn xpath_failures_report_their_codes() {
         let dir = TestDir::new();
         dir.file(
             "fail.whirl",
-            &format!("HTTP GET {request}\n[Asserts]\nstatus == 200\n{check}\n"),
+            &format!("HTTP GET {request}\nASSERT status == 200\nASSERT {check}\n"),
         );
         let output = run_whirl(&dir, &[
-            "--base",
-            &site.base(),
+            "-O",
+            &site.app_url_option(),
             "--report-json",
             "report.json",
             "fail.whirl",
@@ -3501,31 +3704,27 @@ fn captures_and_input_variables_keep_their_types() {
     dir.file(
         "typed.whirl",
         r#"HTTP GET /api/big
-[Asserts]
-status == 200
-[Captures]
-id: json:$.id
-tags: json:$.tags
-price: json:$.price
+ASSERT status == 200
+CAPTURE id: json:$.id
+CAPTURE tags: json:$.tags
+CAPTURE price: json:$.price
 HTTP GET /api/big
-[Asserts]
-status == 200
-json:$.id == {{id}}
-json:$.tags == {{tags}}
-json:$.price == {{price}}
-json:$.id != "{{id}}"
-json:$.tags contains {{letter}}
+ASSERT status == 200
+ASSERT json:$.id == {{id}}
+ASSERT json:$.tags == {{tags}}
+ASSERT json:$.price == {{price}}
+ASSERT json:$.id != "{{id}}"
+ASSERT json:$.tags contains {{letter}}
 HTTP POST /api/http-check
 Authorization: "Bearer whirl-test-key"
 {"count": {{count}}, "zip": {{zip}}, "id": {{id}}, "label": "n={{count}}"}
-[Asserts]
-status == 200
-json:$.body == "{\"count\": 2, \"zip\": \"007\", \"id\": 1234567890123456789, \"label\": \"n=2\"}"
+ASSERT status == 200
+ASSERT json:$.body == "{\"count\": 2, \"zip\": \"007\", \"id\": 1234567890123456789, \"label\": \"n=2\"}"
 "#,
     );
     let output = run_whirl(&dir, &[
-        "--base",
-        &site.base(),
+        "-O",
+        &site.app_url_option(),
         "--var",
         "count=2",
         "--var",
@@ -3561,4 +3760,1146 @@ json:$.body == "{\"count\": 2, \"zip\": \"007\", \"id\": 1234567890123456789, \"
     );
     let html = fs::read_to_string(dir.path.join("report.html")).expect("HTML exists");
     assert!(html.contains("<small>number</small>"), "{html}");
+}
+
+#[test]
+fn snapshot_count_percent_threshold_and_dimension_boundaries() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file(
+        "snap.whirl",
+        "[Options]\nviewport: 100x100\nVISIT /snapshot.html\nSNAPSHOT pixels\n",
+    );
+    let output = run_whirl(&dir, &[
+        "-O",
+        &server.app_url_option(),
+        "--update-snapshots",
+        "snap.whirl",
+    ]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    // The fixture changes a solid 10x10 rectangle in a 100x100 image.
+    for (query, limit, threshold, expected) in [
+        ("a", "100", "0.2", 0),
+        ("a", "99", "0.2", 1),
+        ("a", "1%", "0.2", 0),
+        ("a", "0.999%", "0.2", 1),
+        ("a", "0", "0.2", 1),
+        ("a", "100%", "0.2", 0),
+        ("a&color=%23f0f0f0", "0", "0", 1),
+        ("a&color=%23f0f0f0", "0", "0.2", 0),
+        ("a&grow", "100%", "1", 1),
+    ] {
+        dir.file("snap.whirl", &format!("[Options]\nviewport: 100x100\nsnapshot-max-diff: 100%\nsnapshot-pixel-threshold: 1\nVISIT /snapshot.html?{query}\nSNAPSHOT pixels @1s\nsnapshot-max-diff: {limit}\nsnapshot-pixel-threshold: {threshold}\n"));
+        let output = run_whirl(&dir, &[
+            "-O",
+            &server.app_url_option(),
+            "--report-json",
+            "report.json",
+            "--report-html",
+            "report.html",
+            "snap.whirl",
+        ]);
+        assert_eq!(
+            exit_code(&output),
+            expected,
+            "{query}, {limit}, {threshold}: {}",
+            stdout_text(&output)
+        );
+        let report: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(dir.path.join("report.json")).expect("report"),
+        )
+        .expect("JSON");
+        let step = &report["files"][0]["entries"][0]["steps"][1];
+        assert_eq!(step["snapshot"]["maxDiff"], limit);
+        assert_eq!(step["snapshot"]["pixelThreshold"], threshold);
+        assert!(
+            step["text"]
+                .as_str()
+                .expect("text")
+                .contains(&format!("\nsnapshot-max-diff: {limit}"))
+        );
+        let html = fs::read_to_string(dir.path.join("report.html")).expect("HTML");
+        assert!(html.contains("Snapshot settings"));
+        if expected == 1 {
+            assert_eq!(step["error"]["code"], "snapshot-mismatch");
+            for file in ["snapshot-pixels-actual.png", "snapshot-pixels-diff.png"] {
+                assert!(dir.artifacts().join("snap").join(file).is_file());
+            }
+        }
+    }
+}
+
+#[test]
+fn snapshot_masks_replace_clear_and_cover_every_capture() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    let defaults = "[Options]\nviewport: 100x100\nsnapshot-mask: testid:patch\nsnapshot-mask: css:.missing\nsnapshot-mask: css:.hidden\nsnapshot-max-diff: 0\n";
+    let source = |query: &str, local: &str| {
+        format!(
+            "{defaults}VISIT /snapshot.html?{query}\nSNAPSHOT masked @1s\n{local}SCREENSHOT raw\n"
+        )
+    };
+    dir.file("mask.whirl", &source("", ""));
+    let output = run_whirl(&dir, &[
+        "-O",
+        &server.app_url_option(),
+        "--update-snapshots",
+        "mask.whirl",
+    ]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    let baseline = dir.path.join(format!(
+        "mask.whirl-snapshots/masked-chromium-{}.png",
+        platform_tag()
+    ));
+    let masked = fs::read(&baseline).expect("baseline");
+    assert_ne!(
+        masked,
+        fs::read(dir.artifacts().join("mask/raw.png")).expect("raw screenshot")
+    );
+    // One locator masks multiple elements; an absent locator does not wait.
+    // Replacement on every capture must still settle and compare successfully.
+    for query in ["a&b", "replace&b", "hidden"] {
+        dir.file("mask.whirl", &source(query, ""));
+        let output = run_whirl(&dir, &["-O", &server.app_url_option(), "mask.whirl"]);
+        assert_eq!(exit_code(&output), 0, "{query}: {}", stdout_text(&output));
+    }
+    // Moving a masked box still changes the image. The saved actual must
+    // match a fresh baseline made from that same page with the same masks.
+    dir.file("mask.whirl", &source("a&b&move", ""));
+    let output = run_whirl(&dir, &["-O", &server.app_url_option(), "mask.whirl"]);
+    assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
+    let actual = fs::read(dir.artifacts().join("mask/snapshot-masked-actual.png")).expect("actual");
+    let output = run_whirl(&dir, &[
+        "-O",
+        &server.app_url_option(),
+        "--update-snapshots",
+        "mask.whirl",
+    ]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    assert_eq!(actual, fs::read(&baseline).expect("updated baseline"));
+    // Build a baseline with a local list. A change to the inherited mask's
+    // other element fails, proving replacement rather than list appending.
+    for local in ["snapshot-mask: css:.b\n", "snapshot-mask: none\n"] {
+        dir.file("mask.whirl", &source("", local));
+        let output = run_whirl(&dir, &[
+            "-O",
+            &server.app_url_option(),
+            "--update-snapshots",
+            "mask.whirl",
+        ]);
+        assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+        dir.file("mask.whirl", &source("a", local));
+        let output = run_whirl(&dir, &["-O", &server.app_url_option(), "mask.whirl"]);
+        assert_eq!(exit_code(&output), 1, "{local}: {}", stdout_text(&output));
+    }
+}
+
+#[test]
+fn snapshot_options_resolve_at_their_scope_and_do_not_leak() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    let source = "[Options]\nviewport: 100x100\nsnapshot-mask: css:.{{mask}}\nsnapshot-max-diff: {{limit}}\nsnapshot-pixel-threshold: {{threshold}}\nVISIT /snapshot.html\nCAPTURE limit: eval \"'0.125%'\"\nCAPTURE mask: eval \"'b'\"\nSNAPSHOT local\nsnapshot-mask: css:.{{mask}}\nsnapshot-max-diff: {{limit}}\nSNAPSHOT inherited\n";
+    dir.file("scope.whirl", source);
+    let output = run_whirl(&dir, &[
+        "-O",
+        &server.app_url_option(),
+        "--var",
+        "mask=a",
+        "--var",
+        "limit=100",
+        "--var",
+        "threshold=0.2",
+        "--update-snapshots",
+        "--report-json",
+        "report.json",
+        "scope.whirl",
+    ]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    let report: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(dir.path.join("report.json")).expect("report"))
+            .expect("JSON");
+    let steps = &report["files"][0]["entries"][1]["steps"];
+    assert_eq!(
+        steps[0]["snapshot"],
+        serde_json::json!({"masks":["css:.b"],"maxDiff":"0.125%","pixelThreshold":"0.2"})
+    );
+    assert_eq!(
+        steps[1]["snapshot"],
+        serde_json::json!({"masks":["css:.a"],"maxDiff":"100","pixelThreshold":"0.2"})
+    );
+    // Invalid interpolated file settings stop setup; invalid local settings
+    // fail only that snapshot, after VISIT has run.
+    for (prefix, expected_entry) in [
+        (
+            "[Options]\nsnapshot-max-diff: {{limit}}\nVISIT /snapshot.html\nSNAPSHOT invalid\n",
+            "[setup]",
+        ),
+        (
+            "VISIT /snapshot.html\nSNAPSHOT invalid\nsnapshot-max-diff: {{limit}}\n",
+            "",
+        ),
+    ] {
+        dir.file("invalid.whirl", prefix);
+        let output = run_whirl(&dir, &[
+            "-O",
+            &server.app_url_option(),
+            "--var",
+            "limit=-1",
+            "--report-json",
+            "invalid.json",
+            "invalid.whirl",
+        ]);
+        assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
+        let report: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(dir.path.join("invalid.json")).expect("report"),
+        )
+        .expect("JSON");
+        let entry = &report["files"][0]["entries"][0];
+        if expected_entry == "[setup]" {
+            assert_eq!(entry["name"], expected_entry);
+        } else {
+            assert_eq!(entry["steps"][0]["status"], "passed");
+            assert_eq!(entry["steps"][1]["error"]["code"], "variable-resolution");
+        }
+    }
+}
+
+#[test]
+fn snapshot_masks_use_the_selected_tab_and_strict_frame_owners() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    let source = |script: &str, mask: &str| {
+        format!(
+            "[Options]\nviewport: 200x200\nVISIT /popups.html\nCLICK button:\"Pay with provider\"\nPOPUP extra\nWINDOW extra\nVISIT /snapshot-frames.html\nASSERT frame:iframe >> nth:0 >> testid:patch >> nth:0 visible\nASSERT frame:iframe >> nth:1 >> testid:patch >> nth:0 visible\nEVAL \"{script}\"\nSNAPSHOT frames @2s\nsnapshot-mask: {mask}\n"
+        )
+    };
+    let mask = "frame:iframe >> nth:0 >> testid:patch";
+    dir.file("frames.whirl", &source("void 0", mask));
+    let output = run_whirl(&dir, &[
+        "-O",
+        &server.app_url_option(),
+        "--update-snapshots",
+        "frames.whirl",
+    ]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    for (script, mask, expected) in [
+        (
+            "document.querySelectorAll('iframe')[0].contentDocument.getElementById('a').style.background = 'black'",
+            mask,
+            0,
+        ),
+        (
+            "document.querySelectorAll('iframe')[1].contentDocument.getElementById('a').style.background = 'black'",
+            mask,
+            1,
+        ),
+        ("void 0", "frame:iframe >> testid:patch", 1),
+        ("void 0", "css:[", 3),
+    ] {
+        dir.file("frames.whirl", &source(script, mask));
+        let output = run_whirl(&dir, &[
+            "-O",
+            &server.app_url_option(),
+            "--report-json",
+            "report.json",
+            "frames.whirl",
+        ]);
+        assert_eq!(
+            exit_code(&output),
+            expected,
+            "{script}, {mask}: {}",
+            stdout_text(&output)
+        );
+        if mask == "frame:iframe >> testid:patch" {
+            let report: serde_json::Value = serde_json::from_str(
+                &fs::read_to_string(dir.path.join("report.json")).expect("report"),
+            )
+            .expect("JSON");
+            assert_eq!(
+                report["files"][0]["entries"][1]["steps"][1]["error"]["code"],
+                "strictness"
+            );
+        }
+    }
+}
+
+/// Width and height from a PNG's IHDR chunk.
+fn png_size(path: &Path) -> (u32, u32) {
+    let bytes = fs::read(path).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+    let read = |offset: usize| {
+        let field: [u8; 4] = bytes
+            .get(offset..offset + 4)
+            .and_then(|field| field.try_into().ok())
+            .expect("a PNG header");
+        u32::from_be_bytes(field)
+    };
+    (read(16), read(20))
+}
+
+fn read_report(path: &Path) -> serde_json::Value {
+    serde_json::from_str(&fs::read_to_string(path).expect("report")).expect("JSON")
+}
+
+/// A flow that snapshots the 20x20 target of `snapshot-element.html`.
+fn element_flow(query: &str, headline: &str, local: &str) -> String {
+    format!(
+        "[Options]\nviewport: 100x100\nVISIT /snapshot-element.html?{query}\n{headline}\n{local}"
+    )
+}
+
+#[test]
+fn element_snapshots_compare_only_the_target_crop() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    let flow = |query: &str| {
+        format!(
+            "{}SNAPSHOT page\n",
+            element_flow(query, "SNAPSHOT cart testid:target @2s", "")
+        )
+    };
+    dir.file("crop.whirl", &flow(""));
+    let output = run_whirl(&dir, &[
+        "-O",
+        &server.app_url_option(),
+        "--update-snapshots",
+        "crop.whirl",
+    ]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    let baselines = dir.path.join("crop.whirl-snapshots");
+    let platform = platform_tag();
+    assert_eq!(
+        png_size(&baselines.join(format!("cart-chromium-{platform}.png"))),
+        (20, 20)
+    );
+    // A name-only snapshot keeps capturing the full page.
+    assert_eq!(
+        png_size(&baselines.join(format!("page-chromium-{platform}.png"))),
+        (100, 100)
+    );
+
+    // A change outside the target fails only the full-page snapshot.
+    dir.file(
+        "crop.whirl",
+        &element_flow("outside", "SNAPSHOT cart testid:target @2s", ""),
+    );
+    let output = run_whirl(&dir, &[
+        "-O",
+        &server.app_url_option(),
+        "--report-json",
+        "report.json",
+        "--report-html",
+        "report.html",
+        "crop.whirl",
+    ]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    let report = read_report(&dir.path.join("report.json"));
+    let snapshot = &report["files"][0]["entries"][0]["steps"][1]["snapshot"];
+    assert_eq!(snapshot["target"], "testid:target");
+    let html = fs::read_to_string(dir.path.join("report.html")).expect("HTML");
+    assert!(html.contains("<dd>Element <code>testid:target</code></dd>"));
+
+    // A change inside the target fails with element-sized artifacts.
+    dir.file("crop.whirl", &flow("dot"));
+    let output = run_whirl(&dir, &[
+        "-O",
+        &server.app_url_option(),
+        "--report-json",
+        "report.json",
+        "crop.whirl",
+    ]);
+    assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
+    let report = read_report(&dir.path.join("report.json"));
+    let step = &report["files"][0]["entries"][0]["steps"][1];
+    assert_eq!(step["error"]["code"], "snapshot-mismatch");
+    for file in ["snapshot-cart-actual.png", "snapshot-cart-diff.png"] {
+        assert_eq!(png_size(&dir.artifacts().join("crop").join(file)), (20, 20));
+    }
+
+    // A resized target fails even when every pixel may differ.
+    dir.file(
+        "crop.whirl",
+        &element_flow(
+            "wide",
+            "SNAPSHOT cart testid:target @2s",
+            "snapshot-max-diff: 100%\nsnapshot-pixel-threshold: 1\n",
+        ),
+    );
+    let output = run_whirl(&dir, &["-O", &server.app_url_option(), "crop.whirl"]);
+    assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
+}
+
+#[test]
+fn element_snapshot_tolerances_count_the_crop_pixels() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file(
+        "tolerance.whirl",
+        &element_flow("", "SNAPSHOT cart testid:target", ""),
+    );
+    let output = run_whirl(&dir, &[
+        "-O",
+        &server.app_url_option(),
+        "--update-snapshots",
+        "tolerance.whirl",
+    ]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    // The dot is 10 of the target's 400 pixels: 2.5% of the crop, but
+    // only 0.1% of the 100x100 page.
+    for (query, limit, threshold, expected) in [
+        ("dot", "10", "0.2", 0),
+        ("dot", "9", "0.2", 1),
+        ("dot", "2.5%", "0.2", 0),
+        ("dot", "2.49%", "0.2", 1),
+        ("dot", "0.1%", "0.2", 1),
+        ("dot=0b8bff", "0", "0", 1),
+        ("dot=0b8bff", "0", "0.2", 0),
+    ] {
+        dir.file(
+            "tolerance.whirl",
+            &element_flow(
+                query,
+                "SNAPSHOT cart testid:target @1s",
+                &format!("snapshot-max-diff: {limit}\nsnapshot-pixel-threshold: {threshold}\n"),
+            ),
+        );
+        let output = run_whirl(&dir, &["-O", &server.app_url_option(), "tolerance.whirl"]);
+        assert_eq!(
+            exit_code(&output),
+            expected,
+            "{query}, {limit}, {threshold}: {}",
+            stdout_text(&output)
+        );
+    }
+}
+
+#[test]
+fn element_snapshot_targets_are_strict_and_wait_within_the_step() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file(
+        "strict.whirl",
+        &element_flow("", "SNAPSHOT cart testid:target", ""),
+    );
+    let output = run_whirl(&dir, &[
+        "-O",
+        &server.app_url_option(),
+        "--update-snapshots",
+        "strict.whirl",
+    ]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    // A target that appears later passes; one that never shows times out.
+    for (query, expected, code) in [
+        ("late", 0, None),
+        ("missing", 1, Some("timeout")),
+        ("hidden", 1, Some("timeout")),
+        ("dup", 1, Some("strictness")),
+    ] {
+        dir.file(
+            "strict.whirl",
+            &element_flow(query, "SNAPSHOT cart testid:target @2s", ""),
+        );
+        let output = run_whirl(&dir, &[
+            "-O",
+            &server.app_url_option(),
+            "--report-json",
+            "report.json",
+            "strict.whirl",
+        ]);
+        assert_eq!(
+            exit_code(&output),
+            expected,
+            "{query}: {}",
+            stdout_text(&output)
+        );
+        if let Some(code) = code {
+            let report = read_report(&dir.path.join("report.json"));
+            let step = &report["files"][0]["entries"][0]["steps"][1];
+            assert_eq!(step["error"]["code"], code, "{query}");
+        }
+    }
+    // Two targets and two frame owners fail at once, not at the timeout.
+    for (page, target) in [
+        ("snapshot-element.html?dup", "testid:target"),
+        ("snapshot-frames.html", "frame:iframe >> css:\"#a\""),
+    ] {
+        dir.file(
+            "strict.whirl",
+            &format!("VISIT /{page}\nSNAPSHOT many {target} @20s\n"),
+        );
+        let output = run_whirl(&dir, &[
+            "-O",
+            &server.app_url_option(),
+            "--update-snapshots",
+            "--report-json",
+            "report.json",
+            "strict.whirl",
+        ]);
+        assert_eq!(exit_code(&output), 1, "{target}: {}", stdout_text(&output));
+        let report = read_report(&dir.path.join("report.json"));
+        let step = &report["files"][0]["entries"][0]["steps"][1];
+        assert_eq!(step["error"]["code"], "strictness", "{target}");
+        assert!(
+            step["durationMs"].as_u64().expect("duration") < 10_000,
+            "{target}: {step}"
+        );
+    }
+}
+
+#[test]
+fn element_snapshots_scroll_to_and_capture_the_whole_element() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    let platform = platform_tag();
+    // An offscreen target scrolls into view, a target taller than the
+    // viewport keeps its full height, and a scroll box keeps only its
+    // visible content.
+    for (query, size) in [
+        ("offscreen", (20, 20)),
+        ("tall", (20, 300)),
+        ("scrollbox", (20, 20)),
+    ] {
+        dir.file(
+            "scroll.whirl",
+            &element_flow(query, &format!("SNAPSHOT {query} testid:target"), ""),
+        );
+        for args in [&["--update-snapshots"][..], &[]] {
+            let output = run_whirl(
+                &dir,
+                &[&["-O", &server.app_url_option()][..], args, &[
+                    "scroll.whirl",
+                ]]
+                .concat(),
+            );
+            assert_eq!(exit_code(&output), 0, "{query}: {}", stdout_text(&output));
+        }
+        let baseline = dir.path.join(format!(
+            "scroll.whirl-snapshots/{query}-chromium-{platform}.png"
+        ));
+        assert_eq!(png_size(&baseline), size, "{query}");
+    }
+}
+
+#[test]
+fn element_snapshots_settle_on_the_target_and_never_pass_on_stale_pixels() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    let app_url = server.app_url_option();
+    let run = |query: &str, update: bool| {
+        dir.file(
+            "settle.whirl",
+            &element_flow(query, "SNAPSHOT cart testid:target @5s", ""),
+        );
+        let mut args = vec!["-O", &app_url, "--report-json", "report.json"];
+        if update {
+            args.push("--update-snapshots");
+        }
+        args.push("settle.whirl");
+        let output = run_whirl(&dir, &args);
+        let report = read_report(&dir.path.join("report.json"));
+        (
+            exit_code(&output),
+            report["files"][0]["entries"][0]["steps"][1].clone(),
+        )
+    };
+    // Activity outside the crop does not stop the target from settling,
+    // and a target replaced during captures is found again.
+    for query in ["animate", "replace"] {
+        for update in [true, false] {
+            let (code, step) = run(query, update);
+            assert_eq!(code, 0, "{query}, {update}: {step}");
+        }
+    }
+    let baseline = dir.path.join(format!(
+        "settle.whirl-snapshots/cart-chromium-{}.png",
+        platform_tag()
+    ));
+    let kept = fs::read(&baseline).expect("baseline");
+    // A target that never settles cannot become a baseline, and the failed
+    // update keeps the old one.
+    let (code, step) = run("flicker", true);
+    assert_eq!(code, 1, "{step}");
+    assert_eq!(step["error"]["code"], "timeout");
+    assert_eq!(fs::read(&baseline).expect("baseline"), kept);
+
+    // After a stable mismatch, a target that disappears fails as a timeout
+    // without claiming the old pixels as the current element.
+    let actual = dir.artifacts().join("settle/snapshot-cart-actual.png");
+    let (code, step) = run("dot&vanish", false);
+    assert_eq!(code, 1, "{step}");
+    assert_eq!(step["error"]["code"], "timeout", "{step}");
+    assert!(
+        !actual.exists(),
+        "a vanished target must not save an actual image"
+    );
+    // A target that is still visible when the late capture times out keeps
+    // the earlier comparison result.
+    let (code, step) = run("dot&drift", false);
+    assert_eq!(code, 1, "{step}");
+    assert_eq!(step["error"]["code"], "snapshot-mismatch", "{step}");
+    assert_eq!(png_size(&actual), (20, 20));
+}
+
+#[test]
+fn element_snapshot_masks_resolve_from_the_page() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    // Masks outside the crop add nothing; a mask chained through the
+    // target hides its dot; masking the target covers the whole crop.
+    for (name, masks, query, expected) in [
+        ("outside", "snapshot-mask: testid:outside\n", "dot", 1),
+        (
+            "chained",
+            "snapshot-mask: testid:target >> testid:dot\n",
+            "dot",
+            0,
+        ),
+        ("chained", "snapshot-mask: none\n", "dot", 1),
+        ("whole", "snapshot-mask: testid:target\n", "dot&outside", 0),
+        (
+            "absent",
+            "snapshot-mask: css:.missing\nsnapshot-mask: css:div\n",
+            "dot",
+            0,
+        ),
+    ] {
+        dir.file(
+            "mask.whirl",
+            &element_flow("", &format!("SNAPSHOT {name} testid:target"), masks),
+        );
+        let output = run_whirl(&dir, &[
+            "-O",
+            &server.app_url_option(),
+            "--update-snapshots",
+            "mask.whirl",
+        ]);
+        assert_eq!(exit_code(&output), 0, "{name}: {}", stdout_text(&output));
+        dir.file(
+            "mask.whirl",
+            &element_flow(query, &format!("SNAPSHOT {name} testid:target @1s"), masks),
+        );
+        let output = run_whirl(&dir, &["-O", &server.app_url_option(), "mask.whirl"]);
+        assert_eq!(
+            exit_code(&output),
+            expected,
+            "{name}, {masks}: {}",
+            stdout_text(&output)
+        );
+    }
+    // File masks apply to element snapshots too.
+    let flow = |query: &str| {
+        format!(
+            "[Options]\nviewport: 100x100\nsnapshot-mask: testid:dot\nVISIT /snapshot-element.html?{query}\nSNAPSHOT inherited testid:target @1s\n"
+        )
+    };
+    dir.file("mask.whirl", &flow(""));
+    let output = run_whirl(&dir, &[
+        "-O",
+        &server.app_url_option(),
+        "--update-snapshots",
+        "mask.whirl",
+    ]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    dir.file("mask.whirl", &flow("dot"));
+    let output = run_whirl(&dir, &["-O", &server.app_url_option(), "mask.whirl"]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+}
+
+#[test]
+fn element_snapshots_use_the_selected_tab_and_nested_cross_origin_frames() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    let source = |query: &str| {
+        format!(
+            "[Options]\nviewport: 200x200\nVISIT /popups.html\nCLICK button:\"Pay with provider\"\nPOPUP extra\nWINDOW extra\nVISIT /snapshot-element.html?{query}\nSNAPSHOT tab testid:target @2s\nVISIT /snapshot-element-frames.html?{query}\nSNAPSHOT framed frame:\"#outer\" >> frame:\"#inner\" >> testid:target @5s\n"
+        )
+    };
+    dir.file("frames.whirl", &source(""));
+    let output = run_whirl(&dir, &[
+        "-O",
+        &server.app_url_option(),
+        "--update-snapshots",
+        "frames.whirl",
+    ]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    let baselines = dir.path.join("frames.whirl-snapshots");
+    for name in ["tab", "framed"] {
+        let baseline = baselines.join(format!("{name}-chromium-{}.png", platform_tag()));
+        assert_eq!(png_size(&baseline), (20, 20), "{name}");
+    }
+    let output = run_whirl(&dir, &["-O", &server.app_url_option(), "frames.whirl"]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    // The popup's own page is unchanged, so the first comparison passes
+    // and the framed target's changed dot fails the second.
+    dir.file(
+        "frames.whirl",
+        &source("").replace(
+            "/snapshot-element-frames.html?",
+            "/snapshot-element-frames.html?dot",
+        ),
+    );
+    let output = run_whirl(&dir, &[
+        "-O",
+        &server.app_url_option(),
+        "--report-json",
+        "report.json",
+        "frames.whirl",
+    ]);
+    assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
+    let report = read_report(&dir.path.join("report.json"));
+    let entry = &report["files"][0]["entries"][0];
+    let failed: Vec<_> = entry["steps"]
+        .as_array()
+        .expect("steps")
+        .iter()
+        .filter(|step| step["status"] == "failed")
+        .map(|step| step["snapshot"]["target"].clone())
+        .collect();
+    assert_eq!(failed, [serde_json::json!(
+        "frame:#outer >> frame:#inner >> testid:target"
+    )]);
+}
+
+#[test]
+fn element_snapshot_targets_interpolate_and_mask_secrets_in_reports() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file(
+        "secret.whirl",
+        &element_flow("", "SNAPSHOT secret testid:{{env.WHIRL_TEST_TARGET}}", ""),
+    );
+    let env = [("WHIRL_TEST_TARGET", "target")];
+    let output = run_whirl_env(
+        &dir,
+        &[
+            "-O",
+            &server.app_url_option(),
+            "--update-snapshots",
+            "--report-json",
+            "report.json",
+            "--report-html",
+            "report.html",
+            "secret.whirl",
+        ],
+        &env,
+    );
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    let report = read_report(&dir.path.join("report.json"));
+    let step = &report["files"][0]["entries"][0]["steps"][1];
+    assert_eq!(step["snapshot"]["target"], "testid:***");
+    assert!(!step["text"].as_str().expect("text").contains("target"));
+    let html = fs::read_to_string(dir.path.join("report.html")).expect("HTML");
+    assert!(html.contains("<dd>Element <code>testid:***</code></dd>"));
+    assert!(!html.contains("testid:target"));
+}
+
+#[test]
+fn element_snapshots_crop_and_compare_in_each_engine() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    for engine in engines() {
+        let flow = |query: &str| {
+            format!(
+                "[Options]\nbrowser: {engine}\nviewport: 100x100\nVISIT /snapshot-element.html?{query}\nSNAPSHOT cart testid:target @2s\n"
+            )
+        };
+        dir.file("engine.whirl", &flow(""));
+        let output = run_whirl(&dir, &[
+            "-O",
+            &server.app_url_option(),
+            "--update-snapshots",
+            "engine.whirl",
+        ]);
+        assert_eq!(exit_code(&output), 0, "{engine}: {}", stdout_text(&output));
+        let baseline = dir.path.join(format!(
+            "engine.whirl-snapshots/cart-{engine}-{}.png",
+            platform_tag()
+        ));
+        assert_eq!(png_size(&baseline), (20, 20), "{engine}");
+        for (query, expected) in [("outside", 0), ("dot", 1)] {
+            dir.file("engine.whirl", &flow(query));
+            let output = run_whirl(&dir, &["-O", &server.app_url_option(), "engine.whirl"]);
+            assert_eq!(
+                exit_code(&output),
+                expected,
+                "{engine}, {query}: {}",
+                stdout_text(&output)
+            );
+        }
+    }
+}
+
+#[test]
+fn mocks_serve_browser_requests_and_request_checks_read_what_the_page_sent() {
+    let site = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file(
+        "mock.whirl",
+        &format!(
+            r##"[Options]
+app-url: {}
+allow-hosts: 127.0.0.1
+
+MOCK GET /api/flags 200
+{{ "checkout_v2": true }}
+MOCK GET /api/items* 200
+X-Source: mock
+MOCK GET http://blocked.test/* 200
+Content-Type: text/plain
+```
+fonts ok
+```
+VISIT /mock.html
+ASSERT css:"#flags" text == v2
+ASSERT css:"#items" text == "200 mock"
+ASSERT css:"#font" text == "fonts ok"
+
+MOCK POST /api/cart* 201
+CLICK "Add to cart"
+RESPONSE cart POST /api/cart?source=page
+ASSERT css:"#cart" text == "cart 201"
+ASSERT response:cart status == 201
+ASSERT request:cart method == POST
+ASSERT request:cart url endsWith "/api/cart?source=page"
+ASSERT request:cart header:x-cart == c1
+ASSERT request:cart header:x-missing not exists
+ASSERT request:cart json:$.qty == 1
+ASSERT request:cart body contains A-1
+ASSERT request:cart bytes startsWith hex,7b;
+"##,
+            site.app_url()
+        ),
+    );
+    let output = run_whirl(&dir, &["--report-json", "report.json", "mock.whirl"]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    let report: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(dir.path.join("report.json")).expect("report exists"),
+    )
+    .expect("the report is JSON");
+    let file = &report["files"][0];
+    // A mocked request never reaches the network, so allow-hosts does
+    // not block it (SPEC 7.5).
+    assert_eq!(file["blockedHosts"], serde_json::json!([]));
+    let hits: Vec<(u64, u64)> = file["mocks"]
+        .as_array()
+        .expect("the report lists mocks")
+        .iter()
+        .map(|mock| {
+            (
+                mock["line"].as_u64().expect("a line"),
+                mock["hits"].as_u64().expect("a count"),
+            )
+        })
+        .collect();
+    assert_eq!(hits, [(5, 1), (7, 1), (9, 1), (19, 1)]);
+    assert_eq!(file["mocks"][0]["method"], "GET");
+    assert_eq!(
+        file["mocks"][0]["url"],
+        format!("{}/api/flags", site.app_url())
+    );
+}
+
+#[test]
+fn a_failed_mock_drops_the_request_and_a_later_mock_replaces_it() {
+    let site = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file(
+        "replace.whirl",
+        &format!(
+            r##"[Options]
+app-url: {}
+
+MOCK GET /api/flags failed
+VISIT /mock.html
+ASSERT css:"#flags" text == "flags failed"
+
+MOCK GET /api/flags 200
+{{ "checkout_v2": false }}
+VISIT /mock.html
+ASSERT css:"#flags" text == v1
+
+MOCK GET /never 204
+"##,
+            site.app_url()
+        ),
+    );
+    let output = run_whirl(&dir, &["--report-json", "report.json", "replace.whirl"]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "{stdout}");
+    assert!(
+        stdout.contains("line 13: unused-mock: MOCK GET"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("line 4: unused-mock"), "{stdout}");
+    assert!(!stdout.contains("line 8: unused-mock"), "{stdout}");
+    let report = fs::read_to_string(dir.path.join("report.json")).expect("report exists");
+    assert!(report.contains(r#""code": "unused-mock""#), "{report}");
+}
+
+#[test]
+fn a_mock_serves_the_page_document_that_visit_loads() {
+    let site = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file(
+        "document.whirl",
+        &format!(
+            r#"[Options]
+app-url: {}
+MOCK GET /virtual.html 200
+Content-Type: text/html
+```
+<h1>Virtual page</h1>
+```
+VISIT /virtual.html
+ASSERT heading:"Virtual page" visible
+"#,
+            site.app_url()
+        ),
+    );
+    let output = run_whirl(&dir, &["document.whirl"]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+}
+
+#[test]
+fn response_fails_on_a_request_that_a_failed_mock_served() {
+    let site = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file(
+        "failed.whirl",
+        &format!(
+            r#"[Options]
+app-url: {}
+VISIT /mock.html
+MOCK POST /api/cart* failed
+CLICK "Add to cart"
+RESPONSE cart POST /api/cart?source=page
+"#,
+            site.app_url()
+        ),
+    );
+    let output = run_whirl(&dir, &["failed.whirl"]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 1, "{stdout}");
+    assert!(
+        stdout.contains("request for response cart failed"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn har_records_mocked_responses_and_failed_mocks() {
+    let dir = TestDir::new();
+    dir.file(
+        "har.whirl",
+        r##"MOCK GET http://mock.test/ 200
+Content-Type: text/html
+```
+<p id="a">a</p><p id="b">b</p>
+<script>
+fetch('/api/ok').then((r) => r.text()).then((t) => { document.getElementById('a').textContent = t; });
+fetch('/api/down').catch(() => { document.getElementById('b').textContent = 'down'; });
+</script>
+```
+MOCK GET http://mock.test/api/ok 200
+Content-Type: text/plain
+```
+fine
+```
+MOCK GET http://mock.test/api/down failed
+VISIT http://mock.test/
+ASSERT css:"#a" text == fine
+ASSERT css:"#b" text == down
+"##,
+    );
+    let output = run_whirl(&dir, &["--har", "har.whirl"]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    let har: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(dir.artifacts().join("har/network.har")).expect("the HAR exists"),
+    )
+    .expect("the HAR is JSON");
+    let entries: Vec<(String, i64)> = har["log"]["entries"]
+        .as_array()
+        .expect("HAR entries")
+        .iter()
+        .map(|entry| {
+            (
+                entry["request"]["url"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+                entry["response"]["status"].as_i64().unwrap_or_default(),
+            )
+        })
+        .collect();
+    assert!(
+        entries.contains(&("http://mock.test/api/ok".to_owned(), 200)),
+        "{entries:?}"
+    );
+    assert!(
+        entries.contains(&("http://mock.test/api/down".to_owned(), -1)),
+        "{entries:?}"
+    );
+}
+
+#[test]
+fn shared_state_fixture_restores_and_saves_binary_databases_and_session_storage() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    let mut state: serde_json::Value =
+        serde_json::from_str(include_str!("../../../state/fixtures/full.state.json"))
+            .expect("the shared fixture is JSON");
+    state["origins"][0]["origin"] = server.app_url().into();
+    state["pages"][0]["origins"][0]["origin"] = server.app_url().into();
+    state["cookies"][0]["domain"] = "127.0.0.1".into();
+    state["cookies"][0]["secure"] = false.into();
+    let before = serde_json::to_string(&state).expect("state is JSON");
+    dir.file("input.state.json", &before);
+    dir.file("state.whirl", "VISIT /shared-state.html\nASSERT css:\"#storage\" text == \"Ada/prepared\"\nASSERT css:\"#database\" text == \"Ada/11,22,33,44/true/true\"\nCLICK \"Change\"\nASSERT css:\"#storage\" text == \"Grace/changed\"\nVISIT /shared-state.html\nASSERT css:\"#storage\" text == \"Grace/changed\"\n");
+    let output = run_whirl(&dir, &[
+        "-O",
+        &server.app_url_option(),
+        "--load-state",
+        "input.state.json",
+        "--save-state",
+        "output.state.json",
+        "state.whirl",
+    ]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    let saved: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(dir.path.join("output.state.json")).expect("state was saved"),
+    )
+    .expect("state is JSON");
+    assert_eq!(saved["format"], "whirl-state");
+    assert_eq!(saved["metadata"], state["metadata"]);
+    let origin = saved["origins"]
+        .as_array()
+        .expect("origins are an array")
+        .iter()
+        .find(|item| item["origin"] == server.app_url())
+        .expect("app state was captured");
+    assert_eq!(origin["indexedDB"][0]["stores"][0]["nextKey"], 51);
+    assert_eq!(
+        origin["indexedDB"][0]["stores"][0]["records"],
+        state["origins"][0]["indexedDB"][0]["stores"][0]["records"]
+    );
+    assert_eq!(
+        fs::read_to_string(dir.path.join("input.state.json")).expect("input exists"),
+        before
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            fs::metadata(dir.path.join("output.state.json"))
+                .expect("state exists")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
+}
+
+#[test]
+fn shared_state_restores_main_session_storage_at_each_origin() {
+    let first = SiteServer::start();
+    let second = SiteServer::start();
+    let dir = TestDir::new();
+    let state = serde_json::json!({"format":"whirl-state","version":1,"redacted":false,"cookies":[],
+        "origins":[{"origin":first.app_url(),"localStorage":[{"name":"account","value":"one"}]},{"origin":second.app_url(),"localStorage":[{"name":"account","value":"two"}]}],
+        "pages":[{"id":"main","origins":[{"origin":first.app_url(),"sessionStorage":[{"name":"tab","value":"first"}]},{"origin":second.app_url(),"sessionStorage":[{"name":"tab","value":"second"}]}]}]});
+    dir.file("input.state.json", &state.to_string());
+    dir.file("state.whirl", &format!("VISIT {}/shared-state.html\nASSERT css:\"#storage\" text == \"one/first\"\nVISIT {}/shared-state.html\nASSERT css:\"#storage\" text == \"two/second\"\n", first.app_url(), second.app_url()));
+    let output = run_whirl(&dir, &[
+        "--load-state",
+        "input.state.json",
+        "--save-state",
+        "output.state.json",
+        "state.whirl",
+    ]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    let saved: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(dir.path.join("output.state.json")).expect("state was saved"),
+    )
+    .expect("state is JSON");
+    assert_eq!(saved["pages"][0]["origins"], state["pages"][0]["origins"]);
+}
+
+#[test]
+fn invalid_shared_state_fails_before_browser_launch() {
+    let dir = TestDir::new();
+    dir.file(
+        "input.state.json",
+        r#"{"format":"whirl-state","version":99,"secret":"private-cookie"}"#,
+    );
+    dir.file("state.whirl", "VISIT https://app.test/\n");
+    let output = run_whirl_env(
+        &dir,
+        &["--load-state", "input.state.json", "state.whirl"],
+        &[("PLAYWRIGHT_BROWSERS_PATH", "/missing-whirl-browser")],
+    );
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 3, "{stdout}");
+    assert!(stdout.contains("Invalid state"), "{stdout}");
+    assert!(!stdout.contains("private-cookie"), "{stdout}");
+    assert!(!stdout.contains("Executable doesn't exist"), "{stdout}");
+}
+
+#[test]
+fn saved_state_output_cannot_overwrite_its_flow() {
+    let dir = TestDir::new();
+    let source = "VISIT https://app.test/\n";
+    dir.file("state.whirl", source);
+    let output = run_whirl(&dir, &["--save-state", "state.whirl", "state.whirl"]);
+    assert_eq!(exit_code(&output), 4, "{}", stdout_text(&output));
+    assert_eq!(
+        fs::read_to_string(dir.path.join("state.whirl")).expect("flow exists"),
+        source
+    );
+}
+
+#[test]
+fn shared_state_expiry_and_redaction_are_reported_without_values() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file("input.state.json", r#"{"format":"whirl-state","version":1,"redacted":true,"origins":[],"cookies":[{"name":"sid","value":"private-cookie","domain":"127.0.0.1","hostOnly":true,"path":"/","expires":1,"httpOnly":true,"secure":false,"sameSite":null}]}"#);
+    dir.file(
+        "state.whirl",
+        "VISIT /login.html\nASSERT css:\"#status\" text == \"logged out\"\n",
+    );
+    let output = run_whirl(&dir, &[
+        "-O",
+        &server.app_url_option(),
+        "--load-state",
+        "input.state.json",
+        "state.whirl",
+    ]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "{stdout}");
+    assert!(stdout.contains("skipped 1 expired cookie"), "{stdout}");
+    assert!(stdout.contains("redacted values"), "{stdout}");
+    assert!(!stdout.contains("private-cookie"), "{stdout}");
+}
+
+#[test]
+fn shared_state_export_bypasses_service_workers() {
+    let server = SiteServer::start();
+    let dir = TestDir::new();
+    dir.file(
+        "state.whirl",
+        "VISIT /shared-state-sw.html\nASSERT css:\"#status\" text == \"Controlled\"\n",
+    );
+    let output = run_whirl(&dir, &[
+        "-O",
+        &server.app_url_option(),
+        "--save-state",
+        "output.state.json",
+        "state.whirl",
+    ]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    let saved: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(dir.path.join("output.state.json")).expect("state was saved"),
+    )
+    .expect("state is JSON");
+    assert_eq!(saved["cookies"], serde_json::json!([]));
+    assert_eq!(saved["origins"][0]["localStorage"], serde_json::json!([]));
 }

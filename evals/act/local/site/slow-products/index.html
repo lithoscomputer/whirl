@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Mugs</title>
+</head>
+<body>
+<h1>Mugs</h1>
+<p id="loading">Loading products…</p>
+<ul id="products"></ul>
+<p>Cart: <span data-testid="cart">empty</span></p>
+<script>
+  // The product list comes from a slow API, as on many shops.
+  fetch("products.json?delay=800")
+    .then((response) => response.json())
+    .then((products) => {
+      document.getElementById("loading").remove();
+      const list = document.getElementById("products");
+      for (const product of products) {
+        const item = document.createElement("li");
+        item.innerHTML = `<span>${product.name}</span> <span>${product.price}</span> <button type="button">Add to cart</button>`;
+        item.querySelector("button").addEventListener("click", () => {
+          document.querySelector("[data-testid=cart]").textContent = product.name;
+        });
+        list.append(item);
+      }
+    });
+</script>
+</body>
+</html>

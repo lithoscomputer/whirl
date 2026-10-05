@@ -1,9 +1,8 @@
 [Options]
-base: {{env.EVAL_BASE}}
+app-url: {{env.EVAL_BASE}}
 model: {{model}}
 
 # Click a button inside iframes nested five levels deep.
 VISIT "/layers/?l=frame-same,frame-same,frame-same,frame-same,frame-same"
 ACT "click the Deep button" @60s
-[Asserts]
-testid:status text == clicked
+ASSERT testid:status text == clicked

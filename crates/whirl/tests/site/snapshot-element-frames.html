@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Snapshot element frames</title>
+<style>html, body { margin: 0; } iframe { width: 100px; height: 100px; border: 0; }</style>
+<iframe id="outer" title="Outer"></iframe>
+<script>
+  // The outer frame is same-origin; the frame inside it is cross-origin.
+  const outer = new URL("/snapshot-element-nest.html", location.href);
+  outer.search = location.search;
+  document.getElementById("outer").src = outer.href;
+</script>
+</html>

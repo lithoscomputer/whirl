@@ -1,9 +1,8 @@
 [Options]
-base: {{env.EVAL_BASE}}
+app-url: {{env.EVAL_BASE}}
 model: {{model}}
 
 # "Cancel my membership" is End membership, not the form's Cancel button.
 VISIT /end-membership/
 ACT "cancel my membership" @60s
-[Asserts]
-testid:result text == "membership ended"
+ASSERT testid:result text == "membership ended"

@@ -1,9 +1,8 @@
 [Options]
-base: {{env.EVAL_BASE}}
+app-url: {{env.EVAL_BASE}}
 model: {{model}}
 
 # Click a form button that works without JavaScript.
 VISIT /no-js-click/
 ACT "click Continue to payment" @60s
-[Asserts]
-role:heading "Payment" visible
+ASSERT heading:"Payment" visible

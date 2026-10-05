@@ -68,6 +68,78 @@
               "type": "string"
             }
           },
+          "blockedHostRules": {
+            "type": "array",
+            "description": "The rule that blocked each host of blockedHosts (SPEC 5). Absent when no host was blocked, and in older reports.",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "host",
+                "option",
+                "glob"
+              ],
+              "properties": {
+                "host": {
+                  "type": "string"
+                },
+                "option": {
+                  "enum": [
+                    "allow-hosts",
+                    "block-hosts"
+                  ]
+                },
+                "glob": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The block-hosts glob that matched; null when no allow-hosts glob matched."
+                }
+              }
+            }
+          },
+          "settings": {
+            "type": "array",
+            "description": "Every option with the value the file ran with and its source (SPEC 14). Secret values are masked. Absent when the file's options failed to resolve, and in older reports.",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "key",
+                "value",
+                "source",
+                "active"
+              ],
+              "properties": {
+                "key": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": [
+                    "string",
+                    "array",
+                    "null"
+                  ],
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Text, a list for a list option, or null when unset."
+                },
+                "source": {
+                  "enum": [
+                    "default",
+                    "file",
+                    "command-line"
+                  ]
+                },
+                "active": {
+                  "type": "boolean",
+                  "description": "False for a setting that ordinary runs validate but do not apply, such as browsersim-origin."
+                }
+              }
+            }
+          },
           "warnings": {
             "type": "array",
             "items": {
@@ -78,6 +150,37 @@
             "type": "array",
             "items": {
               "type": "string"
+            }
+          },
+          "mocks": {
+            "type": "array",
+            "description": "Every MOCK line that ran, in order, with the number of requests it served (SPEC 7.5). Absent when the file ran no MOCK.",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "line",
+                "method",
+                "url",
+                "hits"
+              ],
+              "properties": {
+                "line": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "method": {
+                  "type": "string"
+                },
+                "url": {
+                  "type": "string",
+                  "description": "The resolved URL pattern; secret values are masked."
+                },
+                "hits": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
             }
           },
           "entries": {
@@ -134,6 +237,7 @@
                           "action",
                           "page",
                           "assert",
+                          "judge",
                           "capture"
                         ]
                       },
@@ -214,7 +318,8 @@
                                 "plannedBy": {
                                   "enum": [
                                     "llm",
-                                    "jev"
+                                    "jev",
+                                    "cache"
                                   ]
                                 }
                               }
@@ -271,6 +376,396 @@
                                 }
                               }
                             }
+                          },
+                          "cache": {
+                            "enum": [
+                              "hit",
+                              "miss",
+                              "healed"
+                            ],
+                            "description": "The line's AI cache status (SPEC 12.1)."
+                          },
+                          "cached": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "For a healed line, the lines the cache held."
+                          }
+                        }
+                      },
+                      "goal": {
+                        "type": "object",
+                        "required": [
+                          "model",
+                          "actions",
+                          "usage",
+                          "cache"
+                        ],
+                        "properties": {
+                          "model": {
+                            "type": "string"
+                          },
+                          "actions": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "required": [
+                                "line",
+                                "description"
+                              ],
+                              "properties": {
+                                "line": {
+                                  "type": "string"
+                                },
+                                "description": {
+                                  "type": "string"
+                                },
+                                "plannedBy": {
+                                  "enum": [
+                                    "llm",
+                                    "cache"
+                                  ]
+                                },
+                                "error": {
+                                  "type": "string",
+                                  "description": "Why the action failed; the model planned again."
+                                }
+                              }
+                            }
+                          },
+                          "end": {
+                            "enum": [
+                              "done",
+                              "impossible"
+                            ],
+                            "description": "How the model ended the goal; absent for a cache hit and for a step that ran out of actions or time."
+                          },
+                          "reason": {
+                            "type": "string",
+                            "description": "The model's reason for its last answer, masked."
+                          },
+                          "usage": {
+                            "type": "object",
+                            "required": [
+                              "modelCalls",
+                              "inputTokens",
+                              "outputTokens"
+                            ],
+                            "properties": {
+                              "modelCalls": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "inputTokens": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "outputTokens": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "costUsdMicros": {
+                                "type": "integer",
+                                "minimum": 0
+                              }
+                            }
+                          },
+                          "cache": {
+                            "enum": [
+                              "hit",
+                              "miss",
+                              "healed"
+                            ],
+                            "description": "The line's AI cache status (SPEC 12.1)."
+                          },
+                          "cached": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "For a healed line, the lines the cache held."
+                          }
+                        },
+                        "description": "What a GOAL step ran and how it ended (SPEC 7.7)."
+                      },
+                      "ai": {
+                        "type": "object",
+                        "description": "What the step's ai: targets resolved to (SPEC 6.3).",
+                        "required": [
+                          "model",
+                          "targets",
+                          "usage"
+                        ],
+                        "properties": {
+                          "model": {
+                            "type": "string"
+                          },
+                          "targets": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "required": [
+                                "target",
+                                "cache"
+                              ],
+                              "properties": {
+                                "target": {
+                                  "type": "string",
+                                  "description": "The authored locator with its ai: segment; secret values are masked."
+                                },
+                                "locator": {
+                                  "type": "string",
+                                  "description": "The locator of the element it resolved to."
+                                },
+                                "description": {
+                                  "type": "string"
+                                },
+                                "cache": {
+                                  "enum": [
+                                    "hit",
+                                    "miss",
+                                    "healed",
+                                    "uncached"
+                                  ]
+                                },
+                                "cached": {
+                                  "type": "string",
+                                  "description": "For a healed target, the locator the cache held."
+                                }
+                              }
+                            }
+                          },
+                          "usage": {
+                            "type": "object",
+                            "required": [
+                              "modelCalls",
+                              "inputTokens",
+                              "outputTokens"
+                            ],
+                            "properties": {
+                              "modelCalls": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "inputTokens": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "outputTokens": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "costUsdMicros": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "jev": {
+                                "type": "object",
+                                "required": [
+                                  "requests",
+                                  "inputTokens",
+                                  "outputTokens"
+                                ],
+                                "properties": {
+                                  "requests": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  },
+                                  "inputTokens": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  },
+                                  "outputTokens": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  },
+                                  "costUsdMicros": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      },
+                      "extract": {
+                        "type": "object",
+                        "description": "What an EXTRACT step read (SPEC 7.6).",
+                        "required": [
+                          "model",
+                          "usage"
+                        ],
+                        "properties": {
+                          "model": {
+                            "type": "string"
+                          },
+                          "value": {
+                            "type": "object",
+                            "required": [
+                              "type",
+                              "value"
+                            ],
+                            "description": "The value with its type, as a capture is written; absent when the model found no value. A masked value is the string ***.",
+                            "properties": {
+                              "type": {
+                                "type": "string"
+                              },
+                              "value": {}
+                            }
+                          },
+                          "usage": {
+                            "type": "object",
+                            "required": [
+                              "modelCalls",
+                              "inputTokens",
+                              "outputTokens"
+                            ],
+                            "properties": {
+                              "modelCalls": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "inputTokens": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "outputTokens": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "costUsdMicros": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "jev": {
+                                "type": "object",
+                                "required": [
+                                  "requests",
+                                  "inputTokens",
+                                  "outputTokens"
+                                ],
+                                "properties": {
+                                  "requests": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  },
+                                  "inputTokens": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  },
+                                  "outputTokens": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  },
+                                  "costUsdMicros": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      },
+                      "judge": {
+                        "type": "object",
+                        "description": "What a JUDGE step asked and the model's answer (SPEC 9.8). The verdict and reason are absent when the step ended before the model answered.",
+                        "required": [
+                          "model",
+                          "usage"
+                        ],
+                        "properties": {
+                          "model": {
+                            "type": "string"
+                          },
+                          "verdict": {
+                            "enum": [
+                              "yes",
+                              "no",
+                              "unsure"
+                            ]
+                          },
+                          "reason": {
+                            "type": "string",
+                            "description": "The model's reason, with masked values as ***."
+                          },
+                          "usage": {
+                            "type": "object",
+                            "required": [
+                              "modelCalls",
+                              "inputTokens",
+                              "outputTokens"
+                            ],
+                            "properties": {
+                              "modelCalls": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "inputTokens": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "outputTokens": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "costUsdMicros": {
+                                "type": "integer",
+                                "minimum": 0
+                              }
+                            }
+                          }
+                        }
+                      },
+                      "warnings": {
+                        "type": "array",
+                        "description": "Notices that do not change the step's status, such as unused-mock.",
+                        "items": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "required": [
+                            "code",
+                            "message"
+                          ],
+                          "properties": {
+                            "code": {
+                              "type": "string"
+                            },
+                            "message": {
+                              "type": "string"
+                            }
+                          }
+                        }
+                      },
+                      "snapshot": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "masks",
+                          "maxDiff",
+                          "pixelThreshold"
+                        ],
+                        "properties": {
+                          "target": {
+                            "type": "string",
+                            "description": "Explicit locator text of the element an element snapshot captured; absent for a full-page snapshot. Secret values are masked."
+                          },
+                          "masks": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "Effective explicit mask locator text; secret values are masked."
+                          },
+                          "maxDiff": {
+                            "type": "string",
+                            "description": "Pixel count or percentage, including its unit; may contain secret masking."
+                          },
+                          "pixelThreshold": {
+                            "type": "string",
+                            "description": "Effective threshold; may contain secret masking."
                           }
                         }
                       }
