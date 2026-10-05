@@ -1,0 +1,9 @@
+[Options]
+base: {{env.EVAL_BASE}}
+model: {{model}}
+
+# EXTRACT from a list that arrives from a slow request after the page loads.
+VISIT /slow-products/
+EXTRACT price "the price in dollars of the blue mug" @60s
+{ "type": "number" }
+ASSERT extract:price == 12

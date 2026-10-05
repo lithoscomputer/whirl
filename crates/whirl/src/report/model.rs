@@ -68,6 +68,7 @@ pub(crate) enum StepKind {
     Action,
     Page,
     Assert,
+    Judge,
     Capture,
 }
 
@@ -138,6 +139,15 @@ pub(crate) struct StepReport {
     /// What the step's `ai:` targets resolved to (SPEC 6.3).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) ai:          Option<AiReport>,
+    /// What an `EXTRACT` step read (SPEC 7.6).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) extract:     Option<ExtractReport>,
+    /// What a `JUDGE` step's model answered (SPEC 9.8).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) judge:       Option<JudgeReport>,
+    /// What a `GOAL` step ran (SPEC 7.7).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) goal:        Option<GoalReport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) snapshot:    Option<SnapshotReport>,
     /// Notices that do not fail the step, each with a stable code.
@@ -227,12 +237,83 @@ pub(crate) struct AiTargetReport {
     pub(crate) cached:      Option<String>,
 }
 
+/// A `JUDGE` step's verdict, the model's reason, and what the call used
+/// (SPEC 9.8).
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct JudgeReport {
+    pub(crate) model:   String,
+    /// `yes`, `no`, or `unsure`; absent when the call failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) verdict: Option<String>,
+    /// The model's reason, masked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) reason:  Option<String>,
+    pub(crate) usage:   ActUsage,
+}
+
+/// What an `EXTRACT` step read and what its model call used (SPEC 7.6).
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ExtractReport {
+    pub(crate) model: String,
+    /// The value with its type, masked as a capture is; absent when the
+    /// model found no value.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_optional_capture",
+        deserialize_with = "deserialize_optional_capture"
+    )]
+    pub(crate) value: Option<CaptureValue>,
+    pub(crate) usage: ActUsage,
+}
+
+/// Writes a value as the `{type, value}` of a capture.
+#[expect(
+    clippy::ref_option,
+    reason = "serde's serialize_with passes the field by reference"
+)]
+fn serialize_optional_capture<S: Serializer>(
+    value: &Option<CaptureValue>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    match value {
+        Some(value) => CaptureOut {
+            value_type: &value.value_type,
+            value:      &value.value,
+        }
+        .serialize(serializer),
+        None => serializer.serialize_none(),
+    }
+}
+
+/// Reads a `{type, value}` capture shape.
+fn deserialize_optional_capture<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<CaptureValue>, D::Error> {
+    let shape = Option::<serde_json::Value>::deserialize(deserializer)?;
+    let Some(mut shape) = shape else {
+        return Ok(None);
+    };
+    let value_type = shape
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| DeError::custom("a value needs a type"))?;
+    let value = shape
+        .get_mut("value")
+        .map(serde_json::Value::take)
+        .ok_or_else(|| DeError::custom("a value needs a value"))?;
+    Ok(Some(CaptureValue::new(&value_type, value.to_string())))
+}
+
 /// Reports written before planners existed used the language model.
 fn llm_planner() -> String {
     "llm".to_owned()
 }
 
-/// One action an `ACT` step ran.
+/// One action an `ACT` or `GOAL` step ran.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ActActionReport {
@@ -240,9 +321,35 @@ pub(crate) struct ActActionReport {
     pub(crate) line:        String,
     /// The model's description of the element.
     pub(crate) description: String,
-    /// Which planner chose this action: `llm` or `jev`.
+    /// Which planner chose this action: `llm`, `jev`, or `cache`.
     #[serde(default = "llm_planner")]
     pub(crate) planned_by:  String,
+    /// Why the action failed, for a `GOAL` action that the model planned
+    /// past (SPEC 7.7).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) error:       Option<String>,
+}
+
+/// A `GOAL` step's model, the actions it ran, how it ended, and what the
+/// model calls used (SPEC 7.7).
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct GoalReport {
+    pub(crate) model:   String,
+    pub(crate) actions: Vec<ActActionReport>,
+    /// `done` or `impossible`; absent when the model did not say, as for
+    /// a cache hit or a step that ran out of actions or time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) end:     Option<String>,
+    /// The model's reason for its last answer, masked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) reason:  Option<String>,
+    pub(crate) usage:   ActUsage,
+    /// The line's AI cache status (SPEC 12.1): `hit`, `miss`, or `healed`.
+    pub(crate) cache:   String,
+    /// For a healed line, the lines the cache held.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) cached:  Option<Vec<String>>,
 }
 
 /// Token usage summed over an `ACT` step's model calls.

@@ -17,7 +17,9 @@ use crate::check::PredicateKind;
 use crate::lang::ast::{self, Locator, LocatorSegment, SegmentKind};
 use crate::lang::fmt::render_snapshot_target;
 use crate::lang::parse::parse_locator;
-use crate::report::model::{ActReport, AiReport, AiTargetReport, StepError, StepWarning};
+use crate::report::model::{
+    ActReport, AiReport, AiTargetReport, ExtractReport, JudgeReport, StepError, StepWarning,
+};
 use crate::run::act::{Fingerprint, Instruction, PageSnapshot, PlanUsage, Target, target_message};
 use crate::run::cache::{CacheEntry, CacheKey, EntryKind};
 use crate::run::shim::{AriaSnapshotResult, GeneratedLocator, ShimClient, StepCommand, wire};
@@ -302,6 +304,7 @@ impl FlowExec<'_> {
                 &mut probe,
                 StepCommand::AriaSnapshot {
                     locator: Some(wire),
+                    settle:  false,
                 },
                 client,
                 state,
@@ -405,7 +408,10 @@ impl FlowExec<'_> {
         let result = self
             .act_shim_call(
                 line,
-                StepCommand::AriaSnapshot { locator: scope },
+                StepCommand::AriaSnapshot {
+                    locator: scope,
+                    settle:  true,
+                },
                 client,
                 state,
             )
@@ -610,8 +616,10 @@ impl FlowExec<'_> {
         budget: ActBudget,
         client: &mut ShimClient,
         state: &mut EntryState,
-    ) -> (StepEnd, Option<ActReport>, AiSpend) {
+    ) -> AiLineRun {
         let mut spend = AiSpend::default();
+        let mut extract = None;
+        let mut judge = None;
         let mut targets: Vec<AiTarget> = ai_locators(node)
             .into_iter()
             .map(|(locator, absence_ok)| self.ai_target(node, locator, absence_ok))
@@ -711,9 +719,43 @@ impl FlowExec<'_> {
                     spend.warnings.extend(warnings);
                     break end;
                 }
+                PreparedStep::Extract(plan) => {
+                    let remaining = ActBudget {
+                        timeout_ms: u64::try_from(
+                            deadline
+                                .saturating_duration_since(Instant::now())
+                                .as_millis(),
+                        )
+                        .unwrap_or(u64::MAX),
+                        ..budget
+                    };
+                    let (end, report) = self
+                        .run_extract(replaced_node, plan, title, remaining, client, state)
+                        .await;
+                    extract = report;
+                    break end;
+                }
+                PreparedStep::Judge(plan) => {
+                    let remaining = ActBudget {
+                        timeout_ms: u64::try_from(
+                            deadline
+                                .saturating_duration_since(Instant::now())
+                                .as_millis(),
+                        )
+                        .unwrap_or(u64::MAX),
+                        ..budget
+                    };
+                    let (end, report, warnings) = self
+                        .run_judge(replaced_node, plan, title, remaining, client, state)
+                        .await;
+                    judge = report;
+                    spend.warnings.extend(warnings);
+                    break end;
+                }
                 PreparedStep::Check(_) | PreparedStep::Capture(_) => {
                     unreachable!("checks with a subject resolve their targets while they read")
                 }
+                PreparedStep::Goal(_) => unreachable!("GOAL has no locator"),
             }
         };
         let passed = matches!(end, StepEnd::Passed);
@@ -724,8 +766,23 @@ impl FlowExec<'_> {
                 spend.targets.push(target.report);
             }
         }
-        (end, act, spend)
+        AiLineRun {
+            end,
+            act,
+            extract,
+            judge,
+            spend,
+        }
     }
+}
+
+/// What a line with `ai:` targets did.
+pub(super) struct AiLineRun {
+    pub(super) end:     StepEnd,
+    pub(super) act:     Option<ActReport>,
+    pub(super) extract: Option<ExtractReport>,
+    pub(super) judge:   Option<JudgeReport>,
+    pub(super) spend:   AiSpend,
 }
 
 /// The `ai:` locators that a line resolves before it runs, each with
@@ -747,7 +804,12 @@ pub(super) fn ai_locators(node: StepNode<'_>) -> Vec<(&Locator, bool)> {
         }) if locator.ai_description().is_some() => {
             vec![(locator, *state == ast::StateCheck::Hidden)]
         }
-        StepNode::Assert(_) | StepNode::Capture(_) | StepNode::Page(_) => Vec::new(),
+        StepNode::Judge(ast::Judge {
+            scope: Some(scope), ..
+        }) if scope.ai_description().is_some() => vec![(scope, false)],
+        StepNode::Assert(_) | StepNode::Judge(_) | StepNode::Capture(_) | StepNode::Page(_) => {
+            Vec::new()
+        }
     }
 }
 
@@ -755,6 +817,7 @@ pub(super) fn ai_locators(node: StepNode<'_>) -> Vec<(&Locator, bool)> {
 enum Replaced {
     Action(ast::Action),
     Assert(ast::Assert),
+    Judge(ast::Judge),
 }
 
 impl Replaced {
@@ -762,6 +825,7 @@ impl Replaced {
         match self {
             Self::Action(action) => StepNode::Action(action),
             Self::Assert(assert) => StepNode::Assert(assert),
+            Self::Judge(judge) => StepNode::Judge(judge),
         }
     }
 }
@@ -791,8 +855,15 @@ fn replace_targets(node: StepNode<'_>, resolved: &[Locator]) -> Replaced {
             }
             Replaced::Assert(assert)
         }
+        StepNode::Judge(judge) => {
+            let mut judge = judge.clone();
+            if let Some(scope) = &mut judge.scope {
+                next(scope);
+            }
+            Replaced::Judge(judge)
+        }
         StepNode::Capture(_) | StepNode::Page(_) => {
-            unreachable!("only actions and state checks resolve before they run")
+            unreachable!("only actions, state checks, and JUDGE resolve before they run")
         }
     }
 }

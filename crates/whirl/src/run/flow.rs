@@ -2,6 +2,7 @@
 //! resolution (SPEC 5, 11), entry and step execution with timeout
 //! budgeting (SPEC 12), failure artifacts, and the per-file report.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -16,11 +17,11 @@ use crate::lang::ast::{
 };
 use crate::lang::fmt::render_snapshot_target;
 use crate::report::model::{
-    ActReport, AiReport, CaptureValue, EntryReport, FileReport, MockReport, ReportViewport,
-    RuntimeMetadata, SETUP_ENTRY, SnapshotReport, Status, StepError, StepKind, StepReport,
-    StepWarning, Timing,
+    ActReport, AiReport, CaptureValue, EntryReport, ExtractReport, FileReport, GoalReport,
+    JudgeReport, MockReport, ReportViewport, RuntimeMetadata, SETUP_ENTRY, SnapshotReport, Status,
+    StepError, StepKind, StepReport, StepWarning, Timing,
 };
-use crate::run::act::{ActPlanner, Instruction, ModelClient};
+use crate::run::act::{ActPlanner, Instruction, JudgeAnswer, ModelClient};
 use crate::run::artifacts;
 use crate::run::cache::{self, CacheMode};
 use crate::run::shim::{
@@ -32,6 +33,9 @@ use crate::run::vars::{VarError, VarStore};
 mod act_step;
 mod ai_step;
 mod check_step;
+mod extract_step;
+mod goal_step;
+mod judge_step;
 mod snapshot;
 use snapshot::SnapshotSettings;
 
@@ -413,6 +417,7 @@ enum StepNode<'a> {
     Action(&'a ast::Action),
     Page(&'a ast::Page),
     Assert(&'a ast::Assert),
+    Judge(&'a ast::Judge),
     Capture(&'a ast::Capture),
 }
 
@@ -422,6 +427,7 @@ impl<'a> StepNode<'a> {
             Self::Action(step) => step.line,
             Self::Page(step) => step.line,
             Self::Assert(step) => step.line,
+            Self::Judge(step) => step.line,
             Self::Capture(step) => step.line,
         }
     }
@@ -437,6 +443,7 @@ impl<'a> StepNode<'a> {
             },
             Self::Page(step) => &step.text,
             Self::Assert(step) => &step.text,
+            Self::Judge(step) => &step.text,
             Self::Capture(step) => &step.text,
         }
     }
@@ -446,6 +453,7 @@ impl<'a> StepNode<'a> {
             Self::Action(_) => StepKind::Action,
             Self::Page(_) => StepKind::Page,
             Self::Assert(_) => StepKind::Assert,
+            Self::Judge(_) => StepKind::Judge,
             Self::Capture(_) => StepKind::Capture,
         }
     }
@@ -456,6 +464,7 @@ impl<'a> StepNode<'a> {
             Self::Action(step) => step.timeout,
             Self::Page(step) => step.timeout,
             Self::Assert(step) => step.timeout,
+            Self::Judge(step) => step.timeout,
             Self::Capture(step) => step.timeout,
         };
         timeout.map(DurationLit::millis)
@@ -469,6 +478,7 @@ fn entry_steps(entry: &ast::Entry) -> Vec<StepNode<'_>> {
     let page = entry.page.iter().map(StepNode::Page);
     let checks = entry.checks.iter().map(|check| match check {
         ast::CheckStep::Assert(assert) => StepNode::Assert(assert),
+        ast::CheckStep::Judge(judge) => StepNode::Judge(judge),
         ast::CheckStep::Capture(capture) => StepNode::Capture(capture),
     });
     actions.chain(page).chain(checks).collect()
@@ -484,6 +494,9 @@ fn line_budget_ms(node: StepNode<'_>, options: &ResolvedOptions) -> u64 {
     match node {
         StepNode::Action(action) if matches!(action.kind, ast::ActionKind::Visit { .. }) => {
             options.nav_timeout_ms
+        }
+        StepNode::Action(action) if matches!(action.kind, ast::ActionKind::Goal { .. }) => {
+            goal_step::DEFAULT_TIMEOUT_MS
         }
         _ => options.step_timeout_ms,
     }
@@ -569,6 +582,12 @@ enum PreparedStep {
         /// The wire locator of the element the snapshot is limited to.
         scope:       Option<Json>,
     },
+    /// An `EXTRACT` line (SPEC 7.6).
+    Extract(extract_step::ExtractPlan),
+    /// A `GOAL` line (SPEC 7.7).
+    Goal(goal_step::GoalPlan),
+    /// A `JUDGE` line (SPEC 9.8).
+    Judge(judge_step::JudgePlan),
     /// A check with a subject, evaluated in Rust (SPEC 9).
     Check(check_step::PreparedCheck),
     Capture(check_step::PreparedCapture),
@@ -576,23 +595,30 @@ enum PreparedStep {
 
 /// Mutable state of one flow run.
 struct FlowExec<'a> {
-    run:       &'a FlowRun<'a>,
-    options:   ResolvedOptions,
-    vars:      VarStore,
-    warnings:  Vec<String>,
+    run:           &'a FlowRun<'a>,
+    options:       ResolvedOptions,
+    vars:          VarStore,
+    warnings:      Vec<String>,
     /// True while the shim has an open flow (startFlow succeeded and no
     /// cancel closed it).
-    flow_open: bool,
+    flow_open:     bool,
     /// Every capture, unmasked, for a dependent file (SPEC 12).
-    captures:  Vec<(String, check::Value)>,
+    captures:      Vec<(String, check::Value)>,
     /// Responses read so far; a response never changes (SPEC 9.7).
-    responses: check_step::ResponseCache,
+    responses:     check_step::ResponseCache,
     /// Requests read so far, by `RESPONSE` name (SPEC 9.2).
-    requests:  check_step::RequestCache,
+    requests:      check_step::RequestCache,
     /// Every `MOCK` that ran, in order (SPEC 7.5).
-    mocks:     Vec<RegisteredMock>,
+    mocks:         Vec<RegisteredMock>,
     /// The flow's AI cache (SPEC 12.1).
-    cache:     cache::FlowCache,
+    cache:         cache::FlowCache,
+    /// The values `EXTRACT` lines read (SPEC 7.6).
+    extracts:      extract_step::ExtractValues,
+    /// The entry's `JUDGE` batches: consecutive lines with the same scope
+    /// and timeout, by the line of the first (SPEC 9.8).
+    judge_batches: HashMap<u32, Vec<ast::Judge>>,
+    /// Answers that a batch's first line received for the later lines.
+    judge_answers: HashMap<u32, JudgeAnswer>,
 }
 
 /// The resolved header pairs and body of a request or a mocked response.
@@ -648,6 +674,23 @@ impl FlowExec<'_> {
                         .map(|scope| self.locator(scope, None))
                         .transpose()?,
                 }),
+                ast::ActionKind::Extract {
+                    name,
+                    scope,
+                    instruction,
+                    schema,
+                } => Ok(PreparedStep::Extract(extract_step::ExtractPlan {
+                    name:        name.text.clone(),
+                    instruction: Instruction::try_new(instruction, &mut self.vars)?,
+                    scope:       scope
+                        .as_ref()
+                        .map(|scope| self.locator(scope, None))
+                        .transpose()?,
+                    schema:      schema.as_ref().map(ast::ExtractSchema::json),
+                })),
+                ast::ActionKind::Goal { goal } => Ok(PreparedStep::Goal(goal_step::GoalPlan {
+                    goal: Instruction::try_new(goal, &mut self.vars)?,
+                })),
                 _ => self.build_action(action).map(PreparedStep::Command),
             },
             StepNode::Page(page) => {
@@ -674,6 +717,14 @@ impl FlowExec<'_> {
             StepNode::Capture(capture) => self
                 .prepare_capture(capture, implicit_response)
                 .map(PreparedStep::Capture),
+            StepNode::Judge(judge) => Ok(PreparedStep::Judge(judge_step::JudgePlan {
+                claim: Instruction::try_new(&judge.claim, &mut self.vars)?,
+                scope: judge
+                    .scope
+                    .as_ref()
+                    .map(|scope| self.locator(scope, None))
+                    .transpose()?,
+            })),
         }
     }
 
@@ -918,6 +969,8 @@ impl FlowExec<'_> {
                 script: self.resolve(script)?,
             },
             K::Act { .. } => unreachable!("prepare_step routes ACT to the act runner"),
+            K::Extract { .. } => unreachable!("prepare_step routes EXTRACT to its runner"),
+            K::Goal { .. } => unreachable!("prepare_step routes GOAL to its runner"),
             K::Store { scope, key, value } => StepCommand::Store {
                 scope: scope.keyword().to_owned(),
                 key:   self.resolve(key)?,
@@ -1058,6 +1111,9 @@ struct StepRun {
     act:         Option<ActReport>,
     snapshot:    Option<SnapshotReport>,
     ai:          Option<AiReport>,
+    extract:     Option<ExtractReport>,
+    judge:       Option<JudgeReport>,
+    goal:        Option<GoalReport>,
     warnings:    Vec<StepWarning>,
 }
 
@@ -1070,6 +1126,9 @@ impl StepRun {
             snapshot: None,
             act: None,
             ai: None,
+            extract: None,
+            judge: None,
+            goal: None,
             warnings: Vec::new(),
         }
     }
@@ -1148,6 +1207,9 @@ impl FlowExec<'_> {
 
         let started = Instant::now();
         let span = debug_span!("step", line = node.line(), step_kind = ?node.kind());
+        let mut extract = None;
+        let mut judge = None;
+        let mut goal = None;
         let (end, act, mut spend) = match prepared {
             None => {
                 let budget = act_step::ActBudget {
@@ -1155,9 +1217,13 @@ impl FlowExec<'_> {
                     entry_capped,
                     entry_budget_ms,
                 };
-                self.run_ai_line(node, implicit_response, &title, budget, client, state)
+                let run = self
+                    .run_ai_line(node, implicit_response, &title, budget, client, state)
                     .instrument(span)
-                    .await
+                    .await;
+                extract = run.extract;
+                judge = run.judge;
+                (run.end, run.act, run.spend)
             }
             Some(PreparedStep::Command(command)) => {
                 let request = StepRequest {
@@ -1194,6 +1260,53 @@ impl FlowExec<'_> {
                     ..ai_step::AiSpend::default()
                 };
                 (end, act, spend)
+            }
+            Some(PreparedStep::Extract(plan)) => {
+                let budget = act_step::ActBudget {
+                    timeout_ms,
+                    entry_capped,
+                    entry_budget_ms,
+                };
+                let (end, report) = self
+                    .run_extract(node, plan, &title, budget, client, state)
+                    .instrument(span)
+                    .await;
+                extract = report;
+                (end, None, ai_step::AiSpend::default())
+            }
+            Some(PreparedStep::Goal(plan)) => {
+                let budget = act_step::ActBudget {
+                    timeout_ms,
+                    entry_capped,
+                    entry_budget_ms,
+                };
+                let (end, report, warnings) = self
+                    .run_goal(node, plan, &title, budget, client, state)
+                    .instrument(span)
+                    .await;
+                goal = report;
+                let spend = ai_step::AiSpend {
+                    warnings,
+                    ..ai_step::AiSpend::default()
+                };
+                (end, None, spend)
+            }
+            Some(PreparedStep::Judge(plan)) => {
+                let budget = act_step::ActBudget {
+                    timeout_ms,
+                    entry_capped,
+                    entry_budget_ms,
+                };
+                let (end, report, warnings) = self
+                    .run_judge(node, plan, &title, budget, client, state)
+                    .instrument(span)
+                    .await;
+                judge = report;
+                let spend = ai_step::AiSpend {
+                    warnings,
+                    ..ai_step::AiSpend::default()
+                };
+                (end, None, spend)
             }
             Some(PreparedStep::Check(mut check)) => {
                 let budget = check_step::LineBudget {
@@ -1236,6 +1349,9 @@ impl FlowExec<'_> {
             snapshot,
             act,
             ai,
+            extract,
+            judge,
+            goal,
             warnings: spend.warnings,
         }
     }
@@ -1359,6 +1475,8 @@ impl FlowExec<'_> {
             remaining_ms: self.options.entry_timeout_ms,
         };
         let mut entry_status = Status::Passed;
+        self.judge_batches = judge_step::batches(entry);
+        self.judge_answers.clear();
         let implicit_response = entry.actions.first().and_then(|action| {
             matches!(action.kind, ast::ActionKind::Http { .. })
                 .then(|| wire::independent_http_response(action.line))
@@ -1376,6 +1494,9 @@ impl FlowExec<'_> {
                     act:         None,
                     warnings:    Vec::new(),
                     ai:          None,
+                    extract:     None,
+                    judge:       None,
+                    goal:        None,
                 });
                 continue;
             }
@@ -1394,6 +1515,9 @@ impl FlowExec<'_> {
                 snapshot: run.snapshot,
                 warnings: run.warnings,
                 ai: run.ai,
+                extract: run.extract,
+                judge: run.judge,
+                goal: run.goal,
             });
             if status != Status::Passed {
                 entry_status = status;
@@ -1460,6 +1584,9 @@ fn skipped_entry(file: &File, entry: &ast::Entry, vars: &VarStore) -> EntryRepor
             act:         None,
             warnings:    Vec::new(),
             ai:          None,
+            extract:     None,
+            judge:       None,
+            goal:        None,
         })
         .collect();
     EntryReport {
@@ -1507,6 +1634,9 @@ impl EntryReport {
             act:         None,
             warnings:    Vec::new(),
             ai:          None,
+            extract:     None,
+            judge:       None,
+            goal:        None,
         });
         self
     }
@@ -1548,7 +1678,7 @@ fn start_flow_params(run: &FlowRun<'_>, options: &ResolvedOptions) -> StartFlowP
             .har
             .then(|| wire_path(&run.abs_dir.join(artifacts::NETWORK_HAR))),
         trace:              run.flags.trace,
-        open_shadow_roots:  run.file.uses_act(),
+        open_shadow_roots:  run.file.uses_act() || run.file.uses_goal(),
         mocks:              run.file.uses_mock(),
     }
 }
@@ -1725,6 +1855,9 @@ pub(crate) async fn run_flow(run: &FlowRun<'_>, client: &mut ShimClient) -> Flow
             requests: check_step::RequestCache::new(),
             mocks: Vec::new(),
             cache: flow_cache,
+            extracts: extract_step::ExtractValues::new(),
+            judge_batches: HashMap::new(),
+            judge_answers: HashMap::new(),
         };
         if let Some(error) = cache_error {
             exec.warnings.push(format!(

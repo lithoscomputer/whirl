@@ -1,4 +1,4 @@
-"""Compare language models on Whirl's ACT and ai: targets: run each model
+"""Compare language models on Whirl's ACT, GOAL, ai: targets, EXTRACT, and JUDGE: run each model
 against each eval task, then write a dated summary. See evals/act/README.md.
 
 Each task is a .whirl flow. Runs are kept under evals/act/runs/ and never
@@ -16,6 +16,8 @@ import statistics
 import subprocess
 import sys
 import threading
+import time
+import urllib.parse
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -29,8 +31,23 @@ NO_MATCH_SUFFIX = ".no-match.whirl"
 # A task whose file name ends with this passes only when an ai: target
 # matches several elements and fails with strictness (SPEC 6.3).
 AMBIGUOUS_SUFFIX = ".ambiguous.whirl"
+# A task whose file name ends with this passes only when JUDGE answers no
+# (SPEC 9.8).
+JUDGE_FALSE_SUFFIX = ".judge-false.whirl"
+# A task whose file name ends with this passes only when GOAL answers
+# impossible (SPEC 7.7).
+IMPOSSIBLE_SUFFIX = ".impossible.whirl"
 # Each special suffix and the error code that makes its task pass.
-EXPECTED_FAILURES = {NO_MATCH_SUFFIX: "act-no-match", AMBIGUOUS_SUFFIX: "strictness"}
+EXPECTED_FAILURES = {
+    NO_MATCH_SUFFIX: "act-no-match",
+    AMBIGUOUS_SUFFIX: "strictness",
+    JUDGE_FALSE_SUFFIX: "judge-false",
+    IMPOSSIBLE_SUFFIX: "goal-impossible",
+}
+# A task whose file name ends with this passes only when the flow passes with
+# the step warning: JUDGE answers unsure.
+UNSURE_SUFFIX = ".unsure.whirl"
+EXPECTED_WARNINGS = {UNSURE_SUFFIX: "judge-unsure"}
 # The value the login task fills through {{env.EVAL_PASSWORD}}. It is not a
 # secret; it only has to reach the page without reaching the model.
 EVAL_PASSWORD = "eval-password-5d1c"
@@ -51,6 +68,14 @@ class Task:
 def expected_failure(file_name):
     """The error code a task file expects, from its suffix."""
     for suffix, code in EXPECTED_FAILURES.items():
+        if file_name.endswith(suffix):
+            return code
+    return None
+
+
+def expected_warning(file_name):
+    """The step warning a task file expects, from its suffix."""
+    for suffix, code in EXPECTED_WARNINGS.items():
         if file_name.endswith(suffix):
             return code
     return None
@@ -111,7 +136,7 @@ class Result:
 
 def task_name(file_path):
     name = Path(file_path).name
-    for suffix in (*EXPECTED_FAILURES, ".whirl"):
+    for suffix in (*EXPECTED_FAILURES, *EXPECTED_WARNINGS, ".whirl"):
         if name.endswith(suffix):
             return name[: -len(suffix)]
     return name
@@ -126,10 +151,16 @@ def classify(file_report, model):
     # are their sums.
     act_steps = [step for step in steps if step.get("act") is not None]
     ai_steps = [step for step in steps if step.get("ai") is not None]
+    ai_steps += [step for step in steps if step.get("extract") is not None]
+    ai_steps += [step for step in steps if step.get("judge") is not None]
+    ai_steps += [step for step in steps if step.get("goal") is not None]
     result = Result(name, model, "fail")
     if act_steps or ai_steps:
         usages = [step["act"]["usage"] for step in act_steps]
-        usages += [step["ai"]["usage"] for step in ai_steps]
+        usages += [
+            (step.get("ai") or step.get("extract") or step.get("judge") or step["goal"])["usage"]
+            for step in ai_steps
+        ]
         act_steps = act_steps + ai_steps
         result.duration_ms = sum(step["durationMs"] for step in act_steps)
         result.model_calls = sum(usage["modelCalls"] for usage in usages)
@@ -154,6 +185,9 @@ def classify(file_report, model):
         result.outcome = "drift"
     elif expects:
         result.outcome = "pass" if result.code == expects else "fail"
+    elif warns := expected_warning(Path(file_report["path"]).name):
+        warned = any(warning["code"] == warns for step in steps for warning in step.get("warnings", []))
+        result.outcome = "pass" if file_report["status"] == "passed" and warned else "fail"
     else:
         result.outcome = "pass" if file_report["status"] == "passed" else "fail"
     return result
@@ -193,6 +227,16 @@ def shortfalls(tasks, models, results, n):
 
 
 class QuietHandler(http.server.SimpleHTTPRequestHandler):
+    """Serves the site. A `delay=MS` query parameter holds the response
+    that long, like a slow API on a real site."""
+
+    def do_GET(self):
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        delay = query.get("delay", ["0"])[0]
+        if delay.isdigit():
+            time.sleep(min(int(delay), 10_000) / 1000)
+        super().do_GET()
+
     def log_message(self, *args):
         pass
 

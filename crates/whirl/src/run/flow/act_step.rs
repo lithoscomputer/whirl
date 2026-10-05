@@ -95,11 +95,22 @@ pub(super) fn act_failure(code: &str, message: &str) -> StepError {
     }
 }
 
-fn warning(code: &str, message: String) -> StepWarning {
+pub(super) fn warning(code: &str, message: String) -> StepWarning {
     StepWarning {
         code: code.to_owned(),
         message,
     }
+}
+
+/// How the replay of one cached line went (SPEC 12.1).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum Replay {
+    Ran,
+    /// The elements at these locator positions no longer fit their
+    /// fingerprints; nothing ran.
+    Missing(Vec<usize>),
+    /// The line did not parse or build, or its action failed.
+    Failed,
 }
 
 /// What one `ACT` line ran and spent, and the lines its cache entry holds.
@@ -236,7 +247,11 @@ impl FlowExec<'_> {
         if let Some(cached) = &cached {
             let mut hit = true;
             for action in cached {
-                if !self.replay_action(&mut line, action, client, state).await {
+                if self
+                    .replay_action(&mut line, action, None, client, state)
+                    .await
+                    != Replay::Ran
+                {
                     hit = false;
                     break;
                 }
@@ -244,6 +259,7 @@ impl FlowExec<'_> {
                     line:        self.vars.mask(&action.line),
                     description: "the cached line".to_owned(),
                     planned_by:  "cache".to_owned(),
+                    error:       None,
                 });
                 record.lines.push(Some(action.clone()));
                 first_action = Some(format!("the Whirl line {}", action.line));
@@ -293,6 +309,7 @@ impl FlowExec<'_> {
                     &mut line,
                     StepCommand::AriaSnapshot {
                         locator: scope.clone(),
+                        settle:  true,
                     },
                     client,
                     state,
@@ -400,6 +417,7 @@ impl FlowExec<'_> {
                 line:        self.vars.mask(&action.line()),
                 description: self.vars.mask(&description),
                 planned_by:  planned_by.as_str().to_owned(),
+                error:       None,
             });
             record.push_line(cache_line);
             if let Some(read_back) = action.fill_read_back(instruction) {
@@ -463,35 +481,52 @@ impl FlowExec<'_> {
     }
 
     /// Runs one cached line after its fingerprint check, with at most half
-    /// of the line's remaining time (SPEC 12.1). False is a miss.
-    async fn replay_action(
+    /// of the line's remaining time (SPEC 12.1). `cap_ms`, when given,
+    /// stands in for the remaining time when it is shorter. False is a
+    /// miss.
+    pub(super) async fn replay_action(
         &mut self,
         line: &mut ActLine<'_>,
         cached: &CachedAction,
+        cap_ms: Option<u64>,
         client: &mut ShimClient,
         state: &mut EntryState,
-    ) -> bool {
+    ) -> Replay {
         let Ok(action) = parse_action_line(&cached.line) else {
-            return false;
+            return Replay::Failed;
         };
         let locators = action.kind.locators();
         if locators.len() != cached.fingerprints.len() {
-            return false;
+            return Replay::Failed;
         }
-        for (locator, fingerprint) in locators.into_iter().zip(&cached.fingerprints) {
+        let capped = ActLine {
+            deadline: cap_ms.map_or(line.deadline, |cap| {
+                line.deadline
+                    .min(Instant::now() + Duration::from_millis(cap))
+            }),
+            ..*line
+        };
+        let mut missing = Vec::new();
+        for (index, (locator, fingerprint)) in
+            locators.into_iter().zip(&cached.fingerprints).enumerate()
+        {
             if self
-                .check_cached(line, locator, fingerprint, client, state)
+                .check_cached(&capped, locator, fingerprint, client, state)
                 .await
                 .is_none()
             {
-                return false;
+                missing.push(index);
             }
         }
+        if !missing.is_empty() {
+            return Replay::Missing(missing);
+        }
         let Ok(command) = self.build_action(&action) else {
-            return false;
+            return Replay::Failed;
         };
+        let time_ms = capped.remaining_ms() / 2;
         let mut attempt = ActLine {
-            deadline: Instant::now() + Duration::from_millis(line.remaining_ms() / 2),
+            deadline: Instant::now() + Duration::from_millis(time_ms),
             ..*line
         };
         let ran = self
@@ -499,12 +534,12 @@ impl FlowExec<'_> {
             .await
             .is_ok();
         line.entry_start = attempt.entry_start;
-        ran
+        if ran { Replay::Ran } else { Replay::Failed }
     }
 
     /// The cache line of a planned action, with its fingerprints, or the
     /// warning code and reason when the cache cannot hold it (SPEC 12.1).
-    async fn cache_line(
+    pub(super) async fn cache_line(
         &mut self,
         line: &mut ActLine<'_>,
         action: &PlannedAction,
@@ -579,7 +614,7 @@ impl FlowExec<'_> {
     /// Reads the value a fill left in its field. `None` means Whirl cannot
     /// tell: the budget is spent, the element is gone, or it has no value,
     /// such as a `contenteditable` element.
-    async fn read_back_value(
+    pub(super) async fn read_back_value(
         &mut self,
         line: &mut ActLine<'_>,
         command: StepCommand,

@@ -10,17 +10,20 @@
 use std::env;
 use std::time::Instant;
 
-use lithos_llm::catalog::{Catalog, CatalogError};
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
+use lithos_llm::catalog::{Catalog, CatalogError, Support};
 use lithos_llm::client::ClientBuildError;
-use lithos_llm::credentials::ConventionalCredentials;
+use lithos_llm::credentials::{ConventionalCredentials, CredentialProvider as _};
 use lithos_llm::middleware::{CallContext, RetryMiddleware, RetryPolicy};
 use lithos_llm::resolver::{AvailableProviders, CatalogResolver, ModelResolver as _};
-use lithos_llm::types::{ErrorKind, Usage};
-use lithos_llm::{Client, Request};
+use lithos_llm::types::{ContentPart, ErrorKind, ImageContent, MediaSource, Message, Role, Usage};
+use lithos_llm::{Client, Request, StructuredCompletion};
 use serde::Deserialize;
 use serde_json::{Value as Json, json};
 
-use crate::run::act::decision::{ActInference, inference_schema};
+use crate::lang::lint::ModelFacts;
+use crate::run::act::decision::{ActInference, GoalInference, goal_schema, inference_schema};
 use crate::run::act::prompt;
 
 /// Sends every model call to one OpenAI-compatible server (SPEC 13).
@@ -63,17 +66,25 @@ impl ModelCatalog {
         Self { catalog }
     }
 
-    /// True when the selector names a model the client can route.
-    pub(crate) fn knows(&self, selector: &str) -> bool {
+    /// What the catalog says about the model the selector names. In
+    /// endpoint mode every model is known and counts as accepting images.
+    pub(crate) fn facts(&self, selector: &str) -> ModelFacts {
         let Some(catalog) = &self.catalog else {
-            return true;
+            return ModelFacts::Known { images: Some(true) };
         };
         let Ok(request) = Request::builder().model(selector).user("-").build() else {
-            return false;
+            return ModelFacts::Unknown;
         };
-        CatalogResolver
-            .resolve(&request, catalog, &AvailableProviders::all(catalog))
-            .is_ok()
+        match CatalogResolver.resolve(&request, catalog, &AvailableProviders::all(catalog)) {
+            Ok(route) => ModelFacts::Known {
+                images: match route.model().capabilities().images() {
+                    Support::Supported => Some(true),
+                    Support::Unsupported => Some(false),
+                    _ => None,
+                },
+            },
+            Err(_) => ModelFacts::Unknown,
+        }
     }
 }
 
@@ -103,6 +114,62 @@ pub(crate) struct TargetAnswer {
 #[derive(Debug)]
 pub(crate) struct TargetReply {
     pub(crate) answer: Result<TargetAnswer, serde_json::Error>,
+    pub(crate) usage:  Usage,
+}
+
+/// An `EXTRACT` answer (SPEC 7.6): the object, the raw text it came
+/// from, which keeps exact numbers, and what the call used.
+#[derive(Debug)]
+pub(crate) struct ExtractReply {
+    pub(crate) object: Json,
+    pub(crate) text:   String,
+    pub(crate) usage:  Usage,
+}
+
+/// A `JUDGE` verdict (SPEC 9.8).
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Verdict {
+    Yes,
+    No,
+    Unsure,
+}
+
+impl Verdict {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Yes => "yes",
+            Self::No => "no",
+            Self::Unsure => "unsure",
+        }
+    }
+}
+
+/// A `JUDGE` answer.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+pub(crate) struct JudgeAnswer {
+    pub(crate) verdict: Verdict,
+    pub(crate) reason:  String,
+}
+
+/// One `JUDGE` answer, and what the call used.
+#[derive(Debug)]
+pub(crate) struct JudgeReply {
+    /// One answer for each claim, in order.
+    pub(crate) answer: Result<Vec<JudgeAnswer>, serde_json::Error>,
+    pub(crate) usage:  Usage,
+}
+
+/// Several `JUDGE` answers, one for each claim of a batch.
+#[derive(Deserialize)]
+struct JudgeAnswers {
+    verdicts: Vec<JudgeAnswer>,
+}
+
+/// One `GOAL` answer, and what the call used.
+#[derive(Debug)]
+pub(crate) struct GoalReply {
+    pub(crate) answer: Result<GoalInference, serde_json::Error>,
     pub(crate) usage:  Usage,
 }
 
@@ -159,6 +226,30 @@ impl ModelClient {
         })
     }
 
+    /// Asks the model for the next step toward a goal (SPEC 7.7). The
+    /// call, with its retries, ends by `deadline`.
+    pub(crate) async fn goal_step(
+        &self,
+        model: &str,
+        user: &str,
+        deadline: Instant,
+    ) -> Result<GoalReply, lithos_llm::Error> {
+        let (object, usage) = self
+            .structured(
+                model,
+                &prompt::goal_system_prompt(),
+                user,
+                "Goal",
+                goal_schema(),
+                deadline,
+            )
+            .await?;
+        Ok(GoalReply {
+            answer: serde_json::from_value(object),
+            usage,
+        })
+    }
+
     /// Asks the model for every element that an `ai:` description names
     /// (SPEC 6.3). The call, with its retries, ends by `deadline`.
     pub(crate) async fn find_elements(
@@ -208,6 +299,130 @@ impl ModelClient {
         })
     }
 
+    /// Asks the model whether a claim holds, from the text and a PNG
+    /// screenshot (SPEC 9.8).
+    pub(crate) async fn judge(
+        &self,
+        model: &str,
+        text: &str,
+        png: &[u8],
+        claims: usize,
+        deadline: Instant,
+    ) -> Result<JudgeReply, lithos_llm::Error> {
+        let one = json!({
+            "type": "object",
+            "properties": {
+                "verdict": {"type": "string", "enum": ["yes", "no", "unsure"]},
+                "reason": {"type": "string", "description": "One or two sentences on the evidence"}
+            },
+            "required": ["verdict", "reason"],
+            "additionalProperties": false
+        });
+        let schema = if claims == 1 {
+            one
+        } else {
+            json!({
+                "type": "object",
+                "properties": {
+                    "verdicts": {
+                        "type": "array",
+                        "items": one,
+                        "description": "One verdict for each claim, in the order of the claims"
+                    }
+                },
+                "required": ["verdicts"],
+                "additionalProperties": false
+            })
+        };
+        let image = ImageContent::new(MediaSource::base64(STANDARD.encode(png), "image/png"));
+        let message = Message::new(Role::User, [
+            ContentPart::Text {
+                text: text.to_owned(),
+            },
+            ContentPart::Image(image),
+        ]);
+        let request = Request::builder()
+            .model(self.selector(model))
+            .system(prompt::judge_system_prompt())
+            .message(message)
+            .build()
+            .map_err(|source| {
+                lithos_llm::Error::new(ErrorKind::InvalidRequest, "the JUDGE request is invalid")
+                    .with_source(source)
+            })?;
+        let mut context = CallContext::new();
+        context.set_deadline(deadline);
+        let completion = self
+            .client
+            .complete_object_with_context(request, "Judge", schema, context)
+            .await?;
+        let answer = if claims == 1 {
+            serde_json::from_value(completion.object).map(|answer| vec![answer])
+        } else {
+            serde_json::from_value::<JudgeAnswers>(completion.object).map(|all| all.verdicts)
+        };
+        Ok(JudgeReply {
+            answer,
+            usage: completion.response.usage_with_cost(),
+        })
+    }
+
+    /// False when the model's provider has no credentials in the
+    /// environment (SPEC 9.8). An endpoint, and a model the catalog does
+    /// not know, count as ready: their calls report their own errors.
+    pub(crate) async fn has_credentials(&self, model: &str) -> bool {
+        if self.endpoint {
+            return true;
+        }
+        let Ok(request) = Request::builder().model(model).user("-").build() else {
+            return true;
+        };
+        let Ok(route) = self.client.resolve_route(&request) else {
+            return true;
+        };
+        let Ok(provider) = self
+            .client
+            .catalog()
+            .provider(route.handle().provider().as_str())
+        else {
+            return true;
+        };
+        ConventionalCredentials::new().is_configured(provider).await
+    }
+
+    fn selector(&self, model: &str) -> String {
+        if self.endpoint {
+            format!("{ENDPOINT_PROVIDER}/{model}")
+        } else {
+            model.to_owned()
+        }
+    }
+
+    /// Asks the model to read a value in the shape of `schema` (SPEC 7.6).
+    pub(crate) async fn extract(
+        &self,
+        model: &str,
+        user: &str,
+        schema: Json,
+        deadline: Instant,
+    ) -> Result<ExtractReply, lithos_llm::Error> {
+        let completion = self
+            .structured_completion(
+                model,
+                &prompt::extract_system_prompt(),
+                user,
+                "Extract",
+                schema,
+                deadline,
+            )
+            .await?;
+        Ok(ExtractReply {
+            text:   completion.response.text(),
+            usage:  completion.response.usage_with_cost(),
+            object: completion.object,
+        })
+    }
+
     /// Asks the model for the text an instruction wants typed, copied from
     /// the instruction; the page is not sent. `None` when the instruction
     /// does not say.
@@ -253,13 +468,24 @@ impl ModelClient {
         schema: Json,
         deadline: Instant,
     ) -> Result<(Json, Usage), lithos_llm::Error> {
-        let selector = if self.endpoint {
-            format!("{ENDPOINT_PROVIDER}/{model}")
-        } else {
-            model.to_owned()
-        };
+        let completion = self
+            .structured_completion(model, system, user, name, schema, deadline)
+            .await?;
+        Ok((completion.object, completion.response.usage_with_cost()))
+    }
+
+    /// One structured-output call's whole completion.
+    async fn structured_completion(
+        &self,
+        model: &str,
+        system: &str,
+        user: &str,
+        name: &str,
+        schema: Json,
+        deadline: Instant,
+    ) -> Result<StructuredCompletion, lithos_llm::Error> {
         let request = Request::builder()
-            .model(selector)
+            .model(self.selector(model))
             .system(system)
             .user(user)
             .build()
@@ -269,11 +495,9 @@ impl ModelClient {
             })?;
         let mut context = CallContext::new();
         context.set_deadline(deadline);
-        let completion = self
-            .client
+        self.client
             .complete_object_with_context(request, name, schema, context)
-            .await?;
-        Ok((completion.object, completion.response.usage_with_cost()))
+            .await
     }
 }
 
@@ -316,17 +540,28 @@ mod tests {
     }
 
     #[test]
-    fn the_builtin_catalog_knows_listed_models() {
+    fn the_builtin_catalog_knows_listed_models_and_their_image_support() {
         let models = builtin();
-        assert!(models.knows("anthropic/claude-sonnet-5"));
-        assert!(!models.knows("nobody/claude-sonnet-5"));
-        assert!(!models.knows("anthropic/"));
+        assert_eq!(
+            models.facts("anthropic/claude-sonnet-5"),
+            ModelFacts::Known { images: Some(true) }
+        );
+        assert_eq!(
+            models.facts("deepseek/deepseek-v4-flash"),
+            ModelFacts::Known {
+                images: Some(false),
+            }
+        );
+        assert_eq!(models.facts("nobody/claude-sonnet-5"), ModelFacts::Unknown);
+        assert_eq!(models.facts("anthropic/"), ModelFacts::Unknown);
     }
 
     #[test]
     fn endpoint_mode_accepts_any_model() {
         let models = ModelCatalog { catalog: None };
-        assert!(models.knows("gpt-test"));
+        assert_eq!(models.facts("gpt-test"), ModelFacts::Known {
+            images: Some(true),
+        });
     }
 
     #[test]

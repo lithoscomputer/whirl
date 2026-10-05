@@ -1,0 +1,9 @@
+[Options]
+base: {{env.EVAL_BASE}}
+model: {{model}}
+
+# GOAL: the committed cache holds the whole checkout path, but the page
+# renamed one button; the rest of the path still fits.
+VISIT /goal-checkout/
+GOAL "buy three green mugs with standard shipping for Alan Turing"
+ASSERT testid:confirmation text == "Order placed: 3 × Green mug, standard shipping, for Alan Turing"

@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Search</title>
+</head>
+<body>
+<h1>Search the shop</h1>
+<form id="search">
+  <label>Search <input name="q"></label>
+  <button type="submit">Search</button>
+</form>
+<ul id="results"></ul>
+<p data-testid="detail"></p>
+<script>
+  // Results come from a slow API after the form is sent.
+  document.getElementById("search").addEventListener("submit", (event) => {
+    event.preventDefault();
+    const query = new FormData(event.target).get("q").toLowerCase();
+    const list = document.getElementById("results");
+    list.replaceChildren();
+    fetch("results.json?delay=800")
+      .then((response) => response.json())
+      .then((results) => {
+        for (const result of results.filter((item) => item.name.toLowerCase().includes(query.replace(/s$/, "")))) {
+          const item = document.createElement("li");
+          item.innerHTML = `<a href="#">${result.name}</a>`;
+          item.querySelector("a").addEventListener("click", (click) => {
+            click.preventDefault();
+            document.querySelector("[data-testid=detail]").textContent = `${result.name} — ${result.price}`;
+          });
+          list.append(item);
+        }
+      });
+  });
+</script>
+</body>
+</html>

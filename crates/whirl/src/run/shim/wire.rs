@@ -310,7 +310,9 @@ pub(crate) fn read_subject_wire<E>(
         Subject::Url => json!({"type": "url"}),
         Subject::Title => json!({"type": "title"}),
         Subject::Eval(script) => json!({"type": "eval", "script": resolve(script)?}),
-        Subject::Response { .. } | Subject::Request { .. } => return Ok(None),
+        Subject::Response { .. } | Subject::Request { .. } | Subject::Extract { .. } => {
+            return Ok(None);
+        }
     };
     Ok(Some(json))
 }

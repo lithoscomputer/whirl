@@ -6,12 +6,17 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Duration;
 use std::{env, fs, process};
 
+use axum::Router;
+use axum::response::Html;
+use axum::routing::get;
 use reqwest::blocking::{Client as HttpClient, Response};
 use serde_json::{Value as Json, json};
 use tokio::net::TcpListener;
 use tokio::runtime::{Builder, Runtime};
+use tokio::time::sleep;
 use twin_openai::config::{Config, Mode, RecordFormat};
 
 /// A unique temporary directory for one test, removed on drop.
@@ -623,5 +628,740 @@ fn the_generator_prefers_a_test_id_and_names_an_iframe_by_its_title() {
     assert_eq!(
         cache["entries"][1]["locator"],
         "frame:iframe[title='Payment'] >> role:textbox Card"
+    );
+}
+
+const ORDER: &str = "VISIT \"data:text/html,<h1>Order</h1><section data-testid=summary>\
+    <p>Mug $12.50</p><p>Plate $8.00</p><p>Total $20.50</p>\
+    <a href='/docs/returns'>Returns</a></section>\"\n";
+
+#[test]
+fn extract_reads_a_typed_value_that_later_checks_read() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.answer(&[json!({"total": 20.5, "items": ["Mug", "Plate"], "coupon": null})]);
+    let flow = dir.file(
+        "order.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{ORDER}\
+             EXTRACT order testid:summary \"the order total and line items\"\n\
+             {{\n\
+                 \"type\": \"object\",\n\
+                 \"properties\": {{\n\
+                     \"total\": {{ \"type\": \"number\" }},\n\
+                     \"items\": {{ \"type\": \"array\", \"items\": {{ \"type\": \"string\" }} }},\n\
+                     \"coupon\": {{ \"type\": \"string\" }}\n\
+                 }},\n\
+                 \"required\": [\"total\", \"items\"]\n\
+             }}\n\
+             ASSERT extract:order json:$.total == 20.5\n\
+             ASSERT extract:order json:$.items count == 2\n\
+             ASSERT extract:order json:$.coupon not exists\n\
+             CAPTURE first: extract:order json:$.items[0]\n\
+             ASSERT text~:{{{{first}}}} visible\n"
+        ),
+    );
+    let output = twin.run(&dir, &flow, &[]);
+    assert_eq!(
+        exit_code(&output),
+        0,
+        "{}{}",
+        stdout_text(&output),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let extract = &steps(&dir)[1]["extract"];
+    assert_eq!(extract["model"], "gpt-test");
+    assert_eq!(
+        extract["value"],
+        json!({"type": "object", "value": {"total": 20.5, "items": ["Mug", "Plate"]}})
+    );
+    assert_eq!(extract["usage"]["modelCalls"], 1);
+    let log = twin.request_log();
+    assert!(log.contains("the order total and line items"), "{log}");
+}
+
+#[test]
+fn extract_without_a_schema_reads_text_and_null_is_missing() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.answer(&[json!({"value": "Total $20.50"}), json!({"value": null})]);
+    let flow = dir.file(
+        "text.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{ORDER}\
+             EXTRACT total \"the total line\"\n\
+             EXTRACT coupon \"the coupon code\"\n\
+             ASSERT extract:total == \"Total $20.50\"\n\
+             ASSERT extract:coupon not exists\n"
+        ),
+    );
+    let output = twin.run(&dir, &flow, &[]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+}
+
+#[test]
+fn extract_turns_a_link_ref_into_an_absolute_url() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.answer(&[json!({"value": "e6"})]);
+    let flow = dir.file(
+        "link.whirl",
+        "[Options]\nmodel: gpt-test\n\
+         VISIT \"data:text/html,<h1>Order</h1><p>Mug</p><p>Plate</p><p>Total</p>\
+         <a href='https://shop.test/docs/returns'>Returns</a>\"\n\
+         EXTRACT returns \"the returns link\"\n\
+         { \"type\": \"string\", \"format\": \"uri\" }\n\
+         ASSERT extract:returns == \"https://shop.test/docs/returns\"\n",
+    );
+    let output = twin.run(&dir, &flow, &[]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "{stdout}\n{}", twin.request_log());
+}
+
+#[test]
+fn a_null_answer_for_a_non_object_schema_is_missing() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.answer(&[json!({"value": null})]);
+    let flow = dir.file(
+        "missing.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{ORDER}\
+             EXTRACT coupon \"the coupon code\"\n{{ \"type\": \"string\" }}\n\
+             ASSERT extract:coupon not exists\n"
+        ),
+    );
+    let output = twin.run(&dir, &flow, &[]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+}
+
+#[test]
+fn an_extract_answer_outside_its_schema_fails_the_entry() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.answer(&[json!({"value": "twenty"})]);
+    let flow = dir.file(
+        "bad.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{ORDER}\
+             EXTRACT total \"the total\"\n{{ \"type\": \"number\" }}\n"
+        ),
+    );
+    let output = twin.run(&dir, &flow, &[]);
+    assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
+    let step = &steps(&dir)[1];
+    assert_eq!(step["error"]["code"], "extract-schema");
+}
+
+/// A `JUDGE` answer.
+fn verdict(verdict: &str, reason: &str) -> Json {
+    json!({"verdict": verdict, "reason": reason})
+}
+
+#[test]
+fn judge_passes_on_yes_and_sends_the_screenshot_and_the_outline() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.answer(&[verdict("yes", "the total is the sum of the items")]);
+    let flow = dir.file(
+        "judge.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{ORDER}\
+             ASSERT testid:summary visible\n\
+             JUDGE testid:summary \"the total matches the sum of the line items\"\n"
+        ),
+    );
+    let output = twin.run(&dir, &flow, &[]);
+    assert_eq!(
+        exit_code(&output),
+        0,
+        "{}{}",
+        stdout_text(&output),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let step = &steps(&dir)[2];
+    assert_eq!(step["kind"], "judge");
+    assert_eq!(
+        step["text"],
+        "JUDGE testid:summary \"the total matches the sum of the line items\""
+    );
+    assert_eq!(step["judge"]["model"], "gpt-test");
+    assert_eq!(step["judge"]["verdict"], "yes");
+    assert_eq!(step["judge"]["reason"], "the total is the sum of the items");
+    assert_eq!(step["judge"]["usage"]["modelCalls"], 1);
+    let html = fs::read_to_string(dir.path.join("report.html")).expect("the HTML report exists");
+    assert!(
+        html.contains(
+            "<dt>Verdict</dt><dd>yes</dd><dt>Reason</dt><dd>the total is the sum of the items</dd>"
+        ),
+        "{html}"
+    );
+    let log = twin.request_log();
+    assert!(
+        log.contains("the total matches the sum of the line items"),
+        "{log}"
+    );
+    // The twin checks the image part but does not log it.
+    assert!(log.contains("Screenshot:"), "{log}");
+    assert!(log.contains("Plate $8.00"), "{log}");
+    assert!(!log.contains("heading \\\"Order\\\""), "{log}");
+}
+
+#[test]
+fn judge_fails_on_no_with_the_models_reason() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.answer(&[verdict("no", "the page shows an error banner")]);
+    let flow = dir.file(
+        "judge.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{ORDER}\
+             ASSERT testid:summary visible\n\
+             JUDGE \"the page shows no error message\"\n\
+             ASSERT url exists\n"
+        ),
+    );
+    let output = twin.run(&dir, &flow, &[]);
+    assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
+    let stdout = stdout_text(&output);
+    assert!(stdout.contains("judge-false"), "{stdout}");
+    assert!(
+        stdout.contains("the page shows an error banner"),
+        "{stdout}"
+    );
+    let steps = steps(&dir);
+    let error = &steps[2]["error"];
+    assert_eq!(error["code"], "judge-false");
+    assert_eq!(error["expected"], "the page shows no error message");
+    assert_eq!(error["actual"], "the page shows an error banner");
+    assert_eq!(steps[2]["judge"]["verdict"], "no");
+    assert_eq!(
+        steps[3]["status"], "skipped",
+        "the entry stops at the failed JUDGE"
+    );
+}
+
+#[test]
+fn judge_warns_on_unsure_and_the_entry_goes_on() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.answer(&[verdict("unsure", "the chart is cut off")]);
+    let flow = dir.file(
+        "judge.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{ORDER}\
+             ASSERT testid:summary visible\n\
+             JUDGE \"the chart trends upward\"\n\
+             ASSERT url exists\n"
+        ),
+    );
+    let output = twin.run(&dir, &flow, &[]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    assert_eq!(warning_codes(&dir), ["judge-unsure"]);
+    let steps = steps(&dir);
+    assert_eq!(steps[2]["status"], "passed");
+    assert_eq!(steps[2]["judge"]["verdict"], "unsure");
+    assert_eq!(steps[3]["status"], "passed");
+    assert!(
+        stdout_text(&output).contains("the chart is cut off"),
+        "{}",
+        stdout_text(&output)
+    );
+}
+
+#[test]
+fn a_judge_claim_masks_secrets_and_never_uses_the_cache() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.answer(&[verdict("yes", "it shows hunter2")]);
+    let flow = dir.file(
+        "judge.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{ORDER}\
+             ASSERT testid:summary visible\n\
+             JUDGE \"the page greets {{{{env.SECRET}}}}\"\n"
+        ),
+    );
+    let output = twin.run_with_args(&dir, &flow, &[("SECRET", "hunter2")], &["--cache=only"]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    let log = twin.request_log();
+    assert!(!log.contains("greets hunter2"), "{log}");
+    assert!(log.contains("greets "), "{log}");
+    let step = &steps(&dir)[2];
+    assert_eq!(step["judge"]["reason"], "it shows ***");
+    assert!(cache_of(&flow).is_none());
+}
+
+#[test]
+fn judge_without_credentials_stops_the_run_before_any_flow() {
+    let dir = TestDir::new();
+    let flow = dir.file(
+        "judge.whirl",
+        &format!(
+            "[Options]\nmodel: anthropic/claude-sonnet-5\n{ORDER}\
+             ASSERT testid:summary visible\n\
+             JUDGE \"the page shows no error message\"\n"
+        ),
+    );
+    let shim_js = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../shim/dist/index.js");
+    let output = Command::new(env!("CARGO_BIN_EXE_whirl"))
+        .env("WHIRL_NODE", "node")
+        .env("WHIRL_SHIM_JS", shim_js)
+        .env_remove("WHIRL_LLM_ENDPOINT")
+        .env_remove("ANTHROPIC_API_KEY")
+        .current_dir(&dir.path)
+        .arg("--artifacts")
+        .arg(dir.path.join("artifacts"))
+        .arg(&flow)
+        .output()
+        .expect("the whirl binary should run");
+    assert_eq!(exit_code(&output), 3, "{}", stdout_text(&output));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("JUDGE needs credentials for the model anthropic/claude-sonnet-5"),
+        "{stderr}"
+    );
+    assert!(!dir.path.join("artifacts").exists());
+}
+
+const GOAL_SHOP: &str = "VISIT \"data:text/html,<h1>Shop</h1>\
+    <label>Quantity <input id=q></label>\
+    <button onclick=\\\"document.querySelector('output').textContent=document.querySelector('%23q').value\\\">Add to cart</button>\
+    <p>Cart: <output data-testid=cart></output></p>\"\n";
+
+/// A `GOAL` answer that runs one action.
+fn goal_act(element: &str, method: &str, arguments: &[&str]) -> Json {
+    json!({
+        "status": "act",
+        "reason": "one more step",
+        "actions": [{"elementId": element, "description": "an element", "method": method, "arguments": arguments}]
+    })
+}
+
+/// A `GOAL` answer that ends the goal.
+fn goal_end(status: &str, reason: &str) -> Json {
+    json!({"status": status, "reason": reason, "actions": []})
+}
+
+fn goal_flow(dir: &TestDir, goal: &str) -> PathBuf {
+    dir.file(
+        "goal.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{GOAL_SHOP}\
+             GOAL \"{goal}\"\n\
+             ASSERT testid:cart text == 2\n"
+        ),
+    )
+}
+
+#[test]
+fn a_goal_runs_actions_until_done_and_the_cache_replays_its_path() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.answer(&[
+        goal_act("e4", "fill", &["2"]),
+        goal_act("e5", "click", &[]),
+        goal_end("done", "the cart holds 2"),
+    ]);
+    let flow = goal_flow(&dir, "add two to the cart");
+    let output = twin.run_with_args(&dir, &flow, &[], &["--cache=update"]);
+    assert_eq!(
+        exit_code(&output),
+        0,
+        "{}{}",
+        stdout_text(&output),
+        twin.request_log()
+    );
+    let step = &steps(&dir)[1];
+    let goal = &step["goal"];
+    assert_eq!(goal["model"], "gpt-test");
+    assert_eq!(goal["end"], "done");
+    assert_eq!(goal["reason"], "the cart holds 2");
+    assert_eq!(goal["cache"], "miss");
+    assert_eq!(goal["usage"]["modelCalls"], 3);
+    let lines: Vec<&str> = goal["actions"]
+        .as_array()
+        .expect("actions")
+        .iter()
+        .map(|action| action["line"].as_str().expect("a line"))
+        .collect();
+    assert_eq!(lines, [
+        "FILL role:textbox \"Quantity\" \"2\"",
+        "CLICK role:button \"Add to cart\""
+    ]);
+    assert_eq!(warning_codes(&dir), ["cache-miss"]);
+    let log = twin.request_log();
+    assert!(
+        log.contains(
+            "Steps taken so far: 1. FILL role:textbox \\\"Quantity\\\" \\\"2\\\" 2. CLICK role:button"
+        ),
+        "{log}"
+    );
+    let cache = cache_of(&flow).expect("the cache is written");
+    assert_eq!(cache["entries"][0]["kind"], "goal");
+    assert_eq!(cache["entries"][0]["line"], "GOAL \"add two to the cart\"");
+    assert_eq!(
+        cache["entries"][0]["actions"][0]["line"],
+        "FILL role:textbox Quantity \"2\""
+    );
+
+    // The replay makes no model call: the twin has no answer left.
+    let output = twin.run(&dir, &flow, &[]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    let goal = &steps(&dir)[1]["goal"];
+    assert_eq!(goal["cache"], "hit");
+    assert_eq!(goal["usage"]["modelCalls"], 0);
+    assert_eq!(goal["actions"][1]["plannedBy"], "cache");
+    assert!(warning_codes(&dir).is_empty());
+    let html = fs::read_to_string(dir.path.join("report.html")).expect("the HTML report exists");
+    assert!(html.contains("<dt>AI cache</dt><dd>hit</dd>"), "{html}");
+}
+
+#[test]
+fn a_goal_the_model_calls_impossible_fails_with_its_reason() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.answer(&[goal_end("impossible", "the shop has no checkout")]);
+    let flow = goal_flow(&dir, "check out");
+    let output = twin.run(&dir, &flow, &[]);
+    assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
+    let step = &steps(&dir)[1];
+    assert_eq!(step["error"]["code"], "goal-impossible");
+    assert_eq!(step["error"]["actual"], "the shop has no checkout");
+    assert_eq!(step["goal"]["end"], "impossible");
+    assert!(cache_of(&flow).is_none());
+    let html = fs::read_to_string(dir.path.join("report.html")).expect("the HTML report exists");
+    assert!(
+        html.contains("<dt>Ended</dt><dd>impossible: the shop has no checkout</dd>"),
+        "{html}"
+    );
+}
+
+#[test]
+fn a_goal_stops_after_twenty_actions() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    let answers: Vec<Json> = (0..21).map(|_| goal_act("e5", "click", &[])).collect();
+    twin.answer(&answers);
+    let flow = goal_flow(&dir, "add two to the cart");
+    let output = twin.run(&dir, &flow, &[]);
+    assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
+    let step = &steps(&dir)[1];
+    assert_eq!(step["error"]["code"], "goal-limit");
+    assert_eq!(step["goal"]["actions"].as_array().map(Vec::len), Some(20));
+    assert_eq!(step["goal"]["usage"]["modelCalls"], 21);
+}
+
+#[test]
+fn a_failed_goal_action_goes_back_to_the_model() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    // Filling the button fails at once; the model then plans again.
+    twin.answer(&[
+        goal_act("e5", "fill", &["2"]),
+        goal_act("e4", "fill", &["2"]),
+        goal_act("e5", "click", &[]),
+        goal_end("done", "the cart holds 2"),
+    ]);
+    let flow = goal_flow(&dir, "add two to the cart");
+    let output = twin.run_with_args(&dir, &flow, &[], &["--cache=update"]);
+    let log = twin.request_log();
+    assert_eq!(exit_code(&output), 0, "{}{log}", stdout_text(&output));
+    let actions = steps(&dir)[1]["goal"]["actions"].clone();
+    assert_eq!(actions[0]["line"], "FILL role:button \"Add to cart\" \"2\"");
+    assert!(actions[0]["error"].is_string(), "{actions}");
+    assert!(actions[1].get("error").is_none(), "{actions}");
+    assert!(
+        log.contains("1. FILL role:button \\\"Add to cart\\\" \\\"2\\\" (failed: "),
+        "{log}"
+    );
+    // The cache holds only the actions that ran.
+    let cache = cache_of(&flow).expect("the cache is written");
+    assert_eq!(
+        cache["entries"][0]["actions"].as_array().map(Vec::len),
+        Some(2)
+    );
+}
+
+#[test]
+fn a_goal_heals_from_the_current_page_when_a_cached_line_misses() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    let flow = goal_flow(&dir, "add two to the cart");
+    fs::write(
+        dir.path.join("goal.whirl-cache.json"),
+        json!({
+            "version": 1,
+            "entries": [{
+                "kind": "goal",
+                "line": "GOAL \"add two to the cart\"",
+                "occurrence": 1,
+                "model": "gpt-test",
+                "actions": [
+                    {"line": "FILL label:Quantity 2", "fingerprints": [{"role": "textbox", "name": "Quantity"}]},
+                    {"line": "CLICK role:button Buy", "fingerprints": [{"role": "button", "name": "Buy"}]}
+                ]
+            }]
+        })
+        .to_string(),
+    )
+    .expect("the cache writes");
+    // The model finds no element for the renamed button, so it plans the
+    // rest of the goal.
+    twin.answer(&[
+        found(&[]),
+        goal_act("e5", "click", &[]),
+        goal_end("done", "the cart holds 2"),
+    ]);
+    let output = twin.run_with_args(&dir, &flow, &[], &["--cache=update"]);
+    let log = twin.request_log();
+    assert_eq!(exit_code(&output), 0, "{}{log}", stdout_text(&output));
+    let goal = &steps(&dir)[1]["goal"];
+    assert_eq!(goal["cache"], "healed");
+    assert_eq!(goal["usage"]["modelCalls"], 3);
+    assert_eq!(goal["actions"][0]["plannedBy"], "cache");
+    assert_eq!(goal["actions"][1]["plannedBy"], "llm");
+    assert_eq!(goal["cached"][1], "CLICK role:button Buy");
+    assert_eq!(warning_codes(&dir), ["healed"]);
+    assert!(
+        log.contains("Steps taken so far: 1. FILL label:Quantity 2 Accessibility"),
+        "{log}"
+    );
+    let cache = cache_of(&flow).expect("the cache is written");
+    assert_eq!(
+        cache["entries"][0]["actions"][1]["line"],
+        "CLICK role:button \"Add to cart\""
+    );
+}
+
+#[test]
+fn a_goal_miss_fails_with_cache_only() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    let flow = goal_flow(&dir, "add two to the cart");
+    let output = twin.run_with_args(&dir, &flow, &[], &["--cache=only"]);
+    assert_eq!(exit_code(&output), 1, "{}", stdout_text(&output));
+    assert_eq!(steps(&dir)[1]["error"]["code"], "cache-miss");
+}
+
+#[test]
+fn a_goal_sends_secrets_as_placeholders_and_caches_their_reference() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.answer(&[
+        goal_act("e4", "fill", &["%env.QTY%"]),
+        goal_act("e5", "click", &[]),
+        goal_end("done", "added"),
+    ]);
+    let flow = goal_flow(&dir, "add {{env.QTY}} to the cart");
+    let output = twin.run_with_args(&dir, &flow, &[("QTY", "2")], &["--cache=update"]);
+    let log = twin.request_log();
+    assert_eq!(exit_code(&output), 0, "{}{log}", stdout_text(&output));
+    assert!(log.contains("Goal: add %env.QTY% to the cart"), "{log}");
+    let cache = cache_of(&flow).expect("the cache is written");
+    assert_eq!(
+        cache["entries"][0]["actions"][0]["line"],
+        "FILL role:textbox Quantity \"{{env.QTY}}\""
+    );
+}
+
+#[test]
+fn a_goal_that_runs_out_of_time_fails_with_timeout() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.answer(&[goal_act("e2", "click", &[])]);
+    let flow = dir.file(
+        "goal.whirl",
+        "[Options]\nmodel: gpt-test\n\
+         VISIT \"data:text/html,<button disabled>Buy</button>\"\n\
+         GOAL \"buy it\" @1s\n\
+         ASSERT url exists\n",
+    );
+    let output = twin.run(&dir, &flow, &[]);
+    let log = twin.request_log();
+    assert_eq!(exit_code(&output), 1, "{}{log}", stdout_text(&output));
+    let error = &steps(&dir)[1]["error"];
+    assert_eq!(error["code"], "timeout", "{error}");
+    assert_eq!(
+        error["message"],
+        "timeout: GOAL did not finish within 1000ms"
+    );
+}
+
+/// A page whose list arrives from a request that the server holds for
+/// 800 ms, served on its own runtime.
+struct SlowSite {
+    _runtime: Runtime,
+    url:      String,
+}
+
+impl SlowSite {
+    fn start() -> Self {
+        let runtime = Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .expect("the site runtime should build");
+        let listener = runtime
+            .block_on(TcpListener::bind("127.0.0.1:0"))
+            .expect("the site should bind a local port");
+        let url = format!(
+            "http://{}",
+            listener
+                .local_addr()
+                .expect("a bound listener has an address")
+        );
+        let app = Router::new()
+            .route(
+                "/",
+                get(|| async {
+                    Html(
+                        "<h1>Mugs</h1><ul id=list></ul><script>\
+                         fetch('/items').then(r => r.text()).then(t => {\
+                         document.getElementById('list').innerHTML = t; });</script>",
+                    )
+                }),
+            )
+            .route(
+                "/items",
+                get(|| async {
+                    sleep(Duration::from_millis(800)).await;
+                    "<li>Blue mug</li>"
+                }),
+            );
+        runtime.spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("the site should serve");
+        });
+        Self {
+            _runtime: runtime,
+            url,
+        }
+    }
+}
+
+#[test]
+fn a_model_reads_the_page_after_its_requests_finish() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    let site = SlowSite::start();
+    twin.answer(&[json!({"value": "Blue mug"})]);
+    let flow = dir.file(
+        "slow.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\nVISIT {}/\n\
+             EXTRACT item \"the first item\"\n\
+             ASSERT extract:item == \"Blue mug\"\n",
+            site.url
+        ),
+    );
+    let output = twin.run(&dir, &flow, &[]);
+    assert_eq!(exit_code(&output), 0, "{}", stdout_text(&output));
+    let log = twin.request_log();
+    assert!(log.contains("listitem [ref=e4]: Blue mug"), "{log}");
+}
+
+#[test]
+fn a_goal_finds_a_renamed_element_again_and_replays_the_rest_of_its_path() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    let flow = goal_flow(&dir, "add two to the cart");
+    fs::write(
+        dir.path.join("goal.whirl-cache.json"),
+        json!({
+            "version": 1,
+            "entries": [{
+                "kind": "goal",
+                "line": "GOAL \"add two to the cart\"",
+                "occurrence": 1,
+                "model": "gpt-test",
+                "actions": [
+                    {"line": "FILL role:textbox Quantity \"2\"", "fingerprints": [{"role": "textbox", "name": "Quantity"}]},
+                    {"line": "CLICK role:button Buy", "fingerprints": [{"role": "button", "name": "Buy"}]}
+                ]
+            }]
+        })
+        .to_string(),
+    )
+    .expect("the cache writes");
+    // One call finds the button again; one more confirms the goal is done.
+    twin.answer(&[found(&["e5"]), goal_end("done", "the cart holds 2")]);
+    let output = twin.run_with_args(&dir, &flow, &[], &["--cache=update"]);
+    let log = twin.request_log();
+    assert_eq!(exit_code(&output), 0, "{}{log}", stdout_text(&output));
+    let goal = &steps(&dir)[1]["goal"];
+    assert_eq!(goal["cache"], "healed");
+    assert_eq!(goal["end"], "done");
+    assert_eq!(goal["usage"]["modelCalls"], 2);
+    assert_eq!(goal["actions"][1]["plannedBy"], "llm");
+    assert_eq!(warning_codes(&dir), ["healed"]);
+    assert!(log.contains("the button named \\\"Buy\\\""), "{log}");
+    let cache = cache_of(&flow).expect("the cache is written");
+    assert_eq!(
+        cache["entries"][0]["actions"][1]["line"],
+        "CLICK role:button \"Add to cart\""
+    );
+}
+
+#[test]
+fn a_goal_fills_the_fields_of_a_form_in_one_answer() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.answer(&[
+        json!({
+            "status": "act",
+            "reason": "fill the form",
+            "actions": [
+                {"elementId": "e4", "description": "user", "method": "fill", "arguments": ["ada"]},
+                {"elementId": "e6", "description": "password", "method": "fill", "arguments": ["%env.PASSWORD%"]}
+            ]
+        }),
+        goal_end("done", "filled"),
+    ]);
+    let flow = dir.file(
+        "form.whirl",
+        "[Options]\nmodel: gpt-test\n\
+         VISIT \"data:text/html,<h1>Sign in</h1><label>User <input></label><label>Password <input type=password></label>\"\n\
+         GOAL \"sign in as ada with {{env.PASSWORD}}\"\n\
+         ASSERT label:User value == ada\n\
+         ASSERT label:Password value == {{env.PASSWORD}}\n",
+    );
+    let output = twin.run(&dir, &flow, &[("PASSWORD", "hunter2")]);
+    let log = twin.request_log();
+    assert_eq!(exit_code(&output), 0, "{}{log}", stdout_text(&output));
+    let goal = &steps(&dir)[1]["goal"];
+    assert_eq!(goal["usage"]["modelCalls"], 2);
+    assert_eq!(goal["actions"].as_array().map(Vec::len), Some(2));
+}
+
+#[test]
+fn consecutive_judge_lines_with_one_scope_share_one_call() {
+    let dir = TestDir::new();
+    let twin = ModelTwin::start();
+    twin.answer(&[json!({"verdicts": [
+        verdict("yes", "the total is right"),
+        verdict("unsure", "the chart is cut off")
+    ]})]);
+    let flow = dir.file(
+        "judge.whirl",
+        &format!(
+            "[Options]\nmodel: gpt-test\n{ORDER}\
+             ASSERT testid:summary visible\n\
+             JUDGE \"the total matches the line items\"\n\
+             JUDGE \"the chart trends upward\"\n"
+        ),
+    );
+    let output = twin.run(&dir, &flow, &[]);
+    let log = twin.request_log();
+    assert_eq!(exit_code(&output), 0, "{}{log}", stdout_text(&output));
+    let steps = steps(&dir);
+    assert_eq!(steps[2]["judge"]["usage"]["modelCalls"], 1);
+    assert_eq!(steps[3]["judge"]["usage"]["modelCalls"], 0);
+    assert_eq!(steps[3]["judge"]["verdict"], "unsure");
+    assert_eq!(warning_codes(&dir), ["judge-unsure"]);
+    assert!(
+        log.contains("1. the total matches the line items 2. the chart trends upward"),
+        "{log}"
     );
 }

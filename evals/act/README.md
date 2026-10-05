@@ -1,8 +1,15 @@
 # ACT evals
 
-These evals compare language models on `ACT` (SPEC section 7.4) and `ai:`
-targets (SPEC section 6.3) for accuracy, cost, and speed. The `ai-target-*`
-tasks use `ai:` instead of `ACT`. Each task is an ordinary `.whirl` flow: `ACT` is
+These evals compare language models on `ACT` (SPEC section 7.4), `GOAL`
+(SPEC section 7.7), `ai:` targets (SPEC section 6.3), `EXTRACT` (SPEC section
+7.6), and `JUDGE` (SPEC section 9.8) for accuracy, cost, and speed. The
+`ai-target-*` tasks use `ai:` instead of `ACT`, the `extract-*` tasks use
+`EXTRACT`, the `judge-*` tasks use `JUDGE`, and the `goal-*` tasks use `GOAL`.
+Some `judge-*` claims only the screenshot shows, such as a color or a canvas
+chart. `goal-heal-checkout` has a committed AI cache whose second line no
+longer fits the page, so the model plans the rest of the goal from there.
+`goal-heal-renamed` has a committed cache of the whole path in which one button
+has an old name, so the model finds that button again and the rest replays. Each task is an ordinary `.whirl` flow: `ACT` is
 the step under test, and its `ASSERT` lines grade it. Whirl's JSON report records
 the rest.
 
@@ -21,7 +28,7 @@ $ mise run eval:act -- --summarize              # summarize existing runs only
 ```
 
 A session calls real models and costs money. Check it first with
-`--preview`. A local session is about 590 runs per model.
+`--preview`. A local session is about 850 runs per model.
 
 `-n` is a target: the script runs only the runs each model and task still
 need, one pass over the tasks at a time. Repeating a command resumes an
@@ -48,7 +55,10 @@ requests, which `lithos-llm` prices from its catalog.
 - **local** (default): flows in `local/flows/` against the pages in
   `local/site/`, which the script serves on `127.0.0.1`. A page reaches a
   second site through `localhost`. These runs are deterministic apart from
-  the model. The `saved-*` tasks use saved copies of real sites, in
+  the model. A page can ask the server to hold a response with a
+  `delay=MS` query parameter; the `slow-*` tasks and `goal-slow-search` load
+  their data that way, as many real sites do. The `saved-*` tasks use saved
+  copies of real sites, in
   `local/site/saved/` (see its README). Other tasks make the model reason:
   compare prices, tell identical buttons apart by their row, or find an
   element that the instruction names by meaning only.
@@ -74,7 +84,13 @@ A task whose file name ends in `.no-match.whirl` expects `ACT` to find no
 element: it passes only when the ACT step fails with `act-no-match`. A task
 whose file name ends in `.ambiguous.whirl` expects an `ai:` description to
 fit several elements: it passes only when the step fails with `strictness`.
-Times, calls, tokens, and costs sum the task's `ACT` and `ai:` steps.
+A task whose file name ends in `.judge-false.whirl` expects `JUDGE` to answer
+`no`: it passes only when the step fails with `judge-false`. A task whose file
+name ends in `.unsure.whirl` expects `JUDGE` to answer `unsure`: it passes
+only when the flow passes with the warning `judge-unsure`. A task whose file
+name ends in `.impossible.whirl` expects `GOAL` to answer `impossible`: it
+passes only when the step fails with `goal-impossible`. Times, calls, tokens,
+and costs sum the task's `ACT`, `GOAL`, `ai:`, `EXTRACT`, and `JUDGE` steps.
 
 ## Results
 

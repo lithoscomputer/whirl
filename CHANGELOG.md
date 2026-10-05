@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+## 0.20.0 (2026-09-28)
+
+- Read a plain number that a model writes as text, such as `"$1,299.00"`, as the number where an `EXTRACT` schema wants a number and does not allow a string, instead of failing with `extract-schema`. Any other text still fails. In the evals, Gemini 3.5 Flash-Lite's EXTRACT pass rate rose from 0.78 to 0.94.
+- When a model answers `click` with an argument that names no mouse button, such as an empty string or the element's text, click with the left button instead of failing with `act-invalid-decision`; ignore arguments to methods that take none, such as `hover`. In the evals, this recovered most of GLM 5.3 Flash's `act-invalid-decision` failures (ACT pass rate 0.81 to 0.88) and changed nothing beyond noise for the default models.
+
+## 0.19.0 (2026-09-28)
+
+- Judge consecutive `JUDGE` lines with the same scope and timeout in one model call, on one snapshot and one screenshot. Each line still passes or fails on its own answer. In the evals, four claims took 1 call instead of 4, about a quarter of the input tokens, and a third of the time, with the same results.
+- Let `GOAL` fill in the fields of a form in one model answer: the actions run in order, and the first that fails stops the rest. In the evals, a checkout goal took 4 model calls instead of 7 on Gemini 3.1 Flash-Lite, and a two-field sign-in 2 instead of 4.
+- When a cached `GOAL` line misses because the page renamed its element, ask the model to find that element again and replay the rest of the cached path, instead of planning the rest of the goal step by step. The model then confirms the goal is done. In the evals, such a heal took 2 model calls instead of 4 and half the time.
+- Before `ACT`, `GOAL`, `ai:` targets, `EXTRACT`, and `JUDGE` read the page, wait until no request has been open for 500 ms, for at most 5 seconds. A page that loads its content after the document, such as a product list from a slow API, showed the model no content. In the evals, such tasks went from 0 of 9 passes to 9 of 9, and a model step takes about 0.5 s longer.
+- Move the browser shim to protocol 8; `whirl install` provisions the matching bundle.
+- Let `EXTRACT` answer null when its schema's root is not an object, such as `{ "type": "string" }`. The model could not say that the page does not show the value, so it answered `"null"`, an empty string, or `0` instead of a missing value.
+- Add eval tasks that load their data from a slow request, a `GOAL` heal of a renamed button, and several `JUDGE` claims in a row, and add Gemini 3.5 Flash-Lite to the default eval models.
+
+## 0.18.0 (2026-09-28)
+
+- Add `GOAL "goal"`, which asks the model option's language model to reach a goal with several actions, one at a time, as in `GOAL "add two blue mugs to the cart and open the cart"`. Each call sees the goal, the lines that already ran, and a new snapshot of the page, and answers with one action in the form `ACT` uses, `done`, or `impossible`. An action that fails goes back to the model, which plans again. `impossible` fails with `goal-impossible` and the model's reason, and a goal that is not done after 20 actions fails with `goal-limit`. The default time is 2 minutes, and each action gets at most the step timeout. `GOAL` has no navigation by URL, back, or reload. The AI cache records the lines that ran; later runs replay them, and a line that no longer fits heals from the current page with a `healed` warning. `whirl check` reports a `GOAL` that is not the last action of an entry with an `ASSERT` (`goal-unchecked`). Reports show each action, how the goal ended, and what the model calls cost.
+- Add `goal-*` tasks to the evals, including a checkout across two views, a heal from a committed cache, and a goal that must end as `impossible`.
+
+## 0.17.0 (2026-09-28)
+
+- Add `JUDGE [locator] "claim"`, a check line that asks the model option's language model whether a claim about the page holds, as in `JUDGE testid:summary "the total matches the sum of the line items"`. The model sees the AI snapshot and a settled screenshot of the viewport or of the element. `yes` passes, `no` fails with `judge-false` and the model's reason, and `unsure` passes with the warning `judge-unsure`. `JUDGE` runs once and never uses the AI cache. A run whose files use `JUDGE` stops before any flow when the model's provider has no credentials. `whirl check` reports a model that does not accept images (`judge-without-images`), warns when the catalog does not know (`judge-images-unknown`), and warns about an entry with no `ASSERT` before its `JUDGE` (`judge-alone`). Reports show the verdict, the reason, and what the call cost.
+- Add `judge-*` tasks to the evals, with claims that only the screenshot shows and tasks that expect `no` or `unsure`.
+- Move the browser shim to protocol 7; `whirl install` provisions the matching bundle.
+
+## 0.16.0 (2026-09-28)
+
+- Add `EXTRACT name [locator] "instruction"`, which asks the model option's language model to read a value from the page, with an optional JSON Schema on the lines below. `extract:NAME` reads the value with its type in later checks and captures, and filters apply, as in `ASSERT extract:order json:$.total > 0`. Without a schema the value is a string; a null answer is a missing value. A `"format": "uri"` string is answered with a link's ref, and Whirl reads its absolute `href`. JSON numbers keep their exact text. The schema must use a documented subset (`extract-schema-unsupported`), and Whirl adapts it for providers that need strict schemas. An answer outside the schema fails with `extract-schema`. `whirl check` reports duplicate and unknown names and warns with `extract-unsettled` when `EXTRACT` directly follows an interaction. Reports show the value, the model, and what the call cost.
+- Add `extract-*` tasks to the evals: lists, numbers, links, missing values, and a scoped extract.
 ## 0.15.0 (2026-09-28)
 
 - Add `ai:"description"`, a locator segment that a language model resolves to one element, as in `CLICK ai:"the Add to cart button for the first product"`. It works in actions, checks, captures, `SNAPSHOT` targets, and `ACT` scopes, and it must be the last segment; the segments before it limit what the model sees. The model lists every element that matches: two or more fail with `strictness`, and none asks again every 2 seconds until the step times out, except in a `hidden` or `not exists` check, where none passes. `ai:` needs the `model` option and cannot be counted (`ai-count`). JSON and HTML reports show what each target resolved to and what its model calls cost.

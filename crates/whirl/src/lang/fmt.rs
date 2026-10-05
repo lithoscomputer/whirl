@@ -20,10 +20,10 @@ use crate::check::{Number, is_bytes_literal_shape};
 use crate::lang::ast::snapshot::SnapshotOption;
 use crate::lang::ast::{
     Action, ActionKind, Assert, AssertBody, Capture, CheckLine, CheckStep, Comment, DurationLit,
-    DurationUnit, Entry, Extractor, File, FileOption, FilterArg, FilterSpec, HttpBodyKind, Locator,
-    MockResponse, Operand, OptionValue, Page, PageCheck, PredicateSpec, Regex, RequestField,
-    ResponseField, ScrollDirection, ScrollMotion, SegmentKind, StateCheck, Subject, TextPrefix,
-    Value, ValueSegment, Viewport,
+    DurationUnit, Entry, Extractor, File, FileOption, FilterArg, FilterSpec, HttpBodyKind, Judge,
+    Locator, MockResponse, Operand, OptionValue, Page, PageCheck, PredicateSpec, Regex,
+    RequestField, ResponseField, ScrollDirection, ScrollMotion, SegmentKind, StateCheck, Subject,
+    TextPrefix, Value, ValueSegment, Viewport,
 };
 
 /// Where a rendered value sits in its line. The context decides which
@@ -352,7 +352,7 @@ fn push_timeout(out: &mut String, timeout: Option<DurationLit>) {
 }
 
 /// Renders an action line (SPEC 7).
-fn render_action(action: &Action) -> String {
+pub(crate) fn render_action(action: &Action) -> String {
     let is_final = action.timeout.is_none();
     let mut out = match &action.kind {
         ActionKind::Http { method, url, .. } => {
@@ -482,6 +482,9 @@ fn render_action(action: &Action) -> String {
         ActionKind::Eval { script } => {
             format!("EVAL {}", render_value(script, ValueCtx::Plain, is_final))
         }
+        ActionKind::Goal { goal } => {
+            format!("GOAL {}", render_value(goal, ValueCtx::Plain, is_final))
+        }
         ActionKind::Act { scope, instruction } => match scope {
             Some(scope) => format!(
                 "ACT {} {}",
@@ -490,6 +493,24 @@ fn render_action(action: &Action) -> String {
             ),
             None => format!(
                 "ACT {}",
+                render_value(instruction, ValueCtx::Plain, is_final)
+            ),
+        },
+        ActionKind::Extract {
+            name,
+            scope,
+            instruction,
+            ..
+        } => match scope {
+            Some(scope) => format!(
+                "EXTRACT {} {} {}",
+                name.text,
+                render_locator(scope, LocatorCtx::Action, false),
+                render_value(instruction, ValueCtx::Plain, is_final)
+            ),
+            None => format!(
+                "EXTRACT {} {}",
+                name.text,
                 render_value(instruction, ValueCtx::Plain, is_final)
             ),
         },
@@ -632,6 +653,7 @@ fn render_subject(subject: &Subject, ctx: LocatorCtx, is_final: bool) -> String 
         Subject::Request { name, field } => {
             format!("request:{} {}", name.text, render_request_field(field))
         }
+        Subject::Extract { name, .. } => format!("extract:{}", name.text),
     }
 }
 
@@ -709,6 +731,24 @@ fn render_response_field(field: &ResponseField) -> String {
             format!("xpath:{}", render_value(value, ValueCtx::Prefixed, false))
         }
     }
+}
+
+/// Renders a `JUDGE` line (SPEC 9.8).
+fn render_judge(judge: &Judge) -> String {
+    let is_final = judge.timeout.is_none();
+    let mut out = match &judge.scope {
+        Some(scope) => format!(
+            "JUDGE {} {}",
+            render_locator(scope, LocatorCtx::Action, false),
+            render_value(&judge.claim, ValueCtx::Plain, is_final)
+        ),
+        None => format!(
+            "JUDGE {}",
+            render_value(&judge.claim, ValueCtx::Plain, is_final)
+        ),
+    };
+    push_timeout(&mut out, judge.timeout);
+    out
 }
 
 /// Renders a `CAPTURE` line (SPEC 10).
@@ -849,6 +889,18 @@ fn entry_region(entry: &Entry) -> Region {
             } => Some((headers, body)),
             _ => None,
         };
+        if let ActionKind::Extract {
+            schema: Some(schema),
+            ..
+        } = &action.kind
+        {
+            for (offset, text) in schema.text.split('\n').enumerate() {
+                lines.push(Line {
+                    source_line: schema.line + u32::try_from(offset).unwrap_or(u32::MAX),
+                    text:        text.to_owned(),
+                });
+            }
+        }
         if let Some((headers, body)) = request_lines {
             for header in headers {
                 lines.push(Line {
@@ -903,6 +955,7 @@ fn entry_region(entry: &Entry) -> Region {
     for check in &entry.checks {
         let text = match check {
             CheckStep::Assert(assert) => render_assert(assert),
+            CheckStep::Judge(judge) => render_judge(judge),
             CheckStep::Capture(capture) => render_capture(capture),
         };
         lines.push(Line {
@@ -1069,6 +1122,7 @@ mod tests {
                     scrub_value(value);
                 }
             }
+            Subject::Extract { name, .. } => scrub_ident(name),
             Subject::Url | Subject::Title => {}
         }
     }
@@ -1243,12 +1297,28 @@ mod tests {
                     scrub_snapshot_option(&mut option.option);
                 }
             }
-            ActionKind::Eval { script } => scrub_value(script),
+            ActionKind::Eval { script } | ActionKind::Goal { goal: script } => scrub_value(script),
             ActionKind::Act { scope, instruction } => {
                 if let Some(scope) = scope {
                     scrub_locator(scope);
                 }
                 scrub_value(instruction);
+            }
+            ActionKind::Extract {
+                name,
+                scope,
+                instruction,
+                schema,
+            } => {
+                scrub_ident(name);
+                if let Some(scope) = scope {
+                    scrub_locator(scope);
+                }
+                scrub_value(instruction);
+                if let Some(schema) = schema {
+                    schema.line = 0;
+                    schema.end_line = 0;
+                }
             }
             ActionKind::Store { key, value, .. } => {
                 scrub_value(key);
@@ -1286,6 +1356,15 @@ mod tests {
         for check in &mut entry.checks {
             match check {
                 CheckStep::Assert(assert) => scrub_assert(assert),
+                CheckStep::Judge(judge) => {
+                    judge.line = 0;
+                    judge.span = ZERO;
+                    judge.text = String::new();
+                    if let Some(scope) = &mut judge.scope {
+                        scrub_locator(scope);
+                    }
+                    scrub_value(&mut judge.claim);
+                }
                 CheckStep::Capture(capture) => scrub_capture(capture),
             }
         }
@@ -1434,6 +1513,37 @@ HTTP GET /
 X-Value: @10s
 HTTP GET "@10s"
 "#,
+        );
+    }
+
+    #[test]
+    fn extract_round_trips_with_its_schema_as_written() {
+        assert_round_trip(
+            "VISIT /\nEXTRACT order   css:main  \"the total\" @30s\n{\n    \"type\":  \"number\"\n}\nASSERT extract:order > 0\n",
+        );
+        assert_eq!(
+            fmt("VISIT /\nEXTRACT order   \"the total\"\n{ \"type\":  \"number\" }\n"),
+            "VISIT /\nEXTRACT order \"the total\"\n{ \"type\":  \"number\" }\n"
+        );
+    }
+
+    #[test]
+    fn goal_round_trips() {
+        assert_round_trip("VISIT /\nGOAL \"buy {{item}}\" @180s\nASSERT url exists\n");
+        assert_eq!(
+            fmt("VISIT /\nGOAL    \"buy a mug\"\nASSERT url exists\n"),
+            "VISIT /\nGOAL \"buy a mug\"\nASSERT url exists\n"
+        );
+    }
+
+    #[test]
+    fn judge_round_trips() {
+        assert_round_trip(
+            "VISIT /\nASSERT testid:x visible\nJUDGE testid:x \"the total is {{total}}\" @20s\nJUDGE \"no error shows\"\n",
+        );
+        assert_eq!(
+            fmt("VISIT /\nJUDGE    css:main   \"it is fine\"\n"),
+            "VISIT /\nJUDGE css:main \"it is fine\"\n"
         );
     }
 

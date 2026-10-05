@@ -83,6 +83,10 @@ enum Source {
         name:  String,
         field: RequestRead,
     },
+    /// The value an `EXTRACT` line read (SPEC 7.6).
+    Extract {
+        name: String,
+    },
 }
 
 /// A page subject whose locator ends in an `ai:` target.
@@ -337,6 +341,9 @@ impl FlowExec<'_> {
                     field,
                 }
             }
+            Subject::Extract { name, .. } => Source::Extract {
+                name: name.text.clone(),
+            },
             page => {
                 let ai = match page {
                     Subject::Element { locator, .. } if locator.ai_description().is_some() => {
@@ -777,6 +784,10 @@ impl FlowExec<'_> {
                     Err(message) => Attempt::End(StepEnd::Failed(simple_error("read", &message))),
                 }
             }
+            Source::Extract { name } => Attempt::Read(match self.extracts.get(name) {
+                Some(Some(value)) => Read::Value(value.clone()),
+                _ => Read::Missing(Missing::NoExtractValue(name.clone())),
+            }),
             Source::Request { name, field } => {
                 if !self.requests.contains_key(name) {
                     let command = StepCommand::ReadRequest { name: name.clone() };

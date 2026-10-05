@@ -415,7 +415,10 @@ fn render_entry(
             duration(step.duration_ms)
         )?;
         render_act(output, step)?;
+        render_goal(output, step)?;
         render_ai(output, step)?;
+        render_extract(output, step)?;
+        render_judge(output, step)?;
         render_snapshot(output, step)?;
         render_error(output, step)?;
         write!(output, "</li>")?;
@@ -523,6 +526,102 @@ fn render_act(output: &mut impl io::Write, step: &StepReport) -> io::Result<()> 
             escape(&action.line),
             escape(&action.description)
         )?;
+    }
+    write!(output, "</dl>")
+}
+
+/// What a `GOAL` step ran and how it ended (SPEC 7.7).
+fn render_goal(output: &mut impl io::Write, step: &StepReport) -> io::Result<()> {
+    let Some(goal) = &step.goal else {
+        return Ok(());
+    };
+    write!(
+        output,
+        "<dl><dt>Model</dt><dd><code>{}</code> · {} call(s) · {} input and {} output tokens</dd>\
+         <dt>AI cache</dt><dd>{}</dd>",
+        escape(&goal.model),
+        goal.usage.model_calls,
+        goal.usage.input_tokens,
+        goal.usage.output_tokens,
+        escape(&goal.cache)
+    )?;
+    for line in goal.cached.iter().flatten() {
+        write!(
+            output,
+            "<dt>Cached</dt><dd><code>{}</code></dd>",
+            escape(line)
+        )?;
+    }
+    for action in &goal.actions {
+        let chosen_by = if action.planned_by == "cache" {
+            " · from the AI cache"
+        } else {
+            ""
+        };
+        write!(
+            output,
+            "<dt>Ran</dt><dd><code>{}</code> {}{chosen_by}",
+            escape(&action.line),
+            escape(&action.description)
+        )?;
+        if let Some(error) = &action.error {
+            write!(output, " · failed: {}", escape(error))?;
+        }
+        write!(output, "</dd>")?;
+    }
+    if let Some(end) = &goal.end {
+        write!(output, "<dt>Ended</dt><dd>{}", escape(end))?;
+        if let Some(reason) = &goal.reason {
+            write!(output, ": {}", escape(reason))?;
+        }
+        write!(output, "</dd>")?;
+    }
+    write!(output, "</dl>")
+}
+
+/// What an `EXTRACT` step read (SPEC 7.6).
+fn render_extract(output: &mut impl io::Write, step: &StepReport) -> io::Result<()> {
+    let Some(extract) = &step.extract else {
+        return Ok(());
+    };
+    write!(
+        output,
+        "<dl><dt>Model</dt><dd><code>{}</code> · {} call(s) · {} input and {} output tokens</dd>",
+        escape(&extract.model),
+        extract.usage.model_calls,
+        extract.usage.input_tokens,
+        extract.usage.output_tokens
+    )?;
+    match &extract.value {
+        Some(value) => write!(
+            output,
+            "<dt>Read</dt><dd><code>{}</code> · {}</dd>",
+            escape(&value.display()),
+            escape(&value.value_type)
+        )?,
+        None => write!(output, "<dt>Read</dt><dd>no value</dd>")?,
+    }
+    write!(output, "</dl>")
+}
+
+/// A `JUDGE` step's verdict and reason (SPEC 9.8).
+fn render_judge(output: &mut impl io::Write, step: &StepReport) -> io::Result<()> {
+    let Some(judge) = &step.judge else {
+        return Ok(());
+    };
+    write!(
+        output,
+        "<dl><dt>Model</dt><dd><code>{}</code> · {} call(s) · {} input and {} output tokens</dd>",
+        escape(&judge.model),
+        judge.usage.model_calls,
+        judge.usage.input_tokens,
+        judge.usage.output_tokens
+    )?;
+    if let Some(verdict) = &judge.verdict {
+        write!(output, "<dt>Verdict</dt><dd>{}</dd>", escape(verdict))?;
+    }
+    if let Some(reason) = &judge.reason {
+        write!(output, "<dt>Reason</dt><dd>{}</dd>", escape(reason))?;
     }
     write!(output, "</dl>")
 }

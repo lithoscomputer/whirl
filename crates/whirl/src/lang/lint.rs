@@ -15,6 +15,7 @@ use crate::lang::ast::{
     PageCheck, PredicateSpec, RequestField, ResponseField, SegmentKind, Span, StateCheck, Subject,
     Value, ValueSegment, chain_type,
 };
+use crate::lang::schema;
 
 /// How serious a lint diagnostic is: an [`Severity::Error`] fails
 /// `whirl check` and `whirl` runs with exit code 2; a
@@ -53,6 +54,9 @@ pub(crate) fn lint_file_with(file: &File, external_uses: &HashSet<String>) -> Ve
     redundant_presence_counts(file, &mut lints);
     filter_types(file, &mut lints);
     ai_counts(file, &mut lints);
+    extract_rules(file, &mut lints);
+    judge_alone(file, &mut lints);
+    goal_unchecked(file, &mut lints);
     lints.sort_by_key(|lint| (lint.line, lint.column));
     lints
 }
@@ -110,17 +114,32 @@ pub(crate) fn lint_setup_refs(file: &File, setup: &File) -> Vec<Lint> {
     lints
 }
 
-/// `ACT` rules (SPEC 5, 7.4): a file that uses `ACT` needs a `model`
-/// option, and a literal model must be one `known_model` accepts. The
-/// caller decides what is known, because it depends on the environment
+/// What the model catalog says about one model.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ModelFacts {
+    Unknown,
+    Known {
+        /// Whether the model accepts images; `None` when the catalog does
+        /// not say.
+        images: Option<bool>,
+    },
+}
+
+/// Model rules (SPEC 5, 7.4, 9.8): a file that uses the model needs a
+/// `model` option, a literal model must be one the catalog knows, and a
+/// file that uses `JUDGE` needs a model that accepts images. The caller
+/// looks the model up, because the catalog depends on the environment
 /// (SPEC 13).
-pub(crate) fn lint_act(file: &File, known_model: impl Fn(&str) -> bool) -> Vec<Lint> {
+pub(crate) fn lint_act(file: &File, facts: impl Fn(&str) -> ModelFacts) -> Vec<Lint> {
     if let Some(line) = file.model_option() {
         let FileOption::Model(value) = &line.option else {
             return Vec::new();
         };
-        return match value.as_literal() {
-            Some(model) if !known_model(&model) => vec![lint_at(
+        let Some(model) = value.as_literal() else {
+            return Vec::new();
+        };
+        let lint = match facts(&model) {
+            ModelFacts::Unknown => lint_at(
                 file,
                 Severity::Error,
                 "unknown-model",
@@ -128,16 +147,42 @@ pub(crate) fn lint_act(file: &File, known_model: impl Fn(&str) -> bool) -> Vec<L
                 format!(
                     "unknown model `{model}`; use a provider/model name such as anthropic/claude-sonnet-5"
                 ),
-            )],
-            _ => Vec::new(),
+            ),
+            ModelFacts::Known {
+                images: Some(false),
+            } if file.uses_judge() => lint_at(
+                file,
+                Severity::Error,
+                "judge-without-images",
+                value.span,
+                format!("JUDGE sends a screenshot, and the model `{model}` does not accept images"),
+            ),
+            ModelFacts::Known { images: None } if file.uses_judge() => lint_at(
+                file,
+                Severity::Warning,
+                "judge-images-unknown",
+                value.span,
+                format!(
+                    "JUDGE sends a screenshot, and the catalog does not say whether the model `{model}` accepts images"
+                ),
+            ),
+            ModelFacts::Known { .. } => return Vec::new(),
         };
+        return vec![lint];
     }
     let act = file
         .entries
         .iter()
-        .flat_map(|entry| &entry.actions)
-        .find(|action| matches!(action.kind, ActionKind::Act { .. }))
-        .map(|action| (action.span, "ACT"));
+        .flat_map(|entry| {
+            let actions = entry.actions.iter().filter_map(|action| match action.kind {
+                ActionKind::Act { .. } => Some((action.span, "ACT")),
+                ActionKind::Goal { .. } => Some((action.span, "GOAL")),
+                ActionKind::Extract { .. } => Some((action.span, "EXTRACT")),
+                _ => None,
+            });
+            actions.chain(entry.judges().map(|judge| (judge.span, "JUDGE")))
+        })
+        .next();
     let target = file.locator_uses().into_iter().find_map(|used| {
         let segment = used.locator.segments.last()?;
         used.locator
@@ -166,6 +211,145 @@ pub(crate) fn lint_act(file: &File, known_model: impl Fn(&str) -> bool) -> Vec<L
         })
         .into_iter()
         .collect()
+}
+
+/// The model decides when a `GOAL` is done, so the `GOAL` must be the last
+/// action of an entry with an `ASSERT` that checks the result (SPEC 7.7).
+fn goal_unchecked(file: &File, lints: &mut Vec<Lint>) {
+    for entry in &file.entries {
+        let last = entry.actions.len().saturating_sub(1);
+        let checked = entry.asserts().next().is_some();
+        for (index, action) in entry.actions.iter().enumerate() {
+            if matches!(action.kind, ActionKind::Goal { .. }) && (index != last || !checked) {
+                lints.push(lint_at(
+                    file,
+                    Severity::Error,
+                    "goal-unchecked",
+                    action.span,
+                    "an ASSERT must follow GOAL, before any other action, to check that the goal was reached".to_owned(),
+                ));
+            }
+        }
+    }
+}
+
+/// `JUDGE` does not wait for the state it judges, so an entry needs an
+/// `ASSERT` that waits (SPEC 9.8).
+fn judge_alone(file: &File, lints: &mut Vec<Lint>) {
+    for entry in &file.entries {
+        if entry.asserts().next().is_some() {
+            continue;
+        }
+        if let Some(judge) = entry.judges().next() {
+            lints.push(lint_at(
+                file,
+                Severity::Warning,
+                "judge-alone",
+                judge.span,
+                "JUDGE does not retry; add an ASSERT before it that waits for the state the claim describes".to_owned(),
+            ));
+        }
+    }
+}
+
+/// `EXTRACT` rules (SPEC 7.6): unique names read after their line, a
+/// schema in the subset, and a warning for a line that reads the page
+/// right after an interaction.
+fn extract_rules(file: &File, lints: &mut Vec<Lint>) {
+    let mut names = HashSet::new();
+    for entry in &file.entries {
+        for (index, action) in entry.actions.iter().enumerate() {
+            let ActionKind::Extract { name, schema, .. } = &action.kind else {
+                continue;
+            };
+            if !names.insert(name.text.as_str()) {
+                lints.push(lint_at(
+                    file,
+                    Severity::Error,
+                    "duplicate-extract",
+                    name.span,
+                    format!("EXTRACT `{}` is already named", name.text),
+                ));
+            }
+            if let Some(schema) = schema
+                && let Some(problem) = schema::unsupported(&schema.json())
+            {
+                lints.push(lint_at(
+                    file,
+                    Severity::Error,
+                    "extract-schema-unsupported",
+                    Span {
+                        line:   schema.line,
+                        column: 1,
+                        len:    1,
+                    },
+                    format!("the EXTRACT schema is outside the supported subset: {problem}"),
+                ));
+            }
+            let interacts = index
+                .checked_sub(1)
+                .and_then(|previous| entry.actions.get(previous))
+                .is_some_and(|previous| interacts(&previous.kind));
+            if interacts {
+                lints.push(lint_at(
+                    file,
+                    Severity::Warning,
+                    "extract-unsettled",
+                    action.span,
+                    "EXTRACT runs once, right after an interaction; add an ASSERT that waits for the page first"
+                        .to_owned(),
+                ));
+            }
+        }
+        for check in &entry.checks {
+            let subject = match check {
+                CheckStep::Assert(Assert {
+                    body: AssertBody::Check(line),
+                    ..
+                }) => &line.subject,
+                CheckStep::Capture(capture) => &capture.subject,
+                CheckStep::Assert(_) | CheckStep::Judge(_) => continue,
+            };
+            if let Subject::Extract { name, .. } = subject
+                && !names.contains(name.text.as_str())
+            {
+                lints.push(lint_at(
+                    file,
+                    Severity::Error,
+                    "unknown-extract",
+                    name.span,
+                    format!(
+                        "unknown EXTRACT `{}`; name it with EXTRACT first",
+                        name.text
+                    ),
+                ));
+            }
+        }
+    }
+}
+
+/// True for an action that changes what the page shows.
+fn interacts(kind: &ActionKind) -> bool {
+    matches!(
+        kind,
+        ActionKind::Click { .. }
+            | ActionKind::Dblclick { .. }
+            | ActionKind::Fill { .. }
+            | ActionKind::Type { .. }
+            | ActionKind::Press { .. }
+            | ActionKind::Check { .. }
+            | ActionKind::Uncheck { .. }
+            | ActionKind::Select { .. }
+            | ActionKind::Hover { .. }
+            | ActionKind::Drag { .. }
+            | ActionKind::Scroll { .. }
+            | ActionKind::ScrollIntoView { .. }
+            | ActionKind::Upload { .. }
+            | ActionKind::Drop { .. }
+            | ActionKind::Act { .. }
+            | ActionKind::Goal { .. }
+            | ActionKind::Eval { .. }
+    )
 }
 
 /// `ai:` names one element, so it cannot be counted (SPEC 6.3).
@@ -713,8 +897,13 @@ fn collect_action_refs<'a>(action: &'a Action, refs: &mut Vec<VarRef<'a>>) {
                 collect_locator_refs(target, line, refs);
             }
         }
-        ActionKind::Eval { script } => collect_value_refs(script, line, refs),
-        ActionKind::Act { scope, instruction } => {
+        ActionKind::Eval { script } | ActionKind::Goal { goal: script } => {
+            collect_value_refs(script, line, refs);
+        }
+        ActionKind::Act { scope, instruction }
+        | ActionKind::Extract {
+            scope, instruction, ..
+        } => {
             if let Some(scope) = scope {
                 collect_locator_refs(scope, line, refs);
             }
@@ -777,7 +966,7 @@ fn collect_chain_refs<'a>(
             RequestField::Method | RequestField::Url | RequestField::Body | RequestField::Bytes => {
             }
         },
-        Subject::Url | Subject::Title => {}
+        Subject::Url | Subject::Title | Subject::Extract { .. } => {}
     }
     for filter in filters {
         for arg in &filter.args {
@@ -1316,7 +1505,96 @@ mod tests {
     fn lint_act_source(source: &str) -> Vec<Lint> {
         let file = parse_file(Path::new("test.whirl"), source)
             .unwrap_or_else(|error| panic!("fixture should parse:\n{error}"));
-        lint_act(&file, |model| model == "anthropic/claude-sonnet-5")
+        lint_act(&file, |model| match model {
+            "anthropic/claude-sonnet-5" => ModelFacts::Known { images: Some(true) },
+            "text/only" => ModelFacts::Known {
+                images: Some(false),
+            },
+            "maybe/images" => ModelFacts::Known { images: None },
+            _ => ModelFacts::Unknown,
+        })
+    }
+
+    #[test]
+    fn judge_needs_a_model_that_accepts_images() {
+        let judge = |model: &str| {
+            lint_act_source(&format!(
+                "[Options]\nmodel: {model}\nVISIT /\nASSERT testid:x visible\nJUDGE \"it looks right\"\n"
+            ))
+        };
+        assert_eq!(judge("anthropic/claude-sonnet-5"), Vec::new());
+        let lints = judge("text/only");
+        assert_eq!(lints.len(), 1);
+        assert_eq!(lints[0].code, "judge-without-images");
+        assert_eq!(lints[0].severity, Severity::Error);
+        assert_eq!(lints[0].line, 2);
+        let lints = judge("maybe/images");
+        assert_eq!(lints.len(), 1);
+        assert_eq!(lints[0].code, "judge-images-unknown");
+        assert_eq!(lints[0].severity, Severity::Warning);
+        // Image support matters only to JUDGE.
+        assert_eq!(
+            lint_act_source("[Options]\nmodel: text/only\nVISIT /\nACT \"sign in\"\n"),
+            Vec::new()
+        );
+    }
+
+    #[test]
+    fn judge_without_a_model_is_an_error() {
+        let lints = lint_act_source("VISIT /\nASSERT testid:x visible\nJUDGE \"it looks right\"\n");
+        assert_eq!(lints.len(), 1);
+        assert_eq!(lints[0].code, "act-without-model");
+        assert_eq!(lints[0].line, 3);
+        assert_eq!(
+            lints[0].message,
+            "JUDGE needs a `model` option naming the language model to ask"
+        );
+    }
+
+    #[test]
+    fn goal_is_the_last_action_of_an_entry_with_an_assert() {
+        let lint_codes = |source: &str| -> Vec<(&'static str, u32)> {
+            lint(source)
+                .iter()
+                .map(|lint| (lint.code, lint.line))
+                .collect()
+        };
+        assert_eq!(
+            lint_codes(
+                "[Options]\nmodel: m\nVISIT /\nGOAL \"buy a mug\"\nASSERT testid:cart text == 1\n"
+            ),
+            []
+        );
+        assert_eq!(
+            lint_codes(
+                "[Options]\nmodel: m\nVISIT /\nGOAL \"buy a mug\"\nCLICK Checkout\nASSERT url exists\n"
+            ),
+            [("goal-unchecked", 4)]
+        );
+        assert_eq!(
+            lint_codes(
+                "[Options]\nmodel: m\nVISIT /\nGOAL \"buy a mug\"\nCAPTURE u: url\n\nVISIT {{u}}\n"
+            ),
+            [("goal-unchecked", 4)]
+        );
+        let lints = lint_act_source("VISIT /\nGOAL \"buy a mug\"\nASSERT url exists\n");
+        assert_eq!(lints.len(), 1);
+        assert_eq!(lints[0].code, "act-without-model");
+        assert_eq!(
+            lints[0].message,
+            "GOAL needs a `model` option naming the language model to ask"
+        );
+    }
+
+    #[test]
+    fn a_judge_in_an_entry_without_an_assert_warns() {
+        let lints = lint(
+            "[Options]\nmodel: m\nVISIT /\nJUDGE \"a\"\nJUDGE \"b\"\n\nVISIT /b\nASSERT testid:x visible\nJUDGE \"c\"\n",
+        );
+        assert_eq!(lints.len(), 1);
+        assert_eq!(lints[0].code, "judge-alone");
+        assert_eq!(lints[0].severity, Severity::Warning);
+        assert_eq!(lints[0].line, 4);
     }
 
     #[test]
@@ -1356,6 +1634,37 @@ mod tests {
     fn act_instructions_use_captures() {
         let source = "VISIT /\nCAPTURE item: testid:x text\n\nACT \"open {{item}}\"\n";
         assert_eq!(lint(source), Vec::new());
+    }
+
+    #[test]
+    fn extract_names_are_unique_and_read_after_their_line() {
+        let lints = lint(
+            "[Options]\nmodel: m\nVISIT /\nASSERT extract:early exists\nEXTRACT early \"x\"\nEXTRACT early \"y\"\n",
+        );
+        let codes: Vec<&str> = lints.iter().map(|lint| lint.code).collect();
+        assert_eq!(codes, ["unknown-extract", "duplicate-extract"]);
+    }
+
+    #[test]
+    fn an_extract_schema_must_stay_in_the_subset() {
+        let lints = lint(
+            "[Options]\nmodel: m\nVISIT /\nEXTRACT n \"x\"\n{\"type\": \"string\", \"pattern\": \"a\"}\n",
+        );
+        assert_eq!(lints.len(), 1);
+        assert_eq!(lints[0].code, "extract-schema-unsupported");
+        assert_eq!(lints[0].line, 5);
+    }
+
+    #[test]
+    fn an_extract_right_after_an_interaction_warns() {
+        let lints = lint(
+            "[Options]\nmodel: m\nVISIT /\nCLICK Go\nEXTRACT n \"x\"\nASSERT extract:n exists\n",
+        );
+        assert_eq!(lints.len(), 1);
+        assert_eq!(lints[0].code, "extract-unsettled");
+        assert_eq!(lints[0].severity, Severity::Warning);
+        let settled = "[Options]\nmodel: m\nVISIT /\nCLICK Go\nASSERT url == /\nEXTRACT n \"x\"\nASSERT extract:n exists\n";
+        assert_eq!(lint(settled), Vec::new());
     }
 
     #[test]

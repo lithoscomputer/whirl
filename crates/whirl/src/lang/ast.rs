@@ -288,10 +288,33 @@ impl File {
             .any(|action| matches!(action.kind, ActionKind::Act { .. }))
     }
 
-    /// True when any line asks a language model: `ACT`, or a locator with an
-    /// `ai:` target (SPEC 6.3, 7.4).
+    /// True when any entry has a `GOAL` line (SPEC 7.7).
+    pub(crate) fn uses_goal(&self) -> bool {
+        self.entries
+            .iter()
+            .flat_map(|entry| &entry.actions)
+            .any(|action| matches!(action.kind, ActionKind::Goal { .. }))
+    }
+
+    /// True when any entry has a `JUDGE` line (SPEC 9.8).
+    pub(crate) fn uses_judge(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|entry| entry.judges().next().is_some())
+    }
+
+    /// True when any line asks a language model: `ACT`, `GOAL`,
+    /// `EXTRACT`, `JUDGE`, or a locator with an `ai:` target (SPEC 6.3,
+    /// 7.4, 7.6, 7.7, 9.8).
     pub(crate) fn uses_ai(&self) -> bool {
         self.uses_act()
+            || self.uses_goal()
+            || self.uses_judge()
+            || self
+                .entries
+                .iter()
+                .flat_map(|entry| &entry.actions)
+                .any(|action| matches!(action.kind, ActionKind::Extract { .. }))
             || self
                 .locator_uses()
                 .iter()
@@ -525,6 +548,19 @@ pub(crate) enum ActionKind {
         scope:       Option<Locator>,
         instruction: Value,
     },
+    /// `GOAL "goal"` asks the file's model to reach a goal with several
+    /// element actions (SPEC 7.7).
+    Goal {
+        goal: Value,
+    },
+    /// `EXTRACT name [locator] "instruction"` asks the file's model to read
+    /// a value, shaped by an optional JSON Schema (SPEC 7.6).
+    Extract {
+        name:        Ident,
+        scope:       Option<Locator>,
+        instruction: Value,
+        schema:      Option<ExtractSchema>,
+    },
     /// `STORE local "key" "value"` writes one browser storage entry.
     Store {
         scope: StoreScope,
@@ -544,6 +580,23 @@ pub(crate) enum MockResponse {
     },
     /// A failed request, as for a dropped connection.
     Failed,
+}
+
+/// The JSON Schema lines below an `EXTRACT` headline (SPEC 7.6), as
+/// written. The parser checked that they are one JSON object without
+/// `{{ }}`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ExtractSchema {
+    pub(crate) text:     String,
+    pub(crate) line:     u32,
+    pub(crate) end_line: u32,
+}
+
+impl ExtractSchema {
+    /// The schema as JSON.
+    pub(crate) fn json(&self) -> serde_json::Value {
+        serde_json::from_str(&self.text).expect("the parser checked that the schema is JSON")
+    }
 }
 
 /// Browser storage a `STORE` action writes to (SPEC 7).
@@ -696,7 +749,8 @@ impl ActionKind {
             Self::Press { target, .. }
             | Self::Scroll { target, .. }
             | Self::Snapshot { target, .. }
-            | Self::Act { scope: target, .. } => target.iter().collect(),
+            | Self::Act { scope: target, .. }
+            | Self::Extract { scope: target, .. } => target.iter().collect(),
             Self::Http { .. }
             | Self::Response { .. }
             | Self::Mock { .. }
@@ -706,6 +760,7 @@ impl ActionKind {
             | Self::Visit { .. }
             | Self::Screenshot { .. }
             | Self::Eval { .. }
+            | Self::Goal { .. }
             | Self::Store { .. } => Vec::new(),
         }
     }
@@ -729,7 +784,8 @@ impl ActionKind {
             Self::Press { target, .. }
             | Self::Scroll { target, .. }
             | Self::Snapshot { target, .. }
-            | Self::Act { scope: target, .. } => target.iter_mut().collect(),
+            | Self::Act { scope: target, .. }
+            | Self::Extract { scope: target, .. } => target.iter_mut().collect(),
             Self::Http { .. }
             | Self::Response { .. }
             | Self::Mock { .. }
@@ -739,6 +795,7 @@ impl ActionKind {
             | Self::Visit { .. }
             | Self::Screenshot { .. }
             | Self::Eval { .. }
+            | Self::Goal { .. }
             | Self::Store { .. } => Vec::new(),
         }
     }
@@ -772,6 +829,8 @@ impl ActionKind {
             | Self::Snapshot { .. }
             | Self::Eval { .. }
             | Self::Act { .. }
+            | Self::Goal { .. }
+            | Self::Extract { .. }
             | Self::Store { .. } => None,
         }
     }
@@ -858,6 +917,12 @@ pub(crate) enum Subject {
         name:  Ident,
         field: RequestField,
     },
+    /// The value an `EXTRACT` line read (SPEC 7.6, 9.2). `text` is true
+    /// when that line has no schema, so the value is a string.
+    Extract {
+        name: Ident,
+        text: bool,
+    },
 }
 
 impl Subject {
@@ -886,7 +951,8 @@ impl Subject {
                     | RequestField::Header(_)
                     | RequestField::Body,
                 ..
-            } => StaticType::STRING,
+            }
+            | Self::Extract { text: true, .. } => StaticType::STRING,
             Self::Response {
                 field: ResponseField::Bytes,
                 ..
@@ -903,7 +969,8 @@ impl Subject {
             | Self::Request {
                 field: RequestField::Json(_) | RequestField::Xpath(_),
                 ..
-            } => StaticType::Any,
+            }
+            | Self::Extract { text: false, .. } => StaticType::Any,
         }
     }
 }
@@ -1021,10 +1088,12 @@ pub(crate) struct Capture {
     pub(crate) text:    String,
 }
 
-/// One check line of an entry (SPEC 9, 10): an `ASSERT` or a `CAPTURE`.
+/// One check line of an entry (SPEC 9, 10): an `ASSERT`, a `JUDGE`, or a
+/// `CAPTURE`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum CheckStep {
     Assert(Assert),
+    Judge(Judge),
     Capture(Capture),
 }
 
@@ -1032,9 +1101,31 @@ impl CheckStep {
     pub(crate) fn line(&self) -> u32 {
         match self {
             Self::Assert(assert) => assert.line,
+            Self::Judge(judge) => judge.line,
             Self::Capture(capture) => capture.line,
         }
     }
+
+    /// The line's source text.
+    pub(crate) fn text(&self) -> &str {
+        match self {
+            Self::Assert(assert) => &assert.text,
+            Self::Judge(judge) => &judge.text,
+            Self::Capture(capture) => &capture.text,
+        }
+    }
+}
+
+/// A `JUDGE [locator] "claim"` line (SPEC 9.8).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Judge {
+    /// The element the model sees; `None` for the page.
+    pub(crate) scope:   Option<Locator>,
+    pub(crate) claim:   Value,
+    pub(crate) timeout: Option<DurationLit>,
+    pub(crate) line:    u32,
+    pub(crate) span:    Span,
+    pub(crate) text:    String,
 }
 
 /// One entry: actions, then an optional `PAGE` line, then check lines in
@@ -1055,7 +1146,7 @@ impl Entry {
     pub(crate) fn asserts(&self) -> impl Iterator<Item = &Assert> {
         self.checks.iter().filter_map(|check| match check {
             CheckStep::Assert(assert) => Some(assert),
-            CheckStep::Capture(_) => None,
+            CheckStep::Judge(_) | CheckStep::Capture(_) => None,
         })
     }
 
@@ -1063,7 +1154,15 @@ impl Entry {
     pub(crate) fn captures(&self) -> impl Iterator<Item = &Capture> {
         self.checks.iter().filter_map(|check| match check {
             CheckStep::Capture(capture) => Some(capture),
-            CheckStep::Assert(_) => None,
+            CheckStep::Assert(_) | CheckStep::Judge(_) => None,
+        })
+    }
+
+    /// The entry's `JUDGE` lines, in source order.
+    pub(crate) fn judges(&self) -> impl Iterator<Item = &Judge> {
+        self.checks.iter().filter_map(|check| match check {
+            CheckStep::Judge(judge) => Some(judge),
+            CheckStep::Assert(_) | CheckStep::Capture(_) => None,
         })
     }
 

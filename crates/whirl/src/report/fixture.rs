@@ -29,6 +29,9 @@ fn step(
         act: None,
         warnings: Vec::new(),
         ai: None,
+        extract: None,
+        judge: None,
+        goal: None,
     }
 }
 

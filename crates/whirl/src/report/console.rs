@@ -150,6 +150,9 @@ mod tests {
             act: None,
             warnings: Vec::new(),
             ai: None,
+            extract: None,
+            judge: None,
+            goal: None,
         }
     }
 
@@ -249,6 +252,7 @@ mod tests {
                 line:        "CLICK role:button \"Sign in\"".to_owned(),
                 description: "the sign-in button".to_owned(),
                 planned_by:  "llm".to_owned(),
+                error:       None,
             }],
             usage:   ActUsage::default(),
             cached:  None,

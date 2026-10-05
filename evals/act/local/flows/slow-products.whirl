@@ -1,0 +1,8 @@
+[Options]
+base: {{env.EVAL_BASE}}
+model: {{model}}
+
+# The products arrive from a slow request after the page loads.
+VISIT /slow-products/
+ACT "add the blue mug to the cart" @60s
+ASSERT testid:cart text == "Blue mug"

@@ -50,9 +50,11 @@ Error object:
 ### `hello`
 
 Sent once after spawn. Params: `{}`. Result:
-`{"protocol": 6, "playwrightVersion": "1.62.1", "ffmpegPath": "abs path" | null}`.
+`{"protocol": 8, "playwrightVersion": "1.62.1", "ffmpegPath": "abs path" | null}`.
 `ffmpegPath` is Playwright's bundled ffmpeg, which every video recording
 needs; `null` means it is not installed. `whirl doctor` reports it.
+Protocol 8 adds `settle` to `ariaSnapshot`.
+Protocol 7 adds `judgeScreenshot` (section 4.9) for `JUDGE`.
 Protocol 6 adds `generateLocator` (section 4.8) for the AI cache.
 Protocol 5 adds `mock` and `readRequest` (sections 4.6 and 4.7) and the
 `mocks` fields of `startFlow` and `endFlow`.
@@ -207,12 +209,13 @@ Commands and their extra params (result `{}` unless noted):
 | `snapshot` | `baselinePath`, `actualPath`, `diffPath`, `update` (bool), `target` (locator array, or `null` for the full page), `masks` (array of locator arrays), `pixelThreshold` (number 0–1), `maxDiff` (`{"type":"pixels","value":count}` or `{"type":"percent","value":percent}`) |
 | `evalAction` | `script` |
 | `store` | `scope` (`"local"` \| `"session"` \| `"cookie"`), `key`, `value` — writes one `localStorage` or `sessionStorage` entry on the current origin, or one cookie for the current page's URL (host, path `/`, no attributes); `cookie` on a non-http(s) page is an `action` error |
-| `ariaSnapshot` | `locator` (or `null`); result `{"snapshot": "..."}`, the selected tab's `page.ariaSnapshot({ mode: "ai" })`, or that one element's `locator.ariaSnapshot({ mode: "ai" })` with the usual waiting and strictness, for `ACT` (SPEC 7.4) |
+| `ariaSnapshot` | `locator` (or `null`), `settle` (bool); result `{"snapshot": "..."}`, the selected tab's `page.ariaSnapshot({ mode: "ai" })`, or that one element's `locator.ariaSnapshot({ mode: "ai" })` with the usual waiting and strictness, for `ACT` (SPEC 7.4). With `settle`, the shim first waits until the network has been quiet for 500 ms (streams and requests open for 2 s do not count), for at least 100 ms and at most 5 s or half of `timeoutMs` |
 | `page` | `expect` (section 4.2) |
 | `assert` | `spec` (section 4.3) — state checks and tab closure only |
 | `read` | `subject` (section 4.4); result `{"type": "value", "value": ...}` or `{"type": "missing", "reason": "no-element" \| "absent-attribute"}` |
 | `readResponse` | `name`, `body` (bool) (section 4.5); result `{"status": 201, "url": "...", "headers": [[name, value], ...], "bodyBase64": "..." \| null, "bodyError": "..." \| null, "bodyMayBeDecoded": false}` |
 | `generateLocator` | `ref`, `role`, `name` (or `null`) (section 4.8); result `{"type": "locator", "locator": [...]}` or `{"type": "unstable", "reason": "..."}` |
+| `judgeScreenshot` | `locator` (or `null`) (section 4.9); result `{"pngBase64": "..."}` |
 | `readRequest` | `name` (section 4.7); result `{"method": "POST", "url": "...", "headers": [[name, value], ...], "bodyBase64": "..." \| null, "bodyError": "..." \| null}` |
 | `traceGroup` | none; opens one trace group named by `title` for the reads of one check |
 | `traceGroupEnd` | none; closes the group that `traceGroup` opened |
@@ -479,6 +482,17 @@ Rust reads the fingerprint that it caches beside the locator, the element's
 role and accessible name, from the first line of the snapshot. To check a
 cached locator, it sends `ariaSnapshot` with that locator and reads the
 first line of the result the same way.
+
+### 4.9 Judge screenshot
+
+`judgeScreenshot` takes the screenshot that `JUDGE` shows the model (SPEC
+9.8). With a `null` locator it captures the selected tab's viewport. With a
+locator it captures that element, with the usual waiting and strictness. It
+captures frames, as `snapshot` does, until two in a row are identical, and
+returns the last frame when `timeoutMs` runs out first. Rust sends it half of
+the time left in the step, so the model call keeps the rest. The result is the
+PNG as base64. A locator that matches nothing is a `timeout` error, and one
+that matches more than one element is a `strict` error.
 
 ## 5. Timeouts
 

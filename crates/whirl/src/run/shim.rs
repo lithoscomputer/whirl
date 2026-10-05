@@ -29,7 +29,7 @@ use crate::report::model::SnapshotReport;
 pub(super) mod wire;
 
 /// The protocol version this Whirl speaks (protocol section 3).
-pub(crate) const PROTOCOL: u64 = 6;
+pub(crate) const PROTOCOL: u64 = 8;
 
 /// Environment variable naming the built shim entry (protocol section 8).
 pub(crate) const SHIM_JS_ENV: &str = "WHIRL_SHIM_JS";
@@ -386,9 +386,11 @@ pub(crate) enum StepCommand {
         value: String,
     },
     /// ACT's view of the selected tab, or of one element when `locator`
-    /// is given (SPEC 7.4); result [`AriaSnapshotResult`].
+    /// is given (SPEC 7.4); result [`AriaSnapshotResult`]. With `settle`,
+    /// the shim first waits for the network to go quiet (protocol 4.9).
     AriaSnapshot {
         locator: Option<Json>,
+        settle:  bool,
     },
     Page {
         expect: Json,
@@ -412,6 +414,11 @@ pub(crate) enum StepCommand {
     /// [`RequestReadResult`].
     ReadRequest {
         name: String,
+    },
+    /// A settled PNG of an element or the viewport for `JUDGE` (protocol
+    /// 4.9); result `{"pngBase64": "..."}`.
+    JudgeScreenshot {
+        locator: Option<Json>,
     },
     /// A strict locator for a snapshot element (protocol 4.8); result
     /// [`GeneratedLocator`].
@@ -1244,9 +1251,12 @@ mod tests {
                 serde_json::json!({"script": "1 + 1"}),
             ),
             (
-                StepCommand::AriaSnapshot { locator: None },
+                StepCommand::AriaSnapshot {
+                    locator: None,
+                    settle:  true,
+                },
                 "ariaSnapshot",
-                serde_json::json!({"locator": null}),
+                serde_json::json!({"locator": null, "settle": true}),
             ),
             (
                 StepCommand::Page {

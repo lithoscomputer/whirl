@@ -2,8 +2,13 @@
 //! `packages/extension/prompt.ts` (`buildActSystemPrompt`,
 //! `buildActPrompt`, `buildStepTwoPrompt`, and `buildObserveUserMessage`),
 //! the `ai:` target prompt (SPEC 6.3), ported from its
-//! `buildObserveSystemPrompt`, and the text-argument prompt of its Jev path
-//! (browserbase/stagehand#2953).
+//! `buildObserveSystemPrompt`, the `EXTRACT` prompts (SPEC 7.6), ported from
+//! its `buildExtractSystemPrompt` and `buildExtractUserPrompt`, the `JUDGE`
+//! prompt (SPEC 9.8), adapted from the evidence rules of its verifier
+//! (`packages/core/lib/v3/verifier/prompts/fusedOutcome.ts`) and the YES/NO
+//! evaluator of `packages/core/lib/v3LegacyEvaluator.ts`, the `GOAL`
+//! prompt (SPEC 7.7), adapted from its `buildOperatorSystemPrompt`, and the
+//! text-argument prompt of its Jev path (browserbase/stagehand#2953).
 //!
 //! Whirl's changes: element IDs are Playwright AI-snapshot refs rather than
 //! frame-and-node IDs, the method list is Whirl's, and rules are added for
@@ -74,6 +79,172 @@ pub(crate) fn target_system_prompt() -> String {
 
          Each element in the accessibility tree has a ref in square brackets, like [ref=e12] or          [ref=f1e3]. Copy the ref value exactly into elementId, without the brackets or the          `ref=` prefix. For example, if the tree shows [ref=e12], return elementId \"e12\".",
     )
+}
+
+/// The system prompt of an `EXTRACT` call (SPEC 7.6).
+pub(crate) fn extract_system_prompt() -> String {
+    collapse_whitespace(
+        "You are extracting content on behalf of a user. If a user asks you to extract a \
+         'list' of information, or 'all' information, YOU MUST EXTRACT ALL OF THE INFORMATION \
+         THAT THE USER REQUESTS.
+
+         You will be given:
+         1. An instruction
+         2. A hierarchical accessibility tree of the page to extract from.
+
+         Print the exact text from the tree with all symbols, characters, and endlines as is. \
+         Print null if the page does not show the information.
+
+         If a user is attempting to extract links or URLs, you MUST respond with ONLY the refs \
+         of the link elements, such as e12, copied exactly from the [ref=...] marks. Do not \
+         attempt to extract links directly from the text.",
+    )
+}
+
+/// The system prompt of a `JUDGE` call (SPEC 9.8).
+pub(crate) fn judge_system_prompt() -> String {
+    collapse_whitespace(
+        "You are an expert evaluator of a web page. You decide whether a claim about the page \
+         holds, and you answer yes, no, or unsure with a concise reason.
+
+         You will be given:
+         1. a claim about the page
+         2. a hierarchical accessibility tree of the page, or of one element of it
+         3. a screenshot of the same part of the page
+
+         Judge only from the accessibility tree and the screenshot. Do not use outside or \
+         current-world knowledge to override what they show. Do not assume anything that they \
+         do not show: an unseen redirect, a hidden element, or a value that is not on the page. \
+         Ignore small differences that do not change what the claim means, such as \
+         capitalization, spacing, or formatting. Answer yes when the evidence shows the claim \
+         holds, and no when the evidence shows it does not. Answer unsure when the evidence is \
+         missing, cut off, or ambiguous.",
+    )
+}
+
+/// The system prompt of every `GOAL` call (SPEC 7.7). Whirl answers with
+/// a schema instead of tools, and it has no navigation, so the prompt
+/// names the three answers and leaves out the tools.
+pub(crate) fn goal_system_prompt() -> String {
+    collapse_whitespace(
+        "You are a general-purpose agent whose job is to accomplish the user's goal across \
+         multiple model calls by running actions on the page.
+
+         You will be given a goal, a list of steps that have been taken so far, and a \
+         hierarchical accessibility tree of the page as it is now. Your job is to determine if \
+         either the user's goal has been completed or if there are still steps that need to be \
+         taken.
+
+         Answer with status act and the next action when steps remain, with status done when \
+         the goal is complete, or with status impossible when the goal cannot be achieved on \
+         this page. Give a short reason. Leave actions empty unless the status is act.
+
+         Important guidelines:
+         1. Break down complex actions into individual atomic steps.
+         2. Each action is a single step, such as a single click on a specific element, \
+         typing into a single input field, or selecting a single option.
+         3. To fill in a form, give one action for each field that needs a value, in order, \
+         in the same answer. A click, or any other step that changes the page, is an answer \
+         of its own.
+         4. If a step failed, look at the page as it is now and try another way.
+         5. You cannot go to a URL, go back, or reload the page.
+         6. Only answer done when the goal is genuinely complete, and impossible when it is \
+         genuinely impossible to achieve.
+
+         Each element in the accessibility tree has a ref in square brackets, like [ref=e12] or \
+         [ref=f1e3]. Copy the ref value exactly into elementId, without the brackets or the \
+         `ref=` prefix. For example, if the tree shows [ref=e12], return elementId \"e12\".",
+    )
+}
+
+/// The user message of a `GOAL` call: the goal, how to answer an action,
+/// the steps so far, and the snapshot.
+pub(crate) fn goal_message(
+    goal: &str,
+    placeholders: &[String],
+    steps: &[String],
+    snapshot: &str,
+) -> String {
+    let methods = method_list(ActMethod::ALL);
+    let mut message = format!(
+        "Goal: {goal}
+
+  For an action, provide the element and a method such as {methods}. Remember that to users, \
+         buttons and links look the same in most cases.
+  When choosing non-left click actions, provide right or middle as the argument
+  {DRAG_RULE}
+  {SCROLL_RULES}
+  If the step is a key press, e.g., 'press enter', 'press a', 'press space', etc., always \
+         choose the press method with the appropriate key as argument — e.g. 'a', 'Enter', \
+         'Space'. Capitalize the first character like 'Enter', 'Tab', 'Escape' only for special \
+         keys.
+  To choose an option of a 'select' element, choose the selectOptionFromDropdown method with \
+         the exact text of the option. To choose from any other dropdown, click it to open it \
+         first, and choose the option in the next step.
+"
+    );
+    message.push_str(&variables_prompt(placeholders));
+    let steps = if steps.is_empty() {
+        "none".to_owned()
+    } else {
+        steps
+            .iter()
+            .enumerate()
+            .map(|(index, step)| format!("{}. {step}", index + 1))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    message + "\nSteps taken so far:\n" + &steps + "\nAccessibility Tree: \n" + snapshot + "\n"
+}
+
+/// The text of a `JUDGE` call's user message: the claims, their
+/// placeholders, and the snapshot. The screenshot follows it. Several
+/// claims about the same view share one call.
+pub(crate) fn judge_message(claims: &[&str], placeholders: &[String], snapshot: &str) -> String {
+    let placeholders = match (placeholders.is_empty(), claims.len()) {
+        (true, _) => String::new(),
+        (false, 1) => format!(
+            "\nThe claim uses placeholders for hidden values: {}.",
+            placeholders.join(", ")
+        ),
+        (false, _) => format!(
+            "\nThe claims use placeholders for hidden values: {}.",
+            placeholders.join(", ")
+        ),
+    };
+    let claims = match claims {
+        [claim] => format!("Claim: {claim}"),
+        many => {
+            let listed: Vec<String> = many
+                .iter()
+                .enumerate()
+                .map(|(index, claim)| format!("{}. {claim}", index + 1))
+                .collect();
+            format!(
+                "Claims, each judged on its own:\n{}\nAnswer one verdict for each claim, in the same order.",
+                listed.join("\n")
+            )
+        }
+    };
+    format!("{claims}{placeholders}\nAccessibility Tree: \n{snapshot}\nScreenshot:")
+}
+
+/// The user message of an `EXTRACT` call: the instruction, its
+/// placeholders, and the snapshot.
+pub(crate) fn extract_message(
+    instruction: &str,
+    placeholders: &[String],
+    snapshot: &str,
+) -> String {
+    let placeholders = if placeholders.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\nThe instruction uses placeholders for hidden values: {}.",
+            placeholders.join(", ")
+        )
+    };
+    format!("Instruction: {instruction}{placeholders}\nDOM: {snapshot}\n")
 }
 
 /// The user message of an `ai:` target call: the description, its
@@ -285,6 +456,28 @@ mod tests {
         assert!(prompt.contains(DRAG_RULE));
         assert!(prompt.contains(SCROLL_RULES));
         assert!(!prompt.contains("variables"));
+    }
+
+    #[test]
+    fn the_goal_message_lists_the_steps_so_far_and_the_rules() {
+        let message = goal_message(
+            "sign in as %env.USER%",
+            &["%env.USER%".to_owned()],
+            &[
+                "FILL role:textbox Email \"%env.USER%\"".to_owned(),
+                "CLICK role:button Go (failed: timeout)".to_owned(),
+            ],
+            "- button \"Sign in\" [ref=e2]",
+        );
+        assert!(message.starts_with("Goal: sign in as %env.USER%\n"));
+        assert!(message.contains(DRAG_RULE));
+        assert!(message.contains("the following variables to be used in the action: %env.USER%"));
+        assert!(message.contains(
+            "Steps taken so far:\n1. FILL role:textbox Email \"%env.USER%\"\n2. CLICK role:button Go (failed: timeout)\n"
+        ));
+        assert!(message.ends_with("Accessibility Tree: \n- button \"Sign in\" [ref=e2]\n"));
+        assert!(goal_message("x", &[], &[], "").contains("Steps taken so far:\nnone\n"));
+        assert!(!goal_system_prompt().contains('\n'));
     }
 
     #[test]

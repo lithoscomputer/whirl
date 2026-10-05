@@ -5,6 +5,7 @@
 pub(crate) mod act;
 pub(crate) mod artifacts;
 pub(crate) mod cache;
+pub(crate) mod extract;
 pub(crate) mod flow;
 pub(crate) mod runner;
 pub(crate) mod shim;

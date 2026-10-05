@@ -55,6 +55,38 @@ impl ActInference {
     }
 }
 
+/// How one `GOAL` answer goes on (SPEC 7.7).
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum GoalStatus {
+    Act,
+    Done,
+    Impossible,
+}
+
+/// The raw structured answer that [`goal_schema`] describes.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct GoalInference {
+    pub(crate) status: GoalStatus,
+    pub(crate) reason: String,
+    actions:           Vec<InferredAction>,
+}
+
+impl GoalInference {
+    /// The answer's actions, each as a one-step `ACT` answer, so each goes
+    /// through [`PageSnapshot::decide`] like any answer.
+    pub(crate) fn into_acts(self) -> Vec<ActInference> {
+        self.actions
+            .into_iter()
+            .map(|action| ActInference {
+                action:   Some(action),
+                two_step: false,
+            })
+            .collect()
+    }
+}
+
 /// The methods the model may choose. Each maps to one Whirl verb.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -136,6 +168,56 @@ impl ActMethod {
 
 /// The JSON schema of [`ActInference`], sent with every model call.
 pub(crate) fn inference_schema() -> Json {
+    json!({
+        "type": "object",
+        "properties": {
+            "action": action_schema("The element to act on, or null when no matching element exists."),
+            "twoStep": {
+                "type": "boolean",
+                "description": "Whether the selected interaction requires a second action to finish the request."
+            }
+        },
+        "required": ["action", "twoStep"],
+        "additionalProperties": false
+    })
+}
+
+/// The schema of one `GOAL` answer (SPEC 7.7): go on with one action, or
+/// end the goal.
+pub(crate) fn goal_schema() -> Json {
+    json!({
+        "type": "object",
+        "properties": {
+            "status": {
+                "type": "string",
+                "enum": ["act", "done", "impossible"],
+                "description": "act to run one more action, done when the goal is complete, or impossible when it cannot be reached."
+            },
+            "reason": {
+                "type": "string",
+                "description": "A short reason for the answer."
+            },
+            "actions": {
+                "type": "array",
+                "items": action_object_schema(),
+                "description": "When status is act, the next action. Give several only when each fills in or chooses a value in a different field of the same form and none of them changes the page; they run in order. Empty unless status is act."
+            }
+        },
+        "required": ["status", "reason", "actions"],
+        "additionalProperties": false
+    })
+}
+
+/// The wire schema of one element action, or null.
+fn action_schema(description: &str) -> Json {
+    json!({
+        "anyOf": [action_object_schema(), {"type": "null"}],
+        "description": description
+    })
+}
+
+/// The wire schema of one element action.
+fn action_object_schema() -> Json {
     let methods: Vec<&str> = ActMethod::ALL
         .iter()
         .map(|method| method.wire_name())
@@ -143,43 +225,26 @@ pub(crate) fn inference_schema() -> Json {
     json!({
         "type": "object",
         "properties": {
-            "action": {
-                "anyOf": [
-                    {
-                        "type": "object",
-                        "properties": {
-                            "elementId": {
-                                "type": "string",
-                                "description": "The ref of the element, copied from the accessibility tree without brackets, such as e12."
-                            },
-                            "description": {
-                                "type": "string",
-                                "description": "A description of the element and its purpose."
-                            },
-                            "method": {
-                                "type": "string",
-                                "enum": methods,
-                                "description": "The supported browser interaction method to execute."
-                            },
-                            "arguments": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                                "description": "The arguments to pass to the selected interaction method."
-                            }
-                        },
-                        "required": ["elementId", "description", "method", "arguments"],
-                        "additionalProperties": false
-                    },
-                    {"type": "null"}
-                ],
-                "description": "The element to act on, or null when no matching element exists."
+            "elementId": {
+                "type": "string",
+                "description": "The ref of the element, copied from the accessibility tree without brackets, such as e12."
             },
-            "twoStep": {
-                "type": "boolean",
-                "description": "Whether the selected interaction requires a second action to finish the request."
+            "description": {
+                "type": "string",
+                "description": "A description of the element and its purpose."
+            },
+            "method": {
+                "type": "string",
+                "enum": methods,
+                "description": "The supported browser interaction method to execute."
+            },
+            "arguments": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "The arguments to pass to the selected interaction method."
             }
         },
-        "required": ["action", "twoStep"],
+        "required": ["elementId", "description", "method", "arguments"],
         "additionalProperties": false
     })
 }
@@ -570,6 +635,22 @@ pub(crate) enum DecisionError {
     Placeholder(#[from] UnboundPlaceholder),
 }
 
+/// The arguments a method can use (SPEC 7.4). A method that takes none
+/// drops what the answer gave, and a click keeps only an argument that
+/// names a mouse button, so an empty string or the element's text is a
+/// left click. Other methods keep every argument and are checked strictly.
+fn usable_arguments(method: ActMethod, arguments: Vec<String>) -> Vec<String> {
+    match method {
+        ActMethod::Click => arguments
+            .into_iter()
+            .find(|argument| MouseButton::from_name(argument).is_some())
+            .into_iter()
+            .collect(),
+        _ if *method.arity().end() == 0 => Vec::new(),
+        _ => arguments,
+    }
+}
+
 fn arity_text(arity: &RangeInclusive<usize>) -> String {
     if arity.start() == arity.end() {
         arity.start().to_string()
@@ -594,6 +675,11 @@ impl PageSnapshot {
                 .ok_or_else(|| DecisionError::UnknownElement {
                     element_id: action.element_id.clone(),
                 })?;
+        let arguments = usable_arguments(action.method, action.arguments);
+        let action = InferredAction {
+            arguments,
+            ..action
+        };
         let expected = action.method.arity();
         if !expected.contains(&action.arguments.len()) {
             return Err(DecisionError::Arguments {
@@ -999,28 +1085,47 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_mouse_button_is_rejected() {
+    fn a_click_ignores_an_argument_that_names_no_button() {
+        for arguments in [&["sideways"][..], &[""], &["Blue"], &["right", "twice"]] {
+            let answer = json!({
+                "action": {"elementId": "e5", "description": "", "method": "click", "arguments": arguments},
+                "twoStep": false
+            });
+            let action = perform(answer, &instruction("x"));
+            let expected = if arguments.contains(&"right") {
+                "RIGHTCLICK role:button \"Sign in\""
+            } else {
+                "CLICK role:button \"Sign in\""
+            };
+            assert_eq!(action.line(), expected, "{arguments:?}");
+        }
+        let answer = json!({
+            "action": {"elementId": "e5", "description": "", "method": "hover", "arguments": ["now"]},
+            "twoStep": false
+        });
         assert_eq!(
-            snapshot().decide(click_with(&["sideways"]), &instruction("x")),
-            Err(DecisionError::Button {
-                given: "sideways".to_owned(),
-            })
+            perform(answer, &instruction("x")).line(),
+            "HOVER role:button \"Sign in\""
         );
     }
 
     #[test]
     fn arguments_must_fit_the_method() {
+        let answer = inference(json!({
+            "action": {"elementId": "e4", "description": "", "method": "fill", "arguments": ["a", "b"]},
+            "twoStep": false
+        }));
         let error = snapshot()
-            .decide(click_with(&["right", "twice"]), &instruction("x"))
+            .decide(answer, &instruction("x"))
             .expect_err("two arguments");
         assert_eq!(error, DecisionError::Arguments {
-            method:   "click",
-            expected: 0..=1,
+            method:   "fill",
+            expected: 1..=1,
             actual:   2,
         });
         assert_eq!(
             error.to_string(),
-            "click takes 0 or 1 argument(s), but the answer gave 2"
+            "fill takes 1 argument(s), but the answer gave 2"
         );
         let answer = inference(json!({
             "action": {"elementId": "e4", "description": "", "method": "fill", "arguments": []},

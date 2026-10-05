@@ -175,6 +175,17 @@ Set the provider's key, such as `ANTHROPIC_API_KEY`. The model's choice can
 change between runs, so assert the result. `{{env.NAME}}` values in an
 instruction reach the model only as placeholders. See [ACT](SPEC.md#74-act).
 
+`GOAL` lets the model run several actions, one at a time, until it says the
+goal is done. Follow it with an `ASSERT` that checks the result:
+
+```whirl
+GOAL "add two blue mugs to the cart and open the cart"
+ASSERT testid:cart-badge text == 2
+```
+
+A `GOAL` runs at most 20 actions within 2 minutes. `@duration` changes the
+time. See [GOAL](SPEC.md#77-goal).
+
 An `ai:` segment names one element in words, wherever a locator goes:
 
 ```whirl
@@ -182,9 +193,9 @@ CLICK ai:"the Add to cart button for the first product"
 ASSERT role:dialog >> ai:"the order total" text == "$42.00"
 ```
 
-Whirl writes what each `ai:` target and `ACT` line resolved to in
-`<flow>.whirl-cache.json`, next to the flow. Commit it. Later runs replay it
-without a model call, and a step whose page changed heals with a warning:
+Whirl writes what each `ai:` target, `ACT` line, and `GOAL` line resolved to
+in `<flow>.whirl-cache.json`, next to the flow. Commit it. Later runs replay
+it without a model call, and a step whose page changed heals with a warning:
 
 ```console
 $ whirl --cache=update flows/   # resolve with the model and write the cache
@@ -193,6 +204,37 @@ $ whirl --cache=only flows/     # fail a miss instead of asking the model
 ```
 
 See [AI targets](SPEC.md#63-ai-targets) and [the AI cache](SPEC.md#121-the-ai-cache).
+
+`EXTRACT` reads a value from the page into a typed variable, shaped by an
+optional JSON Schema, for later checks:
+
+```whirl
+EXTRACT order testid:summary "the order total and line items"
+{
+    "type": "object",
+    "properties": {
+        "total": { "type": "number" },
+        "items": { "type": "array", "items": { "type": "string" } }
+    },
+    "required": ["total", "items"]
+}
+ASSERT extract:order json:$.total > 0
+```
+
+See [EXTRACT](SPEC.md#76-extract).
+
+`JUDGE` asks the model whether a claim about the page holds. The model sees a
+screenshot and the page outline. Put an `ASSERT` first that waits for the
+state the claim describes, because `JUDGE` does not retry:
+
+```whirl
+ASSERT testid:summary visible
+JUDGE testid:summary "the total matches the sum of the line items"
+JUDGE "the page shows no error message"
+```
+
+`yes` passes, `no` fails with the model's reason, and `unsure` passes with a
+warning. The model must accept images. See [JUDGE](SPEC.md#98-judge).
 
 More commands:
 

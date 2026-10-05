@@ -4,6 +4,7 @@
 //! The CLI parses every input and reports each file's error, so
 //! `whirl check` can surface all broken files in one pass (SPEC 13).
 
+use std::collections::HashMap;
 use std::fmt::{self, Write as _};
 use std::iter::Peekable;
 use std::mem;
@@ -17,12 +18,12 @@ use crate::check::{
 use crate::lang::ast::snapshot::{MaxDiff, PixelThreshold, SnapshotOption, SnapshotOptionLine};
 use crate::lang::ast::{
     Action, ActionKind, Assert, AssertBody, BrowserKind, Capture, CheckLine, CheckStep, Comment,
-    DialogPolicy, DurationLit, Entry, Extractor, File, FileOption, FilterArg, FilterSpec, HttpBody,
-    HttpBodyKind, HttpHeader, Ident, JsonLiteral, Locator, LocatorSegment, MockResponse,
-    MouseButton, Operand, OptionLine, OptionValue, Page, PageCheck, Percent, PredicateSpec,
-    ReducedMotion, Regex, RegexFlags, RequestField, ResponseField, ScrollDirection, ScrollMotion,
-    SegmentKind, Span, StateCheck, StoreScope, Subject, TextPrefix, Value, ValueSegment, Viewport,
-    chain_type,
+    DialogPolicy, DurationLit, Entry, ExtractSchema, Extractor, File, FileOption, FilterArg,
+    FilterSpec, HttpBody, HttpBodyKind, HttpHeader, Ident, JsonLiteral, Judge, Locator,
+    LocatorSegment, MockResponse, MouseButton, Operand, OptionLine, OptionValue, Page, PageCheck,
+    Percent, PredicateSpec, ReducedMotion, Regex, RegexFlags, RequestField, ResponseField,
+    ScrollDirection, ScrollMotion, SegmentKind, Span, StateCheck, StoreScope, Subject, TextPrefix,
+    Value, ValueSegment, Viewport, chain_type,
 };
 
 /// A parse diagnostic (SPEC 16): file, line, column, the source line, a
@@ -932,7 +933,7 @@ fn split_timeout(tokens: &mut Vec<RawToken>) -> Option<DurationLit> {
     Some(duration)
 }
 
-const ACTION_KEYWORDS: [&str; 27] = [
+const ACTION_KEYWORDS: [&str; 29] = [
     "HTTP",
     "RESPONSE",
     "MOCK",
@@ -959,6 +960,8 @@ const ACTION_KEYWORDS: [&str; 27] = [
     "SNAPSHOT",
     "EVAL",
     "ACT",
+    "GOAL",
+    "EXTRACT",
     "STORE",
 ];
 
@@ -1412,6 +1415,10 @@ fn parse_action_body(
             script: one_value(tokens, keyword_span)?,
         },
         "ACT" => parse_act(tokens, keyword_span)?,
+        "GOAL" => ActionKind::Goal {
+            goal: one_value(tokens, keyword_span)?,
+        },
+        "EXTRACT" => parse_extract(tokens, keyword_span)?,
         other => {
             return Err(
                 LineError::new(keyword_span, format!("unknown action `{other}`"))
@@ -1420,6 +1427,28 @@ fn parse_action_body(
         }
     };
     Ok((kind, timeout))
+}
+
+/// Parses `EXTRACT name [locator] "instruction"` (SPEC 7.6). The schema
+/// lines follow in [`Parser::parse_extract_schema`].
+fn parse_extract(mut tokens: Vec<RawToken>, keyword_span: Span) -> Result<ActionKind, LineError> {
+    if tokens.len() < 2 {
+        return Err(LineError::new(
+            keyword_span,
+            "expected EXTRACT name [locator] \"instruction\"",
+        )
+        .expecting(["EXTRACT name \"instruction\""]));
+    }
+    let name = parse_name(vec![tokens.remove(0)], keyword_span)?;
+    let ActionKind::Act { scope, instruction } = parse_act(tokens, keyword_span)? else {
+        unreachable!("parse_act returns ACT");
+    };
+    Ok(ActionKind::Extract {
+        name,
+        scope,
+        instruction,
+        schema: None,
+    })
 }
 
 /// `ACT "instruction"` or `ACT locator "instruction"` (SPEC 7.4). The scope
@@ -1957,6 +1986,13 @@ fn parse_subject(
         let field = parse_response_field_token(first)?;
         return Ok(Head::Subject(Subject::Response { name: None, field }));
     }
+    if head_text.starts_with("extract:") {
+        let span = first.span;
+        let name = strip_prefix_token(first, "extract:".len())
+            .ok_or_else(|| LineError::new(span, "expected an EXTRACT name"))?;
+        let name = parse_name(vec![name], span)?;
+        return Ok(Head::Subject(Subject::Extract { name, text: false }));
+    }
     if head_text.starts_with("request:") {
         let span = first.span;
         let name = strip_prefix_token(first, "request:".len())
@@ -2441,7 +2477,7 @@ enum State {
 }
 
 /// The keywords that start a check line (SPEC 9, 10).
-const CHECK_KEYWORDS: [&str; 2] = ["ASSERT", "CAPTURE"];
+const CHECK_KEYWORDS: [&str; 3] = ["ASSERT", "JUDGE", "CAPTURE"];
 
 struct Parser {
     options:        Vec<OptionLine>,
@@ -2719,6 +2755,8 @@ pub(crate) fn parse_file(path: &Path, source: &str) -> Result<File, ParseError> 
             .map_err(|error| into_parse_error(path, error, line_no, line))?;
         if matches!(line.split_whitespace().next(), Some("HTTP" | "MOCK")) {
             index = parser.parse_http_tail(path, &lines, index)?;
+        } else if line.split_whitespace().next() == Some("EXTRACT") {
+            index = parser.parse_extract_schema(path, &lines, index)?;
         } else {
             index += 1;
         }
@@ -2739,13 +2777,41 @@ pub(crate) fn parse_file(path: &Path, source: &str) -> Result<File, ParseError> 
             expected:    vec!["HTTP".to_owned(), "VISIT".to_owned()],
         });
     }
-    Ok(File {
+    let mut file = File {
         path:           path.to_path_buf(),
         options:        parser.options,
         entries:        parser.entries,
         comments:       parser.comments,
         options_header: parser.options_header,
-    })
+    };
+    mark_text_extracts(&mut file);
+    Ok(file)
+}
+
+/// Marks each `extract:NAME` subject whose latest earlier `EXTRACT` line
+/// of that name has no schema, so the value is a string (SPEC 7.6, 9.6).
+fn mark_text_extracts(file: &mut File) {
+    let mut text: HashMap<String, bool> = HashMap::new();
+    for entry in &mut file.entries {
+        for action in &entry.actions {
+            if let ActionKind::Extract { name, schema, .. } = &action.kind {
+                text.insert(name.text.clone(), schema.is_none());
+            }
+        }
+        for check in &mut entry.checks {
+            let subject = match check {
+                CheckStep::Assert(Assert {
+                    body: AssertBody::Check(line),
+                    ..
+                }) => &mut line.subject,
+                CheckStep::Capture(capture) => &mut capture.subject,
+                CheckStep::Assert(_) | CheckStep::Judge(_) => continue,
+            };
+            if let Subject::Extract { name, text: plain } = subject {
+                *plain = text.get(&name.text).copied().unwrap_or(false);
+            }
+        }
+    }
 }
 
 /// A check line whose form differs from the file's first check form
@@ -2777,6 +2843,110 @@ fn into_parse_error(path: &Path, error: LineError, line_no: u32, line: &str) -> 
 }
 
 impl Parser {
+    /// Parses the optional JSON Schema object below an `EXTRACT` headline
+    /// (SPEC 7.6) and returns the index of the next line to parse.
+    fn parse_extract_schema(
+        &mut self,
+        path: &Path,
+        lines: &[&str],
+        headline: usize,
+    ) -> Result<usize, ParseError> {
+        let mut index = headline + 1;
+        let mut comments = Vec::new();
+        while let Some(line) = lines.get(index) {
+            let trimmed = line.trim_start();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                comments.push(index);
+                index += 1;
+                continue;
+            }
+            break;
+        }
+        let Some(line) = lines.get(index).copied() else {
+            return Ok(headline + 1);
+        };
+        let trimmed = line.trim_start();
+        if !trimmed.starts_with('{') {
+            let header = trimmed.split_whitespace().next().unwrap_or_default();
+            if trimmed.starts_with('[')
+                && !matches!(header, "[Options]" | "[Asserts]" | "[Captures]")
+            {
+                let error = LineError::new(
+                    Span {
+                        line:   0,
+                        column: 1,
+                        len:    1,
+                    },
+                    "an EXTRACT schema is a JSON object",
+                )
+                .at_source(u32::try_from(index + 1).unwrap_or(u32::MAX), line);
+                return Err(into_parse_error(path, error, 0, line));
+            }
+            return Ok(headline + 1);
+        }
+        for comment in comments {
+            let line_no = u32::try_from(comment + 1).unwrap_or(u32::MAX);
+            self.parse_line(lines[comment], line_no)
+                .map_err(|error| into_parse_error(path, error, line_no, lines[comment]))?;
+        }
+        let end =
+            json_body_end(lines, index).map_err(|error| into_parse_error(path, error, 0, line))?;
+        let text = lines[index..=end].join("\n");
+        if let Some(offset) = lines[index..=end]
+            .iter()
+            .position(|line| line.contains("{{"))
+        {
+            let source = lines[index + offset];
+            let column = source
+                .find("{{")
+                .map_or(1, |byte| source[..byte].chars().count() + 1);
+            let error = LineError::new(
+                Span {
+                    line:   0,
+                    column: u32::try_from(column).unwrap_or(u32::MAX),
+                    len:    2,
+                },
+                "an EXTRACT schema cannot contain `{{ }}`",
+            )
+            .at_source(
+                u32::try_from(index + offset + 1).unwrap_or(u32::MAX),
+                source,
+            );
+            return Err(into_parse_error(path, error, 0, source));
+        }
+        if let Err(error) = serde_json::from_str::<serde_json::Value>(&text) {
+            let error_line = index + error.line();
+            let source = lines
+                .get(error_line.saturating_sub(1))
+                .copied()
+                .unwrap_or(line);
+            let local = LineError::new(
+                Span {
+                    line:   0,
+                    column: u32::try_from(error.column()).unwrap_or(u32::MAX),
+                    len:    1,
+                },
+                format!("invalid EXTRACT schema: {error}"),
+            )
+            .at_source(u32::try_from(error_line).unwrap_or(u32::MAX), source);
+            return Err(into_parse_error(path, local, 0, source));
+        }
+        let action = self
+            .current
+            .as_mut()
+            .and_then(|entry| entry.actions.last_mut())
+            .expect("an EXTRACT headline creates a current action");
+        let ActionKind::Extract { schema, .. } = &mut action.kind else {
+            unreachable!("parse_extract_schema follows an EXTRACT action");
+        };
+        *schema = Some(ExtractSchema {
+            text,
+            line: u32::try_from(index + 1).unwrap_or(u32::MAX),
+            end_line: u32::try_from(end + 1).unwrap_or(u32::MAX),
+        });
+        Ok(end + 1)
+    }
+
     fn parse_http_tail(
         &mut self,
         path: &Path,
@@ -3176,7 +3346,31 @@ impl Parser {
         self.first_keyword.get_or_insert(keyword_span.line);
         let implicit_http = self.in_http_entry();
         let line_no = cursor.line_no;
-        let check = if keyword == "ASSERT" {
+        let check = if keyword == "JUDGE" {
+            if implicit_http {
+                return Err(LineError::new(
+                    keyword_span,
+                    "JUDGE checks the page; an HTTP entry has no page",
+                ));
+            }
+            let mut tokens = Vec::new();
+            while let Some(token) = cursor.next_token()? {
+                tokens.push(token);
+            }
+            let timeout = split_timeout(&mut tokens);
+            let ActionKind::Act { scope, instruction } = parse_act(tokens, keyword_span)? else {
+                unreachable!("parse_act returns ACT");
+            };
+            let (text, span) = cursor.content(content_start);
+            CheckStep::Judge(Judge {
+                scope,
+                claim: instruction,
+                timeout,
+                line: line_no,
+                span,
+                text,
+            })
+        } else if keyword == "ASSERT" {
             let Some(first) = cursor.next_token()? else {
                 return Err(LineError::new(after_span(keyword_span), "expected a check")
                     .expecting([
@@ -4494,7 +4688,7 @@ ASSERT status == 202
                         ..
                     }) => &line.subject,
                     CheckStep::Capture(capture) => &capture.subject,
-                    CheckStep::Assert(_) => panic!("expected a subject"),
+                    CheckStep::Assert(_) | CheckStep::Judge(_) => panic!("expected a subject"),
                 };
                 let Subject::Request { name, field } = subject else {
                     panic!("expected a request subject");
@@ -4551,6 +4745,130 @@ ASSERT status == 202
         assert_eq!(
             parse_err("VISIT /\nCLICK ai:\n").message,
             "`ai:` needs a value"
+        );
+    }
+
+    #[test]
+    fn extract_parses_a_name_a_scope_an_instruction_and_a_schema() {
+        let file = parse(
+            "VISIT /\nEXTRACT order testid:summary \"the total\" @30s\n# the shape\n{\n  \"type\": \"number\"\n}\nASSERT extract:order > 0\n",
+        );
+        let entry = only_entry(&file);
+        let ActionKind::Extract {
+            name,
+            scope,
+            instruction,
+            schema,
+        } = &entry.actions[1].kind
+        else {
+            panic!("expected EXTRACT");
+        };
+        assert_eq!(name.text, "order");
+        assert!(scope.is_some());
+        assert_eq!(lit(instruction), "the total");
+        let schema = schema.as_ref().expect("a schema");
+        assert_eq!((schema.line, schema.end_line), (4, 6));
+        assert_eq!(schema.json(), serde_json::json!({"type": "number"}));
+        assert_eq!(
+            entry.actions[1].timeout.map(DurationLit::millis),
+            Some(30_000)
+        );
+        assert!(matches!(
+            &entry.checks[0],
+            CheckStep::Assert(Assert {
+                body: AssertBody::Check(CheckLine {
+                    subject: Subject::Extract { text: false, .. },
+                    ..
+                }),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn an_extract_without_a_schema_reads_text() {
+        let file = parse("VISIT /\nEXTRACT note \"the note\"\nASSERT extract:note == 42\n");
+        assert!(matches!(
+            &only_entry(&file).checks[0],
+            CheckStep::Assert(Assert {
+                body: AssertBody::Check(CheckLine {
+                    subject: Subject::Extract { text: true, .. },
+                    ..
+                }),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn judge_is_a_check_line_with_an_optional_scope() {
+        let file = parse(
+            "VISIT /\nASSERT testid:summary visible\nJUDGE testid:summary \"the total is {{total}}\" @20s\nJUDGE \"no error shows\"\nCAPTURE t: url\n",
+        );
+        let entry = only_entry(&file);
+        let judges: Vec<&Judge> = entry.judges().collect();
+        assert_eq!(judges.len(), 2);
+        assert!(judges[0].scope.is_some());
+        assert_eq!(judges[0].line, 3);
+        assert_eq!(judges[0].timeout.map(DurationLit::millis), Some(20_000));
+        assert_eq!(
+            judges[0].text,
+            "JUDGE testid:summary \"the total is {{total}}\" @20s"
+        );
+        assert!(judges[1].scope.is_none());
+        assert_eq!(lit(&judges[1].claim), "no error shows");
+        assert!(matches!(entry.checks[3], CheckStep::Capture(_)));
+        assert!(file.uses_judge() && file.uses_ai());
+    }
+
+    #[test]
+    fn goal_takes_one_value_and_a_timeout() {
+        let file = parse("VISIT /\nGOAL \"buy {{item}}\" @180s\nASSERT url exists\n");
+        let action = &only_entry(&file).actions[1];
+        let ActionKind::Goal { goal } = &action.kind else {
+            panic!("expected GOAL, got {:?}", action.kind);
+        };
+        assert_eq!(goal.segments.len(), 2);
+        assert_eq!(action.timeout.map(DurationLit::millis), Some(180_000));
+        assert!(file.uses_goal() && file.uses_ai() && !file.uses_act());
+        assert_eq!(
+            parse_err("VISIT /\nGOAL \"a\" \"b\"\n").message,
+            "expected end of line"
+        );
+        assert_eq!(parse_err("VISIT /\nGOAL\n").message, "expected a value");
+    }
+
+    #[test]
+    fn judge_needs_a_page() {
+        assert_eq!(
+            parse_err("HTTP GET /x\nJUDGE \"fine\"\n").message,
+            "JUDGE checks the page; an HTTP entry has no page"
+        );
+        assert!(
+            parse_err("VISIT /\nJUDGE\n")
+                .message
+                .starts_with("expected")
+        );
+    }
+
+    #[test]
+    fn malformed_extract_schemas_are_parse_errors() {
+        assert_eq!(
+            parse_err("VISIT /\nEXTRACT n \"x\"\n{\"type\": \"{{kind}}\"}\n").message,
+            "an EXTRACT schema cannot contain `{{ }}`"
+        );
+        assert!(
+            parse_err("VISIT /\nEXTRACT n \"x\"\n{\"type\": }\n")
+                .message
+                .starts_with("invalid EXTRACT schema")
+        );
+        assert_eq!(
+            parse_err("VISIT /\nEXTRACT n \"x\"\n[1]\n").message,
+            "an EXTRACT schema is a JSON object"
+        );
+        assert_eq!(
+            parse_err("VISIT /\nEXTRACT \"x\"\n").message,
+            "expected EXTRACT name [locator] \"instruction\""
         );
     }
 

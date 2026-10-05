@@ -11,5 +11,15 @@
   <p><label>Password <input type="password" name="password" autocomplete="current-password"></label></p>
   <p><button type="button">Sign in</button></p>
 </form>
+<p data-testid="status" role="status"></p>
+<script>
+  // Signing in shows who signed in; the form stays, so its values can be checked.
+  document.querySelector("button").addEventListener("click", () => {
+    const user = document.querySelector("[name=username]").value.trim();
+    const password = document.querySelector("[name=password]").value;
+    document.querySelector("[data-testid=status]").textContent =
+      user && password ? `Signed in as ${user}` : "Enter a username and a password";
+  });
+</script>
 </body>
 </html>
