@@ -185,6 +185,44 @@ Run the complete [sample shop](examples/shop/README.md) with
 `mise run example:test`. It covers login, validation, shared setup, snapshots,
 and CI reports. See [examples/](examples/) for more flows.
 
+### Snapshot comparison settings
+
+Set defaults in `[Options]`, then override each setting below a `SNAPSHOT`:
+
+```whirl
+[Options]
+snapshot-mask: testid:clock
+snapshot-max-diff: 0.1%
+snapshot-pixel-threshold: 0.2
+
+VISIT /dashboard
+SNAPSHOT dashboard
+snapshot-max-diff: 20
+
+SNAPSHOT unmasked
+snapshot-mask: none
+
+# Compare only the cart.
+SNAPSHOT cart testid:cart
+snapshot-mask: testid:cart >> testid:delivery-estimate
+snapshot-max-diff: 0.5%
+```
+
+A locator after the name captures only that element. It must match exactly one
+element, and every segment needs a prefix, such as `testid:` or `role:`. An
+element snapshot checks what the element looks like and its size. It does not
+check where the element is on the page; use a full-page snapshot for that.
+
+`snapshot-mask` covers matching elements with pink. Repeat it for several
+locators. A local list replaces the file list; `none` clears it. Masks search
+the whole page, not only the element.
+`snapshot-max-diff` permits a pixel count or a percentage of the captured
+image: the full page, or the element.
+`snapshot-pixel-threshold` sets the color difference that counts as a changed
+pixel. Omitted options inherit file defaults. The built-in defaults are no
+masks, zero different pixels, and a pixel threshold of `0.2`. Image dimensions
+must always match. Masks do not redact other screenshots, traces, or video.
+
 ## HTML reports
 
 Create a portable browser test report with recordings and screenshots:

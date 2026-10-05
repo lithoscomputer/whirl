@@ -9,6 +9,7 @@ import type {
 	HttpParams,
 	ScrollDirection,
 	ScrollMotion,
+	SnapshotComparison,
 	StartFlowParams,
 } from "./protocol.js";
 import { assertNever, ShimError } from "./protocol.js";
@@ -100,6 +101,26 @@ export function fieldArrayOrNull(
 		return null;
 	}
 	return fieldArray(params, key);
+}
+
+export function decodeSnapshotComparison(params: Params): SnapshotComparison {
+	const pixelThreshold = fieldNumber(params, "pixelThreshold");
+	if (pixelThreshold < 0 || pixelThreshold > 1) {
+		throw malformed("pixelThreshold", "a number from 0 to 1");
+	}
+	const maxDiff = fieldObject(params, "maxDiff");
+	const type = fieldEnum(maxDiff, "type", ["pixels", "percent"] as const);
+	const value = fieldNumber(maxDiff, "value");
+	if (
+		value < 0 ||
+		(type === "pixels" ? !Number.isSafeInteger(value) : value > 100)
+	) {
+		throw malformed(
+			"maxDiff",
+			"a safe nonnegative pixel count or a percentage from 0 to 100",
+		);
+	}
+	return { pixelThreshold, maxDiff: { type, value } };
 }
 
 export function decodeHttpParams(params: Params): HttpParams {

@@ -117,6 +117,7 @@ mod tests {
             status,
             duration_ms: 5,
             error,
+            snapshot: None,
             act: None,
         }
     }

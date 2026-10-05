@@ -21,11 +21,12 @@ import { FlowNetwork } from "./flow-network.js";
 import { FlowTabs } from "./flow-tabs.js";
 import { createHostAllowlist } from "./host-glob.js";
 import { nameIframes } from "./iframe-names.js";
-import { buildLocator, describeLocator } from "./locators.js";
+import { buildLocator, describeLocator, frameOwners } from "./locators.js";
 import type { Params } from "./params.js";
 import {
 	decodeHttpParams,
 	decodeScrollMotion,
+	decodeSnapshotComparison,
 	fieldArray,
 	fieldArrayOrNull,
 	fieldBoolean,
@@ -1137,9 +1138,40 @@ export class PlaywrightDriver implements ShimDriver {
 				return {};
 			}
 			case "snapshot": {
+				const target = fieldArrayOrNull(params, "target") as
+					| readonly LocatorSegment[]
+					| null;
 				const result = await runSnapshot(
 					page,
 					{
+						...decodeSnapshotComparison(params),
+						capture:
+							target === null
+								? { type: "page" }
+								: {
+										type: "element",
+										locator: buildLocator(page, target),
+										description: describeLocator(target),
+										frames: frameOwners(page, target),
+									},
+						masks: fieldArray(params, "masks").map((segments) => {
+							if (!Array.isArray(segments)) {
+								throw new ShimError(
+									"internal",
+									"snapshot mask is not a locator array",
+								);
+							}
+							return {
+								locator: buildLocator(
+									page,
+									segments as readonly LocatorSegment[],
+								),
+								frames: frameOwners(
+									page,
+									segments as readonly LocatorSegment[],
+								),
+							};
+						}),
 						baselinePath: fieldString(params, "baselinePath"),
 						actualPath: fieldString(params, "actualPath"),
 						diffPath: fieldString(params, "diffPath"),

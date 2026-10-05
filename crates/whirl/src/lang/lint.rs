@@ -8,10 +8,11 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use crate::check::{Number, PredicateKind, StaticType, ValueType, is_bytes_literal_shape};
+use crate::lang::ast::snapshot::SnapshotOption;
 use crate::lang::ast::{
     Action, ActionKind, Assert, AssertBody, Capture, CheckLine, Entry, Extractor, File, FileOption,
-    FilterArg, FilterSpec, Ident, Locator, Operand, PageCheck, PredicateSpec, ResponseField,
-    SegmentKind, Span, StateCheck, Subject, Value, ValueSegment, chain_type,
+    FilterArg, FilterSpec, Ident, Locator, Operand, OptionValue, PageCheck, PredicateSpec,
+    ResponseField, SegmentKind, Span, StateCheck, Subject, Value, ValueSegment, chain_type,
 };
 
 /// How serious a lint diagnostic is: an [`Severity::Error`] fails
@@ -484,7 +485,7 @@ fn duplicate_artifact_names(file: &File, lints: &mut Vec<Lint>) {
             .iter()
             .filter_map(|action| match &action.kind {
                 ActionKind::Screenshot { name } => Some(("SCREENSHOT", name)),
-                ActionKind::Snapshot { name } => Some(("SNAPSHOT", name)),
+                ActionKind::Snapshot { name, .. } => Some(("SNAPSHOT", name)),
                 _ => None,
             })
     });
@@ -594,6 +595,17 @@ fn collect_entry_refs<'a>(entry: &'a Entry, refs: &mut Vec<VarRef<'a>>) {
     }
 }
 
+fn collect_snapshot_refs<'a>(option: &'a SnapshotOption, line: u32, refs: &mut Vec<VarRef<'a>>) {
+    match option {
+        SnapshotOption::Mask(Some(locator)) => collect_locator_refs(locator, line, refs),
+        SnapshotOption::MaxDiff(OptionValue::Interpolated(value))
+        | SnapshotOption::PixelThreshold(OptionValue::Interpolated(value)) => {
+            collect_value_refs(value, line, refs);
+        }
+        _ => {}
+    }
+}
+
 fn collect_action_refs<'a>(action: &'a Action, refs: &mut Vec<VarRef<'a>>) {
     let line = action.line;
     match &action.kind {
@@ -662,8 +674,17 @@ fn collect_action_refs<'a>(action: &'a Action, refs: &mut Vec<VarRef<'a>>) {
         ActionKind::Popup { .. }
         | ActionKind::Tab { .. }
         | ActionKind::Close { .. }
-        | ActionKind::Screenshot { .. }
-        | ActionKind::Snapshot { .. } => {}
+        | ActionKind::Screenshot { .. } => {}
+        ActionKind::Snapshot {
+            target, options, ..
+        } => {
+            if let Some(target) = target {
+                collect_locator_refs(target, line, refs);
+            }
+            for option in options {
+                collect_snapshot_refs(&option.option, option.line, refs);
+            }
+        }
     }
 }
 
@@ -742,9 +763,11 @@ fn collect_value_refs<'a>(value: &'a Value, line: u32, refs: &mut Vec<VarRef<'a>
 /// Every `{{setup.name}}` reference in the file, including option
 /// values, in source order.
 fn collect_setup_refs(file: &File) -> Vec<VarRef<'_>> {
+    let mut refs = Vec::new();
     let mut values: Vec<(&Value, u32)> = Vec::new();
     for line in &file.options {
         match &line.option {
+            FileOption::Snapshot(option) => collect_snapshot_refs(option, line.line, &mut refs),
             FileOption::Base(value)
             | FileOption::Storage(value)
             | FileOption::UserAgent(value)
@@ -762,7 +785,6 @@ fn collect_setup_refs(file: &File) -> Vec<VarRef<'_>> {
             | FileOption::ReducedMotion(_) => {}
         }
     }
-    let mut refs = Vec::new();
     for (value, line) in values {
         collect_value_refs(value, line, &mut refs);
     }
@@ -934,6 +956,41 @@ mod tests {
         let file = parse_file(Path::new("test.whirl"), source)
             .unwrap_or_else(|error| panic!("fixture should parse:\n{error}"));
         lint_file(&file)
+    }
+
+    #[test]
+    fn snapshot_options_reference_captures_and_setup_values() {
+        let lints = lint(
+            "VISIT /\n[Captures]\nmask: eval \"'a'\"\nlimit: eval 1\nthreshold: eval 0.2\nSNAPSHOT x\nsnapshot-mask: testid:{{mask}}\nsnapshot-max-diff: {{limit}}\nsnapshot-pixel-threshold: {{threshold}}\n",
+        );
+        assert!(lints.is_empty(), "{lints:?}");
+        let lints = lint(
+            "[Options]\nsnapshot-mask: testid:{{setup.mask}}\nsnapshot-max-diff: {{setup.limit}}\nsnapshot-pixel-threshold: {{setup.threshold}}\nVISIT /\nSNAPSHOT x\nsnapshot-mask: testid:{{setup.local}}\n",
+        );
+        assert_eq!(
+            lints
+                .iter()
+                .filter(|lint| lint.code == "missing-setup")
+                .count(),
+            4
+        );
+    }
+
+    #[test]
+    fn snapshot_targets_reference_captures_and_setup_values() {
+        let lints = lint("VISIT /\n[Captures]\nrow: eval \"'a'\"\nSNAPSHOT row testid:{{row}}\n");
+        assert!(lints.is_empty(), "{lints:?}");
+        let lints = lint("VISIT /\nSNAPSHOT row testid:{{setup.row}}\n");
+        assert_eq!(lints.len(), 1, "{lints:?}");
+        assert_eq!(lints[0].code, "missing-setup");
+    }
+
+    #[test]
+    fn page_and_element_snapshots_share_one_name_space() {
+        let lints = lint("VISIT /\nSNAPSHOT cart\nSNAPSHOT cart testid:cart\n");
+        assert_eq!(lints.len(), 1, "{lints:?}");
+        assert_eq!(lints[0].severity, Severity::Error);
+        assert_eq!(lints[0].line, 3);
     }
 
     #[test]

@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use crate::check::{FilterKind, PredicateKind, StaticType};
 
 mod options;
+pub(crate) mod snapshot;
 
 /// Source position of a token or step: 1-based line, 1-based character
 /// column, and length in characters (for caret rendering).
@@ -227,6 +228,7 @@ pub(crate) enum OptionValue<T> {
 /// One `key: value` line in the `[Options]` section, typed per SPEC 5.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum FileOption {
+    Snapshot(snapshot::SnapshotOption),
     Base(Value),
     Browser(OptionValue<BrowserKind>),
     Viewport(OptionValue<Viewport>),
@@ -417,8 +419,12 @@ pub(crate) enum ActionKind {
     Screenshot {
         name: Ident,
     },
+    /// `SNAPSHOT name [locator]` compares the full page, or only `target`
+    /// when it is given (SPEC 7).
     Snapshot {
-        name: Ident,
+        name:    Ident,
+        target:  Option<Locator>,
+        options: Vec<snapshot::SnapshotOptionLine>,
     },
     Eval {
         script: Value,
