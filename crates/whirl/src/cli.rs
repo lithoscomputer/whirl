@@ -445,7 +445,7 @@ struct CheckDocument<'a> {
 impl Diagnostic {
     fn parse(error: &ParseError) -> Self {
         Self {
-            code:     "parse-error",
+            code:     error.code.as_str(),
             severity: "error",
             path:     Some(error.path.clone()),
             line:     Some(error.line),
@@ -1293,7 +1293,7 @@ mod tests {
     #[test]
     fn check_keeps_exit_0_for_a_lint_warning() {
         let dir = TempDir::new();
-        let file = dir.file("warn.whirl", "VISIT /login\n[Captures]\nunused: url\n");
+        let file = dir.file("warn.whirl", "VISIT /login\nCAPTURE unused: url\n");
         assert_eq!(run_cli(&["check", file.to_str().expect("utf-8 path")]), 0);
     }
 

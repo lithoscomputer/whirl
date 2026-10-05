@@ -5,5 +5,4 @@ model: {{model}}
 # Choose the smallest plan that fits a team of 8.
 VISIT /plan-by-seats/
 ACT "choose the cheapest plan that fits a team of 8 people" @60s
-[Asserts]
-testid:result text == Team
+ASSERT testid:result text == Team

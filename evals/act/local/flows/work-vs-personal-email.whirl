@@ -5,6 +5,5 @@ model: {{model}}
 # Two fields named Email; the fieldset legend tells them apart.
 VISIT /work-vs-personal-email/
 ACT "enter ada@work.example as my work email" @60s
-[Asserts]
-css:"input[name=work]" value == "ada@work.example"
-css:"input[name=personal]" value == ""
+ASSERT css:"input[name=work]" value == "ada@work.example"
+ASSERT css:"input[name=personal]" value == ""

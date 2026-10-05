@@ -5,5 +5,4 @@ model: {{model}}
 # Bring a section into view; its plans load only when it shows.
 VISIT /landing-page/
 ACT "scroll to the pricing section" @60s
-[Asserts]
-role:heading Team visible
+ASSERT role:heading Team visible

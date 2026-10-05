@@ -2939,7 +2939,7 @@ dependencies = [
 
 [[package]]
 name = "whirl"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -2977,7 +2977,7 @@ dependencies = [
 
 [[package]]
 name = "whirl-xpath"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "libxml",
  "pkg-config",

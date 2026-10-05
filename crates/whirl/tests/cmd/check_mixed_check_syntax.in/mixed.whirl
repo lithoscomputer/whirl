@@ -1,0 +1,6 @@
+VISIT /login
+ASSERT role:heading "Sign in" visible
+
+CLICK "Next"
+[Asserts]
+url contains next

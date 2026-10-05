@@ -233,7 +233,7 @@ fn act_clicks_the_element_the_model_chooses() {
         "click.whirl",
         &format!(
             "[Options]\nmodel: gpt-test\n{SHOP}ACT \"add the item to the cart\"\n\
-             [Asserts]\nrole:heading \"Added\" visible\n"
+             ASSERT role:heading \"Added\" visible\n"
         ),
     );
     let output = twin.run(&dir, &flow, &[]);
@@ -275,7 +275,7 @@ fn a_masked_value_fills_the_page_but_never_reaches_the_model() {
         "[Options]\nmodel: gpt-test\n\
          VISIT \"data:text/html,<h1>Login</h1><input type=password aria-label=Password>\"\n\
          ACT \"type {{env.WHIRL_ACT_SECRET}} into the password field\"\n\
-         [Asserts]\nlabel:Password value == {{env.WHIRL_ACT_SECRET}}\n",
+         ASSERT label:Password value == {{env.WHIRL_ACT_SECRET}}\n",
     );
     let secret = "hunter2-act-secret";
     let output = twin.run(&dir, &flow, &[("WHIRL_ACT_SECRET", secret)]);
@@ -311,7 +311,7 @@ fn a_two_step_action_plans_again_on_a_fresh_snapshot() {
          <div id=menu hidden><button onclick=\\\"document.querySelector('h1').textContent='Large chosen'\\\">\
          Large</button></div>\"\n\
          ACT \"choose Large from the size dropdown\"\n\
-         [Asserts]\nrole:heading \"Large chosen\" visible\n",
+         ASSERT role:heading \"Large chosen\" visible\n",
     );
     let output = twin.run(&dir, &flow, &[]);
     let stdout = stdout_text(&output);
@@ -383,7 +383,7 @@ fn act_right_clicks_when_the_model_names_the_right_button() {
         "right-click.whirl",
         &format!(
             "[Options]\nmodel: gpt-test\n{FILES}ACT \"right-click report.pdf\"\n\
-             [Asserts]\nrole:heading \"Menu\" visible\n"
+             ASSERT role:heading \"Menu\" visible\n"
         ),
     );
     let output = twin.run(&dir, &flow, &[]);
@@ -444,7 +444,7 @@ fn act_drags_an_element_onto_the_target_the_model_names() {
         "drag.whirl",
         &format!(
             "[Options]\nmodel: gpt-test\n{}ACT \"drag the card to Done\"\n\
-             [Asserts]\nrole:heading \"Dropped\" visible\n",
+             ASSERT role:heading \"Dropped\" visible\n",
             visit_html(BOARD)
         ),
     );
@@ -497,7 +497,7 @@ fn act_scrolls_the_page_when_the_model_names_its_body() {
         "scroll.whirl",
         &format!(
             "[Options]\nmodel: gpt-test\n{}ACT \"scroll to the bottom\"\n\
-             [Asserts]\neval \"window.scrollY > 2000\" == true\n",
+             ASSERT eval \"window.scrollY > 2000\" == true\n",
             visit_html(TALL)
         ),
     );
@@ -576,7 +576,7 @@ fn act_works_in_every_engine_when_requested() {
             "click.whirl",
             &format!(
                 "[Options]\nmodel: gpt-test\n{}ACT \"add the item to the cart\"\n\
-                 [Asserts]\nrole:heading \"Added\" visible\n",
+                 ASSERT role:heading \"Added\" visible\n",
                 visit_html(page)
             ),
         );
@@ -643,7 +643,7 @@ fn a_replaced_element_is_planned_again_on_a_fresh_snapshot() {
         "rerender.whirl",
         &format!(
             "[Options]\nmodel: gpt-test\n{}ACT \"add the item to the cart\" @30s\n\
-             [Asserts]\nrole:heading \"Added\" visible\n",
+             ASSERT role:heading \"Added\" visible\n",
             rerendering_shop(&[300])
         ),
     );
@@ -700,7 +700,7 @@ fn a_click_on_a_folded_wrapper_reaches_the_element_inside_it() {
         "folded.whirl",
         &format!(
             "[Options]\nmodel: gpt-test\n{}ACT \"choose Canada from the country dropdown\" @30s\n\
-             [Asserts]\nrole:heading \"Canada chosen\" visible\n",
+             ASSERT role:heading \"Canada chosen\" visible\n",
             visit_html(page)
         ),
     );
@@ -727,7 +727,7 @@ fn a_scoped_act_shows_the_model_only_that_element() {
         "scoped.whirl",
         &format!(
             "[Options]\nmodel: gpt-test\n{}ACT css:form \"click Buy\" @30s\n\
-             [Asserts]\nrole:heading \"Bought\" visible\n",
+             ASSERT role:heading \"Bought\" visible\n",
             visit_html(page)
         ),
     );
@@ -800,7 +800,7 @@ fn act_reaches_a_button_in_a_closed_shadow_root() {
         "closed.whirl",
         &format!(
             "[Options]\nmodel: gpt-test\n{}ACT \"click the Deep button\" @30s\n\
-             [Asserts]\nrole:heading \"clicked\" visible\n",
+             ASSERT role:heading \"clicked\" visible\n",
             visit_html(page)
         ),
     );
@@ -827,7 +827,7 @@ fn act_selects_a_radio_that_a_styled_overlay_covers() {
         "radio.whirl",
         &format!(
             "[Options]\nmodel: gpt-test\n{}ACT \"choose the Medium size\" @10s\n\
-             [Asserts]\nrole:radio \"Medium\" checked\n",
+             ASSERT role:radio \"Medium\" checked\n",
             visit_html(page)
         ),
     );
@@ -878,7 +878,7 @@ fn a_fill_that_the_field_formats_passes() {
         "formatted.whirl",
         &format!(
             "[Options]\nmodel: gpt-test\n{}ACT \"enter the phone number 5551234567\"\n\
-             [Asserts]\nlabel:Phone value == \"(555) 123-4567\"\n",
+             ASSERT label:Phone value == \"(555) 123-4567\"\n",
             visit_html(page)
         ),
     );
@@ -897,7 +897,7 @@ fn typed_text_keeps_the_characters_the_instruction_quotes() {
         "grounded.whirl",
         &format!(
             "[Options]\nmodel: gpt-test\n{}ACT \"type \\\"AbC 123\\\" into the search field\"\n\
-             [Asserts]\nlabel:Search value == \"AbC 123\"\n",
+             ASSERT label:Search value == \"AbC 123\"\n",
             visit_html(page)
         ),
     );
@@ -1044,7 +1044,7 @@ fn act_clicks_a_button_whose_name_playwright_quotes() {
         "quoted-name.whirl",
         &format!(
             "[Options]\nmodel: gpt-test\n{}ACT \"set the status to live\"\n\
-             [Asserts]\nrole:heading \"Live\" visible\n",
+             ASSERT role:heading \"Live\" visible\n",
             visit_html(LIVE_STATUS)
         ),
     );
@@ -1072,7 +1072,7 @@ fn jev_picks_a_button_whose_name_playwright_quotes() {
         "jev-quoted-name.whirl",
         &format!(
             "[Options]\nmodel: gpt-test\n{}ACT \"set the status to live\"\n\
-             [Asserts]\nrole:heading \"Live\" visible\n",
+             ASSERT role:heading \"Live\" visible\n",
             visit_html(LIVE_STATUS)
         ),
     );
@@ -1108,7 +1108,7 @@ fn a_ref_in_a_name_cannot_redirect_jevs_pick() {
         "jev-ref-in-name.whirl",
         &format!(
             "[Options]\nmodel: gpt-test\n{}ACT \"delete the file\"\n\
-             [Asserts]\nrole:heading \"Deleted\" visible\n",
+             ASSERT role:heading \"Deleted\" visible\n",
             visit_html(REF_IN_NAME)
         ),
     );
@@ -1148,7 +1148,7 @@ fn jev_picks_a_button_whose_name_starts_and_ends_with_a_slash() {
         "jev-slash-name.whirl",
         &format!(
             "[Options]\nmodel: gpt-test\n{}ACT \"call the api\"\n\
-             [Asserts]\nrole:heading \"Called\" visible\n",
+             ASSERT role:heading \"Called\" visible\n",
             visit_html(SLASH_NAME)
         ),
     );
@@ -1201,7 +1201,7 @@ fn jev_reads_a_region_that_its_own_heading_names_by_that_heading() {
         "jev-heading-region.whirl",
         &format!(
             "[Options]\nmodel: gpt-test\n{}ACT \"move the tram ride to Sunday\"\n\
-             [Asserts]\nrole:heading \"Moved to Sunday\" visible\n",
+             ASSERT role:heading \"Moved to Sunday\" visible\n",
             visit_html(DAYS)
         ),
     );
@@ -1239,7 +1239,7 @@ fn jev_acts_without_a_model_call_when_it_is_sure() {
         "jev-click.whirl",
         &format!(
             "[Options]\nmodel: gpt-test\n{SHOP}ACT \"add the item to the cart\"\n\
-             [Asserts]\nrole:heading \"Added\" visible\n"
+             ASSERT role:heading \"Added\" visible\n"
         ),
     );
     let output = twin.run_jev(&dir, &flow, &[]);
@@ -1277,7 +1277,7 @@ fn jev_right_clicks_without_a_model_call() {
         "jev-right-click.whirl",
         &format!(
             "[Options]\nmodel: gpt-test\n{FILES}ACT \"right-click report.pdf\"\n\
-             [Asserts]\nrole:heading \"Menu\" visible\n"
+             ASSERT role:heading \"Menu\" visible\n"
         ),
     );
     let output = twin.run_jev(&dir, &flow, &[]);
@@ -1301,7 +1301,7 @@ fn jev_scrolls_the_page_to_the_position_the_instruction_names() {
         "jev-scroll-bottom.whirl",
         &format!(
             "[Options]\nmodel: gpt-test\n{}ACT \"scroll to the bottom\"\n\
-             [Asserts]\neval \"window.scrollY > 2000\" == true\n",
+             ASSERT eval \"window.scrollY > 2000\" == true\n",
             visit_html(TALL)
         ),
     );
@@ -1333,7 +1333,7 @@ fn jev_scrolls_inside_the_iframe_that_its_title_names() {
         "jev-scroll-frame.whirl",
         &format!(
             "[Options]\nmodel: gpt-test\n{}ACT \"scroll down 50% inside the incident history\"\n\
-             [Asserts]\neval \"document.querySelector('#incidents').contentWindow.scrollY > 0\" == true\n",
+             ASSERT eval \"document.querySelector('#incidents').contentWindow.scrollY > 0\" == true\n",
             visit_html(FRAMED_STATUS)
         ),
     );
@@ -1368,7 +1368,7 @@ fn jev_leaves_a_scroll_to_the_model_when_unsure_how() {
         "jev-scroll.whirl",
         &format!(
             "[Options]\nmodel: gpt-test\n{}ACT \"scroll down a page\"\n\
-             [Asserts]\neval \"window.scrollY > 0\" == true\n",
+             ASSERT eval \"window.scrollY > 0\" == true\n",
             visit_html(TALL)
         ),
     );
@@ -1393,7 +1393,7 @@ fn jev_drags_without_a_model_call_when_it_is_sure() {
         "jev-drag-sure.whirl",
         &format!(
             "[Options]\nmodel: gpt-test\n{}ACT \"drag the card to Done\"\n\
-             [Asserts]\nrole:heading \"Dropped\" visible\n",
+             ASSERT role:heading \"Dropped\" visible\n",
             visit_html(BOARD)
         ),
     );
@@ -1425,7 +1425,7 @@ fn jev_leaves_an_unsure_drag_to_the_model() {
         "jev-drag.whirl",
         &format!(
             "[Options]\nmodel: gpt-test\n{}ACT \"drag the card to Done\"\n\
-             [Asserts]\nrole:heading \"Dropped\" visible\n",
+             ASSERT role:heading \"Dropped\" visible\n",
             visit_html(BOARD)
         ),
     );
@@ -1455,7 +1455,7 @@ fn an_unsure_jev_leaves_the_step_to_the_model_with_its_likely_matches() {
         "jev-unsure.whirl",
         &format!(
             "[Options]\nmodel: gpt-test\n{}ACT \"share it\"\n\
-             [Asserts]\nrole:heading \"Shared\" visible\n",
+             ASSERT role:heading \"Shared\" visible\n",
             visit_html(TWO_BUTTONS)
         ),
     );
@@ -1491,7 +1491,7 @@ fn a_failed_jev_request_leaves_the_step_to_the_model() {
         "jev-error.whirl",
         &format!(
             "[Options]\nmodel: gpt-test\n{SHOP}ACT \"add the item to the cart\"\n\
-             [Asserts]\nrole:heading \"Added\" visible\n"
+             ASSERT role:heading \"Added\" visible\n"
         ),
     );
     let output = twin.run_jev(&dir, &flow, &[]);
@@ -1512,7 +1512,7 @@ fn jev_fills_a_masked_value_that_never_reaches_it() {
         "[Options]\nmodel: gpt-test\n\
          VISIT \"data:text/html,<h1>Login</h1><input type=password aria-label=Password>\"\n\
          ACT \"type {{env.WHIRL_ACT_SECRET}} into the password field\"\n\
-         [Asserts]\nlabel:Password value == {{env.WHIRL_ACT_SECRET}}\n",
+         ASSERT label:Password value == {{env.WHIRL_ACT_SECRET}}\n",
     );
     let secret = "hunter2-jev-secret";
     let output = twin.run_jev(&dir, &flow, &[("WHIRL_ACT_SECRET", secret)]);
@@ -1559,7 +1559,7 @@ fn jev_reads_unquoted_text_to_type_with_a_small_model_call() {
         "jev-text.whirl",
         &format!(
             "[Options]\nmodel: gpt-test\n{}ACT \"type Lovelace into the last name field\"\n\
-             [Asserts]\nlabel:\"Last name\" value == Lovelace\n",
+             ASSERT label:\"Last name\" value == Lovelace\n",
             visit_html(page)
         ),
     );
@@ -1604,7 +1604,7 @@ fn jev_looks_at_every_named_element_when_no_control_fits() {
         "jev-broad.whirl",
         &format!(
             "[Options]\nmodel: gpt-test\n{}ACT \"open the menu\"\n\
-             [Asserts]\nrole:heading \"Opened\" visible\n",
+             ASSERT role:heading \"Opened\" visible\n",
             visit_html(page)
         ),
     );
@@ -1638,7 +1638,7 @@ fn copies_of_one_control_in_one_item_share_jevs_vote() {
         "jev-copies.whirl",
         &format!(
             "[Options]\nmodel: gpt-test\n{}ACT \"add the blue mug to the cart\"\n\
-             [Asserts]\nrole:heading \"Added\" visible\n",
+             ASSERT role:heading \"Added\" visible\n",
             visit_html(page)
         ),
     );
@@ -1664,7 +1664,7 @@ fn jev_clicks_the_named_option_of_a_custom_listbox() {
         "jev-listbox.whirl",
         &format!(
             "[Options]\nmodel: gpt-test\n{}ACT \"choose Portugal from the country list\"\n\
-             [Asserts]\nrole:heading \"Portugal chosen\" visible\n",
+             ASSERT role:heading \"Portugal chosen\" visible\n",
             visit_html(page)
         ),
     );
@@ -1701,7 +1701,7 @@ fn jev_opens_a_custom_dropdown_and_chooses_the_named_option() {
         "jev-dropdown.whirl",
         &format!(
             "[Options]\nmodel: gpt-test\n{}ACT \"choose Blue from the color dropdown\"\n\
-             [Asserts]\nrole:heading \"Blue chosen\" visible\n",
+             ASSERT role:heading \"Blue chosen\" visible\n",
             visit_html(page)
         ),
     );

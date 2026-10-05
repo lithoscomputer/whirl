@@ -1,4 +1,4 @@
-order.whirl:4:1: error: `PAGE` must come before an entry's `[Asserts]` section
+order.whirl:3:1: error: `PAGE` must come before an entry's check lines
   PAGE /dashboard
   ^^^^
-  expected one of: a check, an action
+  expected one of: an action, ASSERT, CAPTURE

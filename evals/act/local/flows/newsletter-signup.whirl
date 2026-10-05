@@ -5,5 +5,4 @@ model: {{model}}
 # Subscribe, not "Sign up for an account" or the webinar Register button.
 VISIT /newsletter-signup/
 ACT "sign up for the newsletter" @60s
-[Asserts]
-testid:result text == subscribed
+ASSERT testid:result text == subscribed

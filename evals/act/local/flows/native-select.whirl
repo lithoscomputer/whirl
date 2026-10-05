@@ -5,5 +5,4 @@ model: {{model}}
 # Choose an option from a native select element.
 VISIT /native-select/
 ACT "choose Large from the size dropdown" @60s
-[Asserts]
-label:Size value == Large
+ASSERT label:Size value == Large

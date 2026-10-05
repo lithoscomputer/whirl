@@ -453,13 +453,15 @@ impl<'a> StepNode<'a> {
 }
 
 /// The step lines of one entry in execution order: actions, `PAGE`,
-/// asserts, captures (SPEC 12).
+/// then check lines in the order written (SPEC 12).
 fn entry_steps(entry: &ast::Entry) -> Vec<StepNode<'_>> {
     let actions = entry.actions.iter().map(StepNode::Action);
     let page = entry.page.iter().map(StepNode::Page);
-    let asserts = entry.asserts.iter().map(StepNode::Assert);
-    let captures = entry.captures.iter().map(StepNode::Capture);
-    actions.chain(page).chain(asserts).chain(captures).collect()
+    let checks = entry.checks.iter().map(|check| match check {
+        ast::CheckStep::Assert(assert) => StepNode::Assert(assert),
+        ast::CheckStep::Capture(capture) => StepNode::Capture(capture),
+    });
+    actions.chain(page).chain(checks).collect()
 }
 
 /// The per-line timeout budget (SPEC 12): `@duration` beats the line's
@@ -1709,7 +1711,7 @@ mod tests {
 
     #[test]
     fn visit_gets_the_nav_timeout_and_others_the_step_timeout() {
-        let file = parse("VISIT /a\nCLICK \"Go\"\n[Asserts]\ntitle == x\n");
+        let file = parse("VISIT /a\nCLICK \"Go\"\nASSERT title == x\n");
         let entry = &file.entries[0];
         let mut vars = VarStore::new();
         let options = ResolvedOptions::try_new(&file, &file.path, &mut vars, &Overrides::default())

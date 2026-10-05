@@ -5,5 +5,4 @@ model: {{model}}
 # Twelve identical Delete buttons; only the row tells them apart.
 VISIT /delete-invoice-row/
 ACT "delete invoice 1037" @60s
-[Asserts]
-testid:result text == "deleted 1037"
+ASSERT testid:result text == "deleted 1037"

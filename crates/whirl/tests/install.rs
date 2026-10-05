@@ -104,7 +104,7 @@ fn installs_the_bundle_and_runs_a_flow_from_it() {
     fs::write(
         &flow,
         "VISIT \"data:text/html,<h1>Bundled</h1>\"\n\
-         [Asserts]\nrole:heading \"Bundled\" visible\n",
+         ASSERT role:heading \"Bundled\" visible\n",
     )
     .expect("the flow file should be writable");
     let run = run_whirl_with_bundle(&data_dir, &work_dir, &[

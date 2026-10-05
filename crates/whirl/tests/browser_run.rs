@@ -93,21 +93,34 @@ fn a_passing_flow_interpolates_a_capture_into_a_later_visit() {
          <button onclick=\\\"this.textContent='Done'\\\">Go</button>\"\n\
          FILL \"Name\" world\n\
          CLICK \"Go\"\n\
-         [Asserts]\n\
-         role:heading \"One\" visible\n\
-         label:Name value == world\n\
-         [Captures]\n\
-         next_page: eval \"'data:text/html,<h1>Two</h1>'\"\n\
+         ASSERT role:heading \"One\" visible\n\
+         ASSERT label:Name value == world\n\
+         CAPTURE next_page: eval \"'data:text/html,<h1>Two</h1>'\"\n\
          \n\
          # Second page via the capture.\n\
          VISIT {{next_page}}\n\
-         [Asserts]\n\
-         role:heading \"Two\" visible\n",
+         ASSERT role:heading \"Two\" visible\n",
     );
     let output = run_whirl(&dir, &[flow.to_str().expect("utf-8 path")]);
     let stdout = stdout_text(&output);
     assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
     assert!(stdout.contains("passed"), "stdout:\n{stdout}");
+}
+
+#[test]
+fn check_lines_run_in_the_order_written() {
+    let dir = TestDir::new();
+    // The CAPTURE comes first, so the ASSERT after it in the same entry
+    // can read its value.
+    let flow = dir.file(
+        "order.whirl",
+        "VISIT \"data:text/html,<h1>Hello</h1><p>Hello</p>\"\n\
+         CAPTURE heading: role:heading text\n\
+         ASSERT css:p text == {{heading}}\n",
+    );
+    let output = run_whirl(&dir, &[flow.to_str().expect("utf-8 path")]);
+    let stdout = stdout_text(&output);
+    assert_eq!(exit_code(&output), 0, "stdout:\n{stdout}");
 }
 
 #[test]
@@ -117,9 +130,8 @@ fn a_failing_assert_fails_the_file_and_skips_the_rest() {
         "fail.whirl",
         "# Failing entry.\n\
          VISIT \"data:text/html,<h1>Hi</h1>\"\n\
-         [Asserts]\n\
-         role:heading \"Hi\" text == Bye @1s\n\
-         role:heading \"Hi\" visible\n\
+         ASSERT role:heading \"Hi\" text == Bye @1s\n\
+         ASSERT role:heading \"Hi\" visible\n\
          \n\
          # Skipped entry.\n\
          SCREENSHOT after\n",
@@ -167,12 +179,12 @@ fn two_files_run_in_parallel_workers() {
     let first = dir.file(
         "first.whirl",
         "VISIT \"data:text/html,<h1>First</h1>\"\n\
-         [Asserts]\nrole:heading \"First\" visible\n",
+         ASSERT role:heading \"First\" visible\n",
     );
     let second = dir.file(
         "second.whirl",
         "VISIT \"data:text/html,<h1>Second</h1>\"\n\
-         [Asserts]\nrole:heading \"Second\" visible\n",
+         ASSERT role:heading \"Second\" visible\n",
     );
     let output = run_whirl(&dir, &[
         "--jobs",
@@ -194,15 +206,12 @@ fn press_and_eval_action_and_eval_capture_work() {
         "VISIT \"data:text/html,<input aria-label=\\\"Box\\\">\"\n\
          PRESS \"Box\" \"A\"\n\
          EVAL \"document.title = 'evaled'\"\n\
-         [Asserts]\n\
-         label:Box value == A\n\
-         title == evaled\n\
-         [Captures]\n\
-         squared: eval \"7 * 7\"\n\
+         ASSERT label:Box value == A\n\
+         ASSERT title == evaled\n\
+         CAPTURE squared: eval \"7 * 7\"\n\
          \n\
          VISIT \"data:text/html,<h1>{{squared}}</h1>\"\n\
-         [Asserts]\n\
-         role:heading \"49\" visible\n",
+         ASSERT role:heading \"49\" visible\n",
     );
     let output = run_whirl(&dir, &[flow.to_str().expect("utf-8 path")]);
     let stdout = stdout_text(&output);
@@ -219,9 +228,8 @@ fn type_sends_key_events_where_fill_does_not() {
         "VISIT \"data:text/html,<input aria-label=\\\"Code\\\" onkeydown=\\\"document.getElementById('k').textContent+=event.key\\\"><div id=k></div>\"\n\
          FILL \"Code\" 99\n\
          TYPE \"Code\" 4242\n\
-         [Asserts]\n\
-         label:Code value == 994242\n\
-         css:\"#k\" text == 4242\n",
+         ASSERT label:Code value == 994242\n\
+         ASSERT css:\"#k\" text == 4242\n",
     );
     let output = run_whirl(&dir, &[flow.to_str().expect("utf-8 path")]);
     let stdout = stdout_text(&output);
@@ -233,7 +241,7 @@ fn check_validates_setup_flows_and_their_captures() {
     let dir = TestDir::new();
     dir.file(
         "login.whirl",
-        "VISIT /login\n[Captures]\ntoken: css:\"#token\" text\n",
+        "VISIT /login\nCAPTURE token: css:\"#token\" text\n",
     );
     // A dependent that reads the capture: the setup file's capture counts
     // as used, so neither file warns.
@@ -326,7 +334,7 @@ fn the_reduced_motion_option_is_visible_to_the_page() {
         "motion.whirl",
         "[Options]\nreduced-motion: reduce\n\n\
          VISIT \"data:text/html,<h1>Hi</h1>\"\n\
-         [Captures]\nreduced: eval \"matchMedia('(prefers-reduced-motion: reduce)').matches\"\n",
+         CAPTURE reduced: eval \"matchMedia('(prefers-reduced-motion: reduce)').matches\"\n",
     );
     let output = run_whirl(&dir, &[
         "--report-json",
@@ -353,7 +361,7 @@ fn the_user_agent_option_and_flag_set_navigator_user_agent() {
         "ua.whirl",
         "[Options]\nuser-agent: \"Whirl/1 (file option)\"\n\n\
          VISIT \"data:text/html,<h1>Hi</h1>\"\n\
-         [Captures]\nua: eval \"navigator.userAgent\"\n",
+         CAPTURE ua: eval \"navigator.userAgent\"\n",
     );
     let flow = flow.to_str().expect("utf-8 path");
     let output = run_whirl(&dir, &["--report-json", "report.json", flow]);
@@ -392,18 +400,15 @@ fn a_run_writes_json_and_junit_reports_with_masking() {
         "# Fill the box.\n\
          VISIT \"data:text/html,<h1>Pass</h1><input aria-label=\\\"Box\\\">\"\n\
          FILL \"Box\" {{env.WHIRL_TEST_SECRET}}\n\
-         [Asserts]\n\
-         role:heading \"Pass\" visible\n\
-         label:Box value == {{env.WHIRL_TEST_SECRET}}\n\
-         [Captures]\n\
-         page_title: eval \"'captured-title'\"\n",
+         ASSERT role:heading \"Pass\" visible\n\
+         ASSERT label:Box value == {{env.WHIRL_TEST_SECRET}}\n\
+         CAPTURE page_title: eval \"'captured-title'\"\n",
     );
     let fail = dir.file(
         "fail.whirl",
         "# Mismatched heading.\n\
          VISIT \"data:text/html,<h1>Real</h1>\"\n\
-         [Asserts]\n\
-         role:heading \"Real\" text == Wanted @1s\n",
+         ASSERT role:heading \"Real\" text == Wanted @1s\n",
     );
     let output = run_whirl_env(
         &dir,
@@ -527,7 +532,7 @@ fn an_expiring_entry_timeout_fails_the_in_flight_step() {
 #[test]
 fn presence_before_hidden_requires_the_element_to_appear() {
     let dir = TestDir::new();
-    dir.file("presence.whirl", "VISIT \"data:text/html,<p>Hello</p>\"\n[Asserts]\ntestid:spinner count >= 1 @100ms\ntestid:spinner hidden\n");
+    dir.file("presence.whirl", "VISIT \"data:text/html,<p>Hello</p>\"\nASSERT testid:spinner count >= 1 @100ms\nASSERT testid:spinner hidden\n");
     let output = run_whirl(&dir, &["presence.whirl"]);
     assert_eq!(exit_code(&output), 1);
     assert!(String::from_utf8_lossy(&output.stderr).is_empty());
@@ -608,7 +613,7 @@ fn json_reports_include_actual_runtime_versions_and_error_codes() {
     let dir = TestDir::new();
     dir.file(
         "flow.whirl",
-        "[Options]\nviewport: 960x540\nVISIT \"data:text/html,<title>Hello</title>\"\n[Asserts]\ntitle == Wrong @100ms\n",
+        "[Options]\nviewport: 960x540\nVISIT \"data:text/html,<title>Hello</title>\"\nASSERT title == Wrong @100ms\n",
     );
     let output = run_whirl(&dir, &["--report-json", "report.json", "flow.whirl"]);
     assert_eq!(exit_code(&output), 1);
@@ -650,9 +655,9 @@ fn rerun_selects_only_failed_files_and_runs_their_setup_again_from_another_direc
     let dir = TestDir::new();
     dir.file(
         "setup.whirl",
-        "VISIT \"data:text/html,<title>first</title>\"\n[Captures]\ntoken: title\n",
+        "VISIT \"data:text/html,<title>first</title>\"\nCAPTURE token: title\n",
     );
-    dir.file("dependent.whirl", "[Options]\nsetup: setup.whirl\nVISIT \"data:text/html,<title>{{setup.token}}</title>\"\n[Asserts]\ntitle == second @100ms\n");
+    dir.file("dependent.whirl", "[Options]\nsetup: setup.whirl\nVISIT \"data:text/html,<title>{{setup.token}}</title>\"\nASSERT title == second @100ms\n");
     dir.file("passed.whirl", "VISIT \"data:text/html,<p>Hello</p>\"\n");
     let first = run_whirl(&dir, &[
         "--report-json",
@@ -664,7 +669,7 @@ fn rerun_selects_only_failed_files_and_runs_their_setup_again_from_another_direc
     dir.file("passed.whirl", "BOGUS must not be selected\n");
     dir.file(
         "setup.whirl",
-        "VISIT \"data:text/html,<title>second</title>\"\n[Captures]\ntoken: title\n",
+        "VISIT \"data:text/html,<title>second</title>\"\nCAPTURE token: title\n",
     );
     let other = TestDir::new();
     let report_path = dir.path.join("report.json");
@@ -728,7 +733,7 @@ fn tab_names_are_validated_before_launching_the_browser() {
     let dir = TestDir::new();
     dir.file(
         "unknown.whirl",
-        "VISIT /\nTAB missing\n[Asserts]\ntab:absent closed\n",
+        "VISIT /\nTAB missing\nASSERT tab:absent closed\n",
     );
     let unknown = run_check(&dir, &["unknown.whirl"]);
     assert_eq!(exit_code(&unknown), 2, "{}", stdout_text(&unknown));
@@ -747,7 +752,7 @@ fn response_names_json_paths_and_filter_types_are_checked_without_a_browser() {
     let dir = TestDir::new();
     dir.file(
         "unknown.whirl",
-        "VISIT /\n[Asserts]\nresponse:missing status == 200\n",
+        "VISIT /\nASSERT response:missing status == 200\n",
     );
     let unknown = run_check(&dir, &["unknown.whirl"]);
     assert_eq!(exit_code(&unknown), 2);
@@ -761,14 +766,14 @@ fn response_names_json_paths_and_filter_types_are_checked_without_a_browser() {
     assert!(String::from_utf8_lossy(&duplicate.stderr).contains("already named"));
     dir.file(
         "path.whirl",
-        "VISIT /\nRESPONSE order POST /api/orders\n[Asserts]\nresponse:order json:$.[ == value\n",
+        "VISIT /\nRESPONSE order POST /api/orders\nASSERT response:order json:$.[ == value\n",
     );
     let path = run_check(&dir, &["path.whirl"]);
     assert_eq!(exit_code(&path), 2);
     assert!(String::from_utf8_lossy(&path.stderr).contains("invalid JSONPath"));
     dir.file(
         "types.whirl",
-        "VISIT /\n[Asserts]\ntestid:x text toHex == ab\nurl > 3\n",
+        "VISIT /\nASSERT testid:x text toHex == ab\nASSERT url > 3\n",
     );
     let types = run_check(&dir, &["types.whirl"]);
     assert_eq!(exit_code(&types), 2);

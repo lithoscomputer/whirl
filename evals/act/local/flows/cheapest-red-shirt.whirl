@@ -5,5 +5,4 @@ model: {{model}}
 # Compare prices: the cheapest red tee, not a cheaper polo or a cheaper blue tee.
 VISIT /cheapest-red-shirt/
 ACT "add the cheapest red tee to the cart" @60s
-[Asserts]
-testid:cart text == "Scarlet tee"
+ASSERT testid:cart text == "Scarlet tee"

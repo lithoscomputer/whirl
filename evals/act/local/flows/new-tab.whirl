@@ -7,5 +7,4 @@ VISIT /new-tab/
 ACT "click the button to open the other page" @60s
 POPUP other
 TAB other
-[Asserts]
-role:heading "Other page" visible
+ASSERT role:heading "Other page" visible

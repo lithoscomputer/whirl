@@ -622,7 +622,7 @@ pub(crate) enum PageCheck {
     Matches(Regex),
 }
 
-/// One check line in an `[Asserts]` section (SPEC 9).
+/// One `ASSERT` line (SPEC 9).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Assert {
     pub(crate) body:    AssertBody,
@@ -632,7 +632,7 @@ pub(crate) struct Assert {
     pub(crate) text:    String,
 }
 
-/// The forms of an `[Asserts]` line (SPEC 9.1, 17).
+/// The forms of an `ASSERT` line (SPEC 9.1, 17).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum AssertBody {
     TabClosed {
@@ -803,7 +803,7 @@ pub(crate) fn chain_type<'a>(
     Ok(current)
 }
 
-/// One line in a `[Captures]` section (SPEC 10).
+/// One `CAPTURE` line (SPEC 10).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Capture {
     pub(crate) name:    Ident,
@@ -815,23 +815,52 @@ pub(crate) struct Capture {
     pub(crate) text:    String,
 }
 
-/// One entry: actions, then optional `PAGE`, `[Asserts]`, and
-/// `[Captures]`, in that order (SPEC 4).
+/// One check line of an entry (SPEC 9, 10): an `ASSERT` or a `CAPTURE`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum CheckStep {
+    Assert(Assert),
+    Capture(Capture),
+}
+
+impl CheckStep {
+    pub(crate) fn line(&self) -> u32 {
+        match self {
+            Self::Assert(assert) => assert.line,
+            Self::Capture(capture) => capture.line,
+        }
+    }
+}
+
+/// One entry: actions, then an optional `PAGE` line, then check lines in
+/// the order written (SPEC 4).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Entry {
-    pub(crate) actions:         Vec<Action>,
-    pub(crate) page:            Option<Page>,
-    pub(crate) asserts:         Vec<Assert>,
-    pub(crate) captures:        Vec<Capture>,
-    /// The line of the entry's `[Asserts]` header, when the source has
-    /// one (it may be present even with zero checks). The formatter uses
-    /// it to keep comments on their side of the header.
-    pub(crate) asserts_header:  Option<u32>,
-    /// The line of the entry's `[Captures]` header, when present.
-    pub(crate) captures_header: Option<u32>,
+    pub(crate) actions:  Vec<Action>,
+    pub(crate) page:     Option<Page>,
+    pub(crate) checks:   Vec<CheckStep>,
+    /// The spans of the entry's deprecated `[Asserts]` and `[Captures]`
+    /// section headers, in source order (SPEC 4). `whirl fmt` drops them
+    /// and writes each check as an `ASSERT` or `CAPTURE` line.
+    pub(crate) sections: Vec<Span>,
 }
 
 impl Entry {
+    /// The entry's `ASSERT` lines, in source order.
+    pub(crate) fn asserts(&self) -> impl Iterator<Item = &Assert> {
+        self.checks.iter().filter_map(|check| match check {
+            CheckStep::Assert(assert) => Some(assert),
+            CheckStep::Capture(_) => None,
+        })
+    }
+
+    /// The entry's `CAPTURE` lines, in source order.
+    pub(crate) fn captures(&self) -> impl Iterator<Item = &Capture> {
+        self.checks.iter().filter_map(|check| match check {
+            CheckStep::Capture(capture) => Some(capture),
+            CheckStep::Assert(_) => None,
+        })
+    }
+
     /// The entry's first action. An entry always has at least one action
     /// (SPEC 4), so parsed entries never hit the `expect`.
     fn first_action(&self) -> &Action {
@@ -890,9 +919,8 @@ impl File {
         let entry_lines = self.entries.iter().flat_map(|entry| {
             let actions = entry.actions.iter().map(|action| action.line);
             let page = entry.page.iter().map(|page| page.line);
-            let asserts = entry.asserts.iter().map(|assert| assert.line);
-            let captures = entry.captures.iter().map(|capture| capture.line);
-            actions.chain(page).chain(asserts).chain(captures)
+            let checks = entry.checks.iter().map(CheckStep::line);
+            actions.chain(page).chain(checks)
         });
         option_lines.chain(entry_lines)
     }

@@ -11,22 +11,18 @@ FILL Email alice@example.com
 FILL Password {{env.TEST_PASSWORD}}
 CLICK role:button "Sign in"
 PAGE /dashboard
-[Asserts]
-role:heading "Welcome back" visible
-testid:user-menu text == Alice
+ASSERT role:heading "Welcome back" visible
+ASSERT testid:user-menu text == Alice
 
 # Find a product.
 FILL placeholder:"Search products" widget
 PRESS Enter
-[Asserts]
-url contains q=widget
-testid:result-card count >= 1
-[Captures]
-first_product: testid:result-card >> nth:0 >> role:link attr:href
+ASSERT url contains q=widget
+ASSERT testid:result-card count >= 1
+CAPTURE first_product: testid:result-card >> nth:0 >> role:link attr:href
 
 # Add it to the cart.
 VISIT {{first_product}}
 CLICK "Add to cart"
-[Asserts]
-testid:cart-badge text == 1
-role:alert text contains "Added to cart"
+ASSERT testid:cart-badge text == 1
+ASSERT role:alert text contains "Added to cart"

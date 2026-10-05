@@ -19,9 +19,9 @@ use std::fmt::Write as _;
 use crate::check::{Number, is_bytes_literal_shape};
 use crate::lang::ast::snapshot::SnapshotOption;
 use crate::lang::ast::{
-    Action, ActionKind, Assert, AssertBody, Capture, CheckLine, Comment, DurationLit, DurationUnit,
-    Entry, Extractor, File, FileOption, FilterArg, FilterSpec, HttpBodyKind, Locator, Operand,
-    OptionValue, Page, PageCheck, PredicateSpec, Regex, ResponseField, ScrollDirection,
+    Action, ActionKind, Assert, AssertBody, Capture, CheckLine, CheckStep, Comment, DurationLit,
+    DurationUnit, Entry, Extractor, File, FileOption, FilterArg, FilterSpec, HttpBodyKind, Locator,
+    Operand, OptionValue, Page, PageCheck, PredicateSpec, Regex, ResponseField, ScrollDirection,
     ScrollMotion, SegmentKind, StateCheck, Subject, TextPrefix, Value, ValueSegment, Viewport,
 };
 
@@ -49,10 +49,10 @@ enum ValueCtx {
     ScrollDefault,
     /// A role's accessible name in a `SCROLL` locator.
     ScrollRoleName,
-    /// A role's accessible name in an `[Asserts]` locator; a bare check
+    /// A role's accessible name in an `ASSERT` locator; a bare check
     /// keyword would end the locator instead (SPEC 3.1).
     AssertRoleName,
-    /// A role's accessible name in a `[Captures]` locator; a bare
+    /// A role's accessible name in a `CAPTURE` locator; a bare
     /// extractor keyword would end the locator instead.
     CaptureRoleName,
     /// A value attached to a segment or `file:` prefix; the prefix
@@ -638,17 +638,17 @@ fn render_check(check: &CheckLine, is_final: bool) -> String {
     )
 }
 
-/// Renders an `[Asserts]` line (SPEC 9).
+/// Renders an `ASSERT` line (SPEC 9).
 fn render_assert(assert: &Assert) -> String {
     let is_final = assert.timeout.is_none();
     let mut out = match &assert.body {
-        AssertBody::TabClosed { name } => format!("tab:{} closed", name.text),
+        AssertBody::TabClosed { name } => format!("ASSERT tab:{} closed", name.text),
         AssertBody::ElementState { locator, state } => format!(
-            "{} {}",
+            "ASSERT {} {}",
             render_locator(locator, LocatorCtx::Assert, false),
             state_check_text(*state)
         ),
-        AssertBody::Check(check) => render_check(check, is_final),
+        AssertBody::Check(check) => format!("ASSERT {}", render_check(check, is_final)),
     };
     push_timeout(&mut out, assert.timeout);
     out
@@ -672,7 +672,7 @@ fn render_response_field(field: &ResponseField) -> String {
     }
 }
 
-/// Renders a `[Captures]` line (SPEC 10).
+/// Renders a `CAPTURE` line (SPEC 10).
 fn render_capture(capture: &Capture) -> String {
     let is_final = capture.timeout.is_none();
     let chain = render_chain(
@@ -681,7 +681,7 @@ fn render_capture(capture: &Capture) -> String {
         LocatorCtx::Capture,
         is_final,
     );
-    let mut out = format!("{}: {chain}", capture.name.text);
+    let mut out = format!("CAPTURE {}: {chain}", capture.name.text);
     push_timeout(&mut out, capture.timeout);
     out
 }
@@ -853,28 +853,14 @@ fn entry_region(entry: &Entry) -> Region {
             text:        render_page(page),
         });
     }
-    if let Some(header) = entry.asserts_header {
+    for check in &entry.checks {
+        let text = match check {
+            CheckStep::Assert(assert) => render_assert(assert),
+            CheckStep::Capture(capture) => render_capture(capture),
+        };
         lines.push(Line {
-            source_line: header,
-            text:        "[Asserts]".to_owned(),
-        });
-    }
-    for assert in &entry.asserts {
-        lines.push(Line {
-            source_line: assert.line,
-            text:        render_assert(assert),
-        });
-    }
-    if let Some(header) = entry.captures_header {
-        lines.push(Line {
-            source_line: header,
-            text:        "[Captures]".to_owned(),
-        });
-    }
-    for capture in &entry.captures {
-        lines.push(Line {
-            source_line: capture.line,
-            text:        render_capture(capture),
+            source_line: check.line(),
+            text,
         });
     }
     Region { lines }
@@ -917,9 +903,25 @@ pub(crate) fn format_file(file: &File) -> String {
     for entry in &file.entries {
         regions.push(entry_region(entry));
     }
-    place_comments(&mut regions, &file.comments);
-    let inline: Vec<&Comment> = file
+    // The formatter drops `[Asserts]` and `[Captures]` headers, so a
+    // comment after a header keeps the header's line on its own.
+    let comments: Vec<Comment> = file
         .comments
+        .iter()
+        .map(|comment| {
+            let on_section = file
+                .entries
+                .iter()
+                .flat_map(|entry| &entry.sections)
+                .any(|section| section.line == comment.line);
+            Comment {
+                own_line: comment.own_line || on_section,
+                ..comment.clone()
+            }
+        })
+        .collect();
+    place_comments(&mut regions, &comments);
+    let inline: Vec<&Comment> = comments
         .iter()
         .filter(|comment| !comment.own_line)
         .collect();
@@ -1208,30 +1210,37 @@ mod tests {
                 PageCheck::Matches(regex) => scrub_regex(regex),
             }
         }
-        entry.asserts_header = entry.asserts_header.map(|_| 0);
-        entry.captures_header = entry.captures_header.map(|_| 0);
-        for assert in &mut entry.asserts {
-            assert.line = 0;
-            assert.span = ZERO;
-            assert.text = String::new();
-            match &mut assert.body {
-                AssertBody::TabClosed { name } => scrub_ident(name),
-                AssertBody::ElementState { locator, .. } => scrub_locator(locator),
-                AssertBody::Check(check) => {
-                    scrub_subject(&mut check.subject);
-                    scrub_filters(&mut check.filters);
-                    scrub_predicate(&mut check.predicate);
-                }
+        entry.sections.clear();
+        for check in &mut entry.checks {
+            match check {
+                CheckStep::Assert(assert) => scrub_assert(assert),
+                CheckStep::Capture(capture) => scrub_capture(capture),
             }
         }
-        for capture in &mut entry.captures {
-            capture.line = 0;
-            capture.span = ZERO;
-            capture.text = String::new();
-            scrub_ident(&mut capture.name);
-            scrub_subject(&mut capture.subject);
-            scrub_filters(&mut capture.filters);
+    }
+
+    fn scrub_assert(assert: &mut Assert) {
+        assert.line = 0;
+        assert.span = ZERO;
+        assert.text = String::new();
+        match &mut assert.body {
+            AssertBody::TabClosed { name } => scrub_ident(name),
+            AssertBody::ElementState { locator, .. } => scrub_locator(locator),
+            AssertBody::Check(check) => {
+                scrub_subject(&mut check.subject);
+                scrub_filters(&mut check.filters);
+                scrub_predicate(&mut check.predicate);
+            }
         }
+    }
+
+    fn scrub_capture(capture: &mut Capture) {
+        capture.line = 0;
+        capture.span = ZERO;
+        capture.text = String::new();
+        scrub_ident(&mut capture.name);
+        scrub_subject(&mut capture.subject);
+        scrub_filters(&mut capture.filters);
     }
 
     fn scrub_file(mut file: File) -> File {
@@ -1293,35 +1302,35 @@ mod tests {
     /// Valid sources covering every construct; each must round-trip.
     const FIXTURES: [&str; 21] = [
         // The SPEC section 2 example.
-        "# checkout.whirl \u{2014} buy a widget as a signed-in user.\n[Options]\nbase: https://shop.example.com\nviewport: 1280x800\n\n# Log in.\nVISIT /login\n\nFILL \"Email\" alice@example.com\nFILL \"Password\" {{env.TEST_PASSWORD}}\nCLICK role:button \"Sign in\"\nPAGE /dashboard\n[Asserts]\nrole:heading \"Welcome back\" visible\ntestid:user-menu text == Alice\n\n# Find a product.\nFILL placeholder:\"Search products\" widget\nPRESS Enter\n[Asserts]\nurl contains \"q=widget\"\ntestid:result-card count >= 1\n[Captures]\nfirst_product: testid:result-card >> nth:1 >> role:link attr:href\n\n# Add it to the cart.\nVISIT {{first_product}}\nCLICK \"Add to cart\"\n[Asserts]\ntestid:cart-badge text == 1\nrole:alert text contains \"Added to cart\"\n",
+        "# checkout.whirl \u{2014} buy a widget as a signed-in user.\n[Options]\nbase: https://shop.example.com\nviewport: 1280x800\n\n# Log in.\nVISIT /login\n\nFILL \"Email\" alice@example.com\nFILL \"Password\" {{env.TEST_PASSWORD}}\nCLICK role:button \"Sign in\"\nPAGE /dashboard\nASSERT role:heading \"Welcome back\" visible\nASSERT testid:user-menu text == Alice\n\n# Find a product.\nFILL placeholder:\"Search products\" widget\nPRESS Enter\nASSERT url contains \"q=widget\"\nASSERT testid:result-card count >= 1\nCAPTURE first_product: testid:result-card >> nth:1 >> role:link attr:href\n\n# Add it to the cart.\nVISIT {{first_product}}\nCLICK \"Add to cart\"\nASSERT testid:cart-badge text == 1\nASSERT role:alert text contains \"Added to cart\"\n",
         // Every option key, including interpolated values.
         "[Options]\nbase: https://example.com\nbrowser: webkit\nviewport: 800x600\nstep-timeout: 5s\nentry-timeout: 90s\nnav-timeout: 45s\nallow-hosts: example.com *.example.com\ndialogs: accept\nreduced-motion: reduce\nstorage: auth/state.json\nuser-agent: \"Mozilla/5.0 (Whirl)\"\nsetup: sign-in.whirl\nVISIT /\n",
         "[Options]\nbrowser: {{engine}}\nviewport: {{size}}\nstep-timeout: {{t}}\nVISIT /\n",
         // Every action form.
         "VISIT /a\nCLICK \"Add to cart\"\nRIGHTCLICK \"report.pdf\"\nMIDDLECLICK role:link Docs\nDBLCLICK text~:\"added\"\nFILL \"Email\" alice@example.com\nTYPE \"Code\" 424242\nPRESS Enter\nPRESS label:Search \"Control+A\"\nCHECK \"Remember me\"\nUNCHECK role:checkbox \"Spam\"\nSELECT \"Country\" \"United States\"\nHOVER testid:menu\nDRAG \"Write spec\" to testid:done\nDRAG \"to\" to role:listitem \"to\"\nSCROLL testid:feed\nSCROLL down\nSCROLL role:dialog Filters up\nSCROLL to 50%\nSCROLL testid:board to 33.5%\nSCROLL \"down\"\nSCROLL \"to\" left\nUPLOAD \"Avatar\" file:images/cat.png\nDROP \"Drop files here\" file:reports/q3.csv\nDROP testid:dropzone file:{{report}}\nSCREENSHOT overview\nSNAPSHOT header\nEVAL \"window.scrollTo(0, 0)\"\nSTORE local onboarding:done yes\nSTORE local \"welcome seen\" {{env.SEEN}}\nSTORE session draft hi\nSTORE cookie chat_version v1\nVISIT /u/{{setup.user_id}}\n",
         // Timeout suffixes on every step kind.
-        "VISIT / @45s\nCLICK go @60s\nPAGE /done @2s\n[Asserts]\ntestid:x visible @2500ms\nurl == / @1s\n[Captures]\nn: testid:x text @3s\nm: testid:x text regex /x(y)?/ @3s\n",
+        "VISIT / @45s\nCLICK go @60s\nPAGE /done @2s\nASSERT testid:x visible @2500ms\nASSERT url == / @1s\nCAPTURE n: testid:x text @3s\nCAPTURE m: testid:x text regex /x(y)?/ @3s\n",
         // Every assert form and operator.
-        "VISIT /\n[Asserts]\ntestid:a visible\ntestid:a hidden\ntestid:a enabled\ntestid:a disabled\ntestid:a checked\ntestid:a unchecked\ntestid:a focused\ntestid:a text == x\ntestid:a text != x\ntestid:a text contains x\ntestid:a text matches /Order #\\w+/i\ntestid:a value == 0\ntestid:a attr:aria-expanded == true\ntestid:a attr:data-state != open\ntestid:a count == 3\ntestid:a count != 3\ntestid:a count < 3\ntestid:a count <= 3\ntestid:a count > 3\ntestid:a count >= 3\nurl == https://x/\nurl matches /a.b/ism\ntitle contains Check\n",
+        "VISIT /\nASSERT testid:a visible\nASSERT testid:a hidden\nASSERT testid:a enabled\nASSERT testid:a disabled\nASSERT testid:a checked\nASSERT testid:a unchecked\nASSERT testid:a focused\nASSERT testid:a text == x\nASSERT testid:a text != x\nASSERT testid:a text contains x\nASSERT testid:a text matches /Order #\\w+/i\nASSERT testid:a value == 0\nASSERT testid:a attr:aria-expanded == true\nASSERT testid:a attr:data-state != open\nASSERT testid:a count == 3\nASSERT testid:a count != 3\nASSERT testid:a count < 3\nASSERT testid:a count <= 3\nASSERT testid:a count > 3\nASSERT testid:a count >= 3\nASSERT url == https://x/\nASSERT url matches /a.b/ism\nASSERT title contains Check\n",
         // Every capture form.
-        "VISIT /\n[Captures]\na: testid:x text\nb: label:Amount value\nc: css:\".row\" count\nd: role:link \"Docs\" attr:href\ne: url\nf: title\ng: eval \"document.title\"\nh: testid:x text regex /Order #(\\w+)/\n",
+        "VISIT /\nCAPTURE a: testid:x text\nCAPTURE b: label:Amount value\nCAPTURE c: css:\".row\" count\nCAPTURE d: role:link \"Docs\" attr:href\nCAPTURE e: url\nCAPTURE f: title\nCAPTURE g: eval \"document.title\"\nCAPTURE h: testid:x text regex /Order #(\\w+)/\n",
         // Locator shapes: chains, nth, every prefix and substring form.
         "VISIT /\nCLICK role:button \"Sign in\"\nCLICK role~:button \"sign\"\nCLICK label:Email >> nth:2\nCLICK label~:mail\nCLICK placeholder:Search\nCLICK placeholder~:sea\nCLICK text:Go\nCLICK text~:go\nCLICK alt:Logo\nCLICK alt~:logo\nCLICK title:Info\nCLICK title~:info\nCLICK testid:cart >> css:\".x > .y\" >> nth:1\n",
         // Quotes the parse depends on.
-        "VISIT /\nCLICK \"css:foo\"\nCLICK \"role:button\"\nCLICK \"nth:2\"\nCLICK \">>\"\nFILL Email \"@60s\"\nFILL Email \"@60x\"\nPAGE \"matches\"\n[Asserts]\nrole:button \"visible\" visible\nrole:button \"count\" text == \"@5s\"\n[Captures]\nx: role:link \"text\" text\n",
+        "VISIT /\nCLICK \"css:foo\"\nCLICK \"role:button\"\nCLICK \"nth:2\"\nCLICK \">>\"\nFILL Email \"@60s\"\nFILL Email \"@60x\"\nPAGE \"matches\"\nASSERT role:button \"visible\" visible\nASSERT role:button \"count\" text == \"@5s\"\nCAPTURE x: role:link \"text\" text\n",
         // Values that are safe to bare.
-        "VISIT \"/dashboard\"\nFILL \"Email\" \"alice\"\nPAGE \"/x\"\n[Asserts]\nurl == \"q\"\n",
+        "VISIT \"/dashboard\"\nFILL \"Email\" \"alice\"\nPAGE \"/x\"\nASSERT url == \"q\"\n",
         // Escapes and interpolation.
         "VISIT /\nFILL \"Says \\\"hi\\\"\" \"a\\tb\\nc\\\\d\"\nFILL \"U\" \"\\u{1F600}ok\"\nFILL \"B\" \"\\{{literal\"\nVISIT a\\{{b\nVISIT {{base_url}}/next\nFILL \"P\" {{env.SECRET}}\n",
         // Comments everywhere.
-        "# top\n[Options] # inline options\nbase: https://x # inline base\n\n# name entry one\nVISIT / # go\n# between actions\nCLICK x\nPAGE / # landed\n[Asserts] # checks\n# before check\nurl == / # eq\n[Captures] # caps\n# before cap\nc: url # cap\n\n# name entry two\nVISIT /two\n# trailing comment\n",
+        "# top\n[Options] # inline options\nbase: https://x # inline base\n\n# name entry one\nVISIT / # go\n# between actions\nCLICK x\nPAGE / # landed\n# before check\nASSERT url == / # eq\n# before cap\nCAPTURE c: url # cap\n\n# name entry two\nVISIT /two\n# trailing comment\n",
         // Blank-line and spacing noise.
         "\n\n[Options]\n\n\nbase:    https://x\n\n\nVISIT     /\n\n\nPAGE      /\n\n\n\nVISIT   /b\n\n",
         // CRLF line endings.
-        "VISIT /\r\nPAGE /\r\n[Asserts]\r\nurl == /\r\n",
+        "VISIT /\r\nPAGE /\r\nASSERT url == /\r\n",
         // Empty sections keep their headers.
-        "VISIT /\n[Asserts]\n",
-        "VISIT /\n[Asserts]\n[Captures]\n",
+        "VISIT /\n",
+        "VISIT /\n",
         "[Options]\nVISIT /\n",
         // PRESS one-argument vs two-argument forms.
         "VISIT /\nPRESS Enter\nPRESS \"Control+A\"\nPRESS label:Search Enter\nPRESS role:textbox \"Query\" Enter\n",
@@ -1330,7 +1339,7 @@ mod tests {
         // Attached prefix values that need quotes.
         "VISIT /\nCLICK css:\".a .b\" >> text:\"Add to cart\"\nCLICK label:\"First name\"\nUPLOAD \"Avatar\" file:\"my cat.png\"\nDROP \"Drop files here\" file:\"my cat.png\"\nDROP \"css:.zone\" file:\"@5s\"\n",
         // Capture names and eval edge spellings.
-        "VISIT /\n[Captures]\na_1: eval \"1 + 1\"\nb: eval regex\nc: eval \"@5s\"\nd: eval x regex /y/\n",
+        "VISIT /\nCAPTURE a_1: eval \"1 + 1\"\nCAPTURE b: eval regex\nCAPTURE c: eval \"@5s\"\nCAPTURE d: eval x regex /y/\n",
     ];
 
     #[test]
@@ -1348,12 +1357,25 @@ HTTP POST /api/orders @5s
 Authorization: "Bearer {{env.API_KEY}}"
 Content-Type: application/json
 {"name":"Ada"}
-[Asserts]
-status == 201
+ASSERT status == 201
 HTTP GET /
 X-Value: @10s
 HTTP GET "@10s"
 "#,
+        );
+    }
+
+    #[test]
+    fn rewrites_sections_as_check_lines() {
+        assert_eq!(
+            fmt(
+                "VISIT /\nPAGE /\n[Asserts] # checks\nurl == /\n# before cap\n[Captures]\nc: url\n"
+            ),
+            "VISIT /\nPAGE /\n# checks\nASSERT url == /\n# before cap\nCAPTURE c: url\n"
+        );
+        assert_eq!(
+            fmt("HTTP GET /api\n[Asserts]\nstatus == 200 @5s\n"),
+            "HTTP GET /api\nASSERT status == 200 @5s\n"
         );
     }
 
@@ -1368,8 +1390,8 @@ HTTP GET "@10s"
     #[test]
     fn removes_quotes_a_bare_spelling_preserves() {
         assert_eq!(
-            fmt("VISIT \"/dashboard\"\nFILL \"Email\" \"alice\"\n[Asserts]\nurl == \"q\"\n"),
-            "VISIT /dashboard\nFILL Email alice\n[Asserts]\nurl == q\n"
+            fmt("VISIT \"/dashboard\"\nFILL \"Email\" \"alice\"\nASSERT url == \"q\"\n"),
+            "VISIT /dashboard\nFILL Email alice\nASSERT url == q\n"
         );
     }
 
@@ -1377,22 +1399,21 @@ HTTP GET "@10s"
     fn keeps_quotes_on_typed_literal_spellings() {
         assert_eq!(
             fmt(
-                "VISIT /\n[Asserts]\ntestid:x text == \"1\"\nurl == \"true\"\nurl != \"paid\"\neval \"1\" == 1\neval \"1\" == \"[a]\"\n"
+                "VISIT /\nASSERT testid:x text == \"1\"\nASSERT url == \"true\"\nASSERT url != \"paid\"\nASSERT eval \"1\" == 1\nASSERT eval \"1\" == \"[a]\"\n"
             ),
-            "VISIT /\n[Asserts]\ntestid:x text == \"1\"\nurl == \"true\"\nurl != paid\neval 1 == 1\neval 1 == \"[a]\"\n"
+            "VISIT /\nASSERT testid:x text == \"1\"\nASSERT url == \"true\"\nASSERT url != paid\nASSERT eval 1 == 1\nASSERT eval 1 == \"[a]\"\n"
         );
     }
 
     #[test]
     fn keeps_quotes_on_interpolated_expected_values() {
-        let source = "HTTP GET /x\n[Asserts]\nstatus == 200\njson:$.id == \"{{order_id}}\"\njson:$.n == \"{{a}}1\"\njson:$.id == {{order_id}}\n";
+        let source = "HTTP GET /x\nASSERT status == 200\nASSERT json:$.id == \"{{order_id}}\"\nASSERT json:$.n == \"{{a}}1\"\nASSERT json:$.id == {{order_id}}\n";
         assert_eq!(fmt(source), source);
     }
 
     #[test]
     fn keeps_json_literals_as_written() {
-        let source =
-            "VISIT /\nRESPONSE r GET /x\n[Asserts]\nresponse:r json:$.a == {\"b\":  [1,2]}\n";
+        let source = "VISIT /\nRESPONSE r GET /x\nASSERT response:r json:$.a == {\"b\":  [1,2]}\n";
         assert_eq!(fmt(source), source);
     }
 
@@ -1440,26 +1461,24 @@ HTTP GET "@10s"
             r#"VISIT /
 CLICK Order
 RESPONSE order POST /api/orders @30s
-[Asserts]
-response:order status >= 200
-response:order header:Content-Type contains application/json
-response:order json:"$['key with space']" == true
-response:order json:{{path}} matches /paid/i
-response:order json:$.total toFloat >= 1e3
-response:order json:$.tags == ["a", "{{tag}}"]
-response:order json:$.id == "42"
-response:order json:$.items[*].sku not contains ABC-1
-response:order bytes startsWith hex,7b;
-response:order location urlQueryParam next == /cart
-response:order xpath:"count(//li[@class='row'])" == 3
-response:order xpath://_:entry count >= 1
-response:order body xpath:"string(//h1)" == Checks
-response:order xpath:{{expr}} exists
-[Captures]
-body: response:order json:$
-id: response:order json:$.id toString regex /order-(\d+)/ @2s
-status: response:order status
-header: response:order header:{{header_name}}
+ASSERT response:order status >= 200
+ASSERT response:order header:Content-Type contains application/json
+ASSERT response:order json:"$['key with space']" == true
+ASSERT response:order json:{{path}} matches /paid/i
+ASSERT response:order json:$.total toFloat >= 1e3
+ASSERT response:order json:$.tags == ["a", "{{tag}}"]
+ASSERT response:order json:$.id == "42"
+ASSERT response:order json:$.items[*].sku not contains ABC-1
+ASSERT response:order bytes startsWith hex,7b;
+ASSERT response:order location urlQueryParam next == /cart
+ASSERT response:order xpath:"count(//li[@class='row'])" == 3
+ASSERT response:order xpath://_:entry count >= 1
+ASSERT response:order body xpath:"string(//h1)" == Checks
+ASSERT response:order xpath:{{expr}} exists
+CAPTURE body: response:order json:$
+CAPTURE id: response:order json:$.id toString regex /order-(\d+)/ @2s
+CAPTURE status: response:order status
+CAPTURE header: response:order header:{{header_name}}
 "#,
         );
     }
@@ -1467,7 +1486,7 @@ header: response:order header:{{header_name}}
     #[test]
     fn named_tabs_round_trip() {
         assert_round_trip(
-            "VISIT /\nCLICK Pay\nPOPUP payment @30s\nTAB payment\nCLOSE payment\n[Asserts]\ntab:payment closed @5s\nTAB main\n",
+            "VISIT /\nCLICK Pay\nPOPUP payment @30s\nTAB payment\nCLOSE payment\nASSERT tab:payment closed @5s\nTAB main\n",
         );
     }
 
@@ -1477,10 +1496,8 @@ header: response:order header:{{header_name}}
             r##"VISIT /
 CLICK "frame:literal"
 FILL frame:"#payment iframe" >> nth:2 >> frame:iframe >> label:Email alice@example.com
-[Asserts]
-frame:"#payment iframe" >> label:Email value == alice@example.com
-[Captures]
-email: frame:"#payment iframe" >> label:Email value
+ASSERT frame:"#payment iframe" >> label:Email value == alice@example.com
+CAPTURE email: frame:"#payment iframe" >> label:Email value
 "##,
         );
     }
@@ -1529,15 +1546,15 @@ email: frame:"#payment iframe" >> label:Email value
 
     #[test]
     fn keeps_quotes_on_keyword_shaped_values() {
-        let source = "VISIT /\nPAGE \"matches\"\n[Asserts]\nrole:button \"visible\" visible\n[Captures]\nx: role:link \"text\" text\n";
+        let source = "VISIT /\nPAGE \"matches\"\nASSERT role:button \"visible\" visible\nCAPTURE x: role:link \"text\" text\n";
         assert_eq!(fmt(source), source);
     }
 
     #[test]
     fn unquotes_role_names_without_keyword_conflicts() {
         assert_eq!(
-            fmt("VISIT /\nCLICK role:button \"Save\"\n[Asserts]\nrole:alert \"Saved\" visible\n"),
-            "VISIT /\nCLICK role:button Save\n[Asserts]\nrole:alert Saved visible\n"
+            fmt("VISIT /\nCLICK role:button \"Save\"\nASSERT role:alert \"Saved\" visible\n"),
+            "VISIT /\nCLICK role:button Save\nASSERT role:alert Saved visible\n"
         );
     }
 
@@ -1562,8 +1579,8 @@ email: frame:"#payment iframe" >> label:Email value
     #[test]
     fn keeps_comments_on_their_side_of_a_section_header() {
         assert_eq!(
-            fmt("VISIT /\n# above\n[Asserts]\n# below\nurl == /\n"),
-            "VISIT /\n# above\n[Asserts]\n# below\nurl == /\n"
+            fmt("VISIT /\n# above\n# below\nASSERT url == /\n"),
+            "VISIT /\n# above\n# below\nASSERT url == /\n"
         );
     }
 

@@ -16,10 +16,10 @@
     },
     {
       "code": "unused-capture",
-      "column": 1,
+      "column": 9,
       "expected": [],
       "length": 6,
-      "line": 3,
+      "line": 2,
       "message": "capture `unused` is never used",
       "path": "./warning.whirl",
       "severity": "warning"
