@@ -35,7 +35,7 @@ mod embedded {
 }
 
 /// The pinned Node runtime version (no `v` prefix).
-pub(crate) const NODE_VERSION: &str = "24.19.0";
+pub(crate) const NODE_VERSION: &str = "24.22.1";
 /// The pinned Playwright version, matching `shim/package.json`.
 pub(crate) const PLAYWRIGHT_VERSION: &str = "1.62.1";
 /// The pinned Bun version used to install the bundle's dependencies
@@ -165,7 +165,7 @@ fn node_version_matches(node_bin: &Path) -> bool {
 }
 
 /// Maps `std::env::consts` OS and arch to the official Node tarball
-/// name, for example `node-v24.19.0-darwin-arm64.tar.gz`. `None` for
+/// name, for example `node-v24.22.1-darwin-arm64.tar.gz`. `None` for
 /// platforms Whirl does not provision (Windows included, for now).
 fn node_archive_name(os: &str, arch: &str) -> Option<String> {
     let os = match os {
@@ -600,19 +600,19 @@ mod tests {
     fn archive_names_cover_macos_and_linux() {
         assert_eq!(
             node_archive_name("macos", "aarch64").as_deref(),
-            Some("node-v24.19.0-darwin-arm64.tar.gz")
+            Some("node-v24.22.1-darwin-arm64.tar.gz")
         );
         assert_eq!(
             node_archive_name("macos", "x86_64").as_deref(),
-            Some("node-v24.19.0-darwin-x64.tar.gz")
+            Some("node-v24.22.1-darwin-x64.tar.gz")
         );
         assert_eq!(
             node_archive_name("linux", "aarch64").as_deref(),
-            Some("node-v24.19.0-linux-arm64.tar.gz")
+            Some("node-v24.22.1-linux-arm64.tar.gz")
         );
         assert_eq!(
             node_archive_name("linux", "x86_64").as_deref(),
-            Some("node-v24.19.0-linux-x64.tar.gz")
+            Some("node-v24.22.1-linux-x64.tar.gz")
         );
     }
 
@@ -665,14 +665,14 @@ mod tests {
 
     #[test]
     fn shasum_parsing_finds_the_named_file() {
-        let shasums = "aaaa  node-v24.19.0-darwin-arm64.tar.gz\n\
-                       BBBB  node-v24.19.0-linux-x64.tar.gz\n";
+        let shasums = "aaaa  node-v24.22.1-darwin-arm64.tar.gz\n\
+                       BBBB  node-v24.22.1-linux-x64.tar.gz\n";
         assert_eq!(
-            parse_shasum(shasums, "node-v24.19.0-linux-x64.tar.gz").as_deref(),
+            parse_shasum(shasums, "node-v24.22.1-linux-x64.tar.gz").as_deref(),
             Some("bbbb"),
             "hashes normalize to lowercase"
         );
-        assert_eq!(parse_shasum(shasums, "node-v24.19.0-win-x64.zip"), None);
+        assert_eq!(parse_shasum(shasums, "node-v24.22.1-win-x64.zip"), None);
     }
 
     #[test]

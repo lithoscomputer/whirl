@@ -92,7 +92,7 @@ fn installs_the_bundle_and_runs_a_flow_from_it() {
     let again = run_whirl_with_bundle(&data_dir, &work_dir, &["install"]);
     let text = output_text(&again);
     assert_eq!(exit_code(&again), 0, "{text}");
-    assert!(text.contains("Node v24.19.0: already installed"), "{text}");
+    assert!(text.contains("Node v24.22.1: already installed"), "{text}");
     assert!(text.contains("Bun 1.4.0: already installed"), "{text}");
     assert!(
         text.contains("@playwright/test 1.62.1: already installed"),
@@ -132,7 +132,7 @@ fn executable(path: &Path, content: &str) {
 fn installer_fixture(data_dir: &ScratchDir) {
     executable(
         &data_dir.path.join("bundle/node/bin/node"),
-        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo v24.19.0; else printf '%s\\n' \"$@\" > browser-args.txt; fi\n",
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo v24.22.1; else printf '%s\\n' \"$@\" > browser-args.txt; fi\n",
     );
     executable(
         &data_dir.path.join("bundle/bun/bun"),
