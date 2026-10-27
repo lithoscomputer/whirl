@@ -6,7 +6,7 @@
 //! resolves:
 //! `bundle/node/` holds the pinned Node runtime, `bundle/bun/` holds the
 //! pinned Bun binary that installs dependencies, and `bundle/shim/`
-//! holds the shim entry `index.js`, its sibling dist files, a
+//! holds the shim entry `index.js`, its dist tree, a
 //! `package.json`, and a `node_modules` tree with the pinned
 //! `@playwright/test`.
 //!
@@ -35,13 +35,15 @@ mod embedded {
 }
 
 /// The pinned Node runtime version (no `v` prefix).
-pub(crate) const NODE_VERSION: &str = "24.19.0";
+pub(crate) const NODE_VERSION: &str = "24.22.1";
 /// The pinned Playwright version, matching `shim/package.json`.
 pub(crate) const PLAYWRIGHT_VERSION: &str = "1.62.1";
+/// The shared-state schema dependency, matching `shim/package.json`.
+const ZOD_VERSION: &str = "4.1.12";
 /// The pinned Bun version used to install the bundle's dependencies
 /// (Bun package-management decision). Bun is not a runtime here: the
 /// bundle always runs on the pinned Node.
-pub(crate) const BUN_VERSION: &str = "1.4.0";
+pub(crate) const BUN_VERSION: &str = "1.4.4";
 /// Where the pinned Node release tarballs and checksums live.
 const NODE_DIST_BASE: &str = "https://nodejs.org/dist";
 /// Where the pinned Bun release archives and checksums live.
@@ -165,7 +167,7 @@ fn node_version_matches(node_bin: &Path) -> bool {
 }
 
 /// Maps `std::env::consts` OS and arch to the official Node tarball
-/// name, for example `node-v24.19.0-darwin-arm64.tar.gz`. `None` for
+/// name, for example `node-v24.22.1-darwin-arm64.tar.gz`. `None` for
 /// platforms Whirl does not provision (Windows included, for now).
 fn node_archive_name(os: &str, arch: &str) -> Option<String> {
     let os = match os {
@@ -260,7 +262,7 @@ fn remove_dir_if_present(dir: &Path) -> anyhow::Result<()> {
 
 /// Step (b): the shim JS files and their `package.json`. The source is
 /// the dist tree embedded at build time, or, in a binary built without
-/// one, the tree next to `WHIRL_SHIM_JS`. Existing `.js` files in
+/// one, the tree next to `WHIRL_SHIM_JS`. Existing `.js` files under
 /// `bundle/shim` are removed first so no stale file survives an
 /// upgrade; `node_modules` is left in place for step (c).
 fn provision_shim_files(bundle: &BundleLayout, progress: Progress<'_>) -> anyhow::Result<()> {
@@ -272,9 +274,12 @@ fn provision_shim_files(bundle: &BundleLayout, progress: Progress<'_>) -> anyhow
     ));
     fs::create_dir_all(&bundle.shim_dir)
         .with_context(|| format!("creating {}", bundle.shim_dir.display()))?;
-    remove_top_level_js(&bundle.shim_dir).context("removing stale shim files")?;
+    remove_shim_js(&bundle.shim_dir).context("removing stale shim files")?;
     for (name, contents) in &files {
         let path = bundle.shim_dir.join(name);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+        }
         fs::write(&path, contents).with_context(|| format!("writing {}", path.display()))?;
     }
     let package_json = bundle.shim_dir.join("package.json");
@@ -290,7 +295,7 @@ fn provision_shim_files(bundle: &BundleLayout, progress: Progress<'_>) -> anyhow
 }
 
 /// The shim dist tree to install: embedded files when the binary has
-/// them, otherwise every `.js` file in the directory of
+/// them, otherwise every `.js` file in the directory tree of
 /// `WHIRL_SHIM_JS` (the built dist tree the entry point lives in).
 fn shim_source_files() -> anyhow::Result<Vec<(String, Vec<u8>)>> {
     if !embedded::SHIM_DIST_FILES.is_empty() {
@@ -310,19 +315,7 @@ fn shim_source_files() -> anyhow::Result<Vec<(String, Vec<u8>)>> {
     };
     let dist_dir = shim_js.parent().unwrap_or(Path::new("."));
     let mut files = Vec::new();
-    let entries = fs::read_dir(dist_dir)
-        .with_context(|| format!("reading the shim dist directory {}", dist_dir.display()))?;
-    for entry in entries {
-        let path = entry.context("reading the shim dist directory")?.path();
-        if path.extension().is_none_or(|ext| ext != "js") || !path.is_file() {
-            continue;
-        }
-        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-            continue;
-        };
-        let contents = fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
-        files.push((name.to_owned(), contents));
-    }
+    read_shim_js(dist_dir, dist_dir, &mut files)?;
     if !files.iter().any(|(name, _)| name == "index.js") {
         bail!(
             "no index.js next to {env}={shim_js}; point {env} at the built shim entry \
@@ -335,14 +328,33 @@ fn shim_source_files() -> anyhow::Result<Vec<(String, Vec<u8>)>> {
     Ok(files)
 }
 
-/// Removes the top-level `.js` files of `dir`, leaving subdirectories
-/// (notably `node_modules`) alone.
-fn remove_top_level_js(dir: &Path) -> anyhow::Result<()> {
+fn read_shim_js(root: &Path, dir: &Path, files: &mut Vec<(String, Vec<u8>)>) -> anyhow::Result<()> {
     for entry in fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
-        let path = entry
-            .with_context(|| format!("reading {}", dir.display()))?
-            .path();
-        if path.is_file() && path.extension().is_some_and(|ext| ext == "js") {
+        let entry = entry.with_context(|| format!("reading {}", dir.display()))?;
+        let path = entry.path();
+        let kind = entry.file_type()?;
+        if kind.is_dir() {
+            read_shim_js(root, &path, files)?;
+        } else if kind.is_file() && path.extension().is_some_and(|ext| ext == "js") {
+            let relative = path.strip_prefix(root)?;
+            let name = relative.to_str().context("shim file path is not UTF-8")?;
+            let contents =
+                fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+            files.push((name.to_owned(), contents));
+        }
+    }
+    Ok(())
+}
+
+/// Removes old shim JavaScript, preserving installed dependencies.
+fn remove_shim_js(dir: &Path) -> anyhow::Result<()> {
+    for entry in fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
+        let entry = entry.with_context(|| format!("reading {}", dir.display()))?;
+        let path = entry.path();
+        let kind = entry.file_type()?;
+        if kind.is_dir() && entry.file_name() != "node_modules" {
+            remove_shim_js(&path)?;
+        } else if kind.is_file() && path.extension().is_some_and(|ext| ext == "js") {
             fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
         }
     }
@@ -350,12 +362,12 @@ fn remove_top_level_js(dir: &Path) -> anyhow::Result<()> {
 }
 
 /// The bundle's `package.json`: ESM, private, and the pinned
-/// `@playwright/test` as its only dependency.
+/// browser and shared-state dependencies.
 fn bundle_package_json() -> String {
     format!(
         "{{\n  \"name\": \"whirl-shim-bundle\",\n  \"private\": true,\n  \
          \"type\": \"module\",\n  \"dependencies\": {{\n    \
-         \"@playwright/test\": \"{PLAYWRIGHT_VERSION}\"\n  }}\n}}\n"
+         \"@playwright/test\": \"{PLAYWRIGHT_VERSION}\",\n    \"zod\": \"{ZOD_VERSION}\"\n  }}\n}}\n"
     )
 }
 
@@ -454,12 +466,13 @@ fn make_executable(path: &Path) -> anyhow::Result<()> {
 }
 
 /// Step (d): `bun install` in the bundle shim directory. Bun is the
-/// installer only: the generated `package.json` pins `@playwright/test`,
+/// installer only: the generated `package.json` pins its runtime dependencies,
 /// and the resulting `node_modules` tree serves the bundled Node
-/// runtime. Skipped when the pinned `@playwright/test` is already
-/// installed.
+/// runtime. Skipped when every pinned dependency is already installed.
 fn provision_dependencies(bundle: &BundleLayout, progress: Progress<'_>) -> anyhow::Result<()> {
-    if installed_playwright_version(bundle).as_deref() == Some(PLAYWRIGHT_VERSION) {
+    if installed_package_version(bundle, "@playwright/test").as_deref() == Some(PLAYWRIGHT_VERSION)
+        && installed_package_version(bundle, "zod").as_deref() == Some(ZOD_VERSION)
+    {
         progress(&format!(
             "@playwright/test {PLAYWRIGHT_VERSION}: already installed"
         ));
@@ -483,11 +496,13 @@ fn provision_dependencies(bundle: &BundleLayout, progress: Progress<'_>) -> anyh
     Ok(())
 }
 
-/// The version field of the installed `@playwright/test`, if any.
-fn installed_playwright_version(bundle: &BundleLayout) -> Option<String> {
+/// The version field of an installed package, if any.
+fn installed_package_version(bundle: &BundleLayout, name: &str) -> Option<String> {
     let manifest = bundle
         .shim_dir
-        .join("node_modules/@playwright/test/package.json");
+        .join("node_modules")
+        .join(name)
+        .join("package.json");
     let json: serde_json::Value = serde_json::from_str(&fs::read_to_string(manifest).ok()?).ok()?;
     Some(json.get("version")?.as_str()?.to_owned())
 }
@@ -600,19 +615,19 @@ mod tests {
     fn archive_names_cover_macos_and_linux() {
         assert_eq!(
             node_archive_name("macos", "aarch64").as_deref(),
-            Some("node-v24.19.0-darwin-arm64.tar.gz")
+            Some("node-v24.22.1-darwin-arm64.tar.gz")
         );
         assert_eq!(
             node_archive_name("macos", "x86_64").as_deref(),
-            Some("node-v24.19.0-darwin-x64.tar.gz")
+            Some("node-v24.22.1-darwin-x64.tar.gz")
         );
         assert_eq!(
             node_archive_name("linux", "aarch64").as_deref(),
-            Some("node-v24.19.0-linux-arm64.tar.gz")
+            Some("node-v24.22.1-linux-arm64.tar.gz")
         );
         assert_eq!(
             node_archive_name("linux", "x86_64").as_deref(),
-            Some("node-v24.19.0-linux-x64.tar.gz")
+            Some("node-v24.22.1-linux-x64.tar.gz")
         );
     }
 
@@ -665,14 +680,14 @@ mod tests {
 
     #[test]
     fn shasum_parsing_finds_the_named_file() {
-        let shasums = "aaaa  node-v24.19.0-darwin-arm64.tar.gz\n\
-                       BBBB  node-v24.19.0-linux-x64.tar.gz\n";
+        let shasums = "aaaa  node-v24.22.1-darwin-arm64.tar.gz\n\
+                       BBBB  node-v24.22.1-linux-x64.tar.gz\n";
         assert_eq!(
-            parse_shasum(shasums, "node-v24.19.0-linux-x64.tar.gz").as_deref(),
+            parse_shasum(shasums, "node-v24.22.1-linux-x64.tar.gz").as_deref(),
             Some("bbbb"),
             "hashes normalize to lowercase"
         );
-        assert_eq!(parse_shasum(shasums, "node-v24.19.0-win-x64.zip"), None);
+        assert_eq!(parse_shasum(shasums, "node-v24.22.1-win-x64.zip"), None);
     }
 
     #[test]
@@ -727,12 +742,16 @@ mod tests {
     }
 
     #[test]
-    fn the_bundle_package_json_pins_playwright() {
+    fn the_bundle_package_json_pins_all_shim_dependencies() {
         let json: serde_json::Value =
             serde_json::from_str(&bundle_package_json()).expect("package.json should be JSON");
         assert_eq!(
             json["dependencies"]["@playwright/test"],
             serde_json::json!(PLAYWRIGHT_VERSION)
         );
+        let source: serde_json::Value =
+            serde_json::from_str(include_str!("../../../shim/package.json"))
+                .expect("shim package.json should be JSON");
+        assert_eq!(json["dependencies"], source["dependencies"]);
     }
 }
