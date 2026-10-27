@@ -41,7 +41,7 @@ pub(crate) const PLAYWRIGHT_VERSION: &str = "1.62.1";
 /// The pinned Bun version used to install the bundle's dependencies
 /// (Bun package-management decision). Bun is not a runtime here: the
 /// bundle always runs on the pinned Node.
-pub(crate) const BUN_VERSION: &str = "1.4.0";
+pub(crate) const BUN_VERSION: &str = "1.4.4";
 /// Where the pinned Node release tarballs and checksums live.
 const NODE_DIST_BASE: &str = "https://nodejs.org/dist";
 /// Where the pinned Bun release archives and checksums live.

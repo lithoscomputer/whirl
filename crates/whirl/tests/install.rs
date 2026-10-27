@@ -93,7 +93,7 @@ fn installs_the_bundle_and_runs_a_flow_from_it() {
     let text = output_text(&again);
     assert_eq!(exit_code(&again), 0, "{text}");
     assert!(text.contains("Node v24.22.1: already installed"), "{text}");
-    assert!(text.contains("Bun 1.4.0: already installed"), "{text}");
+    assert!(text.contains("Bun 1.4.4: already installed"), "{text}");
     assert!(
         text.contains("@playwright/test 1.62.1: already installed"),
         "{text}"
@@ -136,7 +136,7 @@ fn installer_fixture(data_dir: &ScratchDir) {
     );
     executable(
         &data_dir.path.join("bundle/bun/bun"),
-        "#!/bin/sh\necho 1.4.0\n",
+        "#!/bin/sh\necho 1.4.4\n",
     );
     let package = data_dir
         .path
