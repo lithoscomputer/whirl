@@ -88,6 +88,16 @@ fn installs_the_bundle_and_runs_a_flow_from_it() {
         "the bundled @playwright/test should exist; {text}"
     );
 
+    assert!(
+        data_dir
+            .path
+            .join("bundle/shim/shared-state/adapter.js")
+            .is_file(),
+        "nested shim modules should be installed; {text}"
+    );
+    let stale_module = data_dir.path.join("bundle/shim/shared-state/stale.js");
+    fs::write(&stale_module, "throw new Error('stale');").expect("stale fixture");
+
     // A second install is idempotent and skips the completed steps.
     let again = run_whirl_with_bundle(&data_dir, &work_dir, &["install"]);
     let text = output_text(&again);
@@ -97,6 +107,11 @@ fn installs_the_bundle_and_runs_a_flow_from_it() {
     assert!(
         text.contains("@playwright/test 1.62.1: already installed"),
         "{text}"
+    );
+
+    assert!(
+        !stale_module.exists(),
+        "reinstall should remove stale nested modules"
     );
 
     // A flow now runs with the bundle as the only shim source.
@@ -143,6 +158,9 @@ fn installer_fixture(data_dir: &ScratchDir) {
         .join("bundle/shim/node_modules/@playwright/test");
     fs::create_dir_all(&package).expect("package directory");
     fs::write(package.join("package.json"), r#"{"version":"1.62.1"}"#).expect("package fixture");
+    let zod = data_dir.path.join("bundle/shim/node_modules/zod");
+    fs::create_dir_all(&zod).expect("zod directory");
+    fs::write(zod.join("package.json"), r#"{"version":"4.1.12"}"#).expect("zod fixture");
     fs::write(package.join("cli.js"), "").expect("CLI fixture");
 }
 

@@ -38,29 +38,46 @@ fn main() {
     fs::write(out_dir.join("shim_embed.rs"), table).expect("shim_embed.rs should be writable");
 }
 
-/// Copies every `.js` file from `dist_dir` into `copies_dir` and returns
-/// the sorted file names. A missing dist tree yields an empty list.
+/// Copies every `.js` file under `dist_dir` into `copies_dir` and returns
+/// the sorted relative paths. A missing dist tree yields an empty list.
 fn copy_dist_js(dist_dir: &Path, copies_dir: &Path) -> Vec<String> {
     let Ok(entries) = fs::read_dir(dist_dir) else {
         return Vec::new();
     };
     let mut names = Vec::new();
-    for entry in entries {
-        let path = entry.expect("shim/dist should be readable").path();
-        if path.extension().is_none_or(|ext| ext != "js") || !path.is_file() {
-            continue;
-        }
-        let name = path
-            .file_name()
-            .expect("a .js file has a name")
-            .to_str()
-            .expect("shim dist file names are UTF-8")
-            .to_owned();
-        fs::copy(&path, copies_dir.join(&name)).expect("shim dist file should copy");
-        names.push(name);
-    }
+    copy_js_entries(dist_dir, copies_dir, entries, &mut names);
     names.sort();
     names
+}
+
+fn copy_js_entries(root: &Path, copies_dir: &Path, entries: fs::ReadDir, names: &mut Vec<String>) {
+    for entry in entries {
+        let entry = entry.expect("shim/dist should be readable");
+        let path = entry.path();
+        let kind = entry
+            .file_type()
+            .expect("shim entry type should be readable");
+        if kind.is_dir() {
+            copy_js_entries(
+                root,
+                copies_dir,
+                fs::read_dir(&path).expect("shim subdirectory should be readable"),
+                names,
+            );
+        } else if kind.is_file() && path.extension().is_some_and(|ext| ext == "js") {
+            let relative = path.strip_prefix(root).expect("shim file is under dist");
+            let destination = copies_dir.join(relative);
+            fs::create_dir_all(destination.parent().expect("copy has a parent"))
+                .expect("shim copy directory should be creatable");
+            fs::copy(&path, destination).expect("shim dist file should copy");
+            names.push(
+                relative
+                    .to_str()
+                    .expect("shim dist paths are UTF-8")
+                    .to_owned(),
+            );
+        }
+    }
 }
 
 /// Renders the generated static table of embedded shim files.
