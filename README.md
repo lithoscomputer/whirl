@@ -361,6 +361,9 @@ authority rules, and the test policy.
 Licensed under either of the [Apache License, Version 2.0](LICENSE-APACHE)
 or the [MIT license](LICENSE-MIT), at your option.
 
+Whirl includes third-party open source components. Their licenses and copyright
+notices are in [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt).
+
 Unless you explicitly state otherwise, any contribution intentionally
 submitted for inclusion in the work by you, as defined in the Apache-2.0
 license, shall be dual licensed as above, without any additional terms or
