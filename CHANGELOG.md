@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Include `THIRD_PARTY_NOTICES.txt` in every release archive, next to the binary and the license files. The path of the `whirl` binary in the archive does not change.
 - Run browsers on Kernel with `whirl run --browser-provider kernel`. Whirl leases one Kernel hosted Chromium per worker slot before any flow starts, and deletes them when the run ends. Set `KERNEL_API_KEY`. A file whose `browser` option is `firefox` or `webkit` is a usage error before any browser is created. With `--headed` and `WHIRL_LOG=info`, Whirl logs each browser's live view URL. The browser runs in Kernel's cloud, so the app under test must be reachable from the internet. `UPLOAD` and `DROP` work up to a file of just under 50 MiB, Playwright's limit for a remote browser. The default, `--browser-provider local`, launches browsers on your machine as before.
 - Let `whirl doctor` accept any Node from v24 up when `WHIRL_NODE` selects a development runtime. It required exactly v24.19.0, so it failed where `node` is a newer release. The installed bundle still runs its own pinned Node.
 - Rename the `base` option to `app-url`, the URL of the app under test. `base` is now an unknown option key; change `base:` lines and `-O base=` to `app-url`. The JSON report lists the setting as `app-url`.

@@ -54,7 +54,9 @@ rm -f "$xpath_probe"
 
 rm -rf "dist-release/$name"
 mkdir -p "dist-release/$name"
-cp "$bin" README.md CHANGELOG.md LICENSE-MIT LICENSE-APACHE "dist-release/$name/"
+# Every distributed copy carries the licenses and the third-party notices.
+cp "$bin" README.md CHANGELOG.md LICENSE-MIT LICENSE-APACHE THIRD_PARTY_NOTICES.txt \
+  "dist-release/$name/"
 tar -czf "dist-release/$name.tar.gz" -C dist-release "$name"
 
 if command -v sha256sum >/dev/null 2>&1; then
